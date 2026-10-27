@@ -9,15 +9,21 @@ Every factory agent reads this file before working on Times. Keep it short and a
   prompt line where the user types commands.
   - Commands start with `/` (e.g. `/checkin`). The set of commands (the "palette") grows
     feature by feature. Each feature adds its commands to a single command registry (name, short
-    description, handler), and `/help` lists whatever is registered. Unknown commands show a short
-    `[red]` hint and never crash the loop.
+    description, handler), and `/help` lists whatever is registered. Unknown commands and other
+    validation errors show a short `[red]` hint on the line **just above the input box** (not at
+    the top of the screen) and never crash the loop.
   - **How the box is built** (no extra packages): a Spectre `Layout` that fills the terminal,
-    with the day view on top and a 3-line bordered input panel at the bottom. After each
-    command, clear the screen and redraw the whole layout. Input is read by our own small line
-    editor, using `console.Cursor.SetPosition` and `console.Input.ReadKey(intercept: true)`:
-    typing, Backspace, Enter, Esc (clear the line), Tab (complete a `/command` from the
-    registry) and ↑/↓ (history). The screen redraws only after each command, not while typing,
-    because Spectre's `Live` display can't run while we read input.
+    with the day view on top, the hint line, and a 3-line bordered input panel at the bottom.
+    After each command, clear the screen and redraw the whole layout. Input is read by our own
+    small line editor, using `console.Cursor.SetPosition` and
+    `console.Input.ReadKey(intercept: true)`: typing, Backspace, Enter, Esc (close the popup if
+    it is open, otherwise clear the line), Tab (complete a `/command` from the registry) and ↑/↓
+    (history). Don't use Spectre's `Live` display: it can't run while we read input.
+  - **Command popup:** while the line starts with `/`, a popup just above the input box lists the
+    registered commands with their descriptions, filtered by what was typed and ranked by
+    Levenshtein distance so typos still match. The popup is the one thing redrawn **while
+    typing**: the line editor redraws only the popup's rows and the input line in place (via
+    `Cursor.SetPosition`), never the whole layout. Everything else redraws only after a command.
   - `/quit` ends the loop with exit code 0.
   - Tests drive the loop by queuing input on `TestConsole.Input` (`PushTextWithEnter`, `PushKey`)
     and always end with `/quit`, so they can't hang.
