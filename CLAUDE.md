@@ -52,7 +52,11 @@ Every factory agent reads this file before working on Times. Keep it short and a
   - Wrap any user or external text in `Markup.Escape` before it goes into markup.
   - Use Spectre widgets (`Table`, `Panel`, `Rule`, `FigletText`) instead of hand-drawn ASCII.
     Keep the colours consistent with what is already there (`SteelBlue1` accents, `grey` headers).
-  - File-scoped namespaces, primary constructors, `internal sealed` unless a type must be public.
+  - File-scoped namespaces, `internal sealed` unless a type must be public.
+  - No primary constructors anywhere (classes, structs or positional records). Write a
+    conventional constructor that assigns to fields or properties.
+  - Private fields are camelCase **without** a leading underscore (`console`, not `_console`).
+    Use `this.` where a field and a constructor parameter share a name.
   - `Run` returns a process exit code: 0 for success, non-zero for errors. Show errors as
     `[red]` markup, never as a stack trace.
   - No new NuGet packages without a reason in the spec. The approver escalates any new dependency.
