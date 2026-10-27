@@ -6,9 +6,14 @@ namespace Times;
 /// Knows where day files live: one JSON file per day, <c>&lt;folder&gt;/yyyy-MM-dd.json</c>.
 /// Read-only for now. It never creates the folder or a file, so browsing leaves nothing behind.
 /// </summary>
-internal sealed class DayStore(string folder)
+internal sealed class DayStore
 {
-    public string Folder { get; } = folder;
+    public DayStore(string folder)
+    {
+        Folder = folder;
+    }
+
+    public string Folder { get; }
 
     /// <summary>The file path for <paramref name="day"/>, formatted with the invariant culture.</summary>
     public string PathFor(DateOnly day) =>

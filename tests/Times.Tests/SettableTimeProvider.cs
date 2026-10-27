@@ -1,9 +1,14 @@
 namespace Times.Tests;
 
 /// <summary>A clock that stays put until a test moves it.</summary>
-internal sealed class SettableTimeProvider(DateTimeOffset utcNow) : TimeProvider
+internal sealed class SettableTimeProvider : TimeProvider
 {
-    public DateTimeOffset UtcNow { get; set; } = utcNow;
+    public SettableTimeProvider(DateTimeOffset utcNow)
+    {
+        UtcNow = utcNow;
+    }
+
+    public DateTimeOffset UtcNow { get; set; }
 
     public override DateTimeOffset GetUtcNow() => UtcNow;
 
