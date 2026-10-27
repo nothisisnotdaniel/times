@@ -11,4 +11,5 @@ Write one feature per line, in plain language.
 - [ ] Input hint: show a grey placeholder in the empty input box, e.g. "Type /help for commands", that disappears when typing starts.
 - [ ] Long input: when the typed line is wider than the input box, show a cue (e.g. a leading `…`) that the start is scrolled out of view.
 - [ ] Terminal check: verify in a real terminal (macOS Terminal, Windows Terminal) that the full-height layout doesn't scroll by one row and the cursor sits in the input box; fix it if it does.
-
+- [ ] Hint position: show validation and error hints (the red messages) on the line just above the input box instead of at the top of the screen. The day view stays at the top.
+- [ ] Command popup: typing `/` in an empty input box opens a popup just above the input box that lists all registered commands with their short descriptions. Each further key filters the list to the commands that match what was typed, ranked so that typos still find the right command (Levenshtein distance, e.g. `/tdoay` still shows `/today`). The popup closes on Enter, Esc, or when the line no longer starts with `/`. This settles open question 9 and changes the rule in CLAUDE.md that the screen only redraws after each command.
