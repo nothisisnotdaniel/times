@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Spectre.Console;
 using Spectre.Console.Testing;
 
 namespace Times.Tests;
@@ -36,6 +37,49 @@ public sealed class AppTests : IDisposable
 
     /// <summary>Everything from the last drawn heading on: the last frame.</summary>
     private static string LastFrame(string output) => output[output.LastIndexOf(LastHeading(output), StringComparison.Ordinal)..];
+
+    /// <summary>
+    /// Splits the output into drawn frames. Each frame runs from a day heading to the bottom
+    /// border of the input panel (the <c>╰</c> line right after the <c>│ > </c> line), split on <c>\n</c>.
+    /// </summary>
+    private static List<string[]> Frames(string output)
+    {
+        var frames = new List<string[]>();
+        var starts = Regex.Matches(output, @"[A-Z][a-z]+day, \d{4}-\d{2}-\d{2}").Select(m => m.Index).ToList();
+        foreach (var start in starts)
+        {
+            var lines = output[start..].Split('\n');
+            for (var i = 0; i + 1 < lines.Length; i++)
+            {
+                if (lines[i].StartsWith("│ > ", StringComparison.Ordinal) && lines[i + 1].StartsWith('╰'))
+                {
+                    var last = lines[i + 1];
+                    lines[i + 1] = last[..(last.IndexOf('╯') + 1)];
+                    frames.Add(lines[..(i + 2)]);
+                    break;
+                }
+            }
+        }
+
+        return frames;
+    }
+
+    /// <summary>Asserts the 24-line layout: the hint row at <c>frame[^4]</c>, the input panel on the last 3 lines.</summary>
+    private static void AssertLayout(string[] frame)
+    {
+        Assert.Equal(24, frame.Length);
+        Assert.StartsWith("╭", frame[^3]);
+        Assert.StartsWith("│ > ", frame[^2]);
+        Assert.StartsWith("╰", frame[^1]);
+    }
+
+    /// <summary>Asserts that <paramref name="text"/> sits on the hint row and nowhere above it.</summary>
+    private static void AssertOnHintRow(string[] frame, string text)
+    {
+        AssertLayout(frame);
+        Assert.Contains(text, frame[^4]);
+        Assert.DoesNotContain(frame[..^4], l => l.Contains(text, StringComparison.Ordinal));
+    }
 
     private static int Count(string text, string value)
     {
@@ -273,6 +317,130 @@ public sealed class AppTests : IDisposable
 
         // The message sits above the input panel.
         Assert.True(frames[1].IndexOf("List all commands", StringComparison.Ordinal) < frames[1].IndexOf("│ > ", StringComparison.Ordinal));
+
+        // Job 004: /help stays in the top area and the hint row stays blank (AC-6);
+        // the hint is on the hint row and gone after the next command (AC-7).
+        var lines = Frames(output);
+        Assert.Equal(4, lines.Count);
+        AssertLayout(lines[1]);
+        Assert.Contains(lines[1][..^4], l => l.Contains("List all commands", StringComparison.Ordinal));
+        Assert.True(string.IsNullOrWhiteSpace(lines[1][^4]));
+        AssertOnHintRow(lines[2], "Unknown command /nope");
+        AssertLayout(lines[3]);
+        Assert.True(string.IsNullOrWhiteSpace(lines[3][^4]));
+    }
+
+    // Hint position (job 004) -------------------------------------------------------------
+
+    // AC-1, AC-3
+    [Fact]
+    public void UnknownCommand_HintSitsDirectlyAboveInputBox()
+    {
+        var (_, output) = RunCommands("/nope", "/quit");
+
+        var frame = Frames(output)[1];
+        AssertOnHintRow(frame, "Unknown command /nope");
+        Assert.DoesNotContain(frame[..^4], l => l.Contains("Unknown command", StringComparison.Ordinal));
+        Assert.Contains(Heading, frame[0]);
+    }
+
+    // AC-2, AC-3
+    [Theory]
+    [InlineData("hello", "Commands start with /")]
+    [InlineData("/next x", "/next takes no arguments.")]
+    [InlineData("/prev [red]", "/prev takes no arguments.")]
+    public void Hints_SitDirectlyAboveInputBox(string typed, string expected)
+    {
+        var (exitCode, output) = RunCommands(typed, "/quit");
+
+        Assert.Equal(0, exitCode);
+        var frame = Frames(output)[1];
+        AssertOnHintRow(frame, expected);
+        Assert.Contains(Heading, frame[0]);
+    }
+
+    // AC-2, AC-3
+    [Fact]
+    public void BoundaryHint_SitsDirectlyAboveInputBox()
+    {
+        var (exitCode, output) = RunCommands(new SettableTimeProvider(DateTimeOffset.MaxValue), "/next", "/quit");
+
+        Assert.Equal(0, exitCode);
+        var frame = Frames(output)[1];
+        AssertOnHintRow(frame, "There is no day after this one.");
+        Assert.Contains("Friday, 9999-12-31", frame[0]);
+    }
+
+    // AC-2, AC-3
+    [Fact]
+    public void HandlerExceptionHint_SitsDirectlyAboveInputBox()
+    {
+        var registry = CommandRegistry.CreateDefault();
+        registry.Register("/boom", "Throws", _ => throw new InvalidOperationException("bad [thing]"));
+
+        var (exitCode, output) = Run(c =>
+        {
+            c.Input.PushTextWithEnter("/boom");
+            c.Input.PushTextWithEnter("/quit");
+        }, registry);
+
+        Assert.Equal(0, exitCode);
+        var frame = Frames(output)[1];
+        AssertOnHintRow(frame, "/boom failed: bad [thing]");
+        Assert.Contains(Heading, frame[0]);
+    }
+
+    // AC-4
+    [Fact]
+    public void HintRow_IsBlank_WhenThereIsNoHint()
+    {
+        var (_, output) = RunCommands("/nope", "", "/quit");
+
+        var frames = Frames(output);
+        Assert.Equal(3, frames.Count);
+        foreach (var frame in new[] { frames[0], frames[2] })
+        {
+            AssertLayout(frame);
+            Assert.True(string.IsNullOrWhiteSpace(frame[^4]));
+            Assert.Contains(Heading, frame[0]);
+        }
+
+        Assert.DoesNotContain(frames[2], l => l.Contains("Unknown command", StringComparison.Ordinal));
+    }
+
+    // AC-7
+    [Fact]
+    public void Hint_IsReplacedByHelp_OnNextCommand()
+    {
+        var (_, output) = RunCommands("/nope", "/help", "/quit");
+
+        var frame = Frames(output)[2];
+        AssertLayout(frame);
+        Assert.Contains(frame[..^4], l => l.Contains("List all commands", StringComparison.Ordinal));
+        Assert.True(string.IsNullOrWhiteSpace(frame[^4]));
+        Assert.DoesNotContain(frame, l => l.Contains("Unknown command", StringComparison.Ordinal));
+    }
+
+    // AC-8
+    [Fact]
+    public void LongHint_IsCroppedToOneLine_AndDoesNotMoveInputBox()
+    {
+        var registry = CommandRegistry.CreateDefault();
+        var text = string.Concat(Enumerable.Repeat("word ", 60)); // 300 characters
+        registry.Register("/long", "Long hint", _ => CommandResult.Error(Markup.Escape(text)));
+
+        var (exitCode, output) = Run(c =>
+        {
+            c.Input.PushTextWithEnter("/long");
+            c.Input.PushTextWithEnter("/quit");
+        }, registry);
+
+        Assert.Equal(0, exitCode);
+        var frame = Frames(output)[1];
+        AssertLayout(frame);
+        Assert.Contains("word", frame[^4]);
+        Assert.DoesNotContain(frame[..^4], l => l.Contains("word", StringComparison.Ordinal));
+        Assert.Contains(Heading, frame[0]);
     }
 
     // AC-10

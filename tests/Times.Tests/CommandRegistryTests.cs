@@ -23,6 +23,29 @@ public class CommandRegistryTests
         Assert.Equal("/quit", command.Name);
     }
 
+    // Job 004
+    [Fact]
+    public void Error_SetsHint_NotMessage()
+    {
+        var result = CommandResult.Error("oops");
+
+        Assert.NotNull(result.Hint);
+        Assert.Null(result.Message);
+        Assert.False(result.Quit);
+    }
+
+    // Job 004
+    [Fact]
+    public void Help_SetsMessage_NotHint()
+    {
+        CommandRegistry.CreateDefault().TryGet("/help", out var help);
+
+        var result = help.Handler("");
+
+        Assert.NotNull(result.Message);
+        Assert.Null(result.Hint);
+    }
+
     [Fact]
     public void TryGet_UnknownName_ReturnsFalse()
     {
