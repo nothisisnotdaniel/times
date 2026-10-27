@@ -1,3 +1,4 @@
+using System.Globalization;
 using Spectre.Console;
 using Spectre.Console.Rendering;
 
@@ -17,6 +18,7 @@ internal sealed class App
     private const string Prompt = "> ";
 
     private readonly IAnsiConsole console;
+    private readonly TimeProvider time;
     private readonly CommandRegistry registry;
     private readonly DayView dayView;
 
@@ -26,10 +28,12 @@ internal sealed class App
     public App(IAnsiConsole console, TimeProvider time, DayStore store, CommandRegistry? registry = null)
     {
         this.console = console;
+        this.time = time;
         Store = store;
         dayView = new DayView(time);
         this.registry = registry ?? CommandRegistry.CreateDefault();
         RegisterNavigation();
+        RegisterBookings();
     }
 
     /// <summary>Where the day files live. Booking features read and write through it.</summary>
@@ -48,6 +52,61 @@ internal sealed class App
         }));
     }
 
+    private void RegisterBookings()
+    {
+        registry.Register("/arrive", $"Book your arrival: now, or at an optional {TimeInput.Format}", argument =>
+            Book("/arrive", argument, (day, at) => day with { Arrival = at }));
+        registry.Register("/leave", $"Book your leaving: now, or at an optional {TimeInput.Format}", argument =>
+            Book("/leave", argument, (day, at) => day with { Leaving = at }));
+    }
+
+    // Books a time on the day being viewed. Nothing is written if the time is invalid, the day's
+    // file cannot be read, or leaving would not be after arrival.
+    private CommandResult Book(string name, string argument, Func<DayRecord, TimeOnly, DayRecord> apply)
+    {
+        TimeOnly at;
+        if (argument.Length == 0)
+        {
+            TimeOnly now = TimeOnly.FromDateTime(time.GetLocalNow().DateTime);
+            at = new TimeOnly(now.Hour, now.Minute);
+        }
+        else if (!TimeInput.TryParse(argument, out at))
+        {
+            return Hint($"{name}: [bold]{Markup.Escape(argument)}[/] is not a time. " +
+                $"Use [bold]{TimeInput.Format}[/], e.g. [bold]8:15[/].");
+        }
+
+        DateOnly day = dayView.Current;
+        DayRecord current;
+        try
+        {
+            current = Store.Load(day);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{name}: {Markup.Escape(ex.Message)} Nothing was booked.");
+        }
+
+        DayRecord updated = apply(current, at);
+        if (updated.Arrival is { } arrival && updated.Leaving is { } leaving && leaving <= arrival)
+        {
+            return Hint($"{name}: leaving ([bold]{Clock(leaving)}[/]) must be after arrival ([bold]{Clock(arrival)}[/]).");
+        }
+
+        try
+        {
+            Store.Save(day, updated);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{name}: could not save the day. {Markup.Escape(ex.Message)}");
+        }
+
+        return CommandResult.None;
+    }
+
+    private static string Clock(TimeOnly value) => value.ToString("HH:mm", CultureInfo.InvariantCulture);
+
     private static Func<string, CommandResult> NoArguments(string name, Func<CommandResult> handler) =>
         argument => argument.Length == 0
             ? handler()
@@ -55,6 +114,16 @@ internal sealed class App
 
     public int Run(string[] args)
     {
+        // Before anything is drawn, read or written: never fall back to the working directory.
+        if (!DayStore.IsValidFolder(Store.Folder))
+        {
+            string reason = string.IsNullOrWhiteSpace(Store.Folder)
+                ? "the app-data folder could not be found (the path is empty)"
+                : $"the data folder [bold]{Markup.Escape(Store.Folder)}[/] is not an absolute path";
+            console.MarkupLine($"[red]Times cannot start: {reason}. Nothing was saved.[/]");
+            return 2;
+        }
+
         LineEditor editor = new LineEditor(console, registry);
         IRenderable? message = null;
         IRenderable? hint = null;
@@ -126,9 +195,10 @@ internal sealed class App
 
     private void Draw(IRenderable? message, IRenderable? hint)
     {
+        IRenderable day = RenderDay();
         IRenderable top = message is null
-            ? dayView.Render()
-            : new Rows(dayView.Render(), Text.Empty, message);
+            ? day
+            : new Rows(day, Text.Empty, message);
 
         Panel input = new Panel(new Markup($"[steelblue1]{Markup.Escape(Prompt)}[/]"))
             .Border(BoxBorder.Rounded)
@@ -143,6 +213,18 @@ internal sealed class App
         frame = Segment.SplitLines(layout.GetSegments(console));
         console.Clear(home: true);
         console.Write(new SegmentsRenderable(frame.SelectMany(l => l.Append(Segment.LineBreak)).SkipLast(1)));
+    }
+
+    private IRenderable RenderDay()
+    {
+        try
+        {
+            return dayView.Render(Store.Load(dayView.Current));
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            return dayView.RenderUnreadable(Markup.Escape(ex.Message));
+        }
     }
 
     // Redraws one screen row (1-based) with what the last frame had there.
