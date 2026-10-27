@@ -797,10 +797,12 @@ public sealed class AppTests : IDisposable
         });
 
         Assert.Contains("\u001b[21;1H", output);
-        List<AnsiWrite> popup = TypingWrites(output, 0).Take(5).ToList();
-        Assert.Equal([17, 18, 19, 20, 21], popup.Select(w => w.Row));
-        Assert.Equal(["/help", "/next", "/prev", "/quit", "/today"], popup.Select(w => w.Text.Split(' ')[0]));
-        Assert.Contains("Go to the previous day", popup[2].Text);
+        List<AnsiWrite> popup = TypingWrites(output, 0).Take(7).ToList();
+        Assert.Equal([15, 16, 17, 18, 19, 20, 21], popup.Select(w => w.Row));
+        Assert.Equal(
+            ["/arrive", "/help", "/leave", "/next", "/prev", "/quit", "/today"],
+            popup.Select(w => w.Text.Split(' ')[0]));
+        Assert.Contains("Go to the previous day", popup[4].Text);
         Assert.Equal(80, popup[0].Text.Length);
     }
 
@@ -906,8 +908,8 @@ public sealed class AppTests : IDisposable
 
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
-        // 17 commands: 7 shown, the eighth row counts the other 10.
-        Assert.StartsWith("… 10 more", popup[^1].Text);
+        // 19 commands: 7 shown, the eighth row counts the other 12.
+        Assert.StartsWith("… 12 more", popup[^1].Text);
         // Nothing is drawn on row 1 while typing (the final clear on /quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
@@ -933,5 +935,331 @@ public sealed class AppTests : IDisposable
         Assert.Equal(3, Count(output, ClearScreen));
         Assert.Equal(2, AnsiFrames(output).Count);
         Assert.Equal(2, Count(output, Heading));
+    }
+
+    // Arrival and leaving (job 008) --------------------------------------------------------
+
+    private string DayFile(string date) => Path.Combine(data.Path, date + ".json");
+
+    private string ReadDay(string date) => File.ReadAllText(DayFile(date));
+
+    /// <summary>The last drawn frame, split into its 24 screen rows.</summary>
+    private static string[] LastLayout(string output) => Frames(output)[^1];
+
+    private static string[] WorkingDirectoryEntries() =>
+        Directory.EnumerateFileSystemEntries(Directory.GetCurrentDirectory()).Order(StringComparer.Ordinal).ToArray();
+
+    // AC-1
+    [Fact]
+    public void Arrive_WithTime_CreatesDayFile_AndShowsIt()
+    {
+        (int exitCode, string output) = RunCommands("/arrive 8:15", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(["2026-10-27.json"], Directory.EnumerateFiles(data.Path).Select(Path.GetFileName));
+        Assert.Equal("{\"arrival\":\"08:15\"}", ReadDay("2026-10-27"));
+        string frame = LastFrame(output);
+        Assert.Matches(@"Arrival +08:15", frame);
+        Assert.Matches(@"Leaving +—", frame);
+        Assert.DoesNotContain("No entries yet.", frame);
+    }
+
+    // AC-2
+    [Fact]
+    public void Leave_WithTime_StoresLeaving_AndShowsIt()
+    {
+        (int exitCode, string output) = RunCommands("/leave 17:30", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("{\"leaving\":\"17:30\"}", ReadDay("2026-10-27"));
+        Assert.Matches(@"Leaving +17:30", LastFrame(output));
+    }
+
+    // AC-2
+    [Theory]
+    [InlineData("/arrive", "{\"arrival\":\"18:30\"}")]
+    [InlineData("/leave", "{\"leaving\":\"18:30\"}")]
+    public void WithoutTime_BooksClockTime_SecondsDropped(string command, string expected)
+    {
+        FixedTimeProvider clock =
+            new FixedTimeProvider(new DateTimeOffset(2026, 10, 27, 18, 30, 59, TimeSpan.Zero), TimeZoneInfo.Utc);
+
+        (int exitCode, string output) = RunCommands(clock, command, "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(expected, ReadDay("2026-10-27"));
+        Assert.Contains("18:30", LastFrame(output));
+    }
+
+    // AC-2
+    [Fact]
+    public void WithoutTime_UsesLocalWallClock()
+    {
+        // 16:30 UTC is 18:30 in UTC+2.
+        TimeZoneInfo zone = TimeZoneInfo.CreateCustomTimeZone("Plus2", TimeSpan.FromHours(2), "Plus2", "Plus2");
+        FixedTimeProvider clock = new FixedTimeProvider(new DateTimeOffset(2026, 10, 27, 16, 30, 0, TimeSpan.Zero), zone);
+
+        RunCommands(clock, "/arrive", "/quit");
+
+        Assert.Equal("{\"arrival\":\"18:30\"}", ReadDay("2026-10-27"));
+    }
+
+    // AC-3
+    [Fact]
+    public void Booking_GoesToTheViewedDay()
+    {
+        (int exitCode, string output) = RunCommands("/prev", "/arrive 9:00", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(["2026-10-26.json"], Directory.EnumerateFiles(data.Path).Select(Path.GetFileName));
+        Assert.Equal("{\"arrival\":\"09:00\"}", ReadDay("2026-10-26"));
+        Assert.StartsWith("Monday, 2026-10-26", LastFrame(output));
+        Assert.Matches(@"Arrival +09:00", LastFrame(output));
+    }
+
+    // AC-4
+    [Fact]
+    public void BookingAgain_ReplacesTheEarlierValue()
+    {
+        (_, string output) = RunCommands("/arrive 8:00", "/arrive 8:15", "/quit");
+
+        Assert.Equal("{\"arrival\":\"08:15\"}", ReadDay("2026-10-27"));
+        Assert.Matches(@"Arrival +08:15", LastFrame(output));
+        Assert.DoesNotContain("08:00", LastFrame(output));
+    }
+
+    // AC-4
+    [Fact]
+    public void Booking_KeepsTheOtherField_AndReopenedAppLoadsBoth()
+    {
+        RunCommands("/arrive 8:15", "/leave 17:30", "/quit");
+
+        Assert.Equal("{\"arrival\":\"08:15\",\"leaving\":\"17:30\"}", ReadDay("2026-10-27"));
+
+        (int exitCode, string output) = RunCommands("/quit");
+        Assert.Equal(0, exitCode);
+        Assert.Matches(@"Arrival +08:15", output);
+        Assert.Matches(@"Leaving +17:30", output);
+    }
+
+    // AC-6
+    [Theory]
+    [InlineData("/arrive 25:00", "/arrive: 25:00 is not a time.")]
+    [InlineData("/leave abc", "/leave: abc is not a time.")]
+    [InlineData("/arrive [bold]", "/arrive: [bold] is not a time.")]
+    public void InvalidTime_ShowsHintOnHintRow_AndWritesNothing(string typed, string expected)
+    {
+        (int exitCode, string output) = RunCommands(typed, "/help", typed, "/quit");
+
+        Assert.Equal(0, exitCode);
+        string[] frame = LastLayout(output);
+        AssertOnHintRow(frame, expected);
+        AssertOnHintRow(frame, "Use H:mm, e.g. 8:15.");
+        Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
+    }
+
+    // AC-6
+    [Fact]
+    public void InvalidTime_LeavesExistingFileUnchanged()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), "{\"arrival\":\"08:00\"}");
+        byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
+
+        (int exitCode, _) = RunCommands("/arrive 25:00", "/leave abc", "/arrive [bold]", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
+    }
+
+    // AC-6
+    [Fact]
+    public void InvalidTime_HintIsRed()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Input.PushTextWithEnter("/arrive 25:00");
+        console.Input.PushTextWithEnter("/quit");
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)m/arrive: ", console.Output);
+    }
+
+    // AC-7
+    [Theory]
+    [InlineData("/arrive 9:00", "/leave 8:00", "{\"arrival\":\"09:00\"}")]
+    [InlineData("/arrive 9:00", "/leave 9:00", "{\"arrival\":\"09:00\"}")]
+    [InlineData("/leave 17:00", "/arrive 18:00", "{\"leaving\":\"17:00\"}")]
+    [InlineData("/leave 17:00", "/arrive 17:00", "{\"leaving\":\"17:00\"}")]
+    public void LeavingNotAfterArrival_IsRejected(string first, string second, string expected)
+    {
+        (int exitCode, string output) = RunCommands(first, second, "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(expected, ReadDay("2026-10-27"));
+        AssertOnHintRow(LastLayout(output), "must be after arrival");
+    }
+
+    // AC-7
+    [Fact]
+    public void LeavingWithoutArrival_IsAllowed()
+    {
+        (_, string output) = RunCommands("/leave 0:00", "/quit");
+
+        Assert.Equal("{\"leaving\":\"00:00\"}", ReadDay("2026-10-27"));
+        Assert.DoesNotContain("must be after", output);
+    }
+
+    // AC-8
+    [Theory]
+    [InlineData("", "the app-data folder could not be found (the path is empty)")]
+    [InlineData("   ", "the app-data folder could not be found (the path is empty)")]
+    [InlineData("Times", "the data folder Times is not an absolute path")]
+    [InlineData("./data", "the data folder ./data is not an absolute path")]
+    [InlineData("[red]x", "the data folder [red]x is not an absolute path")]
+    public void InvalidDataFolder_ReturnsTwo_WithRedError_AndCreatesNothing(string folder, string named)
+    {
+        string[] before = WorkingDirectoryEntries();
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Input.PushTextWithEnter("/arrive 8:15");
+
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(folder)).Run([]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mTimes cannot start", console.Output);
+        Assert.Contains(named, Regex.Replace(console.Output, @"\x1b\[[0-9;]*m", string.Empty));
+        Assert.DoesNotContain(Heading, console.Output);
+        Assert.Equal(before, WorkingDirectoryEntries());
+    }
+
+    // AC-9
+    [Fact]
+    public void MissingFolder_IsCreatedOnlyByTheFirstBooking()
+    {
+        using TempFolder missing = new TempFolder(create: false);
+
+        (int exitCode, _) = Run(c =>
+        {
+            foreach (string command in new[] { "/prev", "/next", "/arrive 25:00", "/leave x", "/quit" })
+            {
+                c.Input.PushTextWithEnter(command);
+            }
+        }, dataFolder: missing.Path);
+
+        Assert.Equal(0, exitCode);
+        Assert.False(Directory.Exists(missing.Path));
+
+        Run(c =>
+        {
+            c.Input.PushTextWithEnter("/arrive 8:15");
+            c.Input.PushTextWithEnter("/quit");
+        }, dataFolder: missing.Path);
+
+        Assert.Equal(
+            [Path.Combine(missing.Path, "2026-10-27.json")],
+            Directory.EnumerateFileSystemEntries(missing.Path));
+    }
+
+    // AC-9
+    [Fact]
+    public void RejectedLeaving_CreatesNothing()
+    {
+        File.WriteAllText(DayFile("2026-10-26"), "{\"arrival\":\"09:00\"}");
+
+        RunCommands("/prev", "/leave 8:00", "/next", "/quit");
+
+        Assert.Equal(["2026-10-26.json"], Directory.EnumerateFiles(data.Path).Select(Path.GetFileName));
+    }
+
+    // AC-10
+    [Fact]
+    public void CorruptDayFile_ShowsRedHint_AndIsNotOverwritten()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), "{not json");
+        byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
+
+        (int exitCode, string output) = RunCommands("/arrive 8:00", "/leave 17:00", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
+        AssertOnHintRow(LastLayout(output), "is not a valid day file. Nothing was booked.");
+        Assert.DoesNotContain("   at ", output);
+        Assert.DoesNotContain("failed:", output);
+        Assert.Equal(["2026-10-27.json"], Directory.EnumerateFiles(data.Path).Select(Path.GetFileName));
+    }
+
+    // AC-10
+    [Fact]
+    public void CorruptDayFile_HintIsRed()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), "{not json");
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Input.PushTextWithEnter("/arrive 8:00");
+        console.Input.PushTextWithEnter("/quit");
+
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)m/arrive: The file for 2026-10-27", console.Output);
+    }
+
+    // AC-11
+    [Fact]
+    public void Help_ListsArriveAndLeave_WithOptionalTime()
+    {
+        (_, string output) = RunCommands("/help", "/quit");
+
+        Assert.Matches(@"/arrive +│ Book your arrival: now, or at an optional H:mm", output);
+        Assert.Matches(@"/leave +│ Book your leaving: now, or at an optional H:mm", output);
+    }
+
+    // AC-11
+    [Theory]
+    [InlineData("/a", "{\"arrival\":\"18:30\"}")]
+    [InlineData("/l", "{\"leaving\":\"18:30\"}")]
+    public void Tab_CompletesArriveAndLeave(string prefix, string expected)
+    {
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Input.PushText(prefix);
+            c.Input.PushKey(ConsoleKey.Tab);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        Assert.Equal(0, exitCode);
+        Assert.DoesNotContain("Unknown command", output);
+        Assert.Equal(expected, ReadDay("2026-10-27"));
+    }
+
+    // AC-11
+    [Theory]
+    [InlineData("/ar", "/arrive")]
+    [InlineData("/lea", "/leave")]
+    [InlineData("/arive", "/arrive")]
+    public void Popup_ShowsArriveAndLeave(string typed, string expected)
+    {
+        string output = RunAnsi(c =>
+        {
+            c.Input.PushText(typed);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        // One popup draw per typed key, each ending on row 21. The draw after the last key lists
+        // the best match on its top row.
+        List<AnsiWrite> writes = TypingWrites(output, 0);
+        List<int> bottoms = writes
+            .Select((w, i) => (w, i))
+            .Where(x => x.w.Row == 21 && x.w.Text.StartsWith('/'))
+            .Select(x => x.i)
+            .ToList();
+        int top = bottoms[typed.Length - 1];
+        while (top > 0 && writes[top - 1].Row == writes[top].Row - 1 && writes[top - 1].Text.StartsWith('/'))
+        {
+            top--;
+        }
+
+        AnsiWrite row = writes[top];
+        Assert.StartsWith(expected, row.Text);
+        Assert.Contains("optional H:mm", row.Text);
     }
 }

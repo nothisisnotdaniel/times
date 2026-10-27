@@ -130,4 +130,59 @@ public class DayViewTests
         Assert.Contains("Wednesday, 2026-10-28", console.Output);
         Assert.Contains("No entries yet.", console.Output);
     }
+
+    // AC-1, AC-4
+    [Fact]
+    public void Render_ShowsArrivalAndLeaving()
+    {
+        TestConsole console = new TestConsole();
+        DayView view = new DayView(FixedTimeProvider.At20261027());
+
+        console.Write(view.Render(new DayRecord { Arrival = new TimeOnly(8, 15), Leaving = new TimeOnly(17, 30) }));
+
+        Assert.Contains("Tuesday, 2026-10-27", console.Output);
+        Assert.Matches(@"Arrival +08:15", console.Output);
+        Assert.Matches(@"Leaving +17:30", console.Output);
+        Assert.DoesNotContain("No entries yet.", console.Output);
+    }
+
+    // AC-1
+    [Fact]
+    public void Render_ShowsDash_ForTheTimeNotBooked()
+    {
+        TestConsole console = new TestConsole();
+        DayView view = new DayView(FixedTimeProvider.At20261027());
+
+        console.Write(view.Render(new DayRecord { Leaving = new TimeOnly(17, 30) }));
+
+        Assert.Matches(@"Arrival +—", console.Output);
+        Assert.Matches(@"Leaving +17:30", console.Output);
+    }
+
+    // AC-1
+    [Fact]
+    public void Render_UsesGreyLabelsAndSteelBlueTimes()
+    {
+        TestConsole console = new TestConsole().EmitAnsiSequences();
+        DayView view = new DayView(FixedTimeProvider.At20261027());
+
+        console.Write(view.Render(new DayRecord { Arrival = new TimeOnly(8, 15) }));
+
+        // grey = 256-colour 8, SteelBlue1 = 256-colour 75.
+        Assert.Contains("\u001b[38;5;8mArrival", console.Output);
+        Assert.Contains("\u001b[38;5;75m08:15", console.Output);
+        Assert.Contains("\u001b[38;5;8m—", console.Output);
+    }
+
+    // AC-1
+    [Fact]
+    public void Render_EmptyRecord_KeepsEmptyState()
+    {
+        TestConsole console = new TestConsole();
+
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(DayRecord.Empty));
+
+        Assert.Contains("No entries yet.", console.Output);
+        Assert.DoesNotContain("Arrival", console.Output);
+    }
 }
