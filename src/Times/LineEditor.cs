@@ -28,19 +28,19 @@ internal sealed class LineEditor
     /// </summary>
     public string? ReadLine(int column, int line, int width)
     {
-        var buffer = string.Empty;
-        var historyIndex = history.Count;
-        var drawn = 0;
+        string buffer = string.Empty;
+        int historyIndex = history.Count;
+        int drawn = 0;
 
         while (true)
         {
-            var key = console.Input.ReadKey(intercept: true);
+            ConsoleKeyInfo? key = console.Input.ReadKey(intercept: true);
             if (key is null)
             {
                 return null;
             }
 
-            var info = key.Value;
+            ConsoleKeyInfo info = key.Value;
             switch (info.Key)
             {
                 case ConsoleKey.Enter:
@@ -107,8 +107,8 @@ internal sealed class LineEditor
     // whatever was drawn before. Returns the number of characters now drawn.
     private int Redraw(string buffer, int column, int line, int width, int previouslyDrawn)
     {
-        var room = Math.Max(1, width - 1);
-        var visible = buffer.Length > room ? buffer[^room..] : buffer;
+        int room = Math.Max(1, width - 1);
+        string visible = buffer.Length > room ? buffer[^room..] : buffer;
 
         console.Cursor.SetPosition(column, line);
         console.Write(new Text(visible.PadRight(previouslyDrawn)));

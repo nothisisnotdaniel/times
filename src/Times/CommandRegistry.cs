@@ -64,7 +64,7 @@ internal sealed class CommandRegistry
     /// <summary>Creates a registry with the built-in <c>/help</c> and <c>/quit</c> commands.</summary>
     public static CommandRegistry CreateDefault()
     {
-        var registry = new CommandRegistry();
+        CommandRegistry registry = new CommandRegistry();
         registry.Register("/help", "List all commands", _ => new CommandResult(registry.RenderHelp()));
         registry.Register("/quit", "Exit Times", _ => new CommandResult(quit: true));
         return registry;
@@ -96,19 +96,19 @@ internal sealed class CommandRegistry
             return null;
         }
 
-        var matches = commands.Keys.Where(n => n.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).Take(2).ToList();
+        List<string> matches = commands.Keys.Where(n => n.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).Take(2).ToList();
         return matches.Count == 1 ? matches[0] : null;
     }
 
     public IRenderable RenderHelp()
     {
-        var table = new Table()
+        Table table = new Table()
             .Border(TableBorder.Rounded)
             .BorderColor(Color.Grey)
             .AddColumn("[grey]Command[/]")
             .AddColumn("[grey]Description[/]");
 
-        foreach (var command in Commands)
+        foreach (Command command in Commands)
         {
             table.AddRow(
                 new Markup($"[steelblue1]{Markup.Escape(command.Name)}[/]"),

@@ -6,7 +6,7 @@ public class LineEditorTests
 {
     private static (TestConsole Console, LineEditor Editor) Create()
     {
-        var console = new TestConsole().Interactive();
+        TestConsole console = new TestConsole().Interactive();
         return (console, new LineEditor(console, CommandRegistry.CreateDefault()));
     }
 
@@ -15,7 +15,7 @@ public class LineEditorTests
     [Fact]
     public void PrintableCharacters_AndEnter_ReturnTheLine()
     {
-        var (console, editor) = Create();
+        (TestConsole console, LineEditor editor) = Create();
         console.Input.PushTextWithEnter("/help me");
 
         Assert.Equal("/help me", Read(editor));
@@ -24,7 +24,7 @@ public class LineEditorTests
     [Fact]
     public void TypedText_IsEchoed()
     {
-        var (console, editor) = Create();
+        (TestConsole console, LineEditor editor) = Create();
         console.Input.PushTextWithEnter("/hel");
 
         Read(editor);
@@ -36,7 +36,7 @@ public class LineEditorTests
     [Fact]
     public void Backspace_RemovesLastCharacter()
     {
-        var (console, editor) = Create();
+        (TestConsole console, LineEditor editor) = Create();
         console.Input.PushText("/quiz");
         console.Input.PushKey(ConsoleKey.Backspace);
         console.Input.PushTextWithEnter("t");
@@ -47,7 +47,7 @@ public class LineEditorTests
     [Fact]
     public void Backspace_OnEmptyLine_DoesNothing()
     {
-        var (console, editor) = Create();
+        (TestConsole console, LineEditor editor) = Create();
         console.Input.PushKey(ConsoleKey.Backspace);
         console.Input.PushTextWithEnter("/q");
 
@@ -57,7 +57,7 @@ public class LineEditorTests
     [Fact]
     public void Escape_ClearsTheLine()
     {
-        var (console, editor) = Create();
+        (TestConsole console, LineEditor editor) = Create();
         console.Input.PushText("abc");
         console.Input.PushKey(ConsoleKey.Escape);
         console.Input.PushTextWithEnter("/quit");
@@ -69,7 +69,7 @@ public class LineEditorTests
     [Fact]
     public void Tab_CompletesUniquePrefix()
     {
-        var (console, editor) = Create();
+        (TestConsole console, LineEditor editor) = Create();
         console.Input.PushText("/q");
         console.Input.PushKey(ConsoleKey.Tab);
         console.Input.PushKey(ConsoleKey.Enter);
@@ -82,7 +82,7 @@ public class LineEditorTests
     [InlineData("/")]   // matches /help and /quit
     public void Tab_LeavesNoOrAmbiguousMatchUnchanged(string prefix)
     {
-        var (console, editor) = Create();
+        (TestConsole console, LineEditor editor) = Create();
         console.Input.PushText(prefix);
         console.Input.PushKey(ConsoleKey.Tab);
         console.Input.PushKey(ConsoleKey.Enter);
@@ -93,7 +93,7 @@ public class LineEditorTests
     [Fact]
     public void Tab_AfterArguments_DoesNothing()
     {
-        var (console, editor) = Create();
+        (TestConsole console, LineEditor editor) = Create();
         console.Input.PushText("/q x");
         console.Input.PushKey(ConsoleKey.Tab);
         console.Input.PushKey(ConsoleKey.Enter);
@@ -105,7 +105,7 @@ public class LineEditorTests
     [Fact]
     public void Up_RecallsPreviousLine()
     {
-        var (console, editor) = Create();
+        (TestConsole console, LineEditor editor) = Create();
         console.Input.PushTextWithEnter("/help");
         console.Input.PushKey(ConsoleKey.UpArrow);
         console.Input.PushKey(ConsoleKey.Enter);
@@ -117,7 +117,7 @@ public class LineEditorTests
     [Fact]
     public void Up_PastOldest_StaysOnOldest()
     {
-        var (console, editor) = Create();
+        (TestConsole console, LineEditor editor) = Create();
         console.Input.PushTextWithEnter("/one");
         console.Input.PushTextWithEnter("/two");
         console.Input.PushKey(ConsoleKey.UpArrow);
@@ -134,7 +134,7 @@ public class LineEditorTests
     [Fact]
     public void Down_PastNewest_GivesEmptyLine()
     {
-        var (console, editor) = Create();
+        (TestConsole console, LineEditor editor) = Create();
         console.Input.PushTextWithEnter("/one");
         console.Input.PushTextWithEnter("/two");
         console.Input.PushKey(ConsoleKey.UpArrow);
@@ -152,7 +152,7 @@ public class LineEditorTests
     [Fact]
     public void Down_MovesToNewerEntry()
     {
-        var (console, editor) = Create();
+        (TestConsole console, LineEditor editor) = Create();
         console.Input.PushTextWithEnter("/one");
         console.Input.PushTextWithEnter("/two");
         console.Input.PushKey(ConsoleKey.UpArrow);
@@ -168,7 +168,7 @@ public class LineEditorTests
     [Fact]
     public void Up_WithNoHistory_LeavesLineEmpty()
     {
-        var (console, editor) = Create();
+        (TestConsole console, LineEditor editor) = Create();
         console.Input.PushKey(ConsoleKey.UpArrow);
         console.Input.PushKey(ConsoleKey.Enter);
 
@@ -178,7 +178,7 @@ public class LineEditorTests
     [Fact]
     public void EmptyLines_AreNotAddedToHistory()
     {
-        var (console, editor) = Create();
+        (TestConsole console, LineEditor editor) = Create();
         console.Input.PushTextWithEnter("/help");
         console.Input.PushTextWithEnter("");
         console.Input.PushKey(ConsoleKey.UpArrow);

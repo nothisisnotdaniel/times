@@ -10,8 +10,8 @@ public class DayStoreTests
     [Fact]
     public void PathFor_UsesInvariantFileName_UnderGermanCulture()
     {
-        using var temp = new TempFolder(create: false);
-        var previous = CultureInfo.CurrentCulture;
+        using TempFolder temp = new TempFolder(create: false);
+        CultureInfo previous = CultureInfo.CurrentCulture;
         try
         {
             CultureInfo.CurrentCulture = new CultureInfo("de-DE");
@@ -27,7 +27,7 @@ public class DayStoreTests
     [Fact]
     public void Exists_IsFalse_WhenFolderIsMissing_AndDoesNotCreateIt()
     {
-        using var temp = new TempFolder(create: false);
+        using TempFolder temp = new TempFolder(create: false);
 
         Assert.False(new DayStore(temp.Path).Exists(Day));
         Assert.False(Directory.Exists(temp.Path));
@@ -37,7 +37,7 @@ public class DayStoreTests
     [Fact]
     public void Exists_IsFalse_WhenFileIsMissing()
     {
-        using var temp = new TempFolder();
+        using TempFolder temp = new TempFolder();
 
         Assert.False(new DayStore(temp.Path).Exists(Day));
         Assert.Empty(Directory.EnumerateFileSystemEntries(temp.Path));
@@ -47,8 +47,8 @@ public class DayStoreTests
     [Fact]
     public void Exists_IsTrue_AfterTheFileIsWritten()
     {
-        using var temp = new TempFolder();
-        var store = new DayStore(temp.Path);
+        using TempFolder temp = new TempFolder();
+        DayStore store = new DayStore(temp.Path);
         File.WriteAllText(Path.Combine(temp.Path, "2026-10-27.json"), "{}");
 
         Assert.True(store.Exists(Day));
