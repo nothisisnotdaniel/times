@@ -205,8 +205,10 @@ internal sealed class App
             .BorderColor(Color.SteelBlue1)
             .Expand();
 
+        int topHeight = console.Profile.Height - HintHeight - InputHeight;
+
         Layout layout = new Layout("Root").SplitRows(
-            new Layout("Day", top),
+            new Layout("Day", TopArea.Fit(top, topHeight)),
             new Layout("Hint", hint ?? Text.Empty).Size(HintHeight),
             new Layout("Input", input).Size(InputHeight));
 
