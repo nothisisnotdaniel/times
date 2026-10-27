@@ -52,7 +52,7 @@ internal sealed class App
 
     public int Run(string[] args)
     {
-        var editor = new LineEditor(console, registry);
+        LineEditor editor = new LineEditor(console, registry);
         IRenderable? message = null;
         IRenderable? hint = null;
 
@@ -60,20 +60,20 @@ internal sealed class App
         {
             Draw(message, hint);
 
-            var height = console.Profile.Height;
-            var width = console.Profile.Width;
+            int height = console.Profile.Height;
+            int width = console.Profile.Width;
             // Inside the panel: border + 1 padding on the left, then the prompt.
-            var column = 3 + Prompt.Length;
-            var line = height - 1;
+            int column = 3 + Prompt.Length;
+            int line = height - 1;
             console.Cursor.SetPosition(column, line);
 
-            var input = editor.ReadLine(column, line, width - column - 2);
+            string? input = editor.ReadLine(column, line, width - column - 2);
             if (input is null)
             {
                 return 0;
             }
 
-            var result = Dispatch(input);
+            CommandResult result = Dispatch(input);
             if (result.Quit)
             {
                 console.Clear(home: true);
@@ -87,7 +87,7 @@ internal sealed class App
 
     private CommandResult Dispatch(string input)
     {
-        var text = input.Trim();
+        string text = input.Trim();
         if (text.Length == 0)
         {
             return CommandResult.None;
@@ -98,11 +98,11 @@ internal sealed class App
             return Hint("Commands start with [bold]/[/]. Type [bold]/help[/] to see all commands.");
         }
 
-        var split = text.IndexOfAny([' ', '\t']);
-        var name = split < 0 ? text : text[..split];
-        var argument = split < 0 ? string.Empty : text[(split + 1)..].Trim();
+        int split = text.IndexOfAny([' ', '\t']);
+        string name = split < 0 ? text : text[..split];
+        string argument = split < 0 ? string.Empty : text[(split + 1)..].Trim();
 
-        if (!registry.TryGet(name, out var command))
+        if (!registry.TryGet(name, out Command? command))
         {
             return Hint($"Unknown command [bold]{Markup.Escape(name)}[/]. Type [bold]/help[/] to see all commands.");
         }
@@ -125,12 +125,12 @@ internal sealed class App
             ? dayView.Render()
             : new Rows(dayView.Render(), Text.Empty, message);
 
-        var input = new Panel(new Markup($"[steelblue1]{Markup.Escape(Prompt)}[/]"))
+        Panel input = new Panel(new Markup($"[steelblue1]{Markup.Escape(Prompt)}[/]"))
             .Border(BoxBorder.Rounded)
             .BorderColor(Color.SteelBlue1)
             .Expand();
 
-        var layout = new Layout("Root").SplitRows(
+        Layout layout = new Layout("Root").SplitRows(
             new Layout("Day", top),
             new Layout("Hint", hint ?? Text.Empty).Size(HintHeight),
             new Layout("Input", input).Size(InputHeight));

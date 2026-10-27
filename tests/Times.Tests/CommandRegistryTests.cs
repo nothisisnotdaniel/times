@@ -5,7 +5,7 @@ public class CommandRegistryTests
     [Fact]
     public void Default_RegistersHelpAndQuit()
     {
-        var registry = CommandRegistry.CreateDefault();
+        CommandRegistry registry = CommandRegistry.CreateDefault();
 
         Assert.Equal(["/help", "/quit"], registry.Commands.Select(c => c.Name));
     }
@@ -17,9 +17,9 @@ public class CommandRegistryTests
     [InlineData("/Quit")]
     public void TryGet_IsCaseInsensitive(string name)
     {
-        var registry = CommandRegistry.CreateDefault();
+        CommandRegistry registry = CommandRegistry.CreateDefault();
 
-        Assert.True(registry.TryGet(name, out var command));
+        Assert.True(registry.TryGet(name, out Command? command));
         Assert.Equal("/quit", command.Name);
     }
 
@@ -27,7 +27,7 @@ public class CommandRegistryTests
     [Fact]
     public void Error_SetsHint_NotMessage()
     {
-        var result = CommandResult.Error("oops");
+        CommandResult result = CommandResult.Error("oops");
 
         Assert.NotNull(result.Hint);
         Assert.Null(result.Message);
@@ -38,9 +38,9 @@ public class CommandRegistryTests
     [Fact]
     public void Help_SetsMessage_NotHint()
     {
-        CommandRegistry.CreateDefault().TryGet("/help", out var help);
+        CommandRegistry.CreateDefault().TryGet("/help", out Command? help);
 
-        var result = help.Handler("");
+        CommandResult result = help.Handler("");
 
         Assert.NotNull(result.Message);
         Assert.Null(result.Hint);
@@ -55,7 +55,7 @@ public class CommandRegistryTests
     [Fact]
     public void Quit_RequestsQuit()
     {
-        CommandRegistry.CreateDefault().TryGet("/quit", out var quit);
+        CommandRegistry.CreateDefault().TryGet("/quit", out Command? quit);
 
         Assert.True(quit.Handler("").Quit);
     }
@@ -63,11 +63,11 @@ public class CommandRegistryTests
     [Fact]
     public void Handler_ReceivesArgument()
     {
-        var registry = new CommandRegistry();
+        CommandRegistry registry = new CommandRegistry();
         string? received = null;
         registry.Register("/x", "x", a => { received = a; return CommandResult.None; });
 
-        registry.TryGet("/x", out var x);
+        registry.TryGet("/x", out Command? x);
         x.Handler("some args");
 
         Assert.Equal("some args", received);
@@ -85,7 +85,7 @@ public class CommandRegistryTests
     [Fact]
     public void Register_RejectsDuplicates_CaseInsensitively()
     {
-        var registry = CommandRegistry.CreateDefault();
+        CommandRegistry registry = CommandRegistry.CreateDefault();
 
         Assert.Throws<ArgumentException>(() => registry.Register("/HELP", "d", _ => CommandResult.None));
     }
@@ -114,7 +114,7 @@ public class CommandRegistryTests
     [Fact]
     public void Complete_PrefixSharedByTwoCommands_ReturnsNull()
     {
-        var registry = CommandRegistry.CreateDefault();
+        CommandRegistry registry = CommandRegistry.CreateDefault();
         registry.Register("/hello", "d", _ => CommandResult.None);
 
         Assert.Null(registry.Complete("/hel"));
