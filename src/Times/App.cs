@@ -15,16 +15,16 @@ internal sealed class App
     private const int InputHeight = 3;
     private const string Prompt = "> ";
 
-    private readonly IAnsiConsole _console;
-    private readonly CommandRegistry _registry;
-    private readonly DayView _dayView;
+    private readonly IAnsiConsole console;
+    private readonly CommandRegistry registry;
+    private readonly DayView dayView;
 
     public App(IAnsiConsole console, TimeProvider time, DayStore store, CommandRegistry? registry = null)
     {
-        _console = console;
+        this.console = console;
         Store = store;
-        _dayView = new DayView(time);
-        _registry = registry ?? CommandRegistry.CreateDefault();
+        dayView = new DayView(time);
+        this.registry = registry ?? CommandRegistry.CreateDefault();
         RegisterNavigation();
     }
 
@@ -33,13 +33,13 @@ internal sealed class App
 
     private void RegisterNavigation()
     {
-        _registry.Register("/prev", "Go to the previous day", NoArguments("/prev", () =>
-            _dayView.Previous() ? CommandResult.None : Hint("There is no day before this one.")));
-        _registry.Register("/next", "Go to the next day", NoArguments("/next", () =>
-            _dayView.Next() ? CommandResult.None : Hint("There is no day after this one.")));
-        _registry.Register("/today", "Go back to today", NoArguments("/today", () =>
+        registry.Register("/prev", "Go to the previous day", NoArguments("/prev", () =>
+            dayView.Previous() ? CommandResult.None : Hint("There is no day before this one.")));
+        registry.Register("/next", "Go to the next day", NoArguments("/next", () =>
+            dayView.Next() ? CommandResult.None : Hint("There is no day after this one.")));
+        registry.Register("/today", "Go back to today", NoArguments("/today", () =>
         {
-            _dayView.Today();
+            dayView.Today();
             return CommandResult.None;
         }));
     }
@@ -51,19 +51,19 @@ internal sealed class App
 
     public int Run(string[] args)
     {
-        var editor = new LineEditor(_console, _registry);
+        var editor = new LineEditor(console, registry);
         IRenderable? message = null;
 
         while (true)
         {
             Draw(message);
 
-            var height = _console.Profile.Height;
-            var width = _console.Profile.Width;
+            var height = console.Profile.Height;
+            var width = console.Profile.Width;
             // Inside the panel: border + 1 padding on the left, then the prompt.
             var column = 3 + Prompt.Length;
             var line = height - 1;
-            _console.Cursor.SetPosition(column, line);
+            console.Cursor.SetPosition(column, line);
 
             var input = editor.ReadLine(column, line, width - column - 2);
             if (input is null)
@@ -74,7 +74,7 @@ internal sealed class App
             var result = Dispatch(input);
             if (result.Quit)
             {
-                _console.Clear(home: true);
+                console.Clear(home: true);
                 return 0;
             }
 
@@ -99,7 +99,7 @@ internal sealed class App
         var name = split < 0 ? text : text[..split];
         var argument = split < 0 ? string.Empty : text[(split + 1)..].Trim();
 
-        if (!_registry.TryGet(name, out var command))
+        if (!registry.TryGet(name, out var command))
         {
             return Hint($"Unknown command [bold]{Markup.Escape(name)}[/]. Type [bold]/help[/] to see all commands.");
         }
@@ -119,8 +119,8 @@ internal sealed class App
     private void Draw(IRenderable? message)
     {
         IRenderable top = message is null
-            ? _dayView.Render()
-            : new Rows(_dayView.Render(), Text.Empty, message);
+            ? dayView.Render()
+            : new Rows(dayView.Render(), Text.Empty, message);
 
         var input = new Panel(new Markup($"[steelblue1]{Markup.Escape(Prompt)}[/]"))
             .Border(BoxBorder.Rounded)
@@ -131,7 +131,7 @@ internal sealed class App
             new Layout("Day", top),
             new Layout("Input", input).Size(InputHeight));
 
-        _console.Clear(home: true);
-        _console.Write(layout);
+        console.Clear(home: true);
+        console.Write(layout);
     }
 }

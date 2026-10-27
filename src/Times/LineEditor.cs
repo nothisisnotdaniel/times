@@ -7,11 +7,19 @@ namespace Times;
 /// redraws only the input line via <c>Cursor.SetPosition</c>. Supports printable characters,
 /// Backspace, Enter, Esc (clear), Tab (complete a <c>/command</c>) and Up/Down (session history).
 /// </summary>
-internal sealed class LineEditor(IAnsiConsole console, CommandRegistry registry)
+internal sealed class LineEditor
 {
-    private readonly List<string> _history = [];
+    private readonly IAnsiConsole console;
+    private readonly CommandRegistry registry;
+    private readonly List<string> history = [];
 
-    public IReadOnlyList<string> History => _history;
+    public LineEditor(IAnsiConsole console, CommandRegistry registry)
+    {
+        this.console = console;
+        this.registry = registry;
+    }
+
+    public IReadOnlyList<string> History => history;
 
     /// <summary>
     /// Reads one line. <paramref name="column"/> and <paramref name="line"/> are the 1-based screen
@@ -21,7 +29,7 @@ internal sealed class LineEditor(IAnsiConsole console, CommandRegistry registry)
     public string? ReadLine(int column, int line, int width)
     {
         var buffer = string.Empty;
-        var historyIndex = _history.Count;
+        var historyIndex = history.Count;
         var drawn = 0;
 
         while (true)
@@ -36,9 +44,9 @@ internal sealed class LineEditor(IAnsiConsole console, CommandRegistry registry)
             switch (info.Key)
             {
                 case ConsoleKey.Enter:
-                    if (buffer.Trim().Length > 0 && (_history.Count == 0 || _history[^1] != buffer))
+                    if (buffer.Trim().Length > 0 && (history.Count == 0 || history[^1] != buffer))
                     {
-                        _history.Add(buffer);
+                        history.Add(buffer);
                     }
 
                     return buffer;
@@ -53,7 +61,7 @@ internal sealed class LineEditor(IAnsiConsole console, CommandRegistry registry)
 
                 case ConsoleKey.Escape:
                     buffer = string.Empty;
-                    historyIndex = _history.Count;
+                    historyIndex = history.Count;
                     break;
 
                 case ConsoleKey.Tab:
@@ -65,19 +73,19 @@ internal sealed class LineEditor(IAnsiConsole console, CommandRegistry registry)
                     break;
 
                 case ConsoleKey.UpArrow:
-                    if (_history.Count > 0)
+                    if (history.Count > 0)
                     {
                         historyIndex = Math.Max(0, historyIndex - 1);
-                        buffer = _history[historyIndex];
+                        buffer = history[historyIndex];
                     }
 
                     break;
 
                 case ConsoleKey.DownArrow:
-                    if (historyIndex < _history.Count)
+                    if (historyIndex < history.Count)
                     {
                         historyIndex++;
-                        buffer = historyIndex == _history.Count ? string.Empty : _history[historyIndex];
+                        buffer = historyIndex == history.Count ? string.Empty : history[historyIndex];
                     }
 
                     break;

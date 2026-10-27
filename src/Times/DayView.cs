@@ -8,9 +8,17 @@ namespace Times;
 /// Renders the current day. The current day starts at today, read from <see cref="TimeProvider"/>,
 /// and can be moved one day back or forward, or back to today.
 /// </summary>
-internal sealed class DayView(TimeProvider time)
+internal sealed class DayView
 {
-    public DateOnly Current { get; private set; } = TodayFrom(time);
+    private readonly TimeProvider time;
+
+    public DayView(TimeProvider time)
+    {
+        this.time = time;
+        Current = TodayFrom(time);
+    }
+
+    public DateOnly Current { get; private set; }
 
     public static string Heading(DateOnly day) => day.ToString("dddd, yyyy-MM-dd", CultureInfo.InvariantCulture);
 

@@ -7,15 +7,15 @@ public sealed class AppTests : IDisposable
 {
     private const string Heading = "Tuesday, 2026-10-27";
 
-    private readonly TempFolder _data = new();
+    private readonly TempFolder data = new();
 
-    public void Dispose() => _data.Dispose();
+    public void Dispose() => data.Dispose();
 
     private (int ExitCode, string Output) Run(Action<TestConsole> input, CommandRegistry? registry = null, TimeProvider? time = null, string? dataFolder = null)
     {
         var console = new TestConsole().Interactive();
         input(console);
-        var exitCode = new App(console, time ?? FixedTimeProvider.At20261027(), new DayStore(dataFolder ?? _data.Path), registry).Run([]);
+        var exitCode = new App(console, time ?? FixedTimeProvider.At20261027(), new DayStore(dataFolder ?? data.Path), registry).Run([]);
         return (exitCode, console.Output);
     }
 
@@ -133,7 +133,7 @@ public sealed class AppTests : IDisposable
         console.Input.PushTextWithEnter("/nope");
         console.Input.PushTextWithEnter("/quit");
 
-        new App(console, FixedTimeProvider.At20261027(), new DayStore(_data.Path)).Run([]);
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
 
         // Red foreground: SGR 31 (standard) or 91 (bright) or 38;5;9.
         Assert.Matches(@"\x1b\[(31|91|38;5;9)(;1)?m(\x1b\[[0-9;]*m)*Unknown command", console.Output);
@@ -427,8 +427,8 @@ public sealed class AppTests : IDisposable
         var (exitCode, _) = RunCommands("/prev", "/next", "/next", "/today", "/quit");
 
         Assert.Equal(0, exitCode);
-        Assert.True(Directory.Exists(_data.Path));
-        Assert.Empty(Directory.EnumerateFileSystemEntries(_data.Path));
+        Assert.True(Directory.Exists(data.Path));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
     }
 
     // AC-7
@@ -522,7 +522,7 @@ public sealed class AppTests : IDisposable
         console.Input.PushTextWithEnter("/prev");
         console.Input.PushTextWithEnter("/quit");
 
-        var exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(_data.Path)).Run([]);
+        var exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
 
         Assert.Equal(0, exitCode);
         Assert.Matches(@"\x1b\[(1;)?(31|91|38;5;9)(;1)?m(\x1b\[[0-9;]*m)*/next", console.Output);
@@ -565,7 +565,7 @@ public sealed class AppTests : IDisposable
         console.Input.PushTextWithEnter("/next");
         console.Input.PushTextWithEnter("/quit");
 
-        new App(console, new SettableTimeProvider(DateTimeOffset.MaxValue), new DayStore(_data.Path)).Run([]);
+        new App(console, new SettableTimeProvider(DateTimeOffset.MaxValue), new DayStore(data.Path)).Run([]);
 
         Assert.Matches(@"\x1b\[(31|91|38;5;9)(;1)?m(\x1b\[[0-9;]*m)*There is no day after this one\.", console.Output);
     }
