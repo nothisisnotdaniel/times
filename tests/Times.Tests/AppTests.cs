@@ -1262,4 +1262,127 @@ public sealed class AppTests : IDisposable
         Assert.StartsWith(expected, row.Text);
         Assert.Contains("optional H:mm", row.Text);
     }
+
+    // Top area overflow (job 009) ----------------------------------------------------------
+
+    /// <summary>Asserts the bottom of a <paramref name="height"/>-line layout: hint row at <c>frame[^4]</c>, input panel on the last 3 lines.</summary>
+    private static void AssertLayout(string[] frame, int height)
+    {
+        Assert.Equal(height, frame.Length);
+        Assert.DoesNotContain("more lines", frame[^4]);
+        Assert.StartsWith("╭", frame[^3]);
+        Assert.StartsWith("│ > ", frame[^2]);
+        Assert.StartsWith("╰", frame[^1]);
+    }
+
+    /// <summary>The /help frame drawn on a terminal tall enough that nothing is cut: the unclipped top content lines.</summary>
+    private string[] UnclippedHelpTop()
+    {
+        (_, string output) = Run(c =>
+        {
+            c.Profile.Height = 80;
+            c.Input.PushTextWithEnter("/help");
+            c.Input.PushTextWithEnter("/quit");
+        }, ManyCommands());
+
+        string[] frame = Frames(output)[1];
+        Assert.Equal(80, frame.Length);
+        Assert.DoesNotContain(frame, l => l.Contains("more lines", StringComparison.Ordinal));
+        string[] top = frame[..^4];
+        int last = Array.FindLastIndex(top, l => !string.IsNullOrWhiteSpace(l));
+        return top[..(last + 1)];
+    }
+
+    // AC-4, AC-7
+    [Fact]
+    public void ShortTerminal_Help_ShowsFirstLines_ThenMoreCue()
+    {
+        string[] full = UnclippedHelpTop();
+
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Profile.Height = 12;
+            c.Input.PushTextWithEnter("/help");
+            c.Input.PushTextWithEnter("/quit");
+        }, ManyCommands());
+
+        Assert.Equal(0, exitCode);
+        List<string[]> frames = Frames(output);
+        Assert.Equal(2, frames.Count);
+        foreach (string[] each in frames)
+        {
+            AssertLayout(each, 12);
+        }
+
+        string[] frame = frames[1];
+        Assert.StartsWith(Heading, frame[0]);
+        Assert.Equal(full[..7], frame[..7]);
+        Assert.Equal($"… {full.Length - 7} more lines", frame[^5].TrimEnd());
+        Assert.True(full.Length - 7 > 10);
+    }
+
+    // AC-4
+    [Fact]
+    public void ShortTerminal_Cue_IsGrey()
+    {
+        string output = RunAnsi(c =>
+        {
+            c.Profile.Height = 12;
+            c.Input.PushTextWithEnter("/help");
+            c.Input.PushTextWithEnter("/quit");
+        }, ManyCommands());
+
+        Assert.Matches(@"\x1b\[(90|38;5;8)m… \d+ more lines", output);
+    }
+
+    // AC-5
+    [Fact]
+    public void DefaultHeight_Help_Fits_WithoutCue()
+    {
+        (_, string output) = Run(c =>
+        {
+            c.Input.PushTextWithEnter("/help");
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        string[] frame = Frames(output)[1];
+        AssertLayout(frame);
+        Assert.DoesNotContain("more lines", output);
+        Assert.Contains("/today", string.Join('\n', frame));
+    }
+
+    // AC-6, AC-7
+    [Fact]
+    public void ShortTerminal_PopupThenEsc_RestoresTheCueRow()
+    {
+        string output = RunAnsi(c =>
+        {
+            c.Profile.Height = 12;
+            c.Input.PushTextWithEnter("/help");
+            c.Input.PushText("/");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("/quit");
+        }, ManyCommands());
+
+        List<string[]> frames = AnsiFrames(output);
+        Assert.Equal(2, frames.Count);
+        foreach (string[] each in frames)
+        {
+            AssertLayout(each, 12);
+        }
+
+        string[] frame = frames[1];
+        Assert.Contains("more lines", frame[^5]);
+
+        List<AnsiWrite> writes = TypingWrites(output, 1);
+        int popupAtCue = writes.FindIndex(w => w.Row == 8 && w.Text.StartsWith('/'));
+        Assert.True(popupAtCue >= 0, "the popup should cover the cue row");
+        AnsiWrite restored = writes.Skip(popupAtCue + 1).First(w => w.Row == 8);
+        Assert.Equal(frame[7], restored.Text);
+        Assert.StartsWith("… ", restored.Text);
+
+        // The hint row (9) is never written with anything but the popup or its own restore.
+        Assert.DoesNotContain(writes, w => w.Row > 9 && w.Text.Contains("more lines", StringComparison.Ordinal));
+    }
 }
