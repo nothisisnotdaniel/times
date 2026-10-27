@@ -15,3 +15,6 @@ Write one feature per line, in plain language.
 - [ ] Input hint: show a grey placeholder in the empty input box, e.g. "Type /help for commands", that disappears when typing starts.
 - [ ] Long input: when the typed line is wider than the input box, show a cue (e.g. a leading `…`) that the start is scrolled out of view.
 - [ ] Terminal check: verify in a real terminal (macOS Terminal, Windows Terminal) that the full-height layout doesn't scroll by one row and the cursor sits in the input box; fix it if it does.
+- [ ] Time left: next to each entry in the day view, show the work time still left for the day. The day starts with 8 hours to work; each span between two consecutive entries (e.g. arrival to leaving) is subtracted from it.
+- [ ] Remove entry: add a command to remove an existing entry (e.g. the arrival or the leaving) from the current day.
+- [ ] Change entry: add a command to change the time of an existing entry on the current day, using the same `H:mm` time format as `/arrive` and `/leave`.
