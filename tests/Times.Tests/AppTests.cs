@@ -1,18 +1,41 @@
+using System.Text.RegularExpressions;
 using Spectre.Console.Testing;
 
 namespace Times.Tests;
 
-public class AppTests
+public sealed class AppTests : IDisposable
 {
     private const string Heading = "Tuesday, 2026-10-27";
 
-    private static (int ExitCode, string Output) Run(Action<TestConsole> input, CommandRegistry? registry = null)
+    private readonly TempFolder _data = new();
+
+    public void Dispose() => _data.Dispose();
+
+    private (int ExitCode, string Output) Run(Action<TestConsole> input, CommandRegistry? registry = null, TimeProvider? time = null, string? dataFolder = null)
     {
         var console = new TestConsole().Interactive();
         input(console);
-        var exitCode = new App(console, FixedTimeProvider.At20261027(), registry).Run([]);
+        var exitCode = new App(console, time ?? FixedTimeProvider.At20261027(), new DayStore(dataFolder ?? _data.Path), registry).Run([]);
         return (exitCode, console.Output);
     }
+
+    private (int ExitCode, string Output) RunCommands(params string[] commands) => RunCommands(null, commands);
+
+    private (int ExitCode, string Output) RunCommands(TimeProvider? time, params string[] commands) =>
+        Run(c =>
+        {
+            foreach (var command in commands)
+            {
+                c.Input.PushTextWithEnter(command);
+            }
+        }, time: time);
+
+    /// <summary>The heading of the last drawn frame.</summary>
+    private static string LastHeading(string output) =>
+        Regex.Matches(output, @"[A-Z][a-z]+day, \d{4}-\d{2}-\d{2}").Last().Value;
+
+    /// <summary>Everything from the last drawn heading on: the last frame.</summary>
+    private static string LastFrame(string output) => output[output.LastIndexOf(LastHeading(output), StringComparison.Ordinal)..];
 
     private static int Count(string text, string value)
     {
@@ -110,7 +133,7 @@ public class AppTests
         console.Input.PushTextWithEnter("/nope");
         console.Input.PushTextWithEnter("/quit");
 
-        new App(console, FixedTimeProvider.At20261027()).Run([]);
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(_data.Path)).Run([]);
 
         // Red foreground: SGR 31 (standard) or 91 (bright) or 38;5;9.
         Assert.Matches(@"\x1b\[(31|91|38;5;9)(;1)?m(\x1b\[[0-9;]*m)*Unknown command", console.Output);
@@ -314,5 +337,236 @@ public class AppTests
         Assert.Equal(3, frames.Length);
         Assert.Contains("List all commands", frames[1]);
         Assert.Contains("List all commands", frames[2]);
+    }
+
+    // Day navigation (job 002) ------------------------------------------------------------
+
+    // AC-1
+    [Fact]
+    public void Prev_MovesToPreviousDay()
+    {
+        var (exitCode, output) = RunCommands("/prev", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("Monday, 2026-10-26", LastHeading(output));
+    }
+
+    // AC-2
+    [Fact]
+    public void Next_MovesToNextDay()
+    {
+        var (exitCode, output) = RunCommands("/next", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("Wednesday, 2026-10-28", LastHeading(output));
+    }
+
+    // AC-3
+    [Fact]
+    public void Today_JumpsBackToToday()
+    {
+        var (exitCode, output) = RunCommands("/prev", "/prev", "/today", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Sunday, 2026-10-25", output);
+        Assert.Equal(Heading, LastHeading(output));
+    }
+
+    // AC-4
+    [Theory]
+    [InlineData(2026, 1, 1, "/prev", "Wednesday, 2025-12-31")]
+    [InlineData(2026, 2, 28, "/next", "Sunday, 2026-03-01")]
+    public void Navigation_CrossesMonthAndYearBoundaries(int year, int month, int day, string command, string expected)
+    {
+        var time = new SettableTimeProvider(new DateTimeOffset(year, month, day, 12, 0, 0, TimeSpan.Zero));
+
+        var (exitCode, output) = RunCommands(time, command, "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(expected, LastHeading(output));
+    }
+
+    // AC-5
+    [Fact]
+    public void Today_UsesTheClockWhenTheCommandRuns()
+    {
+        var time = new SettableTimeProvider(new DateTimeOffset(2026, 10, 27, 23, 0, 0, TimeSpan.Zero));
+        var registry = CommandRegistry.CreateDefault();
+        registry.Register("/tick", "Advance the test clock", _ =>
+        {
+            time.UtcNow = time.UtcNow.AddHours(2);
+            return CommandResult.None;
+        });
+
+        var (exitCode, output) = Run(c =>
+        {
+            c.Input.PushTextWithEnter("/tick");
+            c.Input.PushTextWithEnter("/today");
+            c.Input.PushTextWithEnter("/quit");
+        }, registry, time);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("Wednesday, 2026-10-28", LastHeading(output));
+    }
+
+    // AC-6
+    [Fact]
+    public void DayWithoutFile_ShowsHeadingAndEmptyState()
+    {
+        var (_, output) = RunCommands("/next", "/quit");
+
+        var frame = LastFrame(output);
+        Assert.StartsWith("Wednesday, 2026-10-28", frame);
+        Assert.Contains("No entries yet.", frame);
+    }
+
+    // AC-7
+    [Fact]
+    public void Browsing_LeavesExistingFolderEmpty()
+    {
+        var (exitCode, _) = RunCommands("/prev", "/next", "/next", "/today", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.True(Directory.Exists(_data.Path));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(_data.Path));
+    }
+
+    // AC-7
+    [Fact]
+    public void Browsing_DoesNotCreateMissingFolder()
+    {
+        using var missing = new TempFolder(create: false);
+
+        var (exitCode, _) = Run(c =>
+        {
+            foreach (var command in new[] { "/prev", "/next", "/next", "/today", "/quit" })
+            {
+                c.Input.PushTextWithEnter(command);
+            }
+        }, dataFolder: missing.Path);
+
+        Assert.Equal(0, exitCode);
+        Assert.False(Directory.Exists(missing.Path));
+    }
+
+    // AC-8
+    [Fact]
+    public void Help_ListsNavigationCommands()
+    {
+        var (_, output) = RunCommands("/help", "/quit");
+
+        Assert.Contains("/prev", output);
+        Assert.Contains("Go to the previous day", output);
+        Assert.Contains("/next", output);
+        Assert.Contains("Go to the next day", output);
+        Assert.Contains("/today", output);
+        Assert.Contains("Go back to today", output);
+    }
+
+    // AC-8
+    [Fact]
+    public void NavigationCommands_MatchCaseInsensitively()
+    {
+        var (exitCode, output) = RunCommands("/NEXT", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.DoesNotContain("Unknown command", output);
+        Assert.Equal("Wednesday, 2026-10-28", LastHeading(output));
+    }
+
+    // AC-8
+    [Theory]
+    [InlineData("/p", "Monday, 2026-10-26")]
+    [InlineData("/n", "Wednesday, 2026-10-28")]
+    [InlineData("/t", Heading)]
+    public void Tab_CompletesNavigationCommands(string prefix, string expected)
+    {
+        var (exitCode, output) = Run(c =>
+        {
+            if (prefix == "/t")
+            {
+                c.Input.PushTextWithEnter("/next"); // so /today has somewhere to come back from
+            }
+
+            c.Input.PushText(prefix);
+            c.Input.PushKey(ConsoleKey.Tab);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        Assert.Equal(0, exitCode);
+        Assert.DoesNotContain("Unknown command", output);
+        Assert.Equal(expected, LastHeading(output));
+    }
+
+    // AC-9
+    [Theory]
+    [InlineData("/next 3", "/next")]
+    [InlineData("/prev x", "/prev")]
+    [InlineData("/today [red]", "/today")]
+    public void NavigationWithArgument_ShowsHint_AndKeepsDay(string typed, string name)
+    {
+        var (exitCode, output) = RunCommands(typed, "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(Heading, LastHeading(output));
+        Assert.Contains($"{name} takes no arguments.", LastFrame(output));
+    }
+
+    // AC-9
+    [Fact]
+    public void NavigationWithArgument_HintIsRed_AndLoopContinues()
+    {
+        var console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Input.PushTextWithEnter("/next 3");
+        console.Input.PushTextWithEnter("/prev");
+        console.Input.PushTextWithEnter("/quit");
+
+        var exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(_data.Path)).Run([]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Matches(@"\x1b\[(1;)?(31|91|38;5;9)(;1)?m(\x1b\[[0-9;]*m)*/next", console.Output);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)m takes no arguments\.", console.Output);
+        Assert.Contains("takes no arguments.", console.Output);
+        Assert.Contains("Monday, 2026-10-26", console.Output); // the loop went on to /prev
+    }
+
+    // AC-10
+    [Fact]
+    public void Prev_AtMinValue_ShowsHint_AndStaysPut()
+    {
+        var (exitCode, output) = RunCommands(new SettableTimeProvider(DateTimeOffset.MinValue), "/prev", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("Monday, 0001-01-01", LastHeading(output));
+        Assert.Contains("There is no day before this one.", LastFrame(output));
+        Assert.DoesNotContain("   at ", output);
+        Assert.DoesNotContain("failed", output);
+    }
+
+    // AC-10
+    [Fact]
+    public void Next_AtMaxValue_ShowsHint_AndStaysPut()
+    {
+        var (exitCode, output) = RunCommands(new SettableTimeProvider(DateTimeOffset.MaxValue), "/next", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("Friday, 9999-12-31", LastHeading(output));
+        Assert.Contains("There is no day after this one.", LastFrame(output));
+        Assert.DoesNotContain("   at ", output);
+        Assert.DoesNotContain("failed", output);
+    }
+
+    // AC-10
+    [Fact]
+    public void BoundaryHint_IsRed()
+    {
+        var console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Input.PushTextWithEnter("/next");
+        console.Input.PushTextWithEnter("/quit");
+
+        new App(console, new SettableTimeProvider(DateTimeOffset.MaxValue), new DayStore(_data.Path)).Run([]);
+
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)(;1)?m(\x1b\[[0-9;]*m)*There is no day after this one\.", console.Output);
     }
 }
