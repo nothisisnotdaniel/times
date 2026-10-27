@@ -27,8 +27,6 @@ Decisions the factory would otherwise guess at. When one is settled, move the an
 
 ## UI and commands
 
-9. **Autocomplete.** Should the input box suggest matching commands while typing, like Copilot CLI
-   does, or is `/help` enough at first?
 10. **Day view.** What should the screen above the input box show for a day: a timeline, a
     table of entries, totals?
 11. **Day navigation.** Which commands move between days: `/prev`, `/next` and `/day 2026-10-27`?

@@ -741,4 +741,197 @@ public sealed class AppTests : IDisposable
 
         Assert.Matches(@"\x1b\[(31|91|38;5;9)(;1)?m(\x1b\[[0-9;]*m)*There is no day after this one\.", console.Output);
     }
+
+    // Command popup (job 006) --------------------------------------------------------------
+
+    private const string ClearScreen = "\u001b[2J";
+
+    private string RunAnsi(Action<TestConsole> input, CommandRegistry? registry = null)
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        input(console);
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), registry).Run([]));
+        return console.Output;
+    }
+
+    /// <summary>Each full frame (written at 1;1 right after a clear), split into its 24 screen rows.</summary>
+    private static List<string[]> AnsiFrames(string output) =>
+        AnsiWrites.Parse(output)
+            .Where(w => w.Row == 1 && w.Column == 1 && w.Text.Contains('╰'))
+            .Select(w => w.Text.Split('\n'))
+            .ToList();
+
+    /// <summary>The writes at column 1 between frame <paramref name="index"/> and the next one: what the editor drew while typing.</summary>
+    private static List<AnsiWrite> TypingWrites(string output, int index)
+    {
+        List<AnsiWrite> writes = AnsiWrites.Parse(output);
+        List<int> frameStarts = writes
+            .Select((w, i) => (w, i))
+            .Where(x => x.w.Row == 1 && x.w.Column == 1 && x.w.Text.Contains('╰'))
+            .Select(x => x.i)
+            .ToList();
+        int end = index + 1 < frameStarts.Count ? frameStarts[index + 1] : writes.Count;
+        return writes.Skip(frameStarts[index] + 1).Take(end - frameStarts[index] - 1).Where(w => w.Column == 1).ToList();
+    }
+
+    private static CommandRegistry ManyCommands()
+    {
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+        for (int i = 1; i <= 12; i++)
+        {
+            registry.Register($"/c{i:00}", $"Dummy command {i}", _ => CommandResult.None);
+        }
+
+        return registry;
+    }
+
+    // AC-3
+    [Fact]
+    public void Slash_OpensPopup_OnRowsEndingAtHintRow()
+    {
+        string output = RunAnsi(c =>
+        {
+            c.Input.PushText("/");
+            c.Input.PushKey(ConsoleKey.Backspace);
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        Assert.Contains("\u001b[21;1H", output);
+        List<AnsiWrite> popup = TypingWrites(output, 0).Take(5).ToList();
+        Assert.Equal([17, 18, 19, 20, 21], popup.Select(w => w.Row));
+        Assert.Equal(["/help", "/next", "/prev", "/quit", "/today"], popup.Select(w => w.Text.Split(' ')[0]));
+        Assert.Contains("Go to the previous day", popup[2].Text);
+        Assert.Equal(80, popup[0].Text.Length);
+    }
+
+    // AC-4
+    [Fact]
+    public void Typo_ShowsTodayFirst()
+    {
+        string output = RunAnsi(c =>
+        {
+            c.Input.PushTextWithEnter("/tdoay");
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        List<AnsiWrite> writes = TypingWrites(output, 0);
+        AnsiWrite lastPopupRow = writes.Last(w => w.Row == 21 && w.Text.StartsWith('/'));
+        Assert.StartsWith("/today", lastPopupRow.Text);
+    }
+
+    // AC-4, AC-5
+    [Fact]
+    public void ClosedOrShrunkPopup_RestoresTheFramesRows()
+    {
+        // /help fills the top area with a long table, so the popup covers real content.
+        string output = RunAnsi(c =>
+        {
+            c.Input.PushTextWithEnter("/help");
+            c.Input.PushText("/c");
+            c.Input.PushKey(ConsoleKey.Backspace);
+            c.Input.PushKey(ConsoleKey.Backspace);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("/quit");
+        }, ManyCommands());
+
+        string[] frame = AnsiFrames(output)[1];
+        List<AnsiWrite> writes = TypingWrites(output, 1);
+
+        // "/" and "/c" both fill 8 rows (14-21); Backspace to empty gives every row back.
+        Assert.Contains(writes, w => w.Row == 14 && w.Text.StartsWith("/c01", StringComparison.Ordinal));
+        Dictionary<int, string> screen = [];
+        foreach (AnsiWrite write in writes)
+        {
+            screen[write.Row] = write.Text;
+        }
+
+        for (int row = 14; row <= 21; row++)
+        {
+            Assert.Equal(frame[row - 1], screen[row]);
+        }
+
+        Assert.Contains("│", screen[14]);
+    }
+
+    // AC-5
+    [Fact]
+    public void ClosingPopup_BringsBackTheRedHint()
+    {
+        string output = RunAnsi(c =>
+        {
+            c.Input.PushTextWithEnter("/nope");
+            c.Input.PushText("/");
+            c.Input.PushKey(ConsoleKey.Backspace);
+            c.Input.PushText("/");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        List<string> hintRow = TypingWrites(output, 1).Where(w => w.Row == 21).Select(w => w.Text).ToList();
+
+        // popup, restored (Backspace), popup, restored (Esc), popup (/quit typing), ...
+        Assert.StartsWith("/today", hintRow[0]);
+        Assert.Contains("Unknown command /nope", hintRow[1]);
+        Assert.StartsWith("/today", hintRow[2]);
+        Assert.Contains("Unknown command /nope", hintRow[3]);
+        Assert.Contains("Unknown command /nope", hintRow[^1]);
+        Assert.Contains("\u001b[38;5;9mUnknown command", output[output.LastIndexOf("\u001b[21;1H", StringComparison.Ordinal)..]);
+    }
+
+    // AC-5
+    [Fact]
+    public void Enter_StillDispatchesTheTypedLine()
+    {
+        string output = RunAnsi(c =>
+        {
+            c.Input.PushTextWithEnter("/prev");
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        Assert.Contains("Monday, 2026-10-26", AnsiFrames(output)[1][0]);
+    }
+
+    // AC-7
+    [Fact]
+    public void ManyMatches_PopupShowsEightRows_AndMore()
+    {
+        string output = RunAnsi(c =>
+        {
+            c.Input.PushText("/");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("/quit");
+        }, ManyCommands());
+
+        List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
+        Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
+        // 17 commands: 7 shown, the eighth row counts the other 10.
+        Assert.StartsWith("… 10 more", popup[^1].Text);
+        // Nothing is drawn on row 1 while typing (the final clear on /quit homes the cursor there, writing nothing).
+        Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
+    }
+
+    // AC-9
+    [Fact]
+    public void Typing_NeverClearsOrRedrawsTheLayout()
+    {
+        string output = RunAnsi(c =>
+        {
+            c.Input.PushText("/tdoay");
+            c.Input.PushKey(ConsoleKey.Backspace);
+            c.Input.PushKey(ConsoleKey.Tab);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushText("/he");
+            c.Input.PushKey(ConsoleKey.Tab);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        // One clear per frame (start, after /help) plus one on /quit; one heading per frame.
+        Assert.Equal(3, Count(output, ClearScreen));
+        Assert.Equal(2, AnsiFrames(output).Count);
+        Assert.Equal(2, Count(output, Heading));
+    }
 }

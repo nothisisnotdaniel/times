@@ -20,6 +20,9 @@ internal sealed class App
     private readonly CommandRegistry registry;
     private readonly DayView dayView;
 
+    // The last drawn frame, one entry per screen row, so rows the command popup covered can be restored.
+    private List<SegmentLine> frame = [];
+
     public App(IAnsiConsole console, TimeProvider time, DayStore store, CommandRegistry? registry = null)
     {
         this.console = console;
@@ -67,7 +70,9 @@ internal sealed class App
             int line = height - 1;
             console.Cursor.SetPosition(column, line);
 
-            string? input = editor.ReadLine(column, line, width - column - 2);
+            // The popup ends on the hint row (just above the input box) and grows upwards.
+            PopupArea popup = new PopupArea(height - InputHeight, width, RestoreRow);
+            string? input = editor.ReadLine(column, line, width - column - 2, popup);
             if (input is null)
             {
                 return 0;
@@ -135,7 +140,35 @@ internal sealed class App
             new Layout("Hint", hint ?? Text.Empty).Size(HintHeight),
             new Layout("Input", input).Size(InputHeight));
 
+        frame = Segment.SplitLines(layout.GetSegments(console));
         console.Clear(home: true);
-        console.Write(layout);
+        console.Write(new SegmentsRenderable(frame.SelectMany(l => l.Append(Segment.LineBreak)).SkipLast(1)));
+    }
+
+    // Redraws one screen row (1-based) with what the last frame had there.
+    private void RestoreRow(int row)
+    {
+        if (row < 1 || row > frame.Count)
+        {
+            return;
+        }
+
+        console.Cursor.SetPosition(1, row);
+        console.Write(new SegmentsRenderable(frame[row - 1]));
+    }
+
+    /// <summary>Writes already rendered segments as they are.</summary>
+    private sealed class SegmentsRenderable : IRenderable
+    {
+        private readonly List<Segment> segments;
+
+        public SegmentsRenderable(IEnumerable<Segment> segments)
+        {
+            this.segments = segments.ToList();
+        }
+
+        public Measurement Measure(RenderOptions options, int maxWidth) => new(maxWidth, maxWidth);
+
+        public IEnumerable<Segment> Render(RenderOptions options, int maxWidth) => segments;
     }
 }

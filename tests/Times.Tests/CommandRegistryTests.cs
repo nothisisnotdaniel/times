@@ -119,4 +119,76 @@ public class CommandRegistryTests
 
         Assert.Null(registry.Complete("/hel"));
     }
+
+    // Job 006 ------------------------------------------------------------------------------
+
+    private static CommandRegistry WithNavigation()
+    {
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+        registry.Register("/prev", "Go to the previous day", _ => CommandResult.None);
+        registry.Register("/next", "Go to the next day", _ => CommandResult.None);
+        registry.Register("/today", "Go back to today", _ => CommandResult.None);
+        return registry;
+    }
+
+    // AC-1
+    [Theory]
+    [InlineData("", "abc", 3)]
+    [InlineData("abc", "", 3)]
+    [InlineData("", "", 0)]
+    [InlineData("today", "today", 0)]
+    [InlineData("tdoay", "today", 2)]
+    [InlineData("kitten", "sitting", 3)]
+    public void Levenshtein_GivesEditDistance(string a, string b, int expected)
+    {
+        Assert.Equal(expected, CommandRegistry.Levenshtein(a, b));
+    }
+
+    // AC-2
+    [Fact]
+    public void Match_SlashOnly_ReturnsAllInNameOrder()
+    {
+        Assert.Equal(
+            ["/help", "/next", "/prev", "/quit", "/today"],
+            WithNavigation().Match("/").Select(c => c.Name));
+    }
+
+    // AC-2
+    [Fact]
+    public void Match_OneLetter_OnlyKeepsPrefixes()
+    {
+        Assert.Equal(["/today"], WithNavigation().Match("/t").Select(c => c.Name));
+    }
+
+    // AC-2
+    [Theory]
+    [InlineData("/tdoay", "/today")]
+    [InlineData("/TDOAY", "/today")]
+    [InlineData("/hepl", "/help")]
+    [InlineData("/next foo", "/next")]
+    [InlineData("/ne", "/next")]
+    public void Match_RanksBestFirst(string line, string expected)
+    {
+        Assert.Equal(expected, WithNavigation().Match(line)[0].Name);
+    }
+
+    // AC-2
+    [Theory]
+    [InlineData("/zzzzz")]
+    [InlineData("/z")]
+    [InlineData("/zz")]
+    public void Match_NoCloseCommand_IsEmpty(string line)
+    {
+        Assert.Empty(WithNavigation().Match(line));
+    }
+
+    // AC-2
+    [Fact]
+    public void Match_TiesAreSortedByName()
+    {
+        // "xe" is one edit from the prefixes "he" (/help) and "ne" (/next), two from the rest.
+        IReadOnlyList<Command> matches = WithNavigation().Match("/xe");
+
+        Assert.Equal(["/help", "/next"], matches.Select(c => c.Name));
+    }
 }
