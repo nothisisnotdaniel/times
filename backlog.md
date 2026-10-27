@@ -15,6 +15,7 @@ Write one feature per line, in plain language.
 - [ ] Input hint: show a grey placeholder in the empty input box, e.g. "Type /help for commands", that disappears when typing starts.
 - [ ] Long input: when the typed line is wider than the input box, show a cue (e.g. a leading `…`) that the start is scrolled out of view.
 - [ ] Terminal check: verify in a real terminal (macOS Terminal, Windows Terminal) that the full-height layout doesn't scroll by one row and the cursor sits in the input box; fix it if it does.
-- [ ] Time left: next to each entry in the day view, show the work time still left for the day. The day starts with 8 hours to work; each span between two consecutive entries (e.g. arrival to leaving) is subtracted from it.
-- [ ] Remove entry: add a command to remove an existing entry (e.g. the arrival or the leaving) from the current day.
-- [ ] Change entry: add a command to change the time of an existing entry on the current day, using the same `H:mm` time format as `/arrive` and `/leave`.
+- [ ] Multiple entries: a day holds any number of arrivals and leavings, not just one of each. `/arrive` and `/leave` add a new entry instead of replacing the earlier one. The day view lists the entries in time order, each with a number in front (`1`, `2`, …) that commands use to refer to it. The day file stores the list of entries; files in the current single arrival/leaving format still load. Drop the rule that a leaving must come after the arrival.
+- [ ] Time left: next to each entry in the day view, show the work time still left for the day. The day starts with 8 hours to work; each span from an arrival to the next leaving is subtracted. The value goes negative once more than 8 hours are worked (e.g. `-0:30`), which is expected.
+- [ ] Remove entry: add a command that removes an entry from the current day by its number (e.g. `/remove 2`). An unknown number shows a red hint.
+- [ ] Change entry: add a command that changes the time of an entry on the current day by its number (e.g. `/change 2 17:45`), using the same `H:mm` format as `/arrive` and `/leave`. An unknown number or invalid time shows a red hint.
