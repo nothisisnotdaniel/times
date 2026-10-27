@@ -5,13 +5,14 @@ namespace Times;
 
 /// <summary>
 /// The interactive main screen. Each iteration clears the screen, draws the full-terminal layout
-/// (day view on top, a 3-line input box at the bottom), reads one line and dispatches it through the
+/// (day view on top, a one-line hint row, a 3-line input box at the bottom), reads one line and dispatches it through the
 /// <see cref="CommandRegistry"/>. All output goes through <see cref="IAnsiConsole"/> and all clock
 /// reads through <see cref="TimeProvider"/>, so both can be faked in tests. Day files live in the
 /// injected <see cref="DayStore"/>, so tests use a temp folder.
 /// </summary>
 internal sealed class App
 {
+    private const int HintHeight = 1;
     private const int InputHeight = 3;
     private const string Prompt = "> ";
 
@@ -53,10 +54,11 @@ internal sealed class App
     {
         var editor = new LineEditor(console, registry);
         IRenderable? message = null;
+        IRenderable? hint = null;
 
         while (true)
         {
-            Draw(message);
+            Draw(message, hint);
 
             var height = console.Profile.Height;
             var width = console.Profile.Width;
@@ -79,6 +81,7 @@ internal sealed class App
             }
 
             message = result.Message;
+            hint = result.Hint;
         }
     }
 
@@ -114,9 +117,9 @@ internal sealed class App
         }
     }
 
-    private static CommandResult Hint(string markup) => new(new Markup($"[red]{markup}[/]"));
+    private static CommandResult Hint(string markup) => CommandResult.Error(markup);
 
-    private void Draw(IRenderable? message)
+    private void Draw(IRenderable? message, IRenderable? hint)
     {
         IRenderable top = message is null
             ? dayView.Render()
@@ -129,6 +132,7 @@ internal sealed class App
 
         var layout = new Layout("Root").SplitRows(
             new Layout("Day", top),
+            new Layout("Hint", hint ?? Text.Empty).Size(HintHeight),
             new Layout("Input", input).Size(InputHeight));
 
         console.Clear(home: true);

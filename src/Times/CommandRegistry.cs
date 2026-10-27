@@ -6,18 +6,29 @@ namespace Times;
 /// <summary>What a command handler hands back to the loop.</summary>
 internal sealed record CommandResult
 {
-    /// <param name="message">Shown in the top area until the next command, or <c>null</c> for nothing.</param>
+    /// <param name="message">Shown in the top area (under the day view) until the next command, or <c>null</c> for nothing.</param>
     /// <param name="quit">True to end the loop with exit code 0.</param>
-    public CommandResult(IRenderable? message = null, bool quit = false)
+    /// <param name="hint">Shown on the one-line hint row just above the input box until the next command, or <c>null</c> for nothing.</param>
+    public CommandResult(IRenderable? message = null, bool quit = false, IRenderable? hint = null)
     {
         Message = message;
         Quit = quit;
+        Hint = hint;
     }
 
     public static CommandResult None { get; } = new();
 
-    /// <summary>Shown in the top area until the next command, or <c>null</c> for nothing.</summary>
+    /// <summary>
+    /// A red hint for validation errors. <paramref name="markup"/> is wrapped in <c>[red]…[/]</c>;
+    /// any user text in it must already be escaped with <see cref="Markup.Escape"/>.
+    /// </summary>
+    internal static CommandResult Error(string markup) => new(hint: new Markup($"[red]{markup}[/]"));
+
+    /// <summary>Shown in the top area (under the day view) until the next command, or <c>null</c> for nothing.</summary>
     public IRenderable? Message { get; }
+
+    /// <summary>Shown on the one-line hint row just above the input box until the next command, or <c>null</c> for nothing.</summary>
+    public IRenderable? Hint { get; }
 
     /// <summary>True to end the loop with exit code 0.</summary>
     public bool Quit { get; }
