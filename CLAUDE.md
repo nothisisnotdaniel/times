@@ -57,6 +57,10 @@ Every factory agent reads this file before working on Times. Keep it short and a
     conventional constructor that assigns to fields or properties.
   - Private fields are camelCase **without** a leading underscore (`console`, not `_console`).
     Use `this.` where a field and a constructor parameter share a name.
+  - No `var`: always write the explicit type. Braces on every `if`/`else`/`for`/`foreach`/`while`
+    body, even single lines. `this.` only where a field and a parameter share a name.
+  - `.editorconfig` holds these rules. The build enforces it (`EnforceCodeStyleInBuild`), so a
+    style break is a build warning, and builds must stay at 0 warnings.
   - `Run` returns a process exit code: 0 for success, non-zero for errors. Show errors as
     `[red]` markup, never as a stack trace.
   - No new NuGet packages without a reason in the spec. The approver escalates any new dependency.
