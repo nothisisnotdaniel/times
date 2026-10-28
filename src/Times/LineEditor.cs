@@ -9,6 +9,14 @@ namespace Times;
 /// Enter, Esc (close the popup if it is open, otherwise clear the line), Tab (complete a
 /// <c>/command</c>) and Up/Down (session history).
 /// <para>
+/// Tab completes a unique command prefix. When 2 or more names start with the typed prefix, Tab
+/// extends the line to their longest common prefix and enters the "Tab list" state: the popup
+/// (reopened even after Esc) lists only <see cref="CommandRegistry.StartingWith"/> for the line,
+/// with a grey footer <c>N commands start with …</c>. The next key of any kind leaves that state,
+/// and the popup goes back to <see cref="CommandRegistry.Match"/>. Without a popup area only the
+/// line is extended.
+/// </para>
+/// <para>
 /// When a <see cref="PopupArea"/> is given, the popup opens while the line starts with <c>/</c>
 /// and lists <see cref="CommandRegistry.Match"/> for it. Esc closes it and keeps it closed until
 /// the line stops starting with <c>/</c>. Rows the popup stops covering are handed back to
@@ -42,6 +50,7 @@ internal sealed class LineEditor
         int drawn = 0;
         int popupRows = 0;
         bool popupDismissed = false;
+        bool tabList = false;
 
         while (true)
         {
@@ -51,6 +60,8 @@ internal sealed class LineEditor
                 ClosePopup(popup, popupRows);
                 return null;
             }
+
+            tabList = false;
 
             ConsoleKeyInfo info = key.Value;
             switch (info.Key)
@@ -91,7 +102,18 @@ internal sealed class LineEditor
                     break;
 
                 case ConsoleKey.Tab:
-                    if (!buffer.Any(char.IsWhiteSpace) && registry.Complete(buffer) is { } completed)
+                    if (buffer.Any(char.IsWhiteSpace))
+                    {
+                        break;
+                    }
+
+                    if (registry.StartingWith(buffer).Count >= 2)
+                    {
+                        buffer = registry.CommonPrefix(buffer);
+                        popupDismissed = false;
+                        tabList = true;
+                    }
+                    else if (registry.Complete(buffer) is { } completed)
                     {
                         buffer = completed;
                     }
@@ -131,16 +153,27 @@ internal sealed class LineEditor
             }
 
             bool showPopup = popup is not null && buffer.StartsWith('/') && !popupDismissed;
-            popupRows = showPopup ? DrawPopup(popup!, buffer, popupRows) : ClosePopup(popup, popupRows);
+            popupRows = showPopup ? DrawPopup(popup!, buffer, popupRows, tabList) : ClosePopup(popup, popupRows);
             drawn = Redraw(buffer, column, line, width, drawn);
         }
     }
 
     // Draws the popup for the current line so that it ends on the bottom row, and restores the rows
-    // above it that the previous, taller popup covered. Returns the number of rows now drawn.
-    private int DrawPopup(PopupArea popup, string buffer, int previousRows)
+    // above it that the previous, taller popup covered. In the Tab list it shows the prefix matches
+    // with a count footer instead of the fuzzy match. Returns the number of rows now drawn.
+    private int DrawPopup(PopupArea popup, string buffer, int previousRows, bool tabList)
     {
-        IReadOnlyList<string> rows = CommandPopup.Rows(registry.Match(buffer), popup.Width, popup.MaxRows);
+        IReadOnlyList<string> rows;
+        if (tabList)
+        {
+            IReadOnlyList<Command> matches = registry.StartingWith(buffer);
+            rows = CommandPopup.Rows(matches, popup.Width, popup.MaxRows, $"{matches.Count} commands start with {buffer}");
+        }
+        else
+        {
+            rows = CommandPopup.Rows(registry.Match(buffer), popup.Width, popup.MaxRows);
+        }
+
         int top = popup.BottomRow - rows.Count + 1;
         for (int row = popup.BottomRow - previousRows + 1; row < top; row++)
         {

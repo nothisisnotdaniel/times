@@ -101,6 +101,48 @@ internal sealed class CommandRegistry
     }
 
     /// <summary>
+    /// The commands whose name starts with <paramref name="prefix"/> (ordinal, ignoring case), in
+    /// name order. Empty if <paramref name="prefix"/> does not start with <c>/</c>.
+    /// </summary>
+    public IReadOnlyList<Command> StartingWith(string prefix)
+    {
+        if (!prefix.StartsWith('/'))
+        {
+            return [];
+        }
+
+        return Commands.Where(c => c.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList();
+    }
+
+    /// <summary>
+    /// The longest common prefix of the names in <see cref="StartingWith"/>, in the registered
+    /// casing, or <paramref name="prefix"/> unchanged when fewer than 2 names match.
+    /// </summary>
+    public string CommonPrefix(string prefix)
+    {
+        IReadOnlyList<Command> matches = StartingWith(prefix);
+        if (matches.Count < 2)
+        {
+            return prefix;
+        }
+
+        string common = matches[0].Name;
+        foreach (Command command in matches.Skip(1))
+        {
+            int length = 0;
+            int max = Math.Min(common.Length, command.Name.Length);
+            while (length < max && char.ToLowerInvariant(common[length]) == char.ToLowerInvariant(command.Name[length]))
+            {
+                length++;
+            }
+
+            common = common[..length];
+        }
+
+        return common;
+    }
+
+    /// <summary>
     /// The commands that match the command token of <paramref name="line"/> (the text up to the
     /// first whitespace), best first. An empty token (just <c>/</c>) returns every command in name
     /// order. Otherwise each name scores the smaller Levenshtein distance to the whole name or to

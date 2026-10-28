@@ -132,4 +132,65 @@ public class CommandPopupTests
 
         Assert.Equal("/help  " + new string('d', 33), Render(row, 40).Plain);
     }
+
+    // Job 011 ------------------------------------------------------------------------------
+
+    // AC-7
+    [Fact]
+    public void Footer_IsLastRow_AfterMoreRow_WithinMaxRows()
+    {
+        IReadOnlyList<string> rows = CommandPopup.Rows(Many(12), 80, 20, "12 commands start with /c");
+
+        Assert.Equal(8, rows.Count);
+        Assert.StartsWith("/c06", Render(rows[5]).Plain);
+        Assert.Equal("… 6 more", Render(rows[6]).Plain.TrimEnd());
+        Assert.Equal("12 commands start with /c", Render(rows[7]).Plain.TrimEnd());
+    }
+
+    // AC-7
+    [Theory]
+    [InlineData(3, 3)]
+    [InlineData(4, 4)]
+    [InlineData(5, 4)]
+    [InlineData(8, 4)]
+    public void Footer_TakesOneRowOfTheBudget(int maxRows, int expected)
+    {
+        IReadOnlyList<string> rows = CommandPopup.Rows(Many(3), 80, maxRows, "footer");
+
+        Assert.Equal(expected, rows.Count);
+        Assert.Equal("footer", Render(rows[^1]).Plain.TrimEnd());
+    }
+
+    // AC-7
+    [Fact]
+    public void Footer_WithOneRow_IsTheOnlyRow()
+    {
+        IReadOnlyList<string> rows = CommandPopup.Rows(Many(3), 80, 1, "footer");
+
+        Assert.Single(rows);
+        Assert.Equal("footer", Render(rows[0]).Plain.TrimEnd());
+    }
+
+    // AC-7
+    [Theory]
+    [InlineData(80)]
+    [InlineData(10)]
+    [InlineData(2)]
+    public void Footer_IsGrey_Escaped_AndExactlyTheWidth(int width)
+    {
+        IReadOnlyList<string> rows = CommandPopup.Rows(Many(2), width, 8, "[x]");
+
+        (string plain, string ansi) = Render(rows[^1], width);
+        Assert.StartsWith("[grey]", rows[^1]);
+        Assert.Equal(width, plain.Length);
+        Assert.Equal("[x]"[..Math.Min(3, width)], plain.TrimEnd());
+        Assert.Contains("\u001b[38;5;8m[", ansi);
+    }
+
+    // AC-7
+    [Fact]
+    public void NoFooter_RowsUnchanged()
+    {
+        Assert.Equal(CommandPopup.Rows(Many(12), 80, 8), CommandPopup.Rows(Many(12), 80, 8, null));
+    }
 }

@@ -17,8 +17,9 @@ Every factory agent reads this file before working on Times. Keep it short and a
     After each command, clear the screen and redraw the whole layout. Input is read by our own
     small line editor, using `console.Cursor.SetPosition` and
     `console.Input.ReadKey(intercept: true)`: typing, Backspace, Enter, Esc (close the popup if
-    it is open, otherwise clear the line), Tab (complete a `/command` from the registry) and ↑/↓
-    (history). Don't use Spectre's `Live` display: it can't run while we read input.
+    it is open, otherwise clear the line), Tab (complete a `/command` from the registry; if
+    several match, extend to their common prefix and list them in the popup with a grey count
+    footer) and ↑/↓ (history). Don't use Spectre's `Live` display: it can't run while we read input.
   - **Command popup:** while the line starts with `/`, a popup just above the input box lists the
     registered commands with their descriptions, filtered by what was typed and ranked by
     Levenshtein distance so typos still match. The popup is the one thing redrawn **while
