@@ -1,4 +1,3 @@
-using System.Globalization;
 using Spectre.Console;
 using Spectre.Console.Rendering;
 
@@ -56,14 +55,14 @@ internal sealed class App
     private void RegisterBookings()
     {
         registry.Register("/arrive", $"Book your arrival: now, or at an optional {TimeInput.Format}", argument =>
-            Book("/arrive", argument, (day, at) => day with { Arrival = at }));
+            Book("/arrive", argument, EntryKind.Arrival));
         registry.Register("/leave", $"Book your leaving: now, or at an optional {TimeInput.Format}", argument =>
-            Book("/leave", argument, (day, at) => day with { Leaving = at }));
+            Book("/leave", argument, EntryKind.Leaving));
     }
 
-    // Books a time on the day being viewed. Nothing is written if the time is invalid, the day's
-    // file cannot be read, or leaving would not be after arrival.
-    private CommandResult Book(string name, string argument, Func<DayRecord, TimeOnly, DayRecord> apply)
+    // Adds an entry to the day being viewed, after any earlier ones. Nothing is written if the time
+    // is invalid or the day's file cannot be read.
+    private CommandResult Book(string name, string argument, EntryKind kind)
     {
         TimeOnly at;
         if (argument.Length == 0)
@@ -88,11 +87,7 @@ internal sealed class App
             return Hint($"{name}: {Markup.Escape(ex.Message)} Nothing was booked.");
         }
 
-        DayRecord updated = apply(current, at);
-        if (updated.Arrival is { } arrival && updated.Leaving is { } leaving && leaving <= arrival)
-        {
-            return Hint($"{name}: leaving ([bold]{Clock(leaving)}[/]) must be after arrival ([bold]{Clock(arrival)}[/]).");
-        }
+        DayRecord updated = current.Add(new DayEntry(kind, at));
 
         try
         {
@@ -105,8 +100,6 @@ internal sealed class App
 
         return CommandResult.None;
     }
-
-    private static string Clock(TimeOnly value) => value.ToString("HH:mm", CultureInfo.InvariantCulture);
 
     private static Func<string, CommandResult> NoArguments(string name, Func<CommandResult> handler) =>
         argument => argument.Length == 0
