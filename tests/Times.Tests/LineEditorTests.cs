@@ -773,4 +773,177 @@ public class LineEditorTests
         int footer = writes.FindIndex(w => w.Text.StartsWith("3 commands", StringComparison.Ordinal));
         Assert.Contains(writes.Skip(footer + 1), w => w == new AnsiWrite(23, 8, string.Empty));
     }
+
+    // Input placeholder (job 014) ----------------------------------------------------------
+
+    private const string Placeholder = "Type /help for commands";
+
+    private const string Grey = @"\x1b\[(90|38;5;8)m";
+
+    private static (TestConsole Console, LineEditor Editor) CreateAnsi()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        return (console, new LineEditor(console, CommandRegistry.CreateDefault()));
+    }
+
+    private static List<AnsiWrite> InputRow(TestConsole console) =>
+        AnsiWrites.Parse(console.Output).Where(w => w.Row == 23).ToList();
+
+    // AC-3
+    [Fact]
+    public void Placeholder_FirstCharacter_IsWrittenAtColumn_AndBlanksThePlaceholder()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        console.Input.PushText("x");
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal("x", editor.ReadLine(5, 23, 70, null, Placeholder));
+
+        AnsiWrite first = InputRow(console).First(w => w.Text.Length > 0);
+        Assert.Equal(5, first.Column);
+        Assert.StartsWith("x", first.Text);
+        Assert.True(first.Text.Length >= Placeholder.Length);
+        Assert.Equal(string.Empty, first.Text.Trim()[1..]);
+        Assert.DoesNotContain("Type /help", first.Text);
+    }
+
+    // AC-3
+    [Fact]
+    public void Placeholder_IsNeverPartOfTheReturnedLine()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        console.Input.PushKey(ConsoleKey.Enter);
+        console.Input.PushTextWithEnter("/he");
+
+        Assert.Equal(string.Empty, editor.ReadLine(5, 23, 70, null, Placeholder));
+        Assert.Equal("/he", editor.ReadLine(5, 23, 70, null, Placeholder));
+    }
+
+    // AC-4
+    [Fact]
+    public void Placeholder_ReturnsAfterBackspace_InGrey_WithCursorAtColumn()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        console.Input.PushText("/");
+        console.Input.PushKey(ConsoleKey.Backspace);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        editor.ReadLine(5, 23, 70, null, Placeholder);
+
+        List<AnsiWrite> row = InputRow(console);
+        AnsiWrite last = row.Last(w => w.Text.Length > 0);
+        Assert.Equal(5, last.Column);
+        Assert.Equal(Placeholder, last.Text);
+        Assert.Matches(Grey + Placeholder, console.Output);
+        Assert.Equal(new AnsiWrite(23, 5, string.Empty), AnsiWrites.Parse(console.Output)[^1]);
+        Assert.EndsWith("\u001b[23;5H", console.Output);
+    }
+
+    // AC-4
+    [Fact]
+    public void Placeholder_ReturnsAfterEscape_InGrey_WithCursorAtColumn()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        console.Input.PushText("x");
+        console.Input.PushKey(ConsoleKey.Escape);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal(string.Empty, editor.ReadLine(5, 23, 70, null, Placeholder));
+
+        AnsiWrite last = InputRow(console).Last(w => w.Text.Length > 0);
+        Assert.Equal(new AnsiWrite(23, 5, Placeholder), last);
+        Assert.Matches(Grey + Placeholder, console.Output);
+        Assert.EndsWith("\u001b[23;5H", console.Output);
+    }
+
+    // AC-4
+    [Fact]
+    public void Placeholder_WithPopup_SlashThenBackspace_ShowsPlaceholderAtColumn()
+    {
+        PopupRun run = new PopupRun();
+        run.Console.Input.PushText("/");
+        run.Console.Input.PushKey(ConsoleKey.Backspace);
+        run.Console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal(string.Empty, run.Editor.ReadLine(5, 23, 70, run.Area, Placeholder));
+
+        Assert.Equal(new AnsiWrite(23, 5, Placeholder), AnsiWrites.Parse(run.Console.Output).Last(w => w.Row == 23 && w.Text.Length > 0));
+        Assert.EndsWith("\u001b[23;5H", run.Console.Output);
+    }
+
+    // AC-5
+    [Fact]
+    public void Placeholder_UpShowsHistoryWithoutLeftovers_DownShowsPlaceholderAgain()
+    {
+        (TestConsole second, LineEditor next) = CreateAnsi();
+        second.Input.PushTextWithEnter("/help");
+        next.ReadLine(5, 23, 70, null, Placeholder);
+        int before = AnsiWrites.Parse(second.Output).Count;
+
+        second.Input.PushKey(ConsoleKey.UpArrow);
+        second.Input.PushKey(ConsoleKey.DownArrow);
+        second.Input.PushKey(ConsoleKey.Enter);
+        Assert.Equal(string.Empty, next.ReadLine(5, 23, 70, null, Placeholder));
+
+        List<AnsiWrite> writes = AnsiWrites.Parse(second.Output).Skip(before).Where(w => w.Row == 23 && w.Text.Length > 0).ToList();
+        Assert.Equal(2, writes.Count);
+        // Up: the history entry, padded over the whole placeholder, with no placeholder text left.
+        Assert.StartsWith("/help", writes[0].Text);
+        Assert.True(writes[0].Text.Length >= Placeholder.Length);
+        Assert.Equal("/help", writes[0].Text.TrimEnd());
+        // Down to the empty line: the placeholder again, cursor at the column.
+        Assert.Equal(new AnsiWrite(23, 5, Placeholder), writes[1]);
+        Assert.EndsWith("\u001b[23;5H", second.Output);
+    }
+
+    // AC-6
+    [Fact]
+    public void Placeholder_IsCroppedToTheRoom()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        console.Input.PushText("ab");
+        console.Input.PushKey(ConsoleKey.Escape);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        editor.ReadLine(5, 23, 11, null, Placeholder);
+
+        List<AnsiWrite> row = InputRow(console).Where(w => w.Text.Length > 0).ToList();
+        // Room is width - 1 = 10. Typing blanks only those 10 cells, and the placeholder is cropped to them.
+        Assert.All(row, w => Assert.True(w.Column + w.Text.Length - 1 <= 5 + 10 - 1));
+        Assert.Equal("Type /help", row[^1].Text);
+        Assert.Equal("a" + new string(' ', 9), row[0].Text);
+        Assert.DoesNotContain("Type /help ", console.Output);
+    }
+
+    // AC-7
+    [Fact]
+    public void Placeholder_NeverClearsTheScreen_AndPopupStillOpens()
+    {
+        PopupRun run = new PopupRun();
+        run.Console.Input.PushText("/");
+        run.Console.Input.PushKey(ConsoleKey.Backspace);
+        run.Console.Input.PushText("x");
+        run.Console.Input.PushKey(ConsoleKey.Escape);
+        run.Console.Input.PushKey(ConsoleKey.Enter);
+
+        run.Editor.ReadLine(5, 23, 70, run.Area, Placeholder);
+
+        Assert.DoesNotContain("\u001b[2J", run.Console.Output);
+        Assert.Contains(AnsiWrites.Parse(run.Console.Output), w => w.Row == HintRow && w.Text.StartsWith("/today", StringComparison.Ordinal));
+    }
+
+    // AC-7
+    [Fact]
+    public void NoPlaceholder_EmptyLineStaysBlank()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        console.Input.PushText("x");
+        console.Input.PushKey(ConsoleKey.Backspace);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        editor.ReadLine(5, 23, 70);
+
+        Assert.DoesNotContain("Type /help", console.Output);
+        Assert.Equal(new AnsiWrite(23, 5, " "), AnsiWrites.Parse(console.Output).Last(w => w.Row == 23 && w.Text.Length > 0));
+    }
 }

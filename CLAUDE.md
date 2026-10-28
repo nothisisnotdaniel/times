@@ -13,7 +13,8 @@ Every factory agent reads this file before working on Times. Keep it short and a
     validation errors show a short `[red]` hint on the line **just above the input box** (not at
     the top of the screen) and never crash the loop.
   - **How the box is built** (no extra packages): a Spectre `Layout` that fills the terminal,
-    with the day view on top, the hint line, and a 3-line bordered input panel at the bottom.
+    with the day view on top, the hint line, and a 3-line bordered input panel at the bottom; the
+    empty input line shows a grey `Type /help for commands` placeholder after the prompt.
     After each command, clear the screen and redraw the whole layout. Input is read by our own
     small line editor, using `console.Cursor.SetPosition` and
     `console.Input.ReadKey(intercept: true)`: typing, Backspace, Enter, Esc (close the popup if

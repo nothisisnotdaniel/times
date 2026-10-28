@@ -16,6 +16,7 @@ internal sealed class App
     private const int HintHeight = 1;
     private const int InputHeight = 3;
     private const string Prompt = "> ";
+    private const string Placeholder = "Type /help for commands";
 
     private readonly IAnsiConsole console;
     private readonly TimeProvider time;
@@ -134,14 +135,15 @@ internal sealed class App
 
             int height = console.Profile.Height;
             int width = console.Profile.Width;
-            // Inside the panel: border + 1 padding on the left, then the prompt.
+            // Inside the panel: border + 1 padding on the left, then the prompt. The cursor starts
+            // right after the prompt, on the placeholder's first character, not after it.
             int column = 3 + Prompt.Length;
             int line = height - 1;
             console.Cursor.SetPosition(column, line);
 
             // The popup ends on the hint row (just above the input box) and grows upwards.
             PopupArea popup = new PopupArea(height - InputHeight, width, RestoreRow);
-            string? input = editor.ReadLine(column, line, width - column - 2, popup);
+            string? input = editor.ReadLine(column, line, width - column - 2, popup, Placeholder);
             if (input is null)
             {
                 return 0;
@@ -200,7 +202,7 @@ internal sealed class App
             ? day
             : new Rows(day, Text.Empty, message);
 
-        Panel input = new Panel(new Markup($"[steelblue1]{Markup.Escape(Prompt)}[/]"))
+        Panel input = new Panel(new Markup($"[steelblue1]{Markup.Escape(Prompt)}[/][grey]{Markup.Escape(Placeholder)}[/]"))
             .Border(BoxBorder.Rounded)
             .BorderColor(Color.SteelBlue1)
             .Expand();
