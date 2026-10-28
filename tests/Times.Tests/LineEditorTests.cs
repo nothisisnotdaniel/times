@@ -946,4 +946,214 @@ public class LineEditorTests
         Assert.DoesNotContain("Type /help", console.Output);
         Assert.Equal(new AnsiWrite(23, 5, " "), AnsiWrites.Parse(console.Output).Last(w => w.Row == 23 && w.Text.Length > 0));
     }
+
+    // Long input cue (job 016) ------------------------------------------------------------
+
+    private const string Ellipsis = "\u2026";
+
+    // Every non-empty write on the input row (row 23).
+    private static List<AnsiWrite> InputWrites(TestConsole console) =>
+        InputRow(console).Where(w => w.Text.Length > 0).ToList();
+
+    private static void AssertInsideRoom(IEnumerable<AnsiWrite> writes, int column, int room) =>
+        Assert.All(writes, w => Assert.True(w.Column + w.Text.Length - 1 <= column + room - 1, $"'{w.Text}' at {w.Column} goes past the room"));
+
+    // AC-1
+    [Fact]
+    public void LongInput_LineThatFits_IsShownInFull_WithoutCue()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        console.Input.PushTextWithEnter("abcdefghij");
+
+        Assert.Equal("abcdefghij", editor.ReadLine(5, 23, 11));
+
+        Assert.DoesNotContain(Ellipsis, console.Output);
+        Assert.Equal(new AnsiWrite(23, 5, "abcdefghij"), InputWrites(console)[^1]);
+        Assert.EndsWith("\u001b[23;15H", console.Output);
+    }
+
+    // AC-2
+    [Fact]
+    public void LongInput_EleventhCharacter_ShowsCueAndLastNine()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        console.Input.PushText("abcdefghijk");
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        editor.ReadLine(5, 23, 11);
+
+        List<AnsiWrite> writes = InputWrites(console);
+        Assert.Equal(new AnsiWrite(23, 5, Ellipsis + "cdefghijk"), writes[^1]);
+        AssertInsideRoom(writes, 5, 10);
+        Assert.Equal("\u001b[23;15H", System.Text.RegularExpressions.Regex.Matches(console.Output, @"\u001b\[\d+;\d+H")[^1].Value);
+        Assert.EndsWith("\u001b[23;15H", console.Output);
+    }
+
+    // AC-2
+    [Fact]
+    public void LongInput_EveryLaterCharacter_KeepsCueAndTail()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        console.Input.PushText("abcdefghijklmnop");
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        editor.ReadLine(5, 23, 11);
+
+        List<AnsiWrite> writes = InputWrites(console);
+        Assert.Equal(16, writes.Count);
+        for (int typed = 11; typed <= 16; typed++)
+        {
+            string expected = Ellipsis + "abcdefghijklmnop"[(typed - 9)..typed];
+            Assert.Equal(new AnsiWrite(23, 5, expected), writes[typed - 1]);
+        }
+
+        for (int typed = 1; typed <= 10; typed++)
+        {
+            Assert.DoesNotContain(Ellipsis, writes[typed - 1].Text);
+        }
+
+        AssertInsideRoom(writes, 5, 10);
+        Assert.EndsWith("\u001b[23;15H", console.Output);
+    }
+
+    // AC-3
+    [Fact]
+    public void LongInput_Cue_IsGrey_AndTailIsNot()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        console.Input.PushText("abcdefghijk");
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        editor.ReadLine(5, 23, 11);
+
+        string output = console.Output;
+        Assert.Matches(Grey + Ellipsis + @"\x1b\[0m", output);
+        int tail = output.LastIndexOf("cdefghijk", StringComparison.Ordinal);
+        string beforeTail = output[..tail];
+        Assert.DoesNotMatch(Grey + "$", beforeTail);
+        Assert.EndsWith("\u001b[0m", beforeTail);
+    }
+
+    // AC-4
+    [Fact]
+    public void LongInput_BackspaceToRoom_RemovesCue()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        console.Input.PushText("abcdefghijk");
+        console.Input.PushKey(ConsoleKey.Backspace);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal("abcdefghij", editor.ReadLine(5, 23, 11));
+
+        Assert.Equal(new AnsiWrite(23, 5, "abcdefghij"), InputWrites(console)[^1]);
+        Assert.EndsWith("\u001b[23;15H", console.Output);
+    }
+
+    // AC-5
+    [Fact]
+    public void LongInput_Enter_ReturnsFullLine_AndAddsItToHistoryInFull()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        console.Input.PushTextWithEnter("/checkin something long");
+
+        Assert.Equal("/checkin something long", editor.ReadLine(5, 23, 11));
+        Assert.Equal(["/checkin something long"], editor.History);
+    }
+
+    // AC-5
+    [Fact]
+    public void LongInput_Enter_WithPopup_ReturnsFullLine_CursorAtRoomEnd()
+    {
+        PopupRun run = new PopupRun();
+        run.Console.Input.PushTextWithEnter("/checkin something long");
+
+        Assert.Equal("/checkin something long", run.Editor.ReadLine(5, 23, 11, run.Area));
+        Assert.Equal(["/checkin something long"], run.Editor.History);
+        Assert.EndsWith("\u001b[23;15H", run.Console.Output);
+    }
+
+    // AC-6
+    [Fact]
+    public void LongInput_UpToLongHistoryEntry_ShowsCueAndTail()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        console.Input.PushTextWithEnter("abcdefghijklmn");
+        editor.ReadLine(5, 23, 11, null, Placeholder);
+        int before = AnsiWrites.Parse(console.Output).Count;
+
+        console.Input.PushKey(ConsoleKey.UpArrow);
+        console.Input.PushKey(ConsoleKey.Enter);
+        Assert.Equal("abcdefghijklmn", editor.ReadLine(5, 23, 11, null, Placeholder));
+
+        List<AnsiWrite> writes = AnsiWrites.Parse(console.Output).Skip(before).Where(w => w.Row == 23 && w.Text.Length > 0).ToList();
+        Assert.Equal([new AnsiWrite(23, 5, Ellipsis + "fghijklmn")], writes);
+        Assert.EndsWith("\u001b[23;15H", console.Output);
+    }
+
+    // AC-6
+    [Fact]
+    public void LongInput_EscapeOnOverflowingLine_BringsPlaceholderBack_WithoutLeftovers()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        console.Input.PushText("abcdefghijklmn");
+        console.Input.PushKey(ConsoleKey.Escape);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal(string.Empty, editor.ReadLine(5, 23, 11, null, Placeholder));
+
+        // The cropped placeholder fills all 10 cells, so nothing of the cue or tail can remain.
+        AnsiWrite last = InputWrites(console)[^1];
+        Assert.Equal(new AnsiWrite(23, 5, "Type /help"), last);
+        Assert.DoesNotContain(Ellipsis, last.Text);
+        Assert.Matches(Grey + "Type /help", console.Output);
+        Assert.EndsWith("\u001b[23;5H", console.Output);
+    }
+
+    // AC-6
+    [Fact]
+    public void LongInput_EscapeOnOverflowingLine_WithoutPlaceholder_BlanksTheRoom()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        console.Input.PushText("abcdefghijklmn");
+        console.Input.PushKey(ConsoleKey.Escape);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal(string.Empty, editor.ReadLine(5, 23, 11));
+
+        Assert.Equal(new AnsiWrite(23, 5, new string(' ', 10)), InputWrites(console)[^1]);
+    }
+
+    // AC-7
+    [Fact]
+    public void LongInput_SlashLine_WithPopup_PopupRedrawnPerKey_CursorAtRoomEnd_NoClear()
+    {
+        PopupRun run = new PopupRun();
+        run.Console.Input.PushText("/checkin_x_y_z");
+        run.Console.Input.PushKey(ConsoleKey.Enter);
+
+        run.Editor.ReadLine(5, 23, 11, run.Area);
+
+        string output = run.Console.Output;
+        Assert.DoesNotContain("\u001b[2J", output);
+        Assert.Equal(14, run.PopupDraws());
+        List<AnsiWrite> writes = AnsiWrites.Parse(output).Where(w => w.Row == 23 && w.Text.Length > 0).ToList();
+        Assert.Equal(new AnsiWrite(23, 5, Ellipsis + "kin_x_y_z"), writes[^1]);
+        AssertInsideRoom(writes, 5, 10);
+        Assert.EndsWith("\u001b[23;15H", output);
+    }
+
+    // AC-8
+    [Fact]
+    public void LongInput_RoomBelowTwo_NeverShowsCue_AndShowsLastCharacter()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        console.Input.PushText("abc");
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal("abc", editor.ReadLine(5, 23, 2));
+
+        Assert.DoesNotContain(Ellipsis, console.Output);
+        Assert.Equal(new AnsiWrite(23, 5, "c"), InputWrites(console)[^1]);
+        Assert.EndsWith("\u001b[23;6H", console.Output);
+    }
 }

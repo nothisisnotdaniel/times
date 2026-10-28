@@ -27,6 +27,11 @@ namespace Times;
 /// as the line holds text. It is never part of the returned line, and the cursor stays at the
 /// start of the line while it is shown.
 /// </para>
+/// <para>
+/// A line wider than the room shows only its tail, behind a grey leading <c>…</c> in the first
+/// cell that tells the user the start is scrolled out of view. The cue goes away as soon as the
+/// whole line fits again, and it is never part of the returned line or the history.
+/// </para>
 /// </summary>
 internal sealed class LineEditor
 {
@@ -213,9 +218,11 @@ internal sealed class LineEditor
         return 0;
     }
 
-    // Rewrites the visible part of the buffer (its tail, if it is wider than the box) and blanks
-    // whatever was drawn before. An empty buffer shows the placeholder in grey, if there is one,
-    // with the cursor at the start of the line. Returns the number of characters now drawn.
+    // Rewrites the visible part of the buffer and blanks whatever was drawn before. A buffer wider
+    // than the room (of at least 2 cells) shows a grey leading … followed by its last room - 1
+    // characters, filling the whole room; with a room of 1 only the last character is shown. An
+    // empty buffer shows the placeholder in grey, if there is one, with the cursor at the start of
+    // the line. Returns the number of cells now drawn.
     private int Redraw(string buffer, int column, int line, int width, int previouslyDrawn, string? placeholder)
     {
         int room = Room(width);
@@ -232,6 +239,14 @@ internal sealed class LineEditor
 
             console.Cursor.SetPosition(column, line);
             return shown.Length;
+        }
+
+        if (buffer.Length > room && room >= 2)
+        {
+            console.Write(new Text("\u2026", new Style(Color.Grey)));
+            console.Write(new Text(buffer[^(room - 1)..]));
+            console.Cursor.SetPosition(column + room, line);
+            return room;
         }
 
         string visible = buffer.Length > room ? buffer[^room..] : buffer;
