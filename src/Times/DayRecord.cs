@@ -100,6 +100,17 @@ internal sealed record DayRecord
     /// </summary>
     public DayRecord Add(DayEntry entry) => new(entries.Append(entry));
 
+    /// <summary>
+    /// Returns a new record without entry <paramref name="number"/> (1-based, the numbering of
+    /// <see cref="Entries"/>). Throws <see cref="ArgumentOutOfRangeException"/> if there is no such entry.
+    /// </summary>
+    public DayRecord RemoveAt(int number)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(number, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(number, entries.Length);
+        return new DayRecord(entries.Where((_, i) => i != number - 1));
+    }
+
     public bool Equals(DayRecord? other) =>
         other is not null && entries.SequenceEqual(other.entries);
 

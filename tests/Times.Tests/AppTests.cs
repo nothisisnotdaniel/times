@@ -797,10 +797,10 @@ public sealed class AppTests : IDisposable
         });
 
         Assert.Contains("\u001b[21;1H", output);
-        List<AnsiWrite> popup = TypingWrites(output, 0).Take(7).ToList();
-        Assert.Equal([15, 16, 17, 18, 19, 20, 21], popup.Select(w => w.Row));
+        List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
+        Assert.Equal([14, 15, 16, 17, 18, 19, 20, 21], popup.Select(w => w.Row));
         Assert.Equal(
-            ["/arrive", "/help", "/leave", "/next", "/prev", "/quit", "/today"],
+            ["/arrive", "/help", "/leave", "/next", "/prev", "/quit", "/remove", "/today"],
             popup.Select(w => w.Text.Split(' ')[0]));
         Assert.Contains("Go to the previous day", popup[4].Text);
         Assert.Equal(80, popup[0].Text.Length);
@@ -908,8 +908,8 @@ public sealed class AppTests : IDisposable
 
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
-        // 19 commands: 7 shown, the eighth row counts the other 12.
-        Assert.StartsWith("… 12 more", popup[^1].Text);
+        // 20 commands: 7 shown, the eighth row counts the other 13.
+        Assert.StartsWith("… 13 more", popup[^1].Text);
         // Nothing is drawn on row 1 while typing (the final clear on /quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
@@ -1591,5 +1591,310 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, exitCode);
         Assert.DoesNotContain("Commands start with", output);
         Assert.DoesNotContain("Unknown command", output);
+    }
+
+    // Remove entry (job 021) ---------------------------------------------------------------
+
+    private const string ThreeEntries = "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"},{\"kind\":\"leaving\",\"time\":\"12:00\"},{\"kind\":\"arrival\",\"time\":\"13:00\"}]}";
+
+    /// <summary>Runs the commands on an 80-column console, or a wider one when a long hint must fit.</summary>
+    private (int ExitCode, string Output) RunWide(int width, params string[] commands) =>
+        Run(c =>
+        {
+            c.Profile.Width = width;
+            foreach (string command in commands)
+            {
+                c.Input.PushTextWithEnter(command);
+            }
+        });
+
+    // AC-1 (021)
+    [Fact]
+    public void Remove_MiddleEntry_SavesTheRest_RenumbersAndRecomputesTimeLeft()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
+
+        (int exitCode, string output) = RunCommands("/remove 2", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(Entries("arrival 08:00", "arrival 13:00"), ReadDay("2026-10-27"));
+        Assert.Equal(
+            [new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)), new DayEntry(EntryKind.Arrival, new TimeOnly(13, 0))],
+            new DayStore(data.Path).Load(new DateOnly(2026, 10, 27)).Entries);
+
+        // Before: the leaving at 12:00 closed 4 hours, so the 13:00 arrival had 4:00 left.
+        string first = string.Join('\n', Frames(output)[0]);
+        Assert.Matches(@"3 +Arrival +13:00 +left 4:00", first);
+
+        string[] frame = LastLayout(output);
+        string top = string.Join('\n', frame[..^4]);
+        Assert.Matches(@"1 +Arrival +08:00 +left 8:00", top);
+        Assert.Matches(@"2 +Arrival +13:00 +left 8:00", top);
+        Assert.DoesNotContain("12:00", top);
+        Assert.DoesNotMatch(@"\b3 +(Arrival|Leaving)", top);
+        AssertLayout(frame);
+        Assert.Equal(string.Empty, frame[^4].Trim());
+    }
+
+    // AC-1 (021)
+    [Fact]
+    public void Remove_AfterBookingInTheSameSession_UsesTheShownNumbers()
+    {
+        (int exitCode, string output) = RunCommands("/arrive 8:00", "/leave 12:00", "/arrive 13:00", "/remove 2", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(Entries("arrival 08:00", "arrival 13:00"), ReadDay("2026-10-27"));
+        Assert.Matches(@"2 +Arrival +13:00", LastFrame(output));
+    }
+
+    // AC-2 (021)
+    [Fact]
+    public void Remove_ActsOnTheViewedDay_AndLeavesTodayUntouched()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
+        File.WriteAllText(DayFile("2026-10-26"), Entries("arrival 09:00", "leaving 17:00"));
+        byte[] today = File.ReadAllBytes(DayFile("2026-10-27"));
+
+        (int exitCode, string output) = RunCommands("/prev", "/remove 1", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(Entries("leaving 17:00"), ReadDay("2026-10-26"));
+        Assert.Equal(today, File.ReadAllBytes(DayFile("2026-10-27")));
+        Assert.StartsWith("Monday, 2026-10-26", LastFrame(output));
+        Assert.Matches(@"1 +Leaving +17:00", LastFrame(output));
+    }
+
+    // AC-3 (021)
+    [Theory]
+    [InlineData("/remove 0", "/remove: there is no entry 0.")]
+    [InlineData("/remove 4", "/remove: there is no entry 4.")]
+    [InlineData("/remove 99", "/remove: there is no entry 99.")]
+    [InlineData("/remove 007", "/remove: there is no entry 7.")]
+    public void Remove_UnknownNumber_ShowsHintAboveInputBox_AndChangesNothing(string typed, string expected)
+    {
+        File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
+        byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
+
+        (int exitCode, string output) = RunCommands("/help", typed, "/quit");
+
+        Assert.Equal(0, exitCode);
+        AssertOnHintRow(LastLayout(output), expected);
+        Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
+        Assert.Matches(@"3 +Arrival +13:00", LastFrame(output));
+    }
+
+    // AC-4 (021)
+    [Theory]
+    [InlineData("/remove", "/remove: say which entry to remove.")]
+    [InlineData("/remove abc", "/remove: abc is not an entry number.")]
+    [InlineData("/remove -1", "/remove: -1 is not an entry number.")]
+    [InlineData("/remove +1", "/remove: +1 is not an entry number.")]
+    [InlineData("/remove 1.5", "/remove: 1.5 is not an entry number.")]
+    [InlineData("/remove 2 3", "/remove: 2 3 is not an entry number.")]
+    [InlineData("/remove 99999999999", "/remove: 99999999999 is not an entry number.")]
+    [InlineData("/remove [bold]", "/remove: [bold] is not an entry number.")]
+    [InlineData("/remove [red]x[/]", "/remove: [red]x[/] is not an entry number.")]
+    public void Remove_BadArgument_ShowsUsageHint_AndChangesNothing(string typed, string expected)
+    {
+        File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
+        byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
+
+        (int exitCode, string output) = RunCommands("/help", typed, "/quit");
+
+        Assert.Equal(0, exitCode);
+        string[] frame = LastLayout(output);
+        AssertOnHintRow(frame, expected);
+        AssertOnHintRow(frame, "Use /remove <number>.");
+        Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
+        Assert.DoesNotContain("failed:", output);
+    }
+
+    // AC-3, AC-4 (021)
+    [Theory]
+    [InlineData("/remove 4")]
+    [InlineData("/remove abc")]
+    [InlineData("/remove")]
+    public void Remove_Hints_AreRed(string typed)
+    {
+        File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Input.PushTextWithEnter(typed);
+        console.Input.PushTextWithEnter("/quit");
+
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)m/remove: ", console.Output);
+    }
+
+    // AC-5 (021)
+    [Fact]
+    public void Remove_OnDayWithoutFile_ShowsHint_AndCreatesNothing()
+    {
+        using TempFolder missing = new TempFolder(create: false);
+
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Input.PushTextWithEnter("/remove 1");
+            c.Input.PushTextWithEnter("/quit");
+        }, dataFolder: missing.Path);
+
+        Assert.Equal(0, exitCode);
+        AssertOnHintRow(LastLayout(output), "/remove: there is no entry 1.");
+        Assert.False(Directory.Exists(missing.Path));
+
+        (exitCode, output) = RunCommands("/remove 1", "/quit");
+
+        Assert.Equal(0, exitCode);
+        AssertOnHintRow(LastLayout(output), "/remove: there is no entry 1.");
+        Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
+    }
+
+    // AC-6 (021)
+    [Fact]
+    public void Remove_OnlyEntry_KeepsFileWithEmptyEntries_AndShowsNoEntriesYet()
+    {
+        (int exitCode, string output) = RunCommands("/arrive 8:00", "/remove 1", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("{\"entries\":[]}", ReadDay("2026-10-27"));
+        Assert.Contains("No entries yet.", LastFrame(output));
+        Assert.Equal(string.Empty, LastLayout(output)[^4].Trim());
+    }
+
+    // AC-7 (021)
+    [Theory]
+    [InlineData("{not json", "is not a valid day file. Nothing was removed.")]
+    [InlineData("{\"entries\":[{\"kind\":\"lunch\",\"time\":\"08:15\"}]}", "is not a valid day file. Nothing was removed.")]
+    public void Remove_UnreadableFile_ShowsHint_AndLeavesFileUnchanged(string contents, string expected)
+    {
+        File.WriteAllText(DayFile("2026-10-27"), contents);
+        byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
+
+        (int exitCode, string output) = RunCommands("/remove 1", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
+        AssertOnHintRow(LastLayout(output), "/remove: The file for 2026-10-27 " + expected);
+        Assert.DoesNotContain("   at ", output);
+        Assert.DoesNotContain("failed:", output);
+        Assert.Equal(["2026-10-27.json"], Directory.EnumerateFileSystemEntries(data.Path).Select(Path.GetFileName));
+    }
+
+    // AC-7 (021)
+    [Fact]
+    public void Remove_TooLargeFile_ShowsHint_AndLeavesFileUnchanged()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), new string(' ', (int)DayStore.MaxFileBytes + 1) + ThreeEntries);
+        byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
+
+        // The hint is longer than 80 columns, so widen the terminal to see all of it.
+        (int exitCode, string output) = RunWide(120, "/remove 1", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
+        string[] frame = LastLayout(output);
+        AssertOnHintRow(frame, "/remove: The file for 2026-10-27 is too large to be a day file. Nothing was removed.");
+    }
+
+    // AC-7 (021)
+    [Fact]
+    public void Remove_UnreadableFile_HintIsRed()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), "{not json");
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Input.PushTextWithEnter("/remove 1");
+        console.Input.PushTextWithEnter("/quit");
+
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)m/remove: The file for 2026-10-27", console.Output);
+    }
+
+    // AC-7 (021)
+    [Fact]
+    public void Remove_SaveFailure_ShowsRedHint_NotStackTrace()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
+        byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
+        UnixFileMode mode = File.GetUnixFileMode(data.Path);
+        File.SetUnixFileMode(data.Path, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        try
+        {
+            TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+            console.Profile.Width = 200;
+            console.Input.PushTextWithEnter("/remove 2");
+            console.Input.PushTextWithEnter("/quit");
+
+            Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+            Assert.Matches(@"\x1b\[(31|91|38;5;9)m/remove: could not save the day\.", console.Output);
+            Assert.DoesNotContain("   at ", console.Output);
+            Assert.DoesNotContain("failed:", console.Output);
+        }
+        finally
+        {
+            File.SetUnixFileMode(data.Path, mode);
+        }
+
+        Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
+    }
+
+    // AC-8 (021)
+    [Fact]
+    public void Help_ListsRemove_WithDescription()
+    {
+        (_, string output) = RunCommands("/help", "/quit");
+
+        Assert.Matches(@"/remove +│ Remove an entry from this day by its number", output);
+    }
+
+    // AC-8 (021)
+    [Fact]
+    public void Tab_CompletesRemove()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
+
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Input.PushText("/rem");
+            c.Input.PushKey(ConsoleKey.Tab);
+            c.Input.PushTextWithEnter(" 3");
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        Assert.Equal(0, exitCode);
+        Assert.DoesNotContain("Unknown command", output);
+        Assert.Equal(Entries("arrival 08:00", "leaving 12:00"), ReadDay("2026-10-27"));
+    }
+
+    // AC-8 (021)
+    [Fact]
+    public void Popup_ShowsRemove_AfterTypingRem()
+    {
+        string output = RunAnsi(c =>
+        {
+            c.Input.PushText("/rem");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        List<AnsiWrite> writes = TypingWrites(output, 0);
+        List<int> bottoms = writes
+            .Select((w, i) => (w, i))
+            .Where(x => x.w.Row == 21 && x.w.Text.StartsWith('/'))
+            .Select(x => x.i)
+            .ToList();
+        int top = bottoms[3];
+        while (top > 0 && writes[top - 1].Row == writes[top].Row - 1 && writes[top - 1].Text.StartsWith('/'))
+        {
+            top--;
+        }
+
+        AnsiWrite row = writes[top];
+        Assert.StartsWith("/remove", row.Text);
+        Assert.Contains("Remove an entry from this day by its number", row.Text);
     }
 }

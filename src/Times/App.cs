@@ -1,3 +1,4 @@
+using System.Globalization;
 using Spectre.Console;
 using Spectre.Console.Rendering;
 
@@ -58,6 +59,51 @@ internal sealed class App
             Book("/arrive", argument, EntryKind.Arrival));
         registry.Register("/leave", $"Book your leaving: now, or at an optional {TimeInput.Format}", argument =>
             Book("/leave", argument, EntryKind.Leaving));
+        registry.Register("/remove", "Remove an entry from this day by its number", Remove);
+    }
+
+    // Removes entry <number> from the day being viewed. Nothing is written if the number is not a
+    // plain number, there is no such entry, or the day's file cannot be read.
+    private CommandResult Remove(string argument)
+    {
+        const string Name = "/remove";
+        const string Usage = "Use [bold]/remove <number>[/].";
+        if (argument.Length == 0)
+        {
+            return Hint($"{Name}: say which entry to remove. {Usage}");
+        }
+
+        if (!int.TryParse(argument, NumberStyles.None, CultureInfo.InvariantCulture, out int number))
+        {
+            return Hint($"{Name}: [bold]{Markup.Escape(argument)}[/] is not an entry number. {Usage}");
+        }
+
+        DateOnly day = dayView.Current;
+        DayRecord current;
+        try
+        {
+            current = Store.Load(day);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{Name}: {Markup.Escape(ex.Message)} Nothing was removed.");
+        }
+
+        if (number < 1 || number > current.Entries.Count)
+        {
+            return Hint($"{Name}: there is no entry [bold]{number.ToString(CultureInfo.InvariantCulture)}[/].");
+        }
+
+        try
+        {
+            Store.Save(day, current.RemoveAt(number));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{Name}: could not save the day. {Markup.Escape(ex.Message)}");
+        }
+
+        return CommandResult.None;
     }
 
     // Adds an entry to the day being viewed, after any earlier ones. Nothing is written if the time
