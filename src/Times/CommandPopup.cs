@@ -18,13 +18,27 @@ internal static class CommandPopup
     /// Builds the popup rows for <paramref name="matches"/>. At most <paramref name="maxRows"/>
     /// rows (capped at <see cref="MaxRows"/>) are returned. If more commands match than fit, the
     /// last row is a grey <c>… N more</c>. An empty match list gives one grey
-    /// <c>No matching commands</c> row.
+    /// <c>No matching commands</c> row. When <paramref name="footer"/> is given, the last row is
+    /// that text in grey (escaped, cropped and padded to the width), and the match rows (including
+    /// <c>… N more</c>) get one row less.
     /// </summary>
-    public static IReadOnlyList<string> Rows(IReadOnlyList<Command> matches, int width, int maxRows)
+    public static IReadOnlyList<string> Rows(IReadOnlyList<Command> matches, int width, int maxRows, string? footer = null)
     {
         width = Math.Max(1, width);
         maxRows = Math.Clamp(maxRows, 1, MaxRows);
 
+        if (footer is null)
+        {
+            return MatchRows(matches, width, maxRows);
+        }
+
+        List<string> rows = maxRows > 1 ? [.. MatchRows(matches, width, maxRows - 1)] : [];
+        rows.Add(Grey(footer, width));
+        return rows;
+    }
+
+    private static List<string> MatchRows(IReadOnlyList<Command> matches, int width, int maxRows)
+    {
         if (matches.Count == 0)
         {
             return [Grey("No matching commands", width)];
@@ -59,7 +73,7 @@ internal static class CommandPopup
 
     private static string Grey(string text, int width)
     {
-        string cropped = Crop(text, width);
+        string cropped = Crop(Flatten(text), width);
         return $"[grey]{Markup.Escape(cropped)}[/]{new string(' ', width - cropped.Length)}";
     }
 

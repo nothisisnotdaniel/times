@@ -191,4 +191,55 @@ public class CommandRegistryTests
 
         Assert.Equal(["/help", "/next"], matches.Select(c => c.Name));
     }
+
+    // Job 011 ------------------------------------------------------------------------------
+
+    private static CommandRegistry WithPrefixes()
+    {
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+        registry.Register("/prev", "d", _ => CommandResult.None);
+        registry.Register("/print", "d", _ => CommandResult.None);
+        registry.Register("/project", "d", _ => CommandResult.None);
+        return registry;
+    }
+
+    // AC-1
+    [Theory]
+    [InlineData("/p")]
+    [InlineData("/P")]
+    public void StartingWith_ReturnsPrefixMatchesInNameOrder(string prefix)
+    {
+        Assert.Equal(["/prev", "/print", "/project"], WithPrefixes().StartingWith(prefix).Select(c => c.Name));
+    }
+
+    // AC-1
+    [Theory]
+    [InlineData("p")]
+    [InlineData("/z")]
+    [InlineData("")]
+    public void StartingWith_NoSlashOrNoMatch_IsEmpty(string prefix)
+    {
+        Assert.Empty(WithPrefixes().StartingWith(prefix));
+    }
+
+    // AC-2
+    [Theory]
+    [InlineData("/p", "/pr")]
+    [InlineData("/PR", "/pr")]
+    [InlineData("/pri", "/pri")]
+    [InlineData("/", "/")]
+    [InlineData("/z", "/z")]
+    [InlineData("/pro", "/pro")]
+    public void CommonPrefix_ExtendsToLongestSharedPrefix(string prefix, string expected)
+    {
+        Assert.Equal(expected, WithPrefixes().CommonPrefix(prefix));
+    }
+
+    // AC-1
+    [Fact]
+    public void Complete_KeepsItsContract_WithAmbiguousPrefix()
+    {
+        Assert.Null(WithPrefixes().Complete("/pr"));
+        Assert.Equal("/print", WithPrefixes().Complete("/pri"));
+    }
 }
