@@ -1059,6 +1059,20 @@ public sealed class AppTests : IDisposable
         Assert.Matches(@"4 +Leaving +17:30", output);
     }
 
+    // AC-6 (019)
+    [Fact]
+    public void ArriveAndLeave_ShowTimeLeftPerEntry()
+    {
+        (int exitCode, string output) = RunCommands("/arrive 8:00", "/leave 17:00", "/quit");
+
+        Assert.Equal(0, exitCode);
+        string frame = LastFrame(output);
+        Assert.Contains("left 8:00", frame);
+        Assert.Contains("left -1:00", frame);
+        Assert.Matches(@"1 +Arrival +08:00 +left 8:00", frame);
+        Assert.Matches(@"2 +Leaving +17:00 +left -1:00", frame);
+    }
+
     // AC-3 (017)
     [Fact]
     public void Booking_KeepsEntriesInTimeOrder_WhateverTheBookingOrder()

@@ -55,7 +55,8 @@ internal sealed class DayView
     /// <summary>
     /// Renders the current day: the heading, then one row per entry in time order (grey number
     /// starting at 1, grey <c>Arrival</c>/<c>Leaving</c> label, <c>SteelBlue1</c> time), or
-    /// <c>No entries yet.</c> if nothing is booked.
+    /// <c>No entries yet.</c> if nothing is booked. Each row ends with the work time left after
+    /// that entry (grey <c>left</c> plus the right-aligned value, see <see cref="DayRecord.TimeLeft"/>).
     /// </summary>
     public IRenderable Render(DayRecord day)
     {
@@ -67,7 +68,9 @@ internal sealed class DayView
         Grid grid = new Grid()
             .AddColumn(new GridColumn().RightAligned())
             .AddColumn()
-            .AddColumn();
+            .AddColumn()
+            .AddColumn(new GridColumn().RightAligned());
+        IReadOnlyList<TimeSpan> timeLeft = day.TimeLeft();
         for (int i = 0; i < day.Entries.Count; i++)
         {
             DayEntry entry = day.Entries[i];
@@ -77,10 +80,26 @@ internal sealed class DayView
             grid.AddRow(
                 new Markup($"[grey]{number}[/]"),
                 new Markup($"[grey]{label}[/]"),
-                new Markup($"[steelblue1]{clock}[/]"));
+                new Markup($"[steelblue1]{clock}[/]"),
+                new Markup($"[grey]left[/] {FormatTimeLeft(timeLeft[i])}"));
         }
 
         return new Rows(HeadingRule(), grid);
+    }
+
+    /// <summary>
+    /// Formats a time-left value as invariant <c>H:mm</c> with no leading zero on the hours, and a
+    /// leading <c>-</c> for negative values (<c>-0:30</c>). Zero is <c>0:00</c>.
+    /// </summary>
+    public static string FormatTimeLeft(TimeSpan value)
+    {
+        // Whole minutes, truncated toward zero, so a sub-minute negative value never shows "-0:00".
+        long totalMinutes = value.Ticks / TimeSpan.TicksPerMinute;
+        string sign = totalMinutes < 0 ? "-" : string.Empty;
+        long magnitude = Math.Abs(totalMinutes);
+        string hoursText = (magnitude / 60).ToString(CultureInfo.InvariantCulture);
+        string minutesText = (magnitude % 60).ToString("00", CultureInfo.InvariantCulture);
+        return sign + hoursText + ":" + minutesText;
     }
 
     /// <summary>Renders the current day when its file could not be read. <paramref name="markup"/> must be escaped.</summary>

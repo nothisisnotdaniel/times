@@ -162,9 +162,9 @@ public class DayViewTests
 
         string[] lines = console.Lines.Select(l => l.Trim()).Where(l => l.Length > 0).ToArray();
         Assert.Equal(4, lines.Length);
-        Assert.Matches(@"^1 +Arrival +08:15$", lines[1]);
-        Assert.Matches(@"^2 +Leaving +12:00$", lines[2]);
-        Assert.Matches(@"^3 +Arrival +13:00$", lines[3]);
+        Assert.Matches(@"^1 +Arrival +08:15 +left +8:00$", lines[1]);
+        Assert.Matches(@"^2 +Leaving +12:00 +left +4:15$", lines[2]);
+        Assert.Matches(@"^3 +Arrival +13:00 +left +4:15$", lines[3]);
         Assert.DoesNotContain("—", console.Output);
     }
 
@@ -199,5 +199,110 @@ public class DayViewTests
 
         Assert.Contains("No entries yet.", console.Output);
         Assert.DoesNotContain("Arrival", console.Output);
+    }
+
+    // AC-4 (019)
+    [Theory]
+    [InlineData(8, 0, "8:00")]
+    [InlineData(0, 5, "0:05")]
+    [InlineData(0, 0, "0:00")]
+    [InlineData(0, -30, "-0:30")]
+    [InlineData(-15, -59, "-15:59")]
+    [InlineData(-1, 0, "-1:00")]
+    [InlineData(12, 34, "12:34")]
+    public void FormatTimeLeft_UsesHoursAndMinutes_WithoutLeadingZero(int hours, int minutes, string expected)
+    {
+        Assert.Equal(expected, DayView.FormatTimeLeft(new TimeSpan(hours, minutes, 0)));
+    }
+
+    // AC-4 (019)
+    [Fact]
+    public void FormatTimeLeft_ZeroAndSubMinuteNegative_HaveNoMinusSign()
+    {
+        Assert.Equal("0:00", DayView.FormatTimeLeft(TimeSpan.Zero));
+        Assert.Equal("0:00", DayView.FormatTimeLeft(TimeSpan.FromSeconds(-30)));
+    }
+
+    // AC-4 (019)
+    [Fact]
+    public void FormatTimeLeft_IsInvariant_UnderGermanCulture()
+    {
+        System.Globalization.CultureInfo previous = System.Globalization.CultureInfo.CurrentCulture;
+        try
+        {
+            System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("de-DE");
+            Assert.Equal("8:00", DayView.FormatTimeLeft(TimeSpan.FromHours(8)));
+            Assert.Equal("-0:30", DayView.FormatTimeLeft(TimeSpan.FromMinutes(-30)));
+            Assert.Equal("-15:59", DayView.FormatTimeLeft(new TimeSpan(-15, -59, 0)));
+        }
+        finally
+        {
+            System.Globalization.CultureInfo.CurrentCulture = previous;
+        }
+    }
+
+    // AC-5 (019)
+    [Fact]
+    public void Render_ShowsTimeLeftOnEachEntryRow()
+    {
+        TestConsole console = new TestConsole();
+        DayView view = new DayView(FixedTimeProvider.At20261027());
+        DayRecord record = DayRecord.Empty
+            .Add(new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)))
+            .Add(new DayEntry(EntryKind.Leaving, new TimeOnly(12, 0)))
+            .Add(new DayEntry(EntryKind.Arrival, new TimeOnly(12, 30)))
+            .Add(new DayEntry(EntryKind.Leaving, new TimeOnly(17, 0)));
+
+        console.Write(view.Render(record));
+
+        string[] lines = console.Lines.Select(l => l.TrimEnd()).Where(l => l.Trim().Length > 0).ToArray();
+        Assert.Equal(5, lines.Length);
+        Assert.Matches(@"^1 +Arrival +08:00 +left +8:00$", lines[1]);
+        Assert.Matches(@"^2 +Leaving +12:00 +left +4:00$", lines[2]);
+        Assert.Matches(@"^3 +Arrival +12:30 +left +4:00$", lines[3]);
+        Assert.Matches(@"^4 +Leaving +17:00 +left -0:30$", lines[4]);
+
+        // The value column is right-aligned, so every row ends at the same column.
+        int[] ends = lines[1..].Select(l => l.Length).Distinct().ToArray();
+        Assert.Single(ends);
+    }
+
+    // AC-5 (019)
+    [Fact]
+    public void Render_TimeLeft_GreyLabel_AndNegativeValueNotRed()
+    {
+        TestConsole console = new TestConsole().EmitAnsiSequences();
+        DayView view = new DayView(FixedTimeProvider.At20261027());
+
+        console.Write(view.Render(DayRecord.Empty
+            .Add(new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)))
+            .Add(new DayEntry(EntryKind.Leaving, new TimeOnly(17, 0)))));
+
+        // grey = 256-colour 8; red is 4-bit 31/91 or 256-colour 9.
+        Assert.Contains("\u001b[38;5;8mleft", console.Output);
+        Assert.Contains("-1:00", console.Output);
+        Assert.DoesNotContain("\u001b[31m", console.Output);
+        Assert.DoesNotContain("\u001b[91m", console.Output);
+        Assert.DoesNotContain("\u001b[38;5;9m", console.Output);
+
+        // Between the grey label and the value there is no colour sequence: the value uses the default style.
+        string output = console.Output;
+        int value = output.IndexOf("-1:00", StringComparison.Ordinal);
+        int label = output.LastIndexOf("left", value, StringComparison.Ordinal);
+        string between = output[(label + "left".Length)..value];
+        Assert.DoesNotContain("38;", between);
+        Assert.DoesNotMatch(@"\u001b\[(3[0-7]|9[0-7])m", between);
+    }
+
+    // AC-5 (019)
+    [Fact]
+    public void Render_EmptyRecord_ShowsNoTimeLeft()
+    {
+        TestConsole console = new TestConsole();
+
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(DayRecord.Empty));
+
+        Assert.Contains("No entries yet.", console.Output);
+        Assert.DoesNotContain("left", console.Output);
     }
 }

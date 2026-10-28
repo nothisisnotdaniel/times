@@ -60,6 +60,40 @@ internal sealed record DayRecord
 
     public bool IsEmpty => entries.Length == 0;
 
+    /// <summary>The work time a day starts with, before any span is subtracted.</summary>
+    public static TimeSpan DailyTarget { get; } = TimeSpan.FromHours(8);
+
+    /// <summary>
+    /// Returns the work time left after each entry, parallel to <see cref="Entries"/>. Walking the
+    /// entries in time order, an arrival opens a span if none is open (further arrivals are ignored),
+    /// and a leaving closes the open span and subtracts it from <see cref="DailyTarget"/>. A leaving
+    /// with no open span, and an arrival never closed, subtract nothing. Goes negative past the target.
+    /// </summary>
+    public IReadOnlyList<TimeSpan> TimeLeft()
+    {
+        TimeSpan[] result = new TimeSpan[entries.Length];
+        TimeSpan left = DailyTarget;
+        TimeOnly? open = null;
+        for (int i = 0; i < entries.Length; i++)
+        {
+            DayEntry entry = entries[i];
+            if (entry.Kind == EntryKind.Arrival)
+            {
+                open ??= entry.Time;
+            }
+            else if (open is { } arrival)
+            {
+                // Entries are sorted, so the leaving is never before the arrival.
+                left -= entry.Time - arrival;
+                open = null;
+            }
+
+            result[i] = left;
+        }
+
+        return result;
+    }
+
     /// <summary>
     /// Returns a new record with <paramref name="entry"/> added in time order, after any entries
     /// with the same time.
