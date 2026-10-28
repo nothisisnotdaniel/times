@@ -22,6 +22,11 @@ namespace Times;
 /// the line stops starting with <c>/</c>. Rows the popup stops covering are handed back to
 /// <see cref="PopupArea.RestoreRow"/>, and the cursor always ends at the end of the input line.
 /// </para>
+/// <para>
+/// When a placeholder is given, it is shown in grey whenever the line is empty and blanked as soon
+/// as the line holds text. It is never part of the returned line, and the cursor stays at the
+/// start of the line while it is shown.
+/// </para>
 /// </summary>
 internal sealed class LineEditor
 {
@@ -41,13 +46,16 @@ internal sealed class LineEditor
     /// Reads one line. <paramref name="column"/> and <paramref name="line"/> are the 1-based screen
     /// position where the text starts, and <paramref name="width"/> is the room available for it.
     /// <paramref name="popup"/> says where the command popup may draw, or <c>null</c> for no popup.
+    /// <paramref name="placeholder"/> is grey text shown while the line is empty, or <c>null</c> for
+    /// none. The editor assumes the caller has already drawn it at <paramref name="column"/> and
+    /// redraws it (cropped to the room) whenever the line becomes empty again.
     /// Returns <c>null</c> if the input has no more keys.
     /// </summary>
-    public string? ReadLine(int column, int line, int width, PopupArea? popup = null)
+    public string? ReadLine(int column, int line, int width, PopupArea? popup = null, string? placeholder = null)
     {
         string buffer = string.Empty;
         int historyIndex = history.Count;
-        int drawn = 0;
+        int drawn = placeholder is null ? 0 : Crop(placeholder, Room(width)).Length;
         int popupRows = 0;
         bool popupDismissed = false;
         bool tabList = false;
@@ -154,7 +162,7 @@ internal sealed class LineEditor
 
             bool showPopup = popup is not null && buffer.StartsWith('/') && !popupDismissed;
             popupRows = showPopup ? DrawPopup(popup!, buffer, popupRows, tabList) : ClosePopup(popup, popupRows);
-            drawn = Redraw(buffer, column, line, width, drawn);
+            drawn = Redraw(buffer, column, line, width, drawn, placeholder);
         }
     }
 
@@ -206,15 +214,33 @@ internal sealed class LineEditor
     }
 
     // Rewrites the visible part of the buffer (its tail, if it is wider than the box) and blanks
-    // whatever was drawn before. Returns the number of characters now drawn.
-    private int Redraw(string buffer, int column, int line, int width, int previouslyDrawn)
+    // whatever was drawn before. An empty buffer shows the placeholder in grey, if there is one,
+    // with the cursor at the start of the line. Returns the number of characters now drawn.
+    private int Redraw(string buffer, int column, int line, int width, int previouslyDrawn, string? placeholder)
     {
-        int room = Math.Max(1, width - 1);
-        string visible = buffer.Length > room ? buffer[^room..] : buffer;
-
+        int room = Room(width);
         console.Cursor.SetPosition(column, line);
+
+        if (buffer.Length == 0 && placeholder is not null)
+        {
+            string shown = Crop(placeholder, room);
+            console.Write(new Text(shown, new Style(Color.Grey)));
+            if (previouslyDrawn > shown.Length)
+            {
+                console.Write(new Text(new string(' ', previouslyDrawn - shown.Length)));
+            }
+
+            console.Cursor.SetPosition(column, line);
+            return shown.Length;
+        }
+
+        string visible = buffer.Length > room ? buffer[^room..] : buffer;
         console.Write(new Text(visible.PadRight(previouslyDrawn)));
         console.Cursor.SetPosition(column + visible.Length, line);
         return visible.Length;
     }
+
+    private static int Room(int width) => Math.Max(1, width - 1);
+
+    private static string Crop(string text, int room) => text.Length > room ? text[..room] : text;
 }

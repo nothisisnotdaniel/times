@@ -1385,4 +1385,71 @@ public sealed class AppTests : IDisposable
         // The hint row (9) is never written with anything but the popup or its own restore.
         Assert.DoesNotContain(writes, w => w.Row > 9 && w.Text.Contains("more lines", StringComparison.Ordinal));
     }
+
+    // Input placeholder (job 014) ----------------------------------------------------------
+
+    private const string Placeholder = "Type /help for commands";
+
+    // AC-1
+    [Fact]
+    public void FirstFrame_InputRow_ShowsGreyPlaceholderAfterPrompt()
+    {
+        string output = RunAnsi(c => c.Input.PushTextWithEnter("/quit"));
+
+        string[] frame = AnsiFrames(output)[0];
+        Assert.Equal(24, frame.Length);
+        Assert.Contains("> " + Placeholder, frame[^2]);
+
+        // The raw input row: the prompt in steelblue1, then the placeholder in grey (colour 8).
+        string raw = output.Split('\n').First(l => l.Contains(Placeholder, StringComparison.Ordinal));
+        Assert.Matches(@"\x1b\[38;5;75m> \x1b\[0m\x1b\[(90|38;5;8)m" + Placeholder, raw);
+        Assert.DoesNotMatch(@"\x1b\[38;5;75m[^\x1b]*" + Placeholder, raw);
+    }
+
+    // AC-1
+    [Fact]
+    public void Placeholder_DoesNotMoveTheCursor_TypingStartsAfterPrompt()
+    {
+        string output = RunAnsi(c => c.Input.PushTextWithEnter("/quit"));
+
+        List<AnsiWrite> writes = AnsiWrites.Parse(output);
+        // Row height - 1 = 23; column 3 + "> ".Length = 5.
+        Assert.Contains(writes, w => w.Row == 23 && w.Column == 5 && w.Text.StartsWith("/quit", StringComparison.Ordinal));
+        Assert.Contains("\u001b[23;5H", output);
+    }
+
+    // AC-2
+    [Fact]
+    public void EveryRedrawnFrame_ShowsThePlaceholderAgain()
+    {
+        string output = RunAnsi(c =>
+        {
+            c.Input.PushTextWithEnter("/help");
+            c.Input.PushTextWithEnter("/nope");
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("hello");
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        List<string[]> frames = AnsiFrames(output);
+        Assert.Equal(5, frames.Count);
+        foreach (string[] frame in frames)
+        {
+            Assert.Contains("> " + Placeholder, frame[^2]);
+        }
+
+        // Each frame writes it in grey.
+        Assert.True(Regex.Matches(output, @"\x1b\[(90|38;5;8)m" + Placeholder).Count >= frames.Count);
+    }
+
+    // AC-2
+    [Fact]
+    public void Placeholder_IsNeverDispatched()
+    {
+        (int exitCode, string output) = RunCommands(string.Empty, "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.DoesNotContain("Commands start with", output);
+        Assert.DoesNotContain("Unknown command", output);
+    }
 }
