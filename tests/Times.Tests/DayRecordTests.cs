@@ -217,4 +217,70 @@ public class DayRecordTests
 
         Assert.Equal([Hm(8, 0), Hm(8, 0)], record.TimeLeft());
     }
+
+    // Remove entry (job 021) ---------------------------------------------------------------
+
+    private static DayRecord ThreeEntries() => DayRecord.Empty.Add(Arrival(8, 0)).Add(Leaving(12, 0)).Add(Arrival(13, 0));
+
+    // AC-9 (021)
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void RemoveAt_RemovesFirstMiddleOrLast_AndKeepsOrder(int number)
+    {
+        DayRecord record = ThreeEntries();
+        List<DayEntry> expected = record.Entries.ToList();
+        expected.RemoveAt(number - 1);
+
+        DayRecord removed = record.RemoveAt(number);
+
+        Assert.Equal(expected, removed.Entries);
+    }
+
+    // AC-9 (021)
+    [Fact]
+    public void RemoveAt_ReturnsNewRecord_AndLeavesOriginalUnchanged()
+    {
+        DayRecord record = ThreeEntries();
+
+        DayRecord removed = record.RemoveAt(2);
+
+        Assert.NotSame(record, removed);
+        Assert.Equal([Arrival(8, 0), Leaving(12, 0), Arrival(13, 0)], record.Entries);
+        Assert.Equal([Arrival(8, 0), Arrival(13, 0)], removed.Entries);
+    }
+
+    // AC-9 (021)
+    [Fact]
+    public void RemoveAt_SameTime_RemovesTheEntryAtThatPosition()
+    {
+        DayRecord record = DayRecord.Empty.Add(Leaving(12, 0)).Add(Arrival(12, 0)).Add(Leaving(12, 0));
+
+        Assert.Equal([Arrival(12, 0), Leaving(12, 0)], record.RemoveAt(1).Entries);
+        Assert.Equal([Leaving(12, 0), Leaving(12, 0)], record.RemoveAt(2).Entries);
+        Assert.Equal([Leaving(12, 0), Arrival(12, 0)], record.RemoveAt(3).Entries);
+    }
+
+    // AC-9 (021)
+    [Fact]
+    public void RemoveAt_OnlyEntry_GivesEmptyDay()
+    {
+        DayRecord removed = DayRecord.Empty.Add(Arrival(8, 0)).RemoveAt(1);
+
+        Assert.True(removed.IsEmpty);
+        Assert.Equal("{\"entries\":[]}", removed.ToJson());
+    }
+
+    // AC-9 (021)
+    [Theory]
+    [InlineData(0)]
+    [InlineData(4)]
+    [InlineData(-1)]
+    [InlineData(int.MaxValue)]
+    public void RemoveAt_OutOfRange_Throws(int number)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => ThreeEntries().RemoveAt(number));
+        Assert.Throws<ArgumentOutOfRangeException>(() => DayRecord.Empty.RemoveAt(1));
+    }
 }
