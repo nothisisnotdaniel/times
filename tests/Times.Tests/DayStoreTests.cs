@@ -91,7 +91,7 @@ public class DayStoreTests
         string[] before = WorkingDirectoryEntries();
 
         Assert.Throws<InvalidOperationException>(() =>
-            new DayStore(folder).Save(Day, new DayRecord { Arrival = new TimeOnly(8, 15) }));
+            new DayStore(folder).Save(Day, DayRecord.Empty.Add(Arrival(8, 15))));
 
         Assert.Equal(before, WorkingDirectoryEntries());
     }
@@ -102,7 +102,7 @@ public class DayStoreTests
     {
         using TempFolder temp = new TempFolder();
         DayStore store = new DayStore(temp.Path);
-        DayRecord record = new DayRecord { Arrival = new TimeOnly(8, 15), Leaving = new TimeOnly(17, 30) };
+        DayRecord record = new DayRecord([Arrival(8, 15), Leaving(12, 0), Arrival(13, 0), Leaving(17, 30)]);
 
         store.Save(Day, record);
 
@@ -110,9 +110,9 @@ public class DayStoreTests
         Assert.Equal(DayRecord.Empty, store.Load(Day.AddDays(1)));
     }
 
-    // AC-1
+    // AC-1, AC-3 (017)
     [Fact]
-    public void Save_WritesInvariantHHmm_UnderGermanCulture_AndLeavesOutNulls()
+    public void Save_WritesEntriesFormat_InTimeOrder_UnderGermanCulture()
     {
         using TempFolder temp = new TempFolder();
         DayStore store = new DayStore(temp.Path);
@@ -120,17 +120,53 @@ public class DayStoreTests
         try
         {
             CultureInfo.CurrentCulture = new CultureInfo("de-DE");
-            store.Save(Day, new DayRecord { Arrival = new TimeOnly(8, 15), Leaving = new TimeOnly(17, 30) });
-            Assert.Equal("{\"arrival\":\"08:15\",\"leaving\":\"17:30\"}", File.ReadAllText(store.PathFor(Day)));
+            store.Save(Day, DayRecord.Empty.Add(Leaving(12, 0)).Add(Arrival(8, 15)));
+            Assert.Equal(
+                "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:15\"},{\"kind\":\"leaving\",\"time\":\"12:00\"}]}",
+                File.ReadAllText(store.PathFor(Day)));
 
-            store.Save(Day, new DayRecord { Arrival = new TimeOnly(8, 5) });
-            Assert.Equal("{\"arrival\":\"08:05\"}", File.ReadAllText(store.PathFor(Day)));
-            Assert.Equal(new DayRecord { Arrival = new TimeOnly(8, 5) }, store.Load(Day));
+            store.Save(Day, DayRecord.Empty.Add(Arrival(8, 5)));
+            Assert.Equal("{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:05\"}]}", File.ReadAllText(store.PathFor(Day)));
+            Assert.Equal(DayRecord.Empty.Add(Arrival(8, 5)), store.Load(Day));
         }
         finally
         {
             CultureInfo.CurrentCulture = previous;
         }
+    }
+
+    // AC-6 (017)
+    [Theory]
+    [InlineData("{\"arrival\":\"08:15\",\"leaving\":\"17:30\"}", "A08:15 L17:30")]
+    [InlineData("{\"leaving\":\"17:30\",\"arrival\":\"08:15\"}", "A08:15 L17:30")]
+    [InlineData("{\"arrival\":\"08:15\"}", "A08:15")]
+    [InlineData("{\"leaving\":\"17:30\"}", "L17:30")]
+    [InlineData("{\"arrival\":\"17:30\",\"leaving\":\"08:15\"}", "L08:15 A17:30")]
+    [InlineData("{}", "")]
+    [InlineData("{\"entries\":[]}", "")]
+    [InlineData("{\"entries\":[{\"kind\":\"leaving\",\"time\":\"12:00\"},{\"kind\":\"arrival\",\"time\":\"08:00\"}]}", "A08:00 L12:00")]
+    public void Load_ReadsLegacyAndNewFormat_InTimeOrder(string contents, string expected)
+    {
+        using TempFolder temp = new TempFolder();
+        DayStore store = new DayStore(temp.Path);
+        File.WriteAllText(store.PathFor(Day), contents);
+
+        Assert.Equal(expected, Describe(store.Load(Day)));
+    }
+
+    // AC-7 (017)
+    [Fact]
+    public void Load_LegacyFile_DoesNotRewriteIt()
+    {
+        using TempFolder temp = new TempFolder();
+        DayStore store = new DayStore(temp.Path);
+        File.WriteAllText(store.PathFor(Day), "{\"arrival\":\"08:15\"}");
+        DateTime written = File.GetLastWriteTimeUtc(store.PathFor(Day));
+
+        store.Load(Day);
+
+        Assert.Equal("{\"arrival\":\"08:15\"}", File.ReadAllText(store.PathFor(Day)));
+        Assert.Equal(written, File.GetLastWriteTimeUtc(store.PathFor(Day)));
     }
 
     // AC-9
@@ -150,14 +186,14 @@ public class DayStoreTests
         using TempFolder temp = new TempFolder(create: false);
         DayStore store = new DayStore(temp.Path);
 
-        store.Save(Day, new DayRecord { Leaving = new TimeOnly(17, 30) });
-        store.Save(Day, new DayRecord { Leaving = new TimeOnly(17, 45) });
+        store.Save(Day, DayRecord.Empty.Add(Leaving(17, 30)));
+        store.Save(Day, DayRecord.Empty.Add(Leaving(17, 45)));
 
         Assert.Equal([store.PathFor(Day)], Directory.EnumerateFileSystemEntries(temp.Path));
-        Assert.Equal(new TimeOnly(17, 45), store.Load(Day).Leaving);
+        Assert.Equal([Leaving(17, 45)], store.Load(Day).Entries);
     }
 
-    // AC-10
+    // AC-10, AC-8 (017)
     [Theory]
     [InlineData("{not json")]
     [InlineData("null")]
@@ -165,13 +201,32 @@ public class DayStoreTests
     [InlineData("{\"arrival\":\"8:15\"}")]
     [InlineData("{\"arrival\":\"08:15:00\"}")]
     [InlineData("{\"arrival\":815}")]
+    [InlineData("{\"entries\":[{\"kind\":\"lunch\",\"time\":\"08:15\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"Arrival\",\"time\":\"08:15\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":1,\"time\":\"08:15\"}]}")]
+    [InlineData("{\"entries\":[{\"time\":\"08:15\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"arrival\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"arrival\",\"time\":\"8:15\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:15:00\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"arrival\",\"time\":null}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"arrival\",\"time\":815}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:15\",\"time\":\"09:00\"}]}")]
+    [InlineData("{\"entries\":[\"08:15\"]}")]
+    [InlineData("{\"entries\":{}}")]
+    [InlineData("{\"entries\":\"08:15\"}")]
+    [InlineData("{\"entries\":null}")]
+    [InlineData("{\"entries\":[],\"entries\":[]}")]
+    [InlineData("{\"entries\":[],\"arrival\":\"08:15\"}")]
+    [InlineData("{\"leaving\":\"17:30\",\"entries\":[]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:15\"}]} []")]
     public void Load_InvalidFile_ThrowsInvalidData(string contents)
     {
         using TempFolder temp = new TempFolder();
         DayStore store = new DayStore(temp.Path);
         File.WriteAllText(store.PathFor(Day), contents);
 
-        Assert.Throws<InvalidDataException>(() => store.Load(Day));
+        InvalidDataException ex = Assert.Throws<InvalidDataException>(() => store.Load(Day));
+        Assert.Equal("The file for 2026-10-27 is not a valid day file.", ex.Message);
     }
 
     // AC-10
@@ -193,4 +248,12 @@ public class DayStoreTests
     {
         Assert.Throws<InvalidOperationException>(() => new DayStore(folder).Load(Day));
     }
+
+    private static DayEntry Arrival(int hour, int minute) => new(EntryKind.Arrival, new TimeOnly(hour, minute));
+
+    private static DayEntry Leaving(int hour, int minute) => new(EntryKind.Leaving, new TimeOnly(hour, minute));
+
+    private static string Describe(DayRecord record) =>
+        string.Join(' ', record.Entries.Select(e =>
+            (e.Kind == EntryKind.Arrival ? "A" : "L") + e.Time.ToString("HH:mm", CultureInfo.InvariantCulture)));
 }

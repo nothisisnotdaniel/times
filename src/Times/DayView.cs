@@ -53,9 +53,9 @@ internal sealed class DayView
     public IRenderable Render() => Render(DayRecord.Empty);
 
     /// <summary>
-    /// Renders the current day: the heading, then <c>Arrival</c> and <c>Leaving</c> rows (grey
-    /// labels, <c>SteelBlue1</c> times, <c>—</c> if not booked), or <c>No entries yet.</c> if
-    /// neither is booked.
+    /// Renders the current day: the heading, then one row per entry in time order (grey number
+    /// starting at 1, grey <c>Arrival</c>/<c>Leaving</c> label, <c>SteelBlue1</c> time), or
+    /// <c>No entries yet.</c> if nothing is booked.
     /// </summary>
     public IRenderable Render(DayRecord day)
     {
@@ -64,9 +64,22 @@ internal sealed class DayView
             return new Rows(HeadingRule(), new Markup("[grey]No entries yet.[/]"));
         }
 
-        Grid grid = new Grid().AddColumn().AddColumn();
-        grid.AddRow(new Markup("[grey]Arrival[/]"), TimeCell(day.Arrival));
-        grid.AddRow(new Markup("[grey]Leaving[/]"), TimeCell(day.Leaving));
+        Grid grid = new Grid()
+            .AddColumn(new GridColumn().RightAligned())
+            .AddColumn()
+            .AddColumn();
+        for (int i = 0; i < day.Entries.Count; i++)
+        {
+            DayEntry entry = day.Entries[i];
+            string number = (i + 1).ToString(CultureInfo.InvariantCulture);
+            string label = entry.Kind == EntryKind.Arrival ? "Arrival" : "Leaving";
+            string clock = entry.Time.ToString("HH:mm", CultureInfo.InvariantCulture);
+            grid.AddRow(
+                new Markup($"[grey]{number}[/]"),
+                new Markup($"[grey]{label}[/]"),
+                new Markup($"[steelblue1]{clock}[/]"));
+        }
+
         return new Rows(HeadingRule(), grid);
     }
 
@@ -76,11 +89,6 @@ internal sealed class DayView
 
     private Rule HeadingRule() =>
         new Rule($"[steelblue1]{Markup.Escape(Heading(Current))}[/]").LeftJustified().RuleStyle(Style.Parse("grey"));
-
-    private static Markup TimeCell(TimeOnly? time) =>
-        time is { } value
-            ? new Markup($"[steelblue1]{value.ToString("HH:mm", CultureInfo.InvariantCulture)}[/]")
-            : new Markup("[grey]—[/]");
 
     private static DateOnly TodayFrom(TimeProvider time) => DateOnly.FromDateTime(time.GetLocalNow().DateTime);
 }

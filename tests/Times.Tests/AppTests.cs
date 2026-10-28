@@ -949,6 +949,14 @@ public sealed class AppTests : IDisposable
     private static string[] WorkingDirectoryEntries() =>
         Directory.EnumerateFileSystemEntries(Directory.GetCurrentDirectory()).Order(StringComparer.Ordinal).ToArray();
 
+    /// <summary>A day file in the entries format, e.g. <c>Entries("arrival 08:15", "leaving 12:00")</c>.</summary>
+    private static string Entries(params string[] entries) =>
+        "{\"entries\":[" + string.Join(',', entries.Select(e =>
+        {
+            string[] parts = e.Split(' ');
+            return $"{{\"kind\":\"{parts[0]}\",\"time\":\"{parts[1]}\"}}";
+        })) + "]}";
+
     // AC-1
     [Fact]
     public void Arrive_WithTime_CreatesDayFile_AndShowsIt()
@@ -957,10 +965,10 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(0, exitCode);
         Assert.Equal(["2026-10-27.json"], Directory.EnumerateFiles(data.Path).Select(Path.GetFileName));
-        Assert.Equal("{\"arrival\":\"08:15\"}", ReadDay("2026-10-27"));
+        Assert.Equal(Entries("arrival 08:15"), ReadDay("2026-10-27"));
         string frame = LastFrame(output);
-        Assert.Matches(@"Arrival +08:15", frame);
-        Assert.Matches(@"Leaving +—", frame);
+        Assert.Matches(@"1 +Arrival +08:15", frame);
+        Assert.DoesNotContain("Leaving", frame);
         Assert.DoesNotContain("No entries yet.", frame);
     }
 
@@ -971,14 +979,14 @@ public sealed class AppTests : IDisposable
         (int exitCode, string output) = RunCommands("/leave 17:30", "/quit");
 
         Assert.Equal(0, exitCode);
-        Assert.Equal("{\"leaving\":\"17:30\"}", ReadDay("2026-10-27"));
-        Assert.Matches(@"Leaving +17:30", LastFrame(output));
+        Assert.Equal(Entries("leaving 17:30"), ReadDay("2026-10-27"));
+        Assert.Matches(@"1 +Leaving +17:30", LastFrame(output));
     }
 
     // AC-2
     [Theory]
-    [InlineData("/arrive", "{\"arrival\":\"18:30\"}")]
-    [InlineData("/leave", "{\"leaving\":\"18:30\"}")]
+    [InlineData("/arrive", "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"18:30\"}]}")]
+    [InlineData("/leave", "{\"entries\":[{\"kind\":\"leaving\",\"time\":\"18:30\"}]}")]
     public void WithoutTime_BooksClockTime_SecondsDropped(string command, string expected)
     {
         FixedTimeProvider clock =
@@ -1001,7 +1009,7 @@ public sealed class AppTests : IDisposable
 
         RunCommands(clock, "/arrive", "/quit");
 
-        Assert.Equal("{\"arrival\":\"18:30\"}", ReadDay("2026-10-27"));
+        Assert.Equal(Entries("arrival 18:30"), ReadDay("2026-10-27"));
     }
 
     // AC-3
@@ -1012,34 +1020,64 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(0, exitCode);
         Assert.Equal(["2026-10-26.json"], Directory.EnumerateFiles(data.Path).Select(Path.GetFileName));
-        Assert.Equal("{\"arrival\":\"09:00\"}", ReadDay("2026-10-26"));
+        Assert.Equal(Entries("arrival 09:00"), ReadDay("2026-10-26"));
         Assert.StartsWith("Monday, 2026-10-26", LastFrame(output));
-        Assert.Matches(@"Arrival +09:00", LastFrame(output));
+        Assert.Matches(@"1 +Arrival +09:00", LastFrame(output));
     }
 
-    // AC-4
-    [Fact]
-    public void BookingAgain_ReplacesTheEarlierValue()
+    // AC-2 (017)
+    [Theory]
+    [InlineData("/arrive", "arrival")]
+    [InlineData("/leave", "leaving")]
+    public void BookingAgain_AddsAnEntry_AndKeepsTheEarlierOne(string command, string kind)
     {
-        (_, string output) = RunCommands("/arrive 8:00", "/arrive 8:15", "/quit");
+        (int exitCode, string output) = RunCommands(command + " 8:15", command + " 13:00", "/quit");
 
-        Assert.Equal("{\"arrival\":\"08:15\"}", ReadDay("2026-10-27"));
-        Assert.Matches(@"Arrival +08:15", LastFrame(output));
-        Assert.DoesNotContain("08:00", LastFrame(output));
+        Assert.Equal(0, exitCode);
+        Assert.Equal(Entries(kind + " 08:15", kind + " 13:00"), ReadDay("2026-10-27"));
+        string frame = LastFrame(output);
+        string label = kind == "arrival" ? "Arrival" : "Leaving";
+        Assert.Matches($@"1 +{label} +08:15", frame);
+        Assert.Matches($@"2 +{label} +13:00", frame);
     }
 
-    // AC-4
+    // AC-2 (017)
     [Fact]
-    public void Booking_KeepsTheOtherField_AndReopenedAppLoadsBoth()
+    public void Booking_KeepsAllEntries_AndReopenedAppLoadsThem()
     {
-        RunCommands("/arrive 8:15", "/leave 17:30", "/quit");
+        RunCommands("/arrive 8:15", "/leave 12:00", "/arrive 13:00", "/leave 17:30", "/quit");
 
-        Assert.Equal("{\"arrival\":\"08:15\",\"leaving\":\"17:30\"}", ReadDay("2026-10-27"));
+        Assert.Equal(
+            Entries("arrival 08:15", "leaving 12:00", "arrival 13:00", "leaving 17:30"),
+            ReadDay("2026-10-27"));
 
         (int exitCode, string output) = RunCommands("/quit");
         Assert.Equal(0, exitCode);
-        Assert.Matches(@"Arrival +08:15", output);
-        Assert.Matches(@"Leaving +17:30", output);
+        Assert.Matches(@"1 +Arrival +08:15", output);
+        Assert.Matches(@"2 +Leaving +12:00", output);
+        Assert.Matches(@"3 +Arrival +13:00", output);
+        Assert.Matches(@"4 +Leaving +17:30", output);
+    }
+
+    // AC-3 (017)
+    [Fact]
+    public void Booking_KeepsEntriesInTimeOrder_WhateverTheBookingOrder()
+    {
+        (_, string output) = RunCommands("/leave 17:00", "/arrive 8:00", "/quit");
+
+        Assert.Equal(Entries("arrival 08:00", "leaving 17:00"), ReadDay("2026-10-27"));
+        string frame = LastFrame(output);
+        Assert.Matches(@"1 +Arrival +08:00", frame);
+        Assert.Matches(@"2 +Leaving +17:00", frame);
+    }
+
+    // AC-3 (017)
+    [Fact]
+    public void Booking_SameTime_KeepsBookingOrder_AndAllowsDuplicates()
+    {
+        RunCommands("/leave 12:00", "/arrive 12:00", "/arrive 12:00", "/quit");
+
+        Assert.Equal(Entries("leaving 12:00", "arrival 12:00", "arrival 12:00"), ReadDay("2026-10-27"));
     }
 
     // AC-6
@@ -1084,29 +1122,117 @@ public sealed class AppTests : IDisposable
         Assert.Matches(@"\x1b\[(31|91|38;5;9)m/arrive: ", console.Output);
     }
 
-    // AC-7
+    // AC-4 (017)
     [Theory]
-    [InlineData("/arrive 9:00", "/leave 8:00", "{\"arrival\":\"09:00\"}")]
-    [InlineData("/arrive 9:00", "/leave 9:00", "{\"arrival\":\"09:00\"}")]
-    [InlineData("/leave 17:00", "/arrive 18:00", "{\"leaving\":\"17:00\"}")]
-    [InlineData("/leave 17:00", "/arrive 17:00", "{\"leaving\":\"17:00\"}")]
-    public void LeavingNotAfterArrival_IsRejected(string first, string second, string expected)
+    [InlineData("/arrive 9:00", "/leave 8:00", "leaving 08:00", "arrival 09:00")]
+    [InlineData("/arrive 9:00", "/leave 9:00", "arrival 09:00", "leaving 09:00")]
+    [InlineData("/leave 17:00", "/arrive 18:00", "leaving 17:00", "arrival 18:00")]
+    [InlineData("/leave 17:00", "/arrive 17:00", "leaving 17:00", "arrival 17:00")]
+    [InlineData("/arrive 8:00", "/arrive 9:00", "arrival 08:00", "arrival 09:00")]
+    [InlineData("/leave 12:00", "/leave 17:00", "leaving 12:00", "leaving 17:00")]
+    public void AnyOrder_IsAccepted_WithoutHint(string first, string second, string entry1, string entry2)
     {
         (int exitCode, string output) = RunCommands(first, second, "/quit");
 
         Assert.Equal(0, exitCode);
-        Assert.Equal(expected, ReadDay("2026-10-27"));
-        AssertOnHintRow(LastLayout(output), "must be after arrival");
+        Assert.Equal(Entries(entry1, entry2), ReadDay("2026-10-27"));
+        string[] frame = LastLayout(output);
+        AssertLayout(frame);
+        Assert.Equal(string.Empty, frame[^4].Trim());
+        Assert.DoesNotContain("must be after", output);
     }
 
-    // AC-7
+    // AC-4 (017)
     [Fact]
     public void LeavingWithoutArrival_IsAllowed()
     {
         (_, string output) = RunCommands("/leave 0:00", "/quit");
 
-        Assert.Equal("{\"leaving\":\"00:00\"}", ReadDay("2026-10-27"));
+        Assert.Equal(Entries("leaving 00:00"), ReadDay("2026-10-27"));
         Assert.DoesNotContain("must be after", output);
+    }
+
+    // AC-6, AC-7 (017)
+    [Fact]
+    public void LegacyFile_IsShownAsEntries_AndBookingConvertsIt()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), "{\"arrival\":\"08:15\",\"leaving\":\"17:30\"}");
+
+        (int exitCode, string output) = RunCommands("/arrive 13:00", "/quit");
+
+        Assert.Equal(0, exitCode);
+        string first = string.Join('\n', Frames(output)[0]);
+        Assert.Matches(@"1 +Arrival +08:15", first);
+        Assert.Matches(@"2 +Leaving +17:30", first);
+        Assert.Equal(Entries("arrival 08:15", "arrival 13:00", "leaving 17:30"), ReadDay("2026-10-27"));
+        string frame = LastFrame(output);
+        Assert.Matches(@"1 +Arrival +08:15", frame);
+        Assert.Matches(@"2 +Arrival +13:00", frame);
+        Assert.Matches(@"3 +Leaving +17:30", frame);
+    }
+
+    // AC-6 (017)
+    [Fact]
+    public void LegacyFile_LeavingBeforeArrival_IsShownInTimeOrder()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), "{\"arrival\":\"09:00\",\"leaving\":\"08:00\"}");
+
+        (_, string output) = RunCommands("/quit");
+
+        Assert.Matches(@"1 +Leaving +08:00", output);
+        Assert.Matches(@"2 +Arrival +09:00", output);
+    }
+
+    // AC-7 (017)
+    [Fact]
+    public void LegacyFile_IsNotRewritten_ByLoadingOrBrowsing()
+    {
+        string path = DayFile("2026-10-26");
+        File.WriteAllText(path, "{\"arrival\":\"08:15\"}");
+        DateTime stamp = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(path, stamp);
+        byte[] before = File.ReadAllBytes(path);
+
+        (int exitCode, string output) = RunCommands("/prev", "/next", "/prev", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Matches(@"1 +Arrival +08:15", LastFrame(output));
+        Assert.Equal(before, File.ReadAllBytes(path));
+        Assert.Equal(stamp, File.GetLastWriteTimeUtc(path));
+        Assert.Equal(["2026-10-26.json"], Directory.EnumerateFiles(data.Path).Select(Path.GetFileName));
+    }
+
+    // AC-9 (017)
+    [Fact]
+    public void EmptyEntriesFile_ShowsNoEntriesYet()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), "{\"entries\":[]}");
+
+        (int exitCode, string output) = RunCommands("/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("No entries yet.", LastFrame(output));
+    }
+
+    // AC-8 (017)
+    [Theory]
+    [InlineData("{\"entries\":[{\"kind\":\"lunch\",\"time\":\"08:15\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"arrival\",\"time\":\"8:15\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"arrival\"}]}")]
+    [InlineData("{\"entries\":{}}")]
+    [InlineData("{\"entries\":[],\"arrival\":\"08:15\"}")]
+    public void InvalidEntriesFile_ShowsHint_AndNothingIsBooked(string contents)
+    {
+        File.WriteAllText(DayFile("2026-10-27"), contents);
+        byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
+
+        (int exitCode, string output) = RunCommands("/arrive 9:00", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
+        string[] frame = LastLayout(output);
+        AssertOnHintRow(frame, "is not a valid day file. Nothing was booked.");
+        Assert.Contains("is not a valid day file.", string.Join('\n', frame[..^4]));
     }
 
     // AC-8
@@ -1161,7 +1287,7 @@ public sealed class AppTests : IDisposable
 
     // AC-9
     [Fact]
-    public void RejectedLeaving_CreatesNothing()
+    public void BookingOnAnotherDay_CreatesNoOtherFile()
     {
         File.WriteAllText(DayFile("2026-10-26"), "{\"arrival\":\"09:00\"}");
 
@@ -1212,8 +1338,8 @@ public sealed class AppTests : IDisposable
 
     // AC-11
     [Theory]
-    [InlineData("/a", "{\"arrival\":\"18:30\"}")]
-    [InlineData("/l", "{\"leaving\":\"18:30\"}")]
+    [InlineData("/a", "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"18:30\"}]}")]
+    [InlineData("/l", "{\"entries\":[{\"kind\":\"leaving\",\"time\":\"18:30\"}]}")]
     public void Tab_CompletesArriveAndLeave(string prefix, string expected)
     {
         (int exitCode, string output) = Run(c =>

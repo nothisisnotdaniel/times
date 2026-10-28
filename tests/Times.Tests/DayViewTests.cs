@@ -131,50 +131,65 @@ public class DayViewTests
         Assert.Contains("No entries yet.", console.Output);
     }
 
-    // AC-1, AC-4
+    // AC-5 (017)
     [Fact]
-    public void Render_ShowsArrivalAndLeaving()
+    public void Render_OneEntry_ShowsNumberedRow()
     {
         TestConsole console = new TestConsole();
         DayView view = new DayView(FixedTimeProvider.At20261027());
 
-        console.Write(view.Render(new DayRecord { Arrival = new TimeOnly(8, 15), Leaving = new TimeOnly(17, 30) }));
+        console.Write(view.Render(DayRecord.Empty.Add(new DayEntry(EntryKind.Arrival, new TimeOnly(8, 15)))));
 
         Assert.Contains("Tuesday, 2026-10-27", console.Output);
-        Assert.Matches(@"Arrival +08:15", console.Output);
-        Assert.Matches(@"Leaving +17:30", console.Output);
+        Assert.Matches(@"1 +Arrival +08:15", console.Output);
+        Assert.DoesNotContain("Leaving", console.Output);
+        Assert.DoesNotContain("—", console.Output);
         Assert.DoesNotContain("No entries yet.", console.Output);
     }
 
-    // AC-1
+    // AC-5 (017)
     [Fact]
-    public void Render_ShowsDash_ForTheTimeNotBooked()
+    public void Render_ThreeEntries_ShowsRowsInTimeOrder_NumberedFromOne()
     {
         TestConsole console = new TestConsole();
         DayView view = new DayView(FixedTimeProvider.At20261027());
+        DayRecord record = DayRecord.Empty
+            .Add(new DayEntry(EntryKind.Leaving, new TimeOnly(12, 0)))
+            .Add(new DayEntry(EntryKind.Arrival, new TimeOnly(13, 0)))
+            .Add(new DayEntry(EntryKind.Arrival, new TimeOnly(8, 15)));
 
-        console.Write(view.Render(new DayRecord { Leaving = new TimeOnly(17, 30) }));
+        console.Write(view.Render(record));
 
-        Assert.Matches(@"Arrival +—", console.Output);
-        Assert.Matches(@"Leaving +17:30", console.Output);
+        string[] lines = console.Lines.Select(l => l.Trim()).Where(l => l.Length > 0).ToArray();
+        Assert.Equal(4, lines.Length);
+        Assert.Matches(@"^1 +Arrival +08:15$", lines[1]);
+        Assert.Matches(@"^2 +Leaving +12:00$", lines[2]);
+        Assert.Matches(@"^3 +Arrival +13:00$", lines[3]);
+        Assert.DoesNotContain("—", console.Output);
     }
 
-    // AC-1
+    // AC-5 (017)
     [Fact]
-    public void Render_UsesGreyLabelsAndSteelBlueTimes()
+    public void Render_UsesGreyNumbersAndLabels_AndSteelBlueTimes()
     {
         TestConsole console = new TestConsole().EmitAnsiSequences();
         DayView view = new DayView(FixedTimeProvider.At20261027());
 
-        console.Write(view.Render(new DayRecord { Arrival = new TimeOnly(8, 15) }));
+        console.Write(view.Render(DayRecord.Empty
+            .Add(new DayEntry(EntryKind.Arrival, new TimeOnly(8, 15)))
+            .Add(new DayEntry(EntryKind.Leaving, new TimeOnly(17, 30)))));
 
         // grey = 256-colour 8, SteelBlue1 = 256-colour 75.
+        Assert.Contains("\u001b[38;5;8m1", console.Output);
+        Assert.Contains("\u001b[38;5;8m2", console.Output);
         Assert.Contains("\u001b[38;5;8mArrival", console.Output);
+        Assert.Contains("\u001b[38;5;8mLeaving", console.Output);
         Assert.Contains("\u001b[38;5;75m08:15", console.Output);
-        Assert.Contains("\u001b[38;5;8m—", console.Output);
+        Assert.Contains("\u001b[38;5;75m17:30", console.Output);
+        Assert.DoesNotContain("—", console.Output);
     }
 
-    // AC-1
+    // AC-1, AC-5 (017)
     [Fact]
     public void Render_EmptyRecord_KeepsEmptyState()
     {
