@@ -138,4 +138,83 @@ public class DayRecordTests
             new DayRecord([Arrival(8, 0)]).GetHashCode());
         Assert.NotEqual(DayRecord.Empty.Add(Arrival(8, 0)), DayRecord.Empty.Add(Leaving(8, 0)));
     }
+
+    private static TimeSpan Hm(int hours, int minutes) => new(hours, minutes, 0);
+
+    // AC-2 (019)
+    [Fact]
+    public void DailyTarget_IsEightHours()
+    {
+        Assert.Equal(TimeSpan.FromHours(8), DayRecord.DailyTarget);
+    }
+
+    // AC-1, AC-2 (019)
+    [Fact]
+    public void TimeLeft_SubtractsEachClosedSpan_AfterItsLeaving()
+    {
+        DayRecord record = new DayRecord([Arrival(8, 0), Leaving(12, 0), Arrival(12, 30), Leaving(17, 0)]);
+
+        Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(0, -30)], record.TimeLeft());
+    }
+
+    // AC-2 (019)
+    [Fact]
+    public void TimeLeft_IsParallelToEntries_WhateverTheBookingOrder()
+    {
+        DayRecord record = DayRecord.Empty.Add(Leaving(17, 0)).Add(Arrival(8, 0));
+
+        Assert.Equal([Hm(8, 0), Hm(-1, 0)], record.TimeLeft());
+    }
+
+    // AC-3 (019)
+    [Fact]
+    public void TimeLeft_EmptyDay_IsEmpty()
+    {
+        Assert.Empty(DayRecord.Empty.TimeLeft());
+    }
+
+    // AC-1, AC-3 (019)
+    [Fact]
+    public void TimeLeft_SecondArrivalWhileOpen_IsIgnored()
+    {
+        DayRecord record = new DayRecord([Arrival(9, 0), Arrival(10, 0), Leaving(12, 0)]);
+
+        Assert.Equal([Hm(8, 0), Hm(8, 0), Hm(5, 0)], record.TimeLeft());
+    }
+
+    // AC-1, AC-3 (019)
+    [Fact]
+    public void TimeLeft_LeavingWithoutOpenSpan_SubtractsNothing()
+    {
+        DayRecord record = new DayRecord([Leaving(7, 0), Arrival(8, 0)]);
+
+        Assert.Equal([Hm(8, 0), Hm(8, 0)], record.TimeLeft());
+    }
+
+    // AC-1 (019)
+    [Fact]
+    public void TimeLeft_SecondLeavingAfterClose_SubtractsNothing()
+    {
+        DayRecord record = new DayRecord([Arrival(8, 0), Leaving(12, 0), Leaving(13, 0)]);
+
+        Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0)], record.TimeLeft());
+    }
+
+    // AC-1 (019)
+    [Fact]
+    public void TimeLeft_UnclosedArrival_SubtractsNothing()
+    {
+        DayRecord record = new DayRecord([Arrival(8, 0), Leaving(10, 0), Arrival(11, 0)]);
+
+        Assert.Equal([Hm(8, 0), Hm(6, 0), Hm(6, 0)], record.TimeLeft());
+    }
+
+    // AC-3 (019)
+    [Fact]
+    public void TimeLeft_ZeroLengthSpan_SubtractsNothing()
+    {
+        DayRecord record = new DayRecord([Arrival(9, 0), Leaving(9, 0)]);
+
+        Assert.Equal([Hm(8, 0), Hm(8, 0)], record.TimeLeft());
+    }
 }
