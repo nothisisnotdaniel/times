@@ -60,6 +60,7 @@ internal sealed class App
         registry.Register("/leave", $"Book your leaving: now, or at an optional {TimeInput.Format}", argument =>
             Book("/leave", argument, EntryKind.Leaving));
         registry.Register("/remove", "Remove an entry from this day by its number", Remove);
+        registry.Register("/change", $"Change the time of an entry on this day: <number> <{TimeInput.Format}>", Change);
     }
 
     // Removes entry <number> from the day being viewed. Nothing is written if the number is not a
@@ -97,6 +98,58 @@ internal sealed class App
         try
         {
             Store.Save(day, current.RemoveAt(number));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{Name}: could not save the day. {Markup.Escape(ex.Message)}");
+        }
+
+        return CommandResult.None;
+    }
+
+    // Changes the time of entry <number> on the day being viewed, keeping its kind. Nothing is
+    // written if the argument is not a number and a time, there is no such entry, or the day's file
+    // cannot be read.
+    private CommandResult Change(string argument)
+    {
+        const string Name = "/change";
+        string usage = $"Use [bold]/change <number> <{TimeInput.Format}>[/].";
+        string[] parts = argument.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 2)
+        {
+            return Hint($"{Name}: say which entry and its new time. {usage}");
+        }
+
+        if (!int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out int number))
+        {
+            return Hint($"{Name}: [bold]{Markup.Escape(parts[0])}[/] is not an entry number. {usage}");
+        }
+
+        if (!TimeInput.TryParse(parts[1], out TimeOnly at))
+        {
+            return Hint($"{Name}: [bold]{Markup.Escape(parts[1])}[/] is not a time. " +
+                $"Use [bold]{TimeInput.Format}[/], e.g. [bold]8:15[/].");
+        }
+
+        DateOnly day = dayView.Current;
+        DayRecord current;
+        try
+        {
+            current = Store.Load(day);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{Name}: {Markup.Escape(ex.Message)} Nothing was changed.");
+        }
+
+        if (number < 1 || number > current.Entries.Count)
+        {
+            return Hint($"{Name}: there is no entry [bold]{number.ToString(CultureInfo.InvariantCulture)}[/].");
+        }
+
+        try
+        {
+            Store.Save(day, current.ChangeTime(number, at));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
