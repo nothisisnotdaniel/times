@@ -22,17 +22,21 @@ internal sealed class App
     private readonly TimeProvider time;
     private readonly CommandRegistry registry;
     private readonly DayView dayView;
+    private readonly bool folderFromEnvironment;
 
     // The last drawn frame, one entry per screen row, so rows the command popup covered can be restored.
     private List<SegmentLine> frame = [];
 
-    public App(IAnsiConsole console, TimeProvider time, DayStore store, CommandRegistry? registry = null)
+    /// <param name="folderFromEnvironment">True if the store's folder came from <see cref="DataFolder.VariableName"/>.</param>
+    public App(IAnsiConsole console, TimeProvider time, DayStore store, CommandRegistry? registry = null, bool folderFromEnvironment = false)
     {
         this.console = console;
         this.time = time;
+        this.folderFromEnvironment = folderFromEnvironment;
         Store = store;
         dayView = new DayView(time);
         this.registry = registry ?? CommandRegistry.CreateDefault();
+        this.registry.HelpFooter = RenderDataFolder();
         RegisterNavigation();
         RegisterBookings();
     }
@@ -223,9 +227,20 @@ internal sealed class App
         // Before anything is drawn, read or written: never fall back to the working directory.
         if (!DayStore.IsValidFolder(Store.Folder))
         {
-            string reason = string.IsNullOrWhiteSpace(Store.Folder)
-                ? "the app-data folder could not be found (the path is empty)"
-                : $"the data folder [bold]{Markup.Escape(Store.Folder)}[/] is not an absolute path";
+            string reason;
+            if (folderFromEnvironment)
+            {
+                reason = $"the data folder [bold]{Markup.Escape(Store.Folder)}[/] from {DataFolder.VariableName} is not an absolute path";
+            }
+            else if (string.IsNullOrWhiteSpace(Store.Folder))
+            {
+                reason = "the app-data folder could not be found (the path is empty)";
+            }
+            else
+            {
+                reason = $"the data folder [bold]{Markup.Escape(Store.Folder)}[/] is not an absolute path";
+            }
+
             console.MarkupLine($"[red]Times cannot start: {reason}. Nothing was saved.[/]");
             return 2;
         }
@@ -299,6 +314,13 @@ internal sealed class App
     }
 
     private static CommandResult Hint(string markup) => CommandResult.Error(markup);
+
+    // The line under the /help table, so the user can always tell where the day files are.
+    private Markup RenderDataFolder()
+    {
+        string source = folderFromEnvironment ? $" [grey](from {DataFolder.VariableName})[/]" : string.Empty;
+        return new Markup($"[grey]Data folder:[/] {Markup.Escape(Store.Folder)}{source}");
+    }
 
     private void Draw(IRenderable? message, IRenderable? hint)
     {
