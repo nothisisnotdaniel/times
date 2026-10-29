@@ -40,6 +40,12 @@ internal sealed class App
     /// <summary>Where the day files live. Booking features read and write through it.</summary>
     public DayStore Store { get; }
 
+    /// <summary>Writes <c>Times &lt;version&gt;</c> as plain text, so the version is never parsed as markup.</summary>
+    internal static void WriteVersion(IAnsiConsole console, string version)
+    {
+        console.WriteLine($"Times {version}");
+    }
+
     private void RegisterNavigation()
     {
         registry.Register("/prev", "Go to the previous day", NoArguments("/prev", () =>
@@ -207,6 +213,13 @@ internal sealed class App
 
     public int Run(string[] args)
     {
+        // First of all: --version prints and exits without drawing or touching the data folder.
+        if (args.Contains("--version", StringComparer.Ordinal))
+        {
+            WriteVersion(console, AppVersion.Current);
+            return 0;
+        }
+
         // Before anything is drawn, read or written: never fall back to the working directory.
         if (!DayStore.IsValidFolder(Store.Folder))
         {
