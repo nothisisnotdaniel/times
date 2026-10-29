@@ -6,6 +6,12 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <Version>0.1.0</Version>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>tm</ToolCommandName>
+    <PackageId>Times</PackageId>
+    <PackageOutputPath>$(MSBuildThisFileDirectory)../../nupkg</PackageOutputPath>
+    <Description>Times: an interactive terminal app for tracking check-ins, check-outs, breaks and checkpoints on projects.</Description>
+    <Authors>Daniel Legien</Authors>
   </PropertyGroup>
 
   <ItemGroup>
