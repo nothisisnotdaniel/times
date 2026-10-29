@@ -1,0 +1,111 @@
+namespace Times.Tests;
+
+public class ProjectStoreTests
+{
+    // AC-6
+    [Fact]
+    public void FilePath_IsProjectsJson_InTheFolder()
+    {
+        using TempFolder temp = new TempFolder(create: false);
+
+        Assert.Equal(Path.Combine(temp.Path, "projects.json"), new ProjectStore(temp.Path).FilePath);
+    }
+
+    // AC-3
+    [Fact]
+    public void Load_WhenFolderIsMissing_GivesEmptyList_AndCreatesNothing()
+    {
+        using TempFolder temp = new TempFolder(create: false);
+
+        Assert.Equal(ProjectList.Empty, new ProjectStore(temp.Path).Load());
+        Assert.False(Directory.Exists(temp.Path));
+    }
+
+    // AC-3
+    [Fact]
+    public void Load_WhenFileIsMissing_GivesEmptyList_AndCreatesNothing()
+    {
+        using TempFolder temp = new TempFolder();
+
+        Assert.Equal(ProjectList.Empty, new ProjectStore(temp.Path).Load());
+        Assert.Empty(Directory.EnumerateFileSystemEntries(temp.Path));
+    }
+
+    // AC-1, AC-2, AC-6
+    [Fact]
+    public void SaveThenLoad_RoundTrips_UsingUtf8WithoutBom_AndLeavesNoTempFile()
+    {
+        using TempFolder temp = new TempFolder(create: false);
+        ProjectStore store = new ProjectStore(temp.Path);
+        ProjectList list = ProjectList.Empty.Add(new Project(1234, "Wébsite relaunch")).Add(new Project(5, "[red]Fix[/]"));
+
+        store.Save(ProjectList.Empty.Add(new Project(1, "first")));
+        store.Save(list);
+
+        Assert.Equal(list, new ProjectStore(temp.Path).Load());
+        Assert.Equal([store.FilePath], Directory.EnumerateFileSystemEntries(temp.Path));
+        byte[] bytes = File.ReadAllBytes(store.FilePath);
+        Assert.NotEqual(0xEF, bytes[0]);
+        Assert.Equal(list.ToJson(), System.Text.Encoding.UTF8.GetString(bytes));
+    }
+
+    // AC-7
+    [Theory]
+    [InlineData("{not json")]
+    [InlineData("[]")]
+    [InlineData("{\"projects\":[{\"workItem\":0,\"title\":\"A\"}]}")]
+    public void Load_InvalidFile_ThrowsInvalidData_AndLeavesFileUnchanged(string contents)
+    {
+        using TempFolder temp = new TempFolder();
+        ProjectStore store = new ProjectStore(temp.Path);
+        File.WriteAllText(store.FilePath, contents);
+        byte[] before = File.ReadAllBytes(store.FilePath);
+
+        InvalidDataException ex = Assert.Throws<InvalidDataException>(() => store.Load());
+
+        Assert.Equal("projects.json is not valid.", ex.Message);
+        Assert.Equal(before, File.ReadAllBytes(store.FilePath));
+    }
+
+    // AC-7
+    [Fact]
+    public void Load_TooLargeFile_ThrowsInvalidData()
+    {
+        using TempFolder temp = new TempFolder();
+        ProjectStore store = new ProjectStore(temp.Path);
+        File.WriteAllText(store.FilePath, new string(' ', (int)ProjectStore.MaxFileBytes + 1) + "{\"projects\":[]}");
+
+        InvalidDataException ex = Assert.Throws<InvalidDataException>(() => store.Load());
+
+        Assert.Equal("projects.json is too large.", ex.Message);
+    }
+
+    // AC-7
+    [Fact]
+    public void Load_FileExactlyAtLimit_IsRead()
+    {
+        using TempFolder temp = new TempFolder();
+        ProjectStore store = new ProjectStore(temp.Path);
+        string json = "{\"projects\":[]}";
+        File.WriteAllText(store.FilePath, new string(' ', (int)ProjectStore.MaxFileBytes - json.Length) + json);
+
+        Assert.Equal(ProjectList.Empty, store.Load());
+    }
+
+    // AC-6
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("Times")]
+    [InlineData("./data")]
+    public void InvalidFolder_LoadAndSaveThrow_AndWriteNothing(string folder)
+    {
+        string[] before = Directory.EnumerateFileSystemEntries(Directory.GetCurrentDirectory()).Order(StringComparer.Ordinal).ToArray();
+        ProjectStore store = new ProjectStore(folder);
+
+        Assert.Throws<InvalidOperationException>(() => store.Load());
+        Assert.Throws<InvalidOperationException>(() => store.Save(ProjectList.Empty.Add(new Project(1, "A"))));
+
+        Assert.Equal(before, Directory.EnumerateFileSystemEntries(Directory.GetCurrentDirectory()).Order(StringComparer.Ordinal).ToArray());
+    }
+}

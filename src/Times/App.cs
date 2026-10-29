@@ -23,6 +23,7 @@ internal sealed class App
     private readonly CommandRegistry registry;
     private readonly DayView dayView;
     private readonly bool folderFromEnvironment;
+    private readonly ProjectStore projectStore;
 
     // The last drawn frame, one entry per screen row, so rows the command popup covered can be restored.
     private List<SegmentLine> frame = [];
@@ -34,11 +35,13 @@ internal sealed class App
         this.time = time;
         this.folderFromEnvironment = folderFromEnvironment;
         Store = store;
+        projectStore = new ProjectStore(store.Folder);
         dayView = new DayView(time);
         this.registry = registry ?? CommandRegistry.CreateDefault();
         this.registry.HelpFooter = RenderDataFolder();
         RegisterNavigation();
         RegisterBookings();
+        RegisterProjects();
     }
 
     /// <summary>Where the day files live. Booking features read and write through it.</summary>
@@ -72,6 +75,118 @@ internal sealed class App
         registry.Register("/remove", "Remove an entry from this day by its number", Remove);
         registry.Register("/change", $"Change the time of an entry on this day: <number> <{TimeInput.Format}>", Change);
     }
+
+    private void RegisterProjects()
+    {
+        registry.Register("/addproject", "Add a project to the quicklist: <work item> <title>", AddProject);
+        registry.Register("/projects", "List the projects on the quicklist", NoArguments("/projects", ListProjects));
+    }
+
+    // Adds a project to the end of the quicklist. Nothing is written if the work item or title is
+    // invalid, the work item is already listed, or projects.json cannot be read.
+    private CommandResult AddProject(string argument)
+    {
+        const string Name = "/addproject";
+        const string Usage = "Use [bold]/addproject <work item> <title>[/].";
+        int split = argument.IndexOfAny([' ', '\t']);
+        if (argument.Length == 0 || split < 0)
+        {
+            return Hint($"{Name}: say the work item number and the title. {Usage}");
+        }
+
+        string number = argument[..split];
+        string title = argument[(split + 1)..].Trim();
+        if (!int.TryParse(number, NumberStyles.None, CultureInfo.InvariantCulture, out int workItem) || workItem < 1)
+        {
+            return Hint($"{Name}: [bold]{Markup.Escape(number)}[/] is not a work item number. {Usage}");
+        }
+
+        if (title.Length == 0)
+        {
+            return Hint($"{Name}: say the title. {Usage}");
+        }
+
+        if (title.Length > ProjectList.MaxTitleLength)
+        {
+            return Hint($"{Name}: the title is longer than {ProjectList.MaxTitleLength.ToString(CultureInfo.InvariantCulture)} characters.");
+        }
+
+        if (ProjectList.HasControlCharacters(title))
+        {
+            return Hint($"{Name}: the title must not contain control characters.");
+        }
+
+        ProjectList current;
+        try
+        {
+            current = projectStore.Load();
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{Name}: {UnreadableProjects(ex)} Nothing was added.");
+        }
+
+        if (current.NumberOf(workItem) is { } existing)
+        {
+            return Hint($"{Name}: work item #{workItem.ToString(CultureInfo.InvariantCulture)} is already project " +
+                $"[bold]{existing.ToString(CultureInfo.InvariantCulture)}[/].");
+        }
+
+        Project project = new Project(workItem, title);
+        ProjectList updated = current.Add(project);
+        try
+        {
+            projectStore.Save(updated);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{Name}: could not save the project list. {Markup.Escape(ex.Message)}");
+        }
+
+        return new CommandResult(new Markup(
+            $"Added project [steelblue1]{updated.Projects.Count.ToString(CultureInfo.InvariantCulture)}[/]: " +
+            $"#{workItem.ToString(CultureInfo.InvariantCulture)} {Markup.Escape(title)}"));
+    }
+
+    // Shows the quicklist as a table, or a grey note if it is empty. Never writes anything.
+    private CommandResult ListProjects()
+    {
+        ProjectList list;
+        try
+        {
+            list = projectStore.Load();
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            return Hint($"/projects: {UnreadableProjects(ex)}");
+        }
+
+        if (list.IsEmpty)
+        {
+            return new CommandResult(new Markup("[grey]No projects yet. Add one with /addproject <work item> <title>.[/]"));
+        }
+
+        Table table = new Table()
+            .Border(TableBorder.Rounded)
+            .BorderColor(Color.Grey)
+            .AddColumn("[grey]#[/]")
+            .AddColumn("[grey]Work item[/]")
+            .AddColumn("[grey]Title[/]");
+
+        for (int i = 0; i < list.Projects.Count; i++)
+        {
+            Project project = list.Projects[i];
+            table.AddRow(
+                new Markup($"[steelblue1]{(i + 1).ToString(CultureInfo.InvariantCulture)}[/]"),
+                new Text("#" + project.WorkItem.ToString(CultureInfo.InvariantCulture)),
+                new Text(project.Title));
+        }
+
+        return new CommandResult(table);
+    }
+
+    private static string UnreadableProjects(Exception ex) =>
+        $"the project list cannot be read: {Markup.Escape(ex.Message)}";
 
     // Removes entry <number> from the day being viewed. Nothing is written if the number is not a
     // plain number, there is no such entry, or the day's file cannot be read.
