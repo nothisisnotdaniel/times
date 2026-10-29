@@ -202,6 +202,8 @@ PublishScripts/
 
 # NuGet Packages
 *.nupkg
+# Local output folder of `dotnet pack` (see README.md)
+nupkg/
 # NuGet Symbol Packages
 *.snupkg
 # The packages folder can be ignored because of Package Restore
