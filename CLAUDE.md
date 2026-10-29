@@ -32,7 +32,10 @@ Every factory agent reads this file before working on Times. Keep it short and a
     and always end with `/quit`, so they can't hang.
 - **Data:** stored as JSON, **one file per day**, in the user's app-data folder:
   `Environment.GetFolderPath(SpecialFolder.ApplicationData)/Times/yyyy-MM-dd.json`
-  (`%APPDATA%\Times\` on Windows, `~/.config/Times/` on macOS/Linux). The data folder is injected,
+  (`%APPDATA%\Times\` on Windows, `~/.config/Times/` on macOS/Linux). Setting the `TIMES_DATA_DIR`
+  environment variable overrides that default; it must be an absolute path (used as given, no `~`
+  expansion or trimming), otherwise Times refuses to start with exit code 2. Unset or empty means the
+  default. `DataFolder.Resolve` picks the folder and `/help` shows it. The data folder is injected,
   so tests use a temp folder and never touch the real app data. Use `System.Text.Json`.
 - **Days:** the app always shows one "current" day, starting at today. The user can move to
   the previous or next day or jump to a date. Navigating to a day with no file shows it as an

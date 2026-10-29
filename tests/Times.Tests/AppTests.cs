@@ -2313,4 +2313,158 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal("Times 1.0[red]x[/] [", console.Output.Trim());
     }
+
+    // Data folder location (job 027) -------------------------------------------------------
+
+    private static string StripAnsi(string output) => Regex.Replace(output, @"\x1b\[[0-9;]*m", string.Empty);
+
+    /// <summary>Runs <c>/help</c> then <c>/quit</c> on a terminal wide enough that the data-folder line never wraps.</summary>
+    private static string RunHelp(string folder, bool folderFromEnvironment, bool ansi = false)
+    {
+        TestConsole console = new TestConsole().Interactive();
+        if (ansi)
+        {
+            console.EmitAnsiSequences();
+        }
+
+        console.Profile.Width = 300;
+        console.Input.PushTextWithEnter("/help");
+        console.Input.PushTextWithEnter("/quit");
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(folder), folderFromEnvironment: folderFromEnvironment).Run([]);
+        Assert.Equal(0, exitCode);
+        return console.Output;
+    }
+
+    // AC-4
+    [Theory]
+    [InlineData("relative/dir")]
+    [InlineData("~/times")]
+    [InlineData("   ")]
+    [InlineData("[red]x")]
+    [InlineData("")]
+    public void InvalidOverride_ReturnsTwo_NamesTheVariable_AndCreatesNothing(string folder)
+    {
+        string[] before = WorkingDirectoryEntries();
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 300; // keep the error on one line, so the text can be matched as a whole
+        console.Input.PushTextWithEnter("/arrive 8:15");
+
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(folder), folderFromEnvironment: true).Run([]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mTimes cannot start", console.Output);
+        string text = StripAnsi(console.Output).TrimEnd();
+        Assert.Contains($"the data folder {folder} from TIMES_DATA_DIR is not an absolute path", text);
+        Assert.EndsWith("Nothing was saved.", text);
+        Assert.DoesNotContain("app-data folder could not be found", text);
+        Assert.DoesNotContain(Heading, console.Output);
+        Assert.Equal(before, WorkingDirectoryEntries());
+    }
+
+    // AC-4
+    [Fact]
+    public void InvalidOverride_ShowsMarkupInTheValueLiterally()
+    {
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 300;
+
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore("[red]x[/]"), folderFromEnvironment: true).Run([]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("the data folder [red]x[/] from TIMES_DATA_DIR", console.Output);
+    }
+
+    // AC-5
+    [Fact]
+    public void Help_ShowsDefaultDataFolder_WithoutSource()
+    {
+        string output = RunHelp(data.Path, folderFromEnvironment: false);
+
+        string[] frame = Frames(output)[1];
+        int line = Array.FindIndex(frame, l => l.Contains("Data folder:", StringComparison.Ordinal));
+        Assert.True(line > 0);
+        Assert.Equal($"Data folder: {data.Path}", frame[line].TrimEnd());
+        Assert.StartsWith("╰", frame[line - 1]);
+        foreach (Command command in CommandRegistry.CreateDefault().Commands.Concat([new Command("/arrive", "", _ => CommandResult.None)]))
+        {
+            Assert.Contains(command.Name, string.Join('\n', frame));
+        }
+
+        Assert.DoesNotContain("(from TIMES_DATA_DIR)", output);
+    }
+
+    // AC-5
+    [Fact]
+    public void Help_ShowsOverrideDataFolder_WithGreySource()
+    {
+        string output = RunHelp(data.Path, folderFromEnvironment: true);
+
+        string[] frame = Frames(output)[1];
+        Assert.Contains(frame, l => l.TrimEnd() == $"Data folder: {data.Path} (from TIMES_DATA_DIR)");
+
+        string ansi = RunHelp(data.Path, folderFromEnvironment: true, ansi: true);
+        Assert.Matches(@"\x1b\[(90|38;5;8)mData folder:", ansi);
+        Assert.Matches(@"\x1b\[(90|38;5;8)m\(from TIMES_DATA_DIR\)", ansi);
+    }
+
+    // AC-5
+    [Fact]
+    public void Help_DefaultDataFolder_LabelIsGrey_AndPathIsNot()
+    {
+        string ansi = RunHelp(data.Path, folderFromEnvironment: false, ansi: true);
+
+        Assert.Matches(@"\x1b\[(90|38;5;8)mData folder:\x1b\[0m " + Regex.Escape(data.Path), ansi);
+    }
+
+    // AC-5
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Help_DataFolderWithBrackets_RendersLiterally(bool folderFromEnvironment)
+    {
+        string folder = Path.Combine(data.Path, "[x]");
+
+        string output = RunHelp(folder, folderFromEnvironment);
+
+        Assert.Contains($"Data folder: {folder}", output);
+        Assert.False(Directory.Exists(folder));
+    }
+
+    // AC-6
+    [Fact]
+    public void ValidOverride_BooksIntoThatFolder_AndHelpShowsIt()
+    {
+        using TempFolder overrideFolder = new TempFolder(create: false);
+        string[] before = WorkingDirectoryEntries();
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 300;
+        console.Input.PushTextWithEnter("/arrive 8:15");
+        console.Input.PushTextWithEnter("/help");
+        console.Input.PushTextWithEnter("/quit");
+
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(overrideFolder.Path), folderFromEnvironment: true).Run([]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(
+            [Path.Combine(overrideFolder.Path, "2026-10-27.json")],
+            Directory.EnumerateFileSystemEntries(overrideFolder.Path));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
+        Assert.Equal(before, WorkingDirectoryEntries());
+        Assert.Contains($"Data folder: {overrideFolder.Path} (from TIMES_DATA_DIR)", console.Output);
+    }
+
+    // AC-7
+    [Theory]
+    [InlineData("")]
+    [InlineData("relative/dir")]
+    [InlineData("   ")]
+    public void VersionFlag_WorksWithAnInvalidOverride(string folder)
+    {
+        TestConsole console = new TestConsole().Interactive();
+
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(folder), folderFromEnvironment: true).Run(["--version"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal($"Times {AppVersion.Current}", console.Output.Trim());
+    }
 }

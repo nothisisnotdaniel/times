@@ -61,6 +61,9 @@ internal sealed class CommandRegistry
 
     public IEnumerable<Command> Commands => commands.Values.OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Shown below the <c>/help</c> table, or <c>null</c> for nothing.</summary>
+    public IRenderable? HelpFooter { get; set; }
+
     /// <summary>Creates a registry with the built-in <c>/help</c> and <c>/quit</c> commands.</summary>
     public static CommandRegistry CreateDefault()
     {
@@ -236,6 +239,6 @@ internal sealed class CommandRegistry
                 new Text(command.Description));
         }
 
-        return table;
+        return HelpFooter is null ? table : new Rows(table, HelpFooter);
     }
 }
