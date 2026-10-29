@@ -111,6 +111,19 @@ internal sealed record DayRecord
         return new DayRecord(entries.Where((_, i) => i != number - 1));
     }
 
+    /// <summary>
+    /// Returns a new record where entry <paramref name="number"/> (1-based, the numbering of
+    /// <see cref="Entries"/>) has <paramref name="time"/> and keeps its kind. The result is in time
+    /// order, with the changed entry after any other entries with the same time. Throws
+    /// <see cref="ArgumentOutOfRangeException"/> if there is no such entry.
+    /// </summary>
+    public DayRecord ChangeTime(int number, TimeOnly time)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(number, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(number, entries.Length);
+        return RemoveAt(number).Add(new DayEntry(entries[number - 1].Kind, time));
+    }
+
     public bool Equals(DayRecord? other) =>
         other is not null && entries.SequenceEqual(other.entries);
 

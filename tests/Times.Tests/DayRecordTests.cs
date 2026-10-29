@@ -283,4 +283,100 @@ public class DayRecordTests
         Assert.Throws<ArgumentOutOfRangeException>(() => ThreeEntries().RemoveAt(number));
         Assert.Throws<ArgumentOutOfRangeException>(() => DayRecord.Empty.RemoveAt(1));
     }
+
+    // Change entry (job 023) ---------------------------------------------------------------
+
+    // AC-11 (023)
+    [Theory]
+    [InlineData(1, 8, 30)]
+    [InlineData(2, 12, 30)]
+    [InlineData(3, 13, 15)]
+    public void ChangeTime_FirstMiddleOrLast_KeepsKindAndOtherEntries(int number, int hour, int minute)
+    {
+        DayRecord record = ThreeEntries();
+        List<DayEntry> expected = record.Entries.ToList();
+        expected[number - 1] = new DayEntry(expected[number - 1].Kind, new TimeOnly(hour, minute));
+
+        DayRecord changed = record.ChangeTime(number, new TimeOnly(hour, minute));
+
+        Assert.Equal(expected, changed.Entries);
+    }
+
+    // AC-11 (023)
+    [Fact]
+    public void ChangeTime_PastOthers_ReSortsTheDay()
+    {
+        DayRecord changed = ThreeEntries().ChangeTime(1, new TimeOnly(14, 0));
+
+        Assert.Equal([Leaving(12, 0), Arrival(13, 0), Arrival(14, 0)], changed.Entries);
+    }
+
+    // AC-11 (023)
+    [Fact]
+    public void ChangeTime_EarlierThanOthers_ReSortsTheDay()
+    {
+        DayRecord changed = ThreeEntries().ChangeTime(3, new TimeOnly(7, 0));
+
+        Assert.Equal([Arrival(7, 0), Arrival(8, 0), Leaving(12, 0)], changed.Entries);
+    }
+
+    // AC-11 (023)
+    [Fact]
+    public void ChangeTime_TieWithExistingTime_PutsChangedEntryAfterOthers()
+    {
+        DayRecord record = ThreeEntries();
+
+        Assert.Equal([Arrival(8, 0), Leaving(12, 0), Arrival(12, 0)], record.ChangeTime(3, new TimeOnly(12, 0)).Entries);
+        Assert.Equal([Arrival(8, 0), Arrival(13, 0), Leaving(13, 0)], record.ChangeTime(2, new TimeOnly(13, 0)).Entries);
+        Assert.Equal([Leaving(12, 0), Arrival(12, 0), Arrival(13, 0)], record.ChangeTime(1, new TimeOnly(12, 0)).Entries);
+    }
+
+    // AC-11 (023)
+    [Fact]
+    public void ChangeTime_SameTime_MovesEntryAfterOthersWithThatTime()
+    {
+        DayRecord record = DayRecord.Empty.Add(Arrival(12, 0)).Add(Leaving(12, 0));
+
+        Assert.Equal([Leaving(12, 0), Arrival(12, 0)], record.ChangeTime(1, new TimeOnly(12, 0)).Entries);
+    }
+
+    // AC-11 (023)
+    [Theory]
+    [InlineData(1, 14, 0)]
+    [InlineData(2, 7, 0)]
+    [InlineData(3, 12, 0)]
+    public void ChangeTime_MatchesRemoveThenAdd(int number, int hour, int minute)
+    {
+        DayRecord record = ThreeEntries();
+        DayEntry entry = record.Entries[number - 1];
+
+        DayRecord expected = record.RemoveAt(number).Add(new DayEntry(entry.Kind, new TimeOnly(hour, minute)));
+
+        Assert.Equal(expected, record.ChangeTime(number, new TimeOnly(hour, minute)));
+    }
+
+    // AC-11 (023)
+    [Fact]
+    public void ChangeTime_ReturnsNewRecord_AndLeavesOriginalUnchanged()
+    {
+        DayRecord record = ThreeEntries();
+
+        DayRecord changed = record.ChangeTime(2, new TimeOnly(12, 30));
+
+        Assert.NotSame(record, changed);
+        Assert.Equal([Arrival(8, 0), Leaving(12, 0), Arrival(13, 0)], record.Entries);
+        Assert.Equal([Arrival(8, 0), Leaving(12, 30), Arrival(13, 0)], changed.Entries);
+    }
+
+    // AC-11 (023)
+    [Theory]
+    [InlineData(0)]
+    [InlineData(4)]
+    [InlineData(-1)]
+    [InlineData(int.MaxValue)]
+    public void ChangeTime_OutOfRange_Throws(int number)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => ThreeEntries().ChangeTime(number, new TimeOnly(9, 0)));
+        Assert.Throws<ArgumentOutOfRangeException>(() => DayRecord.Empty.ChangeTime(1, new TimeOnly(9, 0)));
+    }
 }
