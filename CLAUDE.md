@@ -37,6 +37,8 @@ Every factory agent reads this file before working on Times. Keep it short and a
   expansion or trimming), otherwise Times refuses to start with exit code 2. Unset or empty means the
   default. `DataFolder.Resolve` picks the folder and `/help` shows it. The data folder is injected,
   so tests use a temp folder and never touch the real app data. Use `System.Text.Json`.
+  The project quicklist lives next to the day files in `projects.json` (`ProjectStore`), as
+  `{"projects":[{"workItem":1234,"title":"…"}]}`; a project's number is its 1-based position.
 - **Days:** the app always shows one "current" day, starting at today. The user can move to
   the previous or next day or jump to a date. Navigating to a day with no file shows it as an
   empty day **without creating a file**. The day's file is created only when the first

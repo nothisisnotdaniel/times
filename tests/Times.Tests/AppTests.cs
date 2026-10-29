@@ -646,7 +646,7 @@ public sealed class AppTests : IDisposable
 
     // AC-8
     [Theory]
-    [InlineData("/p", "Monday, 2026-10-26")]
+    [InlineData("/pre", "Monday, 2026-10-26")]
     [InlineData("/n", "Wednesday, 2026-10-28")]
     [InlineData("/t", Heading)]
     public void Tab_CompletesNavigationCommands(string prefix, string expected)
@@ -799,12 +799,12 @@ public sealed class AppTests : IDisposable
         Assert.Contains("\u001b[21;1H", output);
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal([14, 15, 16, 17, 18, 19, 20, 21], popup.Select(w => w.Row));
-        // Nine commands: the first seven by name, then a row counting the other two.
+        // Eleven commands: the first seven by name, then a row counting the other four.
         Assert.Equal(
-            ["/arrive", "/change", "/help", "/leave", "/next", "/prev", "/quit", "…"],
+            ["/addproject", "/arrive", "/change", "/help", "/leave", "/next", "/prev", "…"],
             popup.Select(w => w.Text.Split(' ')[0]));
-        Assert.StartsWith("… 2 more", popup[^1].Text);
-        Assert.Contains("Go to the previous day", popup[5].Text);
+        Assert.StartsWith("… 4 more", popup[^1].Text);
+        Assert.Contains("Go to the previous day", popup[6].Text);
         Assert.Equal(80, popup[0].Text.Length);
     }
 
@@ -875,9 +875,9 @@ public sealed class AppTests : IDisposable
         List<string> hintRow = TypingWrites(output, 1).Where(w => w.Row == 21).Select(w => w.Text).ToList();
 
         // popup, restored (Backspace), popup, restored (Esc), popup (/quit typing), ...
-        Assert.StartsWith("… 2 more", hintRow[0]);
+        Assert.StartsWith("… 4 more", hintRow[0]);
         Assert.Contains("Unknown command /nope", hintRow[1]);
-        Assert.StartsWith("… 2 more", hintRow[2]);
+        Assert.StartsWith("… 4 more", hintRow[2]);
         Assert.Contains("Unknown command /nope", hintRow[3]);
         Assert.Contains("Unknown command /nope", hintRow[^1]);
         Assert.Contains("\u001b[38;5;9mUnknown command", output[output.LastIndexOf("\u001b[21;1H", StringComparison.Ordinal)..]);
@@ -910,8 +910,8 @@ public sealed class AppTests : IDisposable
 
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
-        // 21 commands: 7 shown, the eighth row counts the other 14.
-        Assert.StartsWith("… 14 more", popup[^1].Text);
+        // 23 commands: 7 shown, the eighth row counts the other 16.
+        Assert.StartsWith("… 16 more", popup[^1].Text);
         // Nothing is drawn on row 1 while typing (the final clear on /quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
@@ -1354,7 +1354,7 @@ public sealed class AppTests : IDisposable
 
     // AC-11
     [Theory]
-    [InlineData("/a", "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"18:30\"}]}")]
+    [InlineData("/ar", "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"18:30\"}]}")]
     [InlineData("/l", "{\"entries\":[{\"kind\":\"leaving\",\"time\":\"18:30\"}]}")]
     public void Tab_CompletesArriveAndLeave(string prefix, string expected)
     {
@@ -1485,7 +1485,7 @@ public sealed class AppTests : IDisposable
         {
             c.Input.PushTextWithEnter("/help");
             c.Input.PushTextWithEnter("/quit");
-        });
+        }, dataFolder: Path.Combine(Path.GetPathRoot(data.Path)!, "Times")); // a short folder, so the footer is one line (nothing is written)
 
         string[] frame = Frames(output)[1];
         AssertLayout(frame);
@@ -2466,5 +2466,341 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(0, exitCode);
         Assert.Equal($"Times {AppVersion.Current}", console.Output.Trim());
+    }
+
+    // Project quicklist (job 030) ---------------------------------------------------------
+
+    private string ProjectsFile => Path.Combine(data.Path, "projects.json");
+
+    private ProjectList ReadProjects() => ProjectList.FromJson(File.ReadAllText(ProjectsFile));
+
+    /// <summary>Runs <paramref name="command"/> on an ANSI console and returns its output, to check colours.</summary>
+    private string RunAnsi(string command)
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 200;
+        console.Input.PushTextWithEnter(command);
+        console.Input.PushTextWithEnter("/quit");
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+        return console.Output;
+    }
+
+    // AC-1 (030)
+    [Fact]
+    public void AddProject_SavesProject_AndConfirmsInTopArea()
+    {
+        (int exitCode, string output) = RunCommands("/addproject 1234 Website relaunch", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal([new Project(1234, "Website relaunch")], ReadProjects().Projects);
+        Assert.Equal("{\"projects\":[{\"workItem\":1234,\"title\":\"Website relaunch\"}]}", File.ReadAllText(ProjectsFile));
+        string[] frame = LastLayout(output);
+        AssertLayout(frame);
+        Assert.Contains(frame[..^4], l => l.Contains("Added project 1: #1234 Website relaunch", StringComparison.Ordinal));
+        Assert.Equal(string.Empty, frame[^4].Trim());
+    }
+
+    // AC-2 (030)
+    [Fact]
+    public void AddProject_NumbersInOrder_AndKeepsNumbersAfterRestart()
+    {
+        (_, string first) = RunCommands("/addproject 500 First", "/addproject 20 Second", "/quit");
+
+        Assert.Contains("Added project 1: #500 First", first);
+        Assert.Contains("Added project 2: #20 Second", first);
+
+        (_, string restarted) = RunCommands("/addproject 7 Third", "/projects", "/quit");
+
+        Assert.Contains("Added project 3: #7 Third", restarted);
+        string frame = string.Join('\n', LastLayout(restarted));
+        Assert.Matches(@"│ 1 +│ #500 +│ First +│[\s\S]*│ 2 +│ #20 +│ Second +│[\s\S]*│ 3 +│ #7 +│ Third +│", frame);
+        Assert.Equal([new Project(500, "First"), new Project(20, "Second"), new Project(7, "Third")], ReadProjects().Projects);
+    }
+
+    // AC-3 (030)
+    [Fact]
+    public void Projects_ShowsTable_WithHeaders_InQuicklistOrder()
+    {
+        File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":99,\"title\":\"Zeta\"},{\"workItem\":1,\"title\":\"Alpha\"}]}");
+
+        (int exitCode, string output) = RunCommands("/projects", "/quit");
+
+        Assert.Equal(0, exitCode);
+        string[] frame = LastLayout(output);
+        AssertLayout(frame);
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ # +│ Work item +│ Title +│"));
+        int zeta = Array.FindIndex(frame, l => Regex.IsMatch(l, @"│ 1 +│ #99 +│ Zeta +│"));
+        int alpha = Array.FindIndex(frame, l => Regex.IsMatch(l, @"│ 2 +│ #1 +│ Alpha +│"));
+        Assert.True(zeta > 0 && alpha > zeta);
+        Assert.Contains(frame, l => l.StartsWith('╭'));
+        Assert.Equal(string.Empty, frame[^4].Trim());
+    }
+
+    // AC-3 (030)
+    [Fact]
+    public void Projects_TableHeadersAreGrey()
+    {
+        File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":99,\"title\":\"Zeta\"}]}");
+
+        string output = RunAnsi("/projects");
+
+        Assert.Matches(@"\x1b\[(90|38;5;8)m#\x1b\[0m", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)mWork item\x1b\[0m", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)mTitle\x1b\[0m", output);
+    }
+
+    // AC-3 (030)
+    [Fact]
+    public void Projects_WithNoFile_ShowsGreyNote_AndCreatesNothing()
+    {
+        using TempFolder missing = new TempFolder(create: false);
+
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Input.PushTextWithEnter("/projects");
+            c.Input.PushTextWithEnter("/quit");
+        }, dataFolder: missing.Path);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("No projects yet. Add one with /addproject <work item> <title>.", output);
+        Assert.False(Directory.Exists(missing.Path));
+
+        (_, string existing) = RunCommands("/projects", "/quit");
+        Assert.Contains("No projects yet.", existing);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
+    }
+
+    // AC-3 (030)
+    [Fact]
+    public void Projects_WithEmptyList_ShowsGreyNote_AndLeavesFileUnchanged()
+    {
+        File.WriteAllText(ProjectsFile, "{\"projects\":[]}");
+
+        (_, string output) = RunCommands("/projects", "/quit");
+
+        Assert.Contains("No projects yet. Add one with /addproject <work item> <title>.", output);
+        Assert.Equal("{\"projects\":[]}", File.ReadAllText(ProjectsFile));
+        Assert.Matches(@"\x1b\[(90|38;5;8)mNo projects yet\.", RunAnsi("/projects"));
+    }
+
+    // AC-3 (030)
+    [Fact]
+    public void Projects_WithArgument_ShowsHint()
+    {
+        (_, string output) = RunCommands("/projects x", "/quit");
+
+        AssertOnHintRow(LastLayout(output), "/projects takes no arguments.");
+    }
+
+    // AC-4 (030)
+    [Theory]
+    [InlineData("/addproject 42 [red]Fix[/]", "[red]Fix[/]")]
+    [InlineData("/addproject 42    Two  inner   spaces   ", "Two  inner   spaces")]
+    [InlineData("/addproject 42 [bold]x", "[bold]x")]
+    [InlineData("/addproject 42 a]b[c", "a]b[c")]
+    public void AddProject_TitleIsTrimmed_ShownLiterally_AndRoundTrips(string command, string title)
+    {
+        (int exitCode, string output) = RunCommands(command, "/projects", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal([new Project(42, title)], ReadProjects().Projects);
+        Assert.Contains($"Added project 1: #42 {title}", output);
+        Assert.Contains(LastLayout(output), l => l.Contains($"│ #42 ", StringComparison.Ordinal) && l.Contains(title, StringComparison.Ordinal));
+        Assert.DoesNotContain("failed:", output);
+    }
+
+    // AC-4 (030)
+    [Fact]
+    public void AddProject_MarkupTitle_IsNotRenderedAsMarkup()
+    {
+        string output = RunAnsi("/addproject 42 [red]Fix[/]");
+
+        Assert.Contains("#42 [red]Fix[/]", output);
+    }
+
+    // AC-5 (030)
+    [Theory]
+    [InlineData("/addproject", "/addproject: say the work item number and the title.")]
+    [InlineData("/addproject   ", "/addproject: say the work item number and the title.")]
+    [InlineData("/addproject 1234", "/addproject: say the work item number and the title.")]
+    [InlineData("/addproject abc Title", "/addproject: abc is not a work item number.")]
+    [InlineData("/addproject -5 Title", "/addproject: -5 is not a work item number.")]
+    [InlineData("/addproject 0 Title", "/addproject: 0 is not a work item number.")]
+    [InlineData("/addproject 12.5 Title", "/addproject: 12.5 is not a work item number.")]
+    [InlineData("/addproject +7 Title", "/addproject: +7 is not a work item number.")]
+    [InlineData("/addproject 2147483648 Title", "/addproject: 2147483648 is not a work item number.")]
+    [InlineData("/addproject 99999999999999999999 Title", "/addproject: 99999999999999999999 is not a work item number.")]
+    [InlineData("/addproject [red]1[/] Title", "/addproject: [red]1[/] is not a work item number.")]
+    public void AddProject_InvalidInput_ShowsHint_AndWritesNothing(string command, string expected)
+    {
+        (int exitCode, string output) = RunWide(120, command, "/quit");
+
+        Assert.Equal(0, exitCode);
+        AssertOnHintRow(LastLayout(output), expected);
+        Assert.False(File.Exists(ProjectsFile));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
+    }
+
+    // AC-5 (030): the line editor drops C0/C1 controls as they are typed, so a line separator
+    // (Unicode category Zl, not a control char) is what can reach the handler.
+    [Fact]
+    public void AddProject_TitleWithLineSeparator_ShowsHint_AndWritesNothing()
+    {
+        (_, string output) = Run(c =>
+        {
+            c.Profile.Width = 120;
+            c.Input.PushText("/addproject 12 a");
+            c.Input.PushKey(new ConsoleKeyInfo('\u2028', ConsoleKey.NoName, false, false, false));
+            c.Input.PushTextWithEnter("b");
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        AssertOnHintRow(LastLayout(output), "/addproject: the title must not contain control characters.");
+        Assert.False(File.Exists(ProjectsFile));
+    }
+
+    // AC-5 (030)
+    [Fact]
+    public void AddProject_TitleTooLong_ShowsHint_AndWritesNothing()
+    {
+        (_, string output) = RunWide(120, "/addproject 12 " + new string('x', 201), "/quit");
+
+        AssertOnHintRow(LastLayout(output), "/addproject: the title is longer than 200 characters.");
+        Assert.False(File.Exists(ProjectsFile));
+
+        (_, string ok) = RunCommands("/addproject 12 " + new string('x', 200), "/quit");
+        Assert.Equal(200, ReadProjects().Projects[0].Title.Length);
+        Assert.DoesNotContain("longer than", ok);
+    }
+
+    // AC-5 (030)
+    [Fact]
+    public void AddProject_DuplicateWorkItem_NamesExistingProject_AndLeavesFileUnchanged()
+    {
+        File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":1,\"title\":\"A\"},{\"workItem\":1234,\"title\":\"B\"}]}");
+        byte[] before = File.ReadAllBytes(ProjectsFile);
+
+        (int exitCode, string output) = RunCommands("/addproject 1234 Other title", "/quit");
+
+        Assert.Equal(0, exitCode);
+        AssertOnHintRow(LastLayout(output), "/addproject: work item #1234 is already project 2.");
+        Assert.Equal(before, File.ReadAllBytes(ProjectsFile));
+    }
+
+    // AC-5 (030)
+    [Fact]
+    public void AddProject_InvalidInput_HintIsRed()
+    {
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)m/addproject: ", RunAnsi("/addproject abc Title"));
+    }
+
+    // AC-7 (030)
+    [Theory]
+    [InlineData("{not json")]
+    [InlineData("{\"projects\":{}}")]
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"A\"},{\"workItem\":1,\"title\":\"B\"}]}")]
+    public void UnreadableProjectsFile_ShowsHint_AndAddProjectLeavesBytesUnchanged(string contents)
+    {
+        File.WriteAllText(ProjectsFile, contents);
+        byte[] before = File.ReadAllBytes(ProjectsFile);
+
+        (int exitCode, string output) = RunWide(120, "/addproject 5 New", "/quit");
+
+        Assert.Equal(0, exitCode);
+        AssertOnHintRow(LastLayout(output), "/addproject: the project list cannot be read: projects.json is not valid. Nothing was added.");
+        Assert.Equal(before, File.ReadAllBytes(ProjectsFile));
+
+        (_, string listed) = RunWide(120, "/projects", "/quit");
+        AssertOnHintRow(LastLayout(listed), "/projects: the project list cannot be read: projects.json is not valid.");
+        Assert.DoesNotContain("   at ", output + listed);
+        Assert.Equal(before, File.ReadAllBytes(ProjectsFile));
+    }
+
+    // AC-7 (030)
+    [Fact]
+    public void TooLargeProjectsFile_ShowsHint_AndLeavesBytesUnchanged()
+    {
+        File.WriteAllText(ProjectsFile, new string(' ', (int)ProjectStore.MaxFileBytes + 1) + "{\"projects\":[]}");
+        byte[] before = File.ReadAllBytes(ProjectsFile);
+
+        (_, string output) = RunWide(120, "/addproject 5 New", "/projects", "/quit");
+
+        Assert.Contains("/addproject: the project list cannot be read: projects.json is too large. Nothing was added.", output);
+        AssertOnHintRow(LastLayout(output), "/projects: the project list cannot be read: projects.json is too large.");
+        Assert.Equal(before, File.ReadAllBytes(ProjectsFile));
+    }
+
+    // AC-7 (030)
+    [Fact]
+    public void UnreadableProjectsFile_HintIsRed()
+    {
+        File.WriteAllText(ProjectsFile, "{not json");
+
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)m/projects: the project list cannot be read", RunAnsi("/projects"));
+    }
+
+    // AC-7 (030)
+    [Fact]
+    public void AddProject_SaveFailure_ShowsRedHint_NotStackTrace()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        File.WriteAllText(ProjectsFile, "{\"projects\":[]}");
+        byte[] before = File.ReadAllBytes(ProjectsFile);
+        UnixFileMode mode = File.GetUnixFileMode(data.Path);
+        File.SetUnixFileMode(data.Path, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        string output;
+        try
+        {
+            output = RunAnsi("/addproject 5 New");
+        }
+        finally
+        {
+            File.SetUnixFileMode(data.Path, mode);
+        }
+
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)m/addproject: could not save the project list\.", output);
+        Assert.DoesNotContain("   at ", output);
+        Assert.DoesNotContain("failed:", output);
+        Assert.DoesNotContain("Added project", output);
+        Assert.Equal(before, File.ReadAllBytes(ProjectsFile));
+    }
+
+    // AC-8 (030)
+    [Fact]
+    public void AddProject_CreatesNoDayFile_AndDayViewIgnoresProjects()
+    {
+        (_, string output) = RunCommands("/addproject 1234 Website relaunch", "/prev", "/next", "/quit");
+
+        Assert.Equal(["projects.json"], Directory.EnumerateFileSystemEntries(data.Path).Select(Path.GetFileName));
+        Assert.Equal(Heading, LastHeading(output));
+        Assert.Contains("No entries yet.", LastFrame(output));
+        Assert.DoesNotContain("not a valid day file", output);
+    }
+
+    // AC-8 (030)
+    [Fact]
+    public void ProjectsFile_DoesNotAffectBookings()
+    {
+        File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":1,\"title\":\"A\"}]}");
+
+        (_, string output) = RunCommands("/arrive 8:00", "/quit");
+
+        Assert.Equal("{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}", ReadDay("2026-10-27"));
+        Assert.Equal("{\"projects\":[{\"workItem\":1,\"title\":\"A\"}]}", File.ReadAllText(ProjectsFile));
+        Assert.Equal(string.Empty, LastLayout(output)[^4].Trim());
+    }
+
+    // AC-8 (030)
+    [Fact]
+    public void Help_ListsProjectCommands_WithDescriptions()
+    {
+        (_, string output) = RunWide(120, "/help", "/quit");
+
+        Assert.Matches(@"/addproject +│ Add a project to the quicklist: <work item> <title>", output);
+        Assert.Matches(@"/projects +│ List the projects on the quicklist", output);
     }
 }
