@@ -2228,4 +2228,89 @@ public sealed class AppTests : IDisposable
         Assert.StartsWith("/change", row.Text);
         Assert.Contains("Change the time of an entry on this day: <number> <H:mm>", row.Text);
     }
+
+    private static (int ExitCode, string Output) RunWithArgs(string folder, params string[] args)
+    {
+        // No input is queued: if the app tried to read a line, the test console would throw instead of hanging.
+        TestConsole console = new TestConsole().Interactive();
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(folder)).Run(args);
+        return (exitCode, console.Output);
+    }
+
+    [Fact]
+    public void VersionFlag_PrintsVersionAndReturnsZero()
+    {
+        (int exitCode, string output) = RunWithArgs(data.Path, "--version");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal($"Times {AppVersion.Current}", output.Trim());
+        Assert.DoesNotContain('\n', output.Trim());
+    }
+
+    [Fact]
+    public void VersionFlag_NeverDrawsTheMainScreen()
+    {
+        (_, string output) = RunWithArgs(data.Path, "--version");
+
+        Assert.DoesNotContain(Placeholder, output);
+        Assert.DoesNotContain("╭", output);
+        Assert.DoesNotContain("│ > ", output);
+        Assert.DoesNotContain(Heading, output);
+    }
+
+    [Fact]
+    public void VersionFlag_LeavesTheDataFolderEmpty()
+    {
+        (int exitCode, _) = RunWithArgs(data.Path, "--version");
+
+        Assert.Equal(0, exitCode);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("relative")]
+    public void VersionFlag_WorksWithAnInvalidDataFolder(string folder)
+    {
+        (int exitCode, string output) = RunWithArgs(folder, "--version");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal($"Times {AppVersion.Current}", output.Trim());
+    }
+
+    [Fact]
+    public void VersionFlag_IsRecognisedInAnyPosition()
+    {
+        (int exitCode, string output) = RunWithArgs(data.Path, "x", "--version");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal($"Times {AppVersion.Current}", output.Trim());
+        Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
+    }
+
+    [Theory]
+    [InlineData("--Version")]
+    [InlineData("-v")]
+    public void VersionFlag_MatchesExactlyAndOtherwiseStartsNormally(string arg)
+    {
+        TestConsole console = new TestConsole().Interactive();
+        console.Input.PushTextWithEnter("/quit");
+
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([arg]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(Placeholder, console.Output);
+        Assert.Contains(Heading, console.Output);
+        Assert.DoesNotContain($"Times {AppVersion.Current}", console.Output);
+    }
+
+    [Fact]
+    public void VersionFlag_WritesTheVersionAsPlainText()
+    {
+        TestConsole console = new TestConsole();
+
+        App.WriteVersion(console, "1.0[red]x[/] [");
+
+        Assert.Equal("Times 1.0[red]x[/] [", console.Output.Trim());
+    }
 }
