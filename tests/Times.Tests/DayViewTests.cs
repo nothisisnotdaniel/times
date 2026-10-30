@@ -305,4 +305,98 @@ public class DayViewTests
         Assert.Contains("No entries yet.", console.Output);
         Assert.DoesNotContain("left", console.Output);
     }
+
+    // Breaks and checkpoints (job 036) ----------------------------------------------------
+
+    private static DayRecord AllKinds() => new DayRecord(
+    [
+        new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)),
+        new DayEntry(EntryKind.Checkpoint, new TimeOnly(9, 30), "Standup", 5678),
+        new DayEntry(EntryKind.BreakStart, new TimeOnly(12, 0)),
+        new DayEntry(EntryKind.BreakEnd, new TimeOnly(12, 30)),
+        new DayEntry(EntryKind.Checkpoint, new TimeOnly(15, 0), "2024 review", null),
+        new DayEntry(EntryKind.Leaving, new TimeOnly(17, 0)),
+    ]);
+
+    // AC-8, AC-9 (036)
+    [Fact]
+    public void Render_AllKinds_NumbersTogetherInTimeOrder_WithLabelsDetailsAndTimeLeft()
+    {
+        TestConsole console = new TestConsole();
+        console.Profile.Width = 120;
+
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(AllKinds()));
+
+        string[] lines = console.Lines.Select(l => l.TrimEnd()).Where(l => l.Trim().Length > 0).ToArray();
+        Assert.Equal(7, lines.Length);
+        Assert.Matches(@"^1 +Arrival +08:00 +left +8:00$", lines[1]);
+        Assert.Matches(@"^2 +Checkpoint +09:30 +Standup #5678$", lines[2]);
+        Assert.Matches(@"^3 +Break start +12:00$", lines[3]);
+        Assert.Matches(@"^4 +Break end +12:30$", lines[4]);
+        Assert.Matches(@"^5 +Checkpoint +15:00 +2024 review$", lines[5]);
+        Assert.Matches(@"^6 +Leaving +17:00 +left +-1:00$", lines[6]);
+        Assert.DoesNotContain("#", lines[5]);
+    }
+
+    // AC-8 (036)
+    [Fact]
+    public void Render_NewKinds_GreyLabels_SteelBlueTimes_GreyWorkItem_DefaultName()
+    {
+        TestConsole console = new TestConsole().EmitAnsiSequences();
+        console.Profile.Width = 120;
+
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(AllKinds()));
+
+        // grey = 256-colour 8, SteelBlue1 = 256-colour 75.
+        string output = console.Output;
+        Assert.Contains("\u001b[38;5;8mBreak start", output);
+        Assert.Contains("\u001b[38;5;8mBreak end", output);
+        Assert.Contains("\u001b[38;5;8mCheckpoint", output);
+        Assert.Contains("\u001b[38;5;75m09:30", output);
+        Assert.Contains("\u001b[38;5;75m12:00", output);
+        Assert.Contains("\u001b[38;5;75m12:30", output);
+        Assert.Contains("\u001b[38;5;8m#5678", output);
+        Assert.Matches(@"(^|\s)Standup", output);
+        Assert.DoesNotContain("\u001b[38;5;8mStandup", output);
+    }
+
+    // AC-8 (036)
+    [Fact]
+    public void Render_CheckpointName_IsEscaped()
+    {
+        TestConsole console = new TestConsole();
+        console.Profile.Width = 120;
+        DayRecord record = DayRecord.Empty.Add(new DayEntry(EntryKind.Checkpoint, new TimeOnly(9, 0), "[red]Fix[/] [bold] #1", 42));
+
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record));
+
+        Assert.Matches(@"1 +Checkpoint +09:00 +\[red\]Fix\[/\] \[bold\] #1 #42", console.Output);
+    }
+
+    // AC-8 (036)
+    [Fact]
+    public void Render_WithoutCheckpoint_ArrivalAndLeavingRowsLookAsBefore()
+    {
+        TestConsole console = new TestConsole();
+        DayRecord record = new DayRecord(
+        [
+            new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)),
+            new DayEntry(EntryKind.BreakStart, new TimeOnly(12, 0)),
+            new DayEntry(EntryKind.Leaving, new TimeOnly(17, 0)),
+        ]);
+
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record));
+
+        string[] lines = console.Lines.Select(l => l.TrimEnd()).Where(l => l.Trim().Length > 0).ToArray();
+        Assert.Matches(@"^1 +Arrival +08:00 +left +-?\d+:\d\d$", lines[1]);
+        Assert.Matches(@"^2 +Break start +12:00$", lines[2]);
+        Assert.Matches(@"^3 +Leaving +17:00 +left +-1:00$", lines[3]);
+
+        // Same single space between the time and "left" as a day with only arrival and leaving.
+        TestConsole plain = new TestConsole();
+        plain.Write(new DayView(FixedTimeProvider.At20261027()).Render(new DayRecord(
+            [new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)), new DayEntry(EntryKind.Leaving, new TimeOnly(17, 0))])));
+        string[] plainLines = plain.Lines.Select(l => l.TrimEnd()).Where(l => l.Trim().Length > 0).ToArray();
+        Assert.Equal(plainLines[1][plainLines[1].IndexOf("08:00", StringComparison.Ordinal)..], lines[1][lines[1].IndexOf("08:00", StringComparison.Ordinal)..]);
+    }
 }

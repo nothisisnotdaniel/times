@@ -249,6 +249,49 @@ public class DayStoreTests
         Assert.Throws<InvalidOperationException>(() => new DayStore(folder).Load(Day));
     }
 
+    // AC-6 (036)
+    [Fact]
+    public void SaveThenLoad_RoundTripsBreaksAndCheckpoints()
+    {
+        using TempFolder temp = new TempFolder();
+        DayStore store = new DayStore(temp.Path);
+        DayRecord record = new DayRecord(
+        [
+            Arrival(8, 0),
+            new DayEntry(EntryKind.BreakStart, new TimeOnly(12, 0)),
+            new DayEntry(EntryKind.BreakEnd, new TimeOnly(12, 30)),
+            new DayEntry(EntryKind.Checkpoint, new TimeOnly(9, 30), "Standup [x]", 5678),
+            new DayEntry(EntryKind.Checkpoint, new TimeOnly(15, 0), "2024 review", null),
+            Leaving(17, 0),
+        ]);
+
+        store.Save(Day, record);
+
+        Assert.Equal(record, store.Load(Day));
+        Assert.Equal(
+            "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}," +
+            "{\"kind\":\"checkpoint\",\"time\":\"09:30\",\"name\":\"Standup [x]\",\"workItem\":5678}," +
+            "{\"kind\":\"breakStart\",\"time\":\"12:00\"},{\"kind\":\"breakEnd\",\"time\":\"12:30\"}," +
+            "{\"kind\":\"checkpoint\",\"time\":\"15:00\",\"name\":\"2024 review\"}," +
+            "{\"kind\":\"leaving\",\"time\":\"17:00\"}]}",
+            File.ReadAllText(store.PathFor(Day)));
+    }
+
+    // AC-7 (036)
+    [Theory]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"A\",\"workItem\":0}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"lunch\",\"time\":\"09:00\"}]}")]
+    public void Load_InvalidCheckpointOrKind_ThrowsInvalidData(string contents)
+    {
+        using TempFolder temp = new TempFolder();
+        DayStore store = new DayStore(temp.Path);
+        File.WriteAllText(store.PathFor(Day), contents);
+
+        InvalidDataException ex = Assert.Throws<InvalidDataException>(() => store.Load(Day));
+        Assert.Equal("The file for 2026-10-27 is not a valid day file.", ex.Message);
+    }
+
     private static DayEntry Arrival(int hour, int minute) => new(EntryKind.Arrival, new TimeOnly(hour, minute));
 
     private static DayEntry Leaving(int hour, int minute) => new(EntryKind.Leaving, new TimeOnly(hour, minute));

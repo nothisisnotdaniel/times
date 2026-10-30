@@ -54,9 +54,12 @@ internal sealed class DayView
 
     /// <summary>
     /// Renders the current day: the heading, then one row per entry in time order (grey number
-    /// starting at 1, grey <c>Arrival</c>/<c>Leaving</c> label, <c>SteelBlue1</c> time), or
-    /// <c>No entries yet.</c> if nothing is booked. Each row ends with the work time left after
-    /// that entry (grey <c>left</c> plus the right-aligned value, see <see cref="DayRecord.TimeLeft"/>).
+    /// starting at 1, grey label such as <c>Arrival</c> or <c>Checkpoint</c>, <c>SteelBlue1</c> time),
+    /// or <c>No entries yet.</c> if nothing is booked. If the day has a checkpoint, a details column
+    /// follows the time: the checkpoint's escaped name and, if it has one, its grey work item
+    /// (<c>#5678</c>). Arrival and leaving rows end with the work time left after that entry (grey
+    /// <c>left</c> plus the right-aligned value, see <see cref="DayRecord.TimeLeft"/>); break and
+    /// checkpoint rows leave that cell empty.
     /// </summary>
     public IRenderable Render(DayRecord day)
     {
@@ -65,26 +68,63 @@ internal sealed class DayView
             return new Rows(HeadingRule(), new Markup("[grey]No entries yet.[/]"));
         }
 
+        // Only days with a checkpoint get the details column, so other days look exactly as before.
+        bool details = day.Entries.Any(e => e.Kind == EntryKind.Checkpoint);
         Grid grid = new Grid()
             .AddColumn(new GridColumn().RightAligned())
             .AddColumn()
-            .AddColumn()
-            .AddColumn(new GridColumn().RightAligned());
+            .AddColumn();
+        if (details)
+        {
+            grid.AddColumn();
+        }
+
+        grid.AddColumn(new GridColumn().RightAligned());
         IReadOnlyList<TimeSpan> timeLeft = day.TimeLeft();
         for (int i = 0; i < day.Entries.Count; i++)
         {
             DayEntry entry = day.Entries[i];
             string number = (i + 1).ToString(CultureInfo.InvariantCulture);
-            string label = entry.Kind == EntryKind.Arrival ? "Arrival" : "Leaving";
             string clock = entry.Time.ToString("HH:mm", CultureInfo.InvariantCulture);
-            grid.AddRow(
+            List<IRenderable> cells =
+            [
                 new Markup($"[grey]{number}[/]"),
-                new Markup($"[grey]{label}[/]"),
+                new Markup($"[grey]{Label(entry.Kind)}[/]"),
                 new Markup($"[steelblue1]{clock}[/]"),
-                new Markup($"[grey]left[/] {FormatTimeLeft(timeLeft[i])}"));
+            ];
+            if (details)
+            {
+                cells.Add(Details(entry));
+            }
+
+            bool hasTimeLeft = entry.Kind is EntryKind.Arrival or EntryKind.Leaving;
+            cells.Add(hasTimeLeft ? new Markup($"[grey]left[/] {FormatTimeLeft(timeLeft[i])}") : Text.Empty);
+            grid.AddRow(cells.ToArray());
         }
 
         return new Rows(HeadingRule(), grid);
+    }
+
+    private static string Label(EntryKind kind) => kind switch
+    {
+        EntryKind.Arrival => "Arrival",
+        EntryKind.Leaving => "Leaving",
+        EntryKind.BreakStart => "Break start",
+        EntryKind.BreakEnd => "Break end",
+        EntryKind.Checkpoint => "Checkpoint",
+        _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+    };
+
+    // The checkpoint's name (user text, so escaped) and its grey work item; empty for other kinds.
+    private static IRenderable Details(DayEntry entry)
+    {
+        if (entry.Name is not { } name)
+        {
+            return Text.Empty;
+        }
+
+        string workItem = entry.WorkItem is { } w ? $" [grey]#{w.ToString(CultureInfo.InvariantCulture)}[/]" : string.Empty;
+        return new Markup(Markup.Escape(name) + workItem);
     }
 
     /// <summary>

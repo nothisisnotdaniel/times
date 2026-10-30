@@ -11,6 +11,12 @@ public sealed class AppTests : IDisposable
     /// <summary>Rows the quicklist panel takes with no projects (border, one line, border): the day heading is on the next row.</summary>
     private const int EmptyPanelRows = 3;
 
+    /// <summary>
+    /// The rows /help needs on an empty day with a one-line data folder footer: 14 commands no longer
+    /// fit the 24-row default (the "Shorter /help" backlog item), so tests about the help content use this.
+    /// </summary>
+    private const int HelpHeight = 26;
+
     private readonly TempFolder data = new();
 
     public void Dispose() => data.Dispose();
@@ -628,7 +634,12 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Help_ListsNavigationCommands()
     {
-        (_, string output) = RunCommands("/help", "/quit");
+        (_, string output) = Run(c =>
+        {
+            c.Profile.Height = HelpHeight;
+            c.Input.PushTextWithEnter("/help");
+            c.Input.PushTextWithEnter("/quit");
+        });
 
         Assert.Contains("/prev", output);
         Assert.Contains("Go to the previous day", output);
@@ -804,12 +815,12 @@ public sealed class AppTests : IDisposable
         Assert.Contains("\u001b[21;1H", output);
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal([14, 15, 16, 17, 18, 19, 20, 21], popup.Select(w => w.Row));
-        // Eleven commands: the first seven by name, then a row counting the other four.
+        // Fourteen commands: the first seven by name, then a row counting the other seven.
         Assert.Equal(
-            ["/addproject", "/arrive", "/change", "/help", "/leave", "/next", "/prev", "…"],
+            ["/addproject", "/arrive", "/break", "/breakend", "/change", "/checkpoint", "/help", "…"],
             popup.Select(w => w.Text.Split(' ')[0]));
-        Assert.StartsWith("… 4 more", popup[^1].Text);
-        Assert.Contains("Go to the previous day", popup[6].Text);
+        Assert.StartsWith("… 7 more", popup[^1].Text);
+        Assert.Contains("List all commands", popup[6].Text);
         Assert.Equal(80, popup[0].Text.Length);
     }
 
@@ -880,9 +891,9 @@ public sealed class AppTests : IDisposable
         List<string> hintRow = TypingWrites(output, 1).Where(w => w.Row == 21).Select(w => w.Text).ToList();
 
         // popup, restored (Backspace), popup, restored (Esc), popup (/quit typing), ...
-        Assert.StartsWith("… 4 more", hintRow[0]);
+        Assert.StartsWith("… 7 more", hintRow[0]);
         Assert.Contains("Unknown command /nope", hintRow[1]);
-        Assert.StartsWith("… 4 more", hintRow[2]);
+        Assert.StartsWith("… 7 more", hintRow[2]);
         Assert.Contains("Unknown command /nope", hintRow[3]);
         Assert.Contains("Unknown command /nope", hintRow[^1]);
         Assert.Contains("\u001b[38;5;9mUnknown command", output[output.LastIndexOf("\u001b[21;1H", StringComparison.Ordinal)..]);
@@ -915,8 +926,8 @@ public sealed class AppTests : IDisposable
 
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
-        // 23 commands: 7 shown, the eighth row counts the other 16.
-        Assert.StartsWith("… 16 more", popup[^1].Text);
+        // 26 commands: 7 shown, the eighth row counts the other 19.
+        Assert.StartsWith("… 19 more", popup[^1].Text);
         // Nothing is drawn on row 1 while typing (the final clear on /quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
@@ -1484,16 +1495,17 @@ public sealed class AppTests : IDisposable
 
     // AC-5
     [Fact]
-    public void DefaultHeight_Help_Fits_WithoutCue()
+    public void HelpHeight_Help_Fits_WithoutCue()
     {
         (_, string output) = Run(c =>
         {
+            c.Profile.Height = HelpHeight;
             c.Input.PushTextWithEnter("/help");
             c.Input.PushTextWithEnter("/quit");
         }, dataFolder: Path.Combine(Path.GetPathRoot(data.Path)!, "Times")); // a short folder, so the footer is one line (nothing is written)
 
         string[] frame = Frames(output)[1];
-        AssertLayout(frame);
+        AssertLayout(frame, HelpHeight);
         Assert.DoesNotContain("more lines", output);
         Assert.Contains("/today", string.Join('\n', frame));
     }
@@ -2333,6 +2345,7 @@ public sealed class AppTests : IDisposable
         }
 
         console.Profile.Width = 300;
+        console.Profile.Height = HelpHeight;
         console.Input.PushTextWithEnter("/help");
         console.Input.PushTextWithEnter("/quit");
         int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(folder), folderFromEnvironment: folderFromEnvironment).Run([]);
@@ -2443,6 +2456,7 @@ public sealed class AppTests : IDisposable
         string[] before = WorkingDirectoryEntries();
         TestConsole console = new TestConsole().Interactive();
         console.Profile.Width = 300;
+        console.Profile.Height = HelpHeight + 1; // one more row for the booked entry
         console.Input.PushTextWithEnter("/arrive 8:15");
         console.Input.PushTextWithEnter("/help");
         console.Input.PushTextWithEnter("/quit");
@@ -3084,18 +3098,19 @@ public sealed class AppTests : IDisposable
     [Theory]
     [InlineData(5)]
     [InlineData(9)]
-    public void Help_AtDefaultHeight_WithManyProjects_ShowsTodayAndDataFolder(int projects)
+    public void Help_AtHelpHeight_WithManyProjects_ShowsTodayAndDataFolder(int projects)
     {
         WriteProjects(projects);
         TestConsole console = new TestConsole().Interactive();
         console.Profile.Width = 300;
+        console.Profile.Height = HelpHeight;
         console.Input.PushTextWithEnter("/help");
         console.Input.PushTextWithEnter("/quit");
 
         Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
 
         string[] frame = Frames(console.Output)[1];
-        AssertLayout(frame);
+        AssertLayout(frame, HelpHeight);
         Assert.Contains(Heading, frame[0]);
         Assert.DoesNotContain(frame, l => l.Contains("more lines", StringComparison.Ordinal));
         Assert.DoesNotContain(frame, l => l.StartsWith("╭─Projects", StringComparison.Ordinal));
@@ -3132,5 +3147,351 @@ public sealed class AppTests : IDisposable
         {
             Assert.StartsWith("╭─Projects", frame[0]);
         }
+    }
+
+    // Breaks and checkpoints (job 036) -------------------------------------------------------
+
+    private const string CheckpointUsage = "Use /checkpoint [H:mm] [#project] <name>, where #project is the project's number on the quicklist.";
+
+    private void WriteTwoProjects() =>
+        File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":1234,\"title\":\"Website\"},{\"workItem\":5678,\"title\":\"Controlling\"}]}");
+
+    private DayRecord LoadDay() => new DayStore(data.Path).Load(new DateOnly(2026, 10, 27));
+
+    private static DayEntry Checkpoint(int hour, int minute, string name, int? workItem = null) =>
+        new(EntryKind.Checkpoint, new TimeOnly(hour, minute), name, workItem);
+
+    private static FixedTimeProvider At183059() =>
+        new(new DateTimeOffset(2026, 10, 27, 18, 30, 59, TimeSpan.Zero), TimeZoneInfo.Utc);
+
+    // AC-1 (036)
+    [Theory]
+    [InlineData("/break", "breakStart", "Break start")]
+    [InlineData("/breakend", "breakEnd", "Break end")]
+    public void Break_WithoutTime_BooksCurrentMinute(string command, string kind, string label)
+    {
+        (int exitCode, string output) = RunCommands(At183059(), command, "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(Entries(kind + " 18:30"), ReadDay("2026-10-27"));
+        Assert.Matches($@"1 +{label} +18:30", LastFrame(output));
+    }
+
+    // AC-1 (036)
+    [Theory]
+    [InlineData("/break", "breakStart")]
+    [InlineData("/breakend", "breakEnd")]
+    public void Break_WithTime_BooksThatTime_OnTheViewedDay(string command, string kind)
+    {
+        (int exitCode, _) = RunCommands("/prev", command + " 9:05", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(["2026-10-26.json"], Directory.EnumerateFiles(data.Path).Select(Path.GetFileName));
+        Assert.Equal(Entries(kind + " 09:05"), ReadDay("2026-10-26"));
+    }
+
+    // AC-1 (036)
+    [Theory]
+    [InlineData("/break 25:00", "/break: 25:00 is not a time.")]
+    [InlineData("/breakend abc", "/breakend: abc is not a time.")]
+    [InlineData("/break [bold]", "/break: [bold] is not a time.")]
+    public void Break_InvalidTime_ShowsHint_AndWritesNothing(string typed, string expected)
+    {
+        (int exitCode, string output) = RunCommands(typed, "/quit");
+
+        Assert.Equal(0, exitCode);
+        AssertOnHintRow(LastLayout(output), expected);
+        AssertOnHintRow(LastLayout(output), "Use H:mm, e.g. 8:15.");
+        Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
+    }
+
+    // AC-1, AC-4 (036)
+    [Theory]
+    [InlineData("/break 25:00")]
+    [InlineData("/checkpoint #abc Standup")]
+    public void BreakAndCheckpoint_Hints_AreRed(string typed)
+    {
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)m/(break|checkpoint): ", RunAnsi(typed));
+    }
+
+    // AC-2 (036)
+    [Fact]
+    public void Checkpoint_NameOnly_BooksCurrentMinute_WithoutWorkItem()
+    {
+        (int exitCode, string output) = RunCommands(At183059(), "/checkpoint Standup", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal([Checkpoint(18, 30, "Standup")], LoadDay().Entries);
+        Assert.Equal("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"18:30\",\"name\":\"Standup\"}]}", ReadDay("2026-10-27"));
+        Assert.Matches(@"1 +Checkpoint +18:30 +Standup", LastFrame(output));
+    }
+
+    // AC-2 (036)
+    [Theory]
+    [InlineData("/checkpoint 9:30 Standup", "Standup")]
+    [InlineData("/checkpoint 09:30 Standup", "Standup")]
+    [InlineData("/checkpoint   9:30   Daily   stand up   ", "Daily   stand up")]
+    [InlineData("/checkpoint 9:30 10:00 sync", "10:00 sync")]
+    public void Checkpoint_WithTime_BooksThatTime_AndKeepsInnerSpaces(string typed, string name)
+    {
+        (int exitCode, _) = RunCommands(typed, "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal([Checkpoint(9, 30, name)], LoadDay().Entries);
+    }
+
+    // AC-3 (036)
+    [Theory]
+    [InlineData("/checkpoint 9:30 #2 Standup", 9, 30)]
+    [InlineData("/checkpoint #2 Standup", 18, 30)]
+    public void Checkpoint_ProjectNumber_StoresTheProjectsWorkItem(string typed, int hour, int minute)
+    {
+        WriteTwoProjects();
+
+        (int exitCode, string output) = RunCommands(typed, "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal([Checkpoint(hour, minute, "Standup", 5678)], LoadDay().Entries);
+        Assert.Contains("\"workItem\":5678", ReadDay("2026-10-27"));
+        Assert.DoesNotContain("\"workItem\":2", ReadDay("2026-10-27"));
+        Assert.Matches(@"1 +Checkpoint +\d\d:\d\d +Standup #5678", LastFrame(output));
+    }
+
+    // AC-3 (036)
+    [Theory]
+    [InlineData("/checkpoint 2024 review", 18, 30)]
+    [InlineData("/checkpoint 9:30 2024 review", 9, 30)]
+    public void Checkpoint_DigitWordWithoutHash_IsPartOfTheName(string typed, int hour, int minute)
+    {
+        WriteTwoProjects();
+
+        RunCommands(typed, "/quit");
+
+        Assert.Equal([Checkpoint(hour, minute, "2024 review")], LoadDay().Entries);
+    }
+
+    // AC-3 (036)
+    [Fact]
+    public void Checkpoint_HashWordLaterInTheName_IsPartOfTheName()
+    {
+        WriteTwoProjects();
+
+        RunCommands("/checkpoint 9:30 Review #2 done", "/quit");
+
+        Assert.Equal([Checkpoint(9, 30, "Review #2 done")], LoadDay().Entries);
+    }
+
+    // AC-4 (036)
+    [Theory]
+    [InlineData("/checkpoint 9:30 #0 Standup", "/checkpoint: there is no project #0 on the quicklist.")]
+    [InlineData("/checkpoint #3 Standup", "/checkpoint: there is no project #3 on the quicklist.")]
+    [InlineData("/checkpoint #99 Standup", "/checkpoint: there is no project #99 on the quicklist.")]
+    [InlineData("/checkpoint #99999999999 Standup", "/checkpoint: there is no project #99999999999 on the quicklist.")]
+    [InlineData("/checkpoint # Standup", "/checkpoint: # is not a project number. " + CheckpointUsage)]
+    [InlineData("/checkpoint #abc Standup", "/checkpoint: #abc is not a project number. " + CheckpointUsage)]
+    [InlineData("/checkpoint 9:30 #2x Standup", "/checkpoint: #2x is not a project number. " + CheckpointUsage)]
+    [InlineData("/checkpoint #-1 Standup", "/checkpoint: #-1 is not a project number. " + CheckpointUsage)]
+    [InlineData("/checkpoint #[red] Standup", "/checkpoint: #[red] is not a project number. " + CheckpointUsage)]
+    [InlineData("/checkpoint #２ Standup", "/checkpoint: #２ is not a project number. " + CheckpointUsage)]
+    [InlineData("/checkpoint", "/checkpoint: say the checkpoint's name. " + CheckpointUsage)]
+    [InlineData("/checkpoint 9:30", "/checkpoint: say the checkpoint's name. " + CheckpointUsage)]
+    [InlineData("/checkpoint #2", "/checkpoint: say the checkpoint's name. " + CheckpointUsage)]
+    [InlineData("/checkpoint 9:30 #2", "/checkpoint: say the checkpoint's name. " + CheckpointUsage)]
+    [InlineData("/checkpoint 25:00 Standup", "/checkpoint: 25:00 is not a time. Use H:mm, e.g. 8:15.")]
+    [InlineData("/checkpoint 9:5 Standup", "/checkpoint: 9:5 is not a time. Use H:mm, e.g. 8:15.")]
+    [InlineData("/checkpoint 25:00", "/checkpoint: 25:00 is not a time. Use H:mm, e.g. 8:15.")]
+    [InlineData("/checkpoint a\u2028b", "/checkpoint: the name must not contain control characters.")]
+    public void Checkpoint_InvalidInput_ShowsHint_AndWritesNoFile(string typed, string expected)
+    {
+        WriteTwoProjects();
+        byte[] projects = File.ReadAllBytes(ProjectsFile);
+
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Profile.Width = 200;
+            foreach (char ch in typed)
+            {
+                // TestConsoleInput.PushText only takes characters with a ConsoleKey (below 256).
+                c.Input.PushKey(new ConsoleKeyInfo(ch, ch < 256 ? (ConsoleKey)char.ToUpperInvariant(ch) : ConsoleKey.NoName, false, false, false));
+            }
+
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        Assert.Equal(0, exitCode);
+        AssertOnHintRow(LastLayout(output), expected);
+        Assert.False(File.Exists(DayFile("2026-10-27")));
+        Assert.Equal(projects, File.ReadAllBytes(ProjectsFile));
+    }
+
+    // AC-4 (036)
+    [Fact]
+    public void Checkpoint_NameTooLong_ShowsHint_AndWritesNoFile_MaxLengthBooks()
+    {
+        string max = new string('n', ProjectList.MaxTitleLength);
+
+        (_, string output) = RunWide(200, "/checkpoint " + max + "n", "/quit");
+
+        AssertOnHintRow(LastLayout(output), "/checkpoint: the name is longer than 200 characters.");
+        Assert.False(File.Exists(DayFile("2026-10-27")));
+
+        RunCommands("/checkpoint 9:00 " + max, "/quit");
+        Assert.Equal([Checkpoint(9, 0, max)], LoadDay().Entries);
+    }
+
+    // AC-4 (036)
+    [Fact]
+    public void Checkpoint_InvalidInput_LeavesExistingDayUnchanged()
+    {
+        WriteTwoProjects();
+        File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
+        byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
+
+        RunCommands("/checkpoint #9 X", "/checkpoint #x X", "/checkpoint 9:30", "/checkpoint 24:00 X", "/break 7", "/quit");
+
+        Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
+    }
+
+    // AC-4 (036)
+    [Theory]
+    [InlineData("{not json")]
+    [InlineData("{\"projects\":{}}")]
+    public void Checkpoint_WithProjectNumber_UnreadableQuicklist_ShowsHint_AndWritesNothing(string contents)
+    {
+        File.WriteAllText(ProjectsFile, contents);
+
+        (int exitCode, string output) = RunWide(200, "/checkpoint 9:30 #1 Standup", "/quit");
+
+        Assert.Equal(0, exitCode);
+        AssertOnHintRow(LastLayout(output), "/checkpoint: the project list cannot be read: projects.json is not valid. Nothing was booked.");
+        Assert.False(File.Exists(DayFile("2026-10-27")));
+        Assert.Equal(contents, File.ReadAllText(ProjectsFile));
+    }
+
+    // AC-5 (036)
+    [Theory]
+    [InlineData("/checkpoint Standup", 18, 30, "Standup")]
+    [InlineData("/checkpoint 2024 review", 18, 30, "2024 review")]
+    [InlineData("/checkpoint 9:30 2024 review", 9, 30, "2024 review")]
+    public void Checkpoint_WithoutProjectNumber_IgnoresABrokenQuicklist(string typed, int hour, int minute, string name)
+    {
+        File.WriteAllText(ProjectsFile, "{not json");
+
+        (int exitCode, string output) = RunWide(200, typed, "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal([Checkpoint(hour, minute, name)], LoadDay().Entries);
+        Assert.Equal(string.Empty, LastLayout(output)[^4].Trim());
+    }
+
+    // AC-8 (036)
+    [Fact]
+    public void Checkpoint_MarkupName_IsShownLiterally()
+    {
+        (_, string output) = RunCommands("/checkpoint 9:00 [red]Fix[/]", "/quit");
+
+        Assert.Equal([Checkpoint(9, 0, "[red]Fix[/]")], LoadDay().Entries);
+        Assert.Matches(@"1 +Checkpoint +09:00 +\[red\]Fix\[/\]", LastFrame(output));
+    }
+
+    // AC-8, AC-9 (036)
+    [Fact]
+    public void Day_NumbersAllEntriesTogether_AndBreaksDoNotChangeTimeLeft()
+    {
+        WriteTwoProjects();
+
+        (int exitCode, string output) = RunWide(120, "/arrive 8:00", "/leave 17:00", "/break 12:00", "/breakend 12:30", "/checkpoint 9:30 #1 Kickoff", "/quit");
+
+        Assert.Equal(0, exitCode);
+        string frame = LastFrame(output);
+        Assert.Matches(@"1 +Arrival +08:00 +left 8:00", frame);
+        Assert.Matches(@"2 +Checkpoint +09:30 +Kickoff #1234 *\n", frame);
+        Assert.Matches(@"3 +Break start +12:00 *\n", frame);
+        Assert.Matches(@"4 +Break end +12:30 *\n", frame);
+        Assert.Matches(@"5 +Leaving +17:00 +left -1:00", frame);
+    }
+
+    // AC-10 (036)
+    [Fact]
+    public void Remove_RemovesBreakAndCheckpointEntries()
+    {
+        WriteTwoProjects();
+        RunCommands("/arrive 8:00", "/break 12:00", "/checkpoint 13:00 #2 Review", "/breakend 12:30", "/quit");
+
+        RunCommands("/remove 2", "/remove 3", "/quit");
+
+        Assert.Equal(Entries("arrival 08:00", "breakEnd 12:30"), ReadDay("2026-10-27"));
+    }
+
+    // AC-10 (036)
+    [Fact]
+    public void Change_MovesBreakAndCheckpoint_KeepingKindNameAndWorkItem()
+    {
+        WriteTwoProjects();
+        RunCommands("/arrive 8:00", "/checkpoint 9:00 #2 Daily  sync", "/break 12:00", "/quit");
+
+        (int exitCode, string output) = RunWide(120, "/change 2 14:00", "/change 2 7:00", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(
+            [
+                new DayEntry(EntryKind.BreakStart, new TimeOnly(7, 0)),
+                new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)),
+                Checkpoint(14, 0, "Daily  sync", 5678),
+            ],
+            LoadDay().Entries);
+        Assert.Matches(@"3 +Checkpoint +14:00 +Daily  sync #5678", LastFrame(output));
+    }
+
+    // AC-11 (036)
+    [Fact]
+    public void Help_ListsBreakBreakEndAndCheckpoint_WithDescriptions()
+    {
+        (_, string output) = Run(c =>
+        {
+            c.Profile.Height = HelpHeight;
+            c.Input.PushTextWithEnter("/help");
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        Assert.Matches(@"/break +│ Book the start of a break: now, or at an optional H:mm", output);
+        Assert.Matches(@"/breakend +│ Book the end of a break: now, or at an optional H:mm", output);
+        Assert.Matches(@"/checkpoint +│ Book a checkpoint: \[H:mm\] \[#quicklist number\] <name> +│", output);
+    }
+
+    // AC-11 (036)
+    [Theory]
+    [InlineData("/brea", "/break ", "Book the start of a break")]
+    [InlineData("/breake", "/breakend ", "Book the end of a break")]
+    [InlineData("/checkp", "/checkpoint ", "Book a checkpoint: [H:mm] [#quicklist number] <name>")]
+    public void Popup_ShowsBreakAndCheckpoint(string typed, string name, string description)
+    {
+        string output = RunAnsi(c =>
+        {
+            c.Input.PushText(typed);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        Assert.Contains(TypingWrites(output, 0), w => w.Text.StartsWith(name, StringComparison.Ordinal) && w.Text.Contains(description, StringComparison.Ordinal));
+    }
+
+    // AC-11 (036)
+    [Fact]
+    public void Tab_CompletesCheckpoint()
+    {
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Input.PushText("/checkp");
+            c.Input.PushKey(ConsoleKey.Tab);
+            c.Input.PushTextWithEnter(" 9:00 Done");
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        Assert.Equal(0, exitCode);
+        Assert.DoesNotContain("Unknown command", output);
+        Assert.Equal([Checkpoint(9, 0, "Done")], LoadDay().Entries);
     }
 }
