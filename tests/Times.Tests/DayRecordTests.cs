@@ -379,4 +379,184 @@ public class DayRecordTests
         Assert.Throws<ArgumentOutOfRangeException>(() => ThreeEntries().ChangeTime(number, new TimeOnly(9, 0)));
         Assert.Throws<ArgumentOutOfRangeException>(() => DayRecord.Empty.ChangeTime(1, new TimeOnly(9, 0)));
     }
+
+    // Breaks and checkpoints (job 036) ----------------------------------------------------
+
+    private static DayEntry BreakStart(int hour, int minute) => new(EntryKind.BreakStart, new TimeOnly(hour, minute));
+
+    private static DayEntry BreakEnd(int hour, int minute) => new(EntryKind.BreakEnd, new TimeOnly(hour, minute));
+
+    private static DayEntry Checkpoint(int hour, int minute, string name, int? workItem = null) =>
+        new(EntryKind.Checkpoint, new TimeOnly(hour, minute), name, workItem);
+
+    // AC-6 (036)
+    [Fact]
+    public void ToJson_WritesNewKinds_AndLeavesOutMissingWorkItem()
+    {
+        DayRecord record = new DayRecord(
+        [
+            Arrival(8, 0),
+            BreakStart(12, 0),
+            BreakEnd(12, 30),
+            Checkpoint(13, 0, "Standup", 5678),
+            Checkpoint(14, 0, "2024 review"),
+            Leaving(17, 0),
+        ]);
+
+        Assert.Equal(
+            "{\"entries\":[" +
+            "{\"kind\":\"arrival\",\"time\":\"08:00\"}," +
+            "{\"kind\":\"breakStart\",\"time\":\"12:00\"}," +
+            "{\"kind\":\"breakEnd\",\"time\":\"12:30\"}," +
+            "{\"kind\":\"checkpoint\",\"time\":\"13:00\",\"name\":\"Standup\",\"workItem\":5678}," +
+            "{\"kind\":\"checkpoint\",\"time\":\"14:00\",\"name\":\"2024 review\"}," +
+            "{\"kind\":\"leaving\",\"time\":\"17:00\"}]}",
+            record.ToJson());
+    }
+
+    // AC-6 (036)
+    [Fact]
+    public void RoundTrip_KeepsNewKinds_NamesAndWorkItems()
+    {
+        DayRecord record = new DayRecord(
+        [
+            BreakStart(12, 0),
+            BreakEnd(12, 30),
+            Checkpoint(9, 30, "Stand  up [x] \"quoted\" äö", 5678),
+            Checkpoint(10, 0, "No project"),
+        ]);
+
+        DayRecord loaded = DayRecord.FromJson(record.ToJson());
+
+        Assert.Equal(record, loaded);
+        Assert.Equal("Stand  up [x] \"quoted\" äö", loaded.Entries[0].Name);
+        Assert.Equal(5678, loaded.Entries[0].WorkItem);
+        Assert.Null(loaded.Entries[1].WorkItem);
+        Assert.Null(loaded.Entries[2].Name);
+    }
+
+    // AC-6, AC-7 (036)
+    [Fact]
+    public void FromJson_ReadsPropertiesInAnyOrder()
+    {
+        DayRecord record = DayRecord.FromJson(
+            "{\"entries\":[{\"workItem\":7,\"name\":\"Review\",\"time\":\"09:00\",\"kind\":\"checkpoint\"}]}");
+
+        Assert.Equal([Checkpoint(9, 0, "Review", 7)], record.Entries);
+    }
+
+    // AC-7 (036)
+    [Theory]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":null}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":42}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"   \"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"a\\nb\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"a\\u2028b\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"A\",\"name\":\"B\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"A\",\"workItem\":0}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"A\",\"workItem\":-3}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"A\",\"workItem\":1.5}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"A\",\"workItem\":\"5\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"A\",\"workItem\":null}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"A\",\"workItem\":3000000000}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"A\",\"workItem\":1,\"workItem\":2}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"lunch\",\"time\":\"09:00\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"Checkpoint\",\"time\":\"09:00\",\"name\":\"A\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"break\",\"time\":\"09:00\"}]}")]
+    public void FromJson_InvalidCheckpointOrKind_ThrowsJsonException(string json)
+    {
+        Assert.ThrowsAny<JsonException>(() => DayRecord.FromJson(json));
+    }
+
+    // AC-7 (036)
+    [Fact]
+    public void FromJson_NameLongerThanMax_Throws_AndMaxLengthLoads()
+    {
+        string max = new string('a', ProjectList.MaxTitleLength);
+        string tooLong = max + "a";
+
+        Assert.Equal(max, DayRecord.FromJson($"{{\"entries\":[{{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"{max}\"}}]}}").Entries[0].Name);
+        Assert.ThrowsAny<JsonException>(() =>
+            DayRecord.FromJson($"{{\"entries\":[{{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"{tooLong}\"}}]}}"));
+    }
+
+    // AC-7 (036)
+    [Theory]
+    [InlineData("{\"arrival\":\"08:15\",\"leaving\":\"17:30\"}")]
+    [InlineData("{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:15\"},{\"kind\":\"leaving\",\"time\":\"17:30\"}]}")]
+    public void FromJson_FilesFromBeforeJob036_StillLoad(string json)
+    {
+        Assert.Equal([Arrival(8, 15), Leaving(17, 30)], DayRecord.FromJson(json).Entries);
+    }
+
+    // AC-6 (036)
+    [Fact]
+    public void ToJson_ArrivalAndLeaving_Unchanged()
+    {
+        Assert.Equal(
+            "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:15\"},{\"kind\":\"leaving\",\"time\":\"12:00\"}]}",
+            new DayRecord([Arrival(8, 15), Leaving(12, 0)]).ToJson());
+    }
+
+    // AC-9 (036)
+    [Fact]
+    public void TimeLeft_BreaksAndCheckpoints_ChangeNothing()
+    {
+        DayRecord plain = new DayRecord([Arrival(8, 0), Leaving(17, 0)]);
+        DayRecord withBreak = new DayRecord(
+            [Arrival(8, 0), BreakStart(12, 0), Checkpoint(12, 15, "Lunch talk", 5), BreakEnd(12, 30), Leaving(17, 0)]);
+
+        Assert.Equal(plain.TimeLeft()[^1], withBreak.TimeLeft()[^1]);
+        Assert.Equal(
+            [TimeSpan.FromHours(8), TimeSpan.FromHours(8), TimeSpan.FromHours(8), TimeSpan.FromHours(8), TimeSpan.FromHours(-1)],
+            withBreak.TimeLeft());
+    }
+
+    // AC-9 (036)
+    [Fact]
+    public void TimeLeft_BreakEnd_NeverClosesAnArrival()
+    {
+        DayRecord record = new DayRecord([Arrival(8, 0), BreakEnd(10, 0), Checkpoint(11, 0, "X"), BreakStart(12, 0), Leaving(13, 0)]);
+
+        // Only the 13:00 leaving closes the 08:00 arrival: 5 hours.
+        Assert.Equal(
+            [TimeSpan.FromHours(8), TimeSpan.FromHours(8), TimeSpan.FromHours(8), TimeSpan.FromHours(8), TimeSpan.FromHours(3)],
+            record.TimeLeft());
+    }
+
+    // AC-10 (036)
+    [Fact]
+    public void ChangeTime_KeepsKindNameAndWorkItem()
+    {
+        DayRecord record = new DayRecord([Arrival(8, 0), Checkpoint(9, 0, "Standup", 5678), BreakStart(12, 0)]);
+
+        DayRecord changed = record.ChangeTime(2, new TimeOnly(13, 0)).ChangeTime(2, new TimeOnly(7, 30));
+
+        Assert.Equal([BreakStart(7, 30), Arrival(8, 0), Checkpoint(13, 0, "Standup", 5678)], changed.Entries);
+    }
+
+    // AC-10 (036)
+    [Fact]
+    public void RemoveAt_RemovesBreakOrCheckpoint()
+    {
+        DayRecord record = new DayRecord([BreakStart(12, 0), Checkpoint(13, 0, "A", 1), BreakEnd(14, 0)]);
+
+        Assert.Equal([BreakStart(12, 0), BreakEnd(14, 0)], record.RemoveAt(2).Entries);
+        Assert.Equal([Checkpoint(13, 0, "A", 1), BreakEnd(14, 0)], record.RemoveAt(1).Entries);
+    }
+
+    // AC-7 (036)
+    [Fact]
+    public void DayEntry_RejectsInvalidCheckpoints_AndNamesOnOtherKinds()
+    {
+        TimeOnly nine = new TimeOnly(9, 0);
+        Assert.ThrowsAny<ArgumentException>(() => new DayEntry(EntryKind.Checkpoint, nine));
+        Assert.ThrowsAny<ArgumentException>(() => new DayEntry(EntryKind.Checkpoint, nine, " ", null));
+        Assert.ThrowsAny<ArgumentException>(() => new DayEntry(EntryKind.Checkpoint, nine, "a\tb", null));
+        Assert.ThrowsAny<ArgumentException>(() => new DayEntry(EntryKind.Checkpoint, nine, "A", 0));
+        Assert.ThrowsAny<ArgumentException>(() => new DayEntry(EntryKind.Arrival, nine, "A", null));
+        Assert.ThrowsAny<ArgumentException>(() => new DayEntry(EntryKind.BreakStart, nine, null, 5));
+    }
 }

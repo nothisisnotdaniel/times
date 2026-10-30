@@ -72,6 +72,11 @@ internal sealed class App
             Book("/arrive", argument, EntryKind.Arrival));
         registry.Register("/leave", $"Book your leaving: now, or at an optional {TimeInput.Format}", argument =>
             Book("/leave", argument, EntryKind.Leaving));
+        registry.Register("/break", $"Book the start of a break: now, or at an optional {TimeInput.Format}", argument =>
+            Book("/break", argument, EntryKind.BreakStart));
+        registry.Register("/breakend", $"Book the end of a break: now, or at an optional {TimeInput.Format}", argument =>
+            Book("/breakend", argument, EntryKind.BreakEnd));
+        registry.Register("/checkpoint", $"Book a checkpoint: [{TimeInput.Format}] [#quicklist number] <name>", Checkpoint);
         registry.Register("/remove", "Remove an entry from this day by its number", Remove);
         registry.Register("/change", $"Change the time of an entry on this day: <number> <{TimeInput.Format}>", Change);
     }
@@ -291,15 +296,118 @@ internal sealed class App
         TimeOnly at;
         if (argument.Length == 0)
         {
-            TimeOnly now = TimeOnly.FromDateTime(time.GetLocalNow().DateTime);
-            at = new TimeOnly(now.Hour, now.Minute);
+            at = Now();
         }
         else if (!TimeInput.TryParse(argument, out at))
         {
-            return Hint($"{name}: [bold]{Markup.Escape(argument)}[/] is not a time. " +
-                $"Use [bold]{TimeInput.Format}[/], e.g. [bold]8:15[/].");
+            return NotATime(name, argument);
         }
 
+        return Save(name, new DayEntry(kind, at));
+    }
+
+    // Books a named checkpoint: [H:mm] [#<project>] <name>. Only a token right after the optional time
+    // that starts with '#' is a project number; it is looked up in the quicklist and the project's
+    // work item is stored. Nothing is written if any part is invalid, and projects.json is read only
+    // when a project number is given.
+    private CommandResult Checkpoint(string argument)
+    {
+        const string Name = "/checkpoint";
+        string usage = $"Use [bold]{Markup.Escape($"/checkpoint [{TimeInput.Format}] [#project] <name>")}[/], " +
+            "where #project is the project's number on the quicklist.";
+
+        string rest = argument;
+        TimeOnly at = Now();
+        (string first, string afterFirst) = SplitToken(rest);
+        if (TimeInput.TryParse(first, out TimeOnly given))
+        {
+            at = given;
+            rest = afterFirst;
+        }
+        else if (first.Contains(':') && first.All(c => c == ':' || char.IsAsciiDigit(c)))
+        {
+            return NotATime(Name, first);
+        }
+
+        string? projectToken = null;
+        int? projectNumber = null;
+        (string token, string afterToken) = SplitToken(rest);
+        if (token.StartsWith('#'))
+        {
+            projectToken = token;
+            rest = afterToken;
+            string digits = token[1..];
+            if (digits.Length == 0 || !digits.All(char.IsAsciiDigit))
+            {
+                return Hint($"{Name}: [bold]{Markup.Escape(token)}[/] is not a project number. {usage}");
+            }
+
+            // Too many digits for an int can never be a quicklist position: 0 stands for "no such project".
+            projectNumber = int.TryParse(digits, NumberStyles.None, CultureInfo.InvariantCulture, out int parsed) ? parsed : 0;
+        }
+
+        string checkpoint = rest.Trim();
+        if (checkpoint.Length == 0)
+        {
+            return Hint($"{Name}: say the checkpoint's name. {usage}");
+        }
+
+        if (checkpoint.Length > ProjectList.MaxTitleLength)
+        {
+            return Hint($"{Name}: the name is longer than {ProjectList.MaxTitleLength.ToString(CultureInfo.InvariantCulture)} characters.");
+        }
+
+        if (ProjectList.HasControlCharacters(checkpoint))
+        {
+            return Hint($"{Name}: the name must not contain control characters.");
+        }
+
+        int? workItem = null;
+        if (projectNumber is { } number && projectToken is not null)
+        {
+            ProjectList projects;
+            try
+            {
+                projects = projectStore.Load();
+            }
+            catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+            {
+                return Hint($"{Name}: {UnreadableProjects(ex)} Nothing was booked.");
+            }
+
+            if (number < 1 || number > projects.Projects.Count)
+            {
+                return Hint($"{Name}: there is no project [bold]{Markup.Escape(projectToken)}[/] on the quicklist.");
+            }
+
+            workItem = projects.Projects[number - 1].WorkItem;
+        }
+
+        return Save(Name, new DayEntry(EntryKind.Checkpoint, at, checkpoint, workItem));
+    }
+
+    // Splits off the first space- or tab-separated token. The rest keeps its inner spacing.
+    private static (string Token, string Remainder) SplitToken(string text)
+    {
+        string trimmed = text.TrimStart(' ', '\t');
+        int split = trimmed.IndexOfAny([' ', '\t']);
+        return split < 0 ? (trimmed, string.Empty) : (trimmed[..split], trimmed[(split + 1)..]);
+    }
+
+    // The current local minute, seconds dropped.
+    private TimeOnly Now()
+    {
+        TimeOnly now = TimeOnly.FromDateTime(time.GetLocalNow().DateTime);
+        return new TimeOnly(now.Hour, now.Minute);
+    }
+
+    private static CommandResult NotATime(string name, string text) =>
+        Hint($"{name}: [bold]{Markup.Escape(text)}[/] is not a time. " +
+            $"Use [bold]{TimeInput.Format}[/], e.g. [bold]8:15[/].");
+
+    // Adds entry to the day being viewed. Nothing is written if the day's file cannot be read.
+    private CommandResult Save(string name, DayEntry entry)
+    {
         DateOnly day = dayView.Current;
         DayRecord current;
         try
@@ -311,7 +419,7 @@ internal sealed class App
             return Hint($"{name}: {Markup.Escape(ex.Message)} Nothing was booked.");
         }
 
-        DayRecord updated = current.Add(new DayEntry(kind, at));
+        DayRecord updated = current.Add(entry);
 
         try
         {
