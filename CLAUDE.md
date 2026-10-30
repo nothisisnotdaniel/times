@@ -32,6 +32,12 @@ Every factory agent reads this file before working on Times. Keep it short and a
     (for macOS Terminal) move it by a page (height - 2 lines); plain ↑/↓ stay history. Like the
     popup, a scroll redraws in place: only the top-area rows, then the popup (if open) and the input
     line. The offset goes back to 0 on every full redraw (after every Enter).
+    The mouse wheel moves it by 3 lines per notch through the same in-place redraw: `App.Run` turns
+    terminal mouse reporting on (`MouseReporting`, SGR `ESC[?1000h ESC[?1006h`) before the first draw
+    and off in a `finally` on every exit (Program.cs also turns it off on Ctrl+C and process exit).
+    The line editor reads the `ESC [ …` sequence after an Esc that has a `[` waiting and decodes it
+    with `MouseInput`; a lone Esc stays Esc. On Windows, `WindowsConsole.cs` sets the console input
+    mode and turns wheel records into the same SGR keys.
   - **Command popup:** while the line starts with `/`, a popup just above the input box lists the
     registered commands with their descriptions, filtered by what was typed and ranked by
     Levenshtein distance so typos still match. The popup is the one thing redrawn **while

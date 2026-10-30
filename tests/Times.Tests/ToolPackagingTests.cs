@@ -44,6 +44,20 @@ public sealed class ToolPackagingTests
         Assert.Contains(expected, readme, StringComparison.Ordinal);
     }
 
+    // AC-10 (038)
+    [Theory]
+    [InlineData("## Mouse")]
+    [InlineData("wheel scrolls the area above the input box")]
+    [InlineData("Shift-drag")]
+    [InlineData("Option-drag")]
+    [InlineData("normal mouse behaviour comes back when Times\nexits")]
+    public void Readme_ExplainsMouse(string expected)
+    {
+        string readme = File.ReadAllText(Path.Combine(RepoRoot, "README.md")).ReplaceLineEndings("\n");
+
+        Assert.Contains(expected, readme, StringComparison.Ordinal);
+    }
+
     // AC-6
     [Theory]
     [InlineData("nupkg/x.nupkg")]

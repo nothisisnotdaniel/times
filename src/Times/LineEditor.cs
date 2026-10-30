@@ -2,6 +2,13 @@ using Spectre.Console;
 
 namespace Times;
 
+/// <summary>How far one scroll request moves: a page (scroll keys) or a wheel notch.</summary>
+internal enum ScrollStep
+{
+    Page,
+    Wheel,
+}
+
 /// <summary>
 /// A small line editor for the input box. It reads keys with <c>ReadKey(intercept: true)</c> and,
 /// after each key, redraws only the command popup's rows and the input line via
@@ -11,11 +18,20 @@ namespace Times;
 /// <para>
 /// PageUp/PageDown scroll the screen above the input box when a scroll callback is given:
 /// Shift+PageUp/PageDown and Ctrl+Up/Down do the same (macOS Terminal keeps plain PageUp/PageDown
-/// for its own scrollback). The editor calls the callback with -1 (up) or +1 (down); when it
-/// reports that it redrew something, the editor draws the popup (if open) again on top and then
+/// for its own scrollback). The editor calls the callback with -1 (up) or +1 (down) and
+/// <see cref="ScrollStep.Page"/>; when it reports that it redrew something, the editor draws the popup (if open) again on top and then
 /// the input line, so the cursor ends after the typed text. Scroll keys never change the line, the
 /// history position or the popup state. Without a callback they do nothing. Plain Up/Down stay
 /// history.
+/// </para>
+/// <para>
+/// Mouse wheel: after an Esc key (<c>Key == Escape</c> or <c>KeyChar == ''</c>), if another key
+/// is already waiting and it is <c>[</c>, the editor reads the rest of the escape sequence (blocking,
+/// at most <see cref="MouseInput.MaxKeys"/> keys) and decodes it with <see cref="MouseInput"/>. A
+/// wheel notch calls the scroll callback with -1 or +1 and <see cref="ScrollStep.Wheel"/>, exactly
+/// like a scroll key; clicks, horizontal wheel and unknown sequences are dropped silently. Neither
+/// touches the line, the history position, the popup or the Tab list. A lone Esc (nothing waiting)
+/// is a plain Esc, and an Esc followed by any other key is a plain Esc and then that key.
 /// </para>
 /// <para>
 /// Tab completes a unique command prefix. When 2 or more names start with the typed prefix, Tab
@@ -63,11 +79,11 @@ internal sealed class LineEditor
     /// <paramref name="placeholder"/> is grey text shown while the line is empty, or <c>null</c> for
     /// none. The editor assumes the caller has already drawn it at <paramref name="column"/> and
     /// redraws it (cropped to the room) whenever the line becomes empty again.
-    /// <paramref name="scroll"/> is called with -1 or +1 for a scroll key and returns <c>true</c> if
-    /// it redrew anything, or is <c>null</c> to ignore scroll keys.
+    /// <paramref name="scroll"/> is called with -1 or +1 and the kind of step for a scroll key or a
+    /// wheel notch and returns <c>true</c> if it redrew anything, or is <c>null</c> to ignore both.
     /// Returns <c>null</c> if the input has no more keys.
     /// </summary>
-    public string? ReadLine(int column, int line, int width, PopupArea? popup = null, string? placeholder = null, Func<int, bool>? scroll = null)
+    public string? ReadLine(int column, int line, int width, PopupArea? popup = null, string? placeholder = null, Func<int, ScrollStep, bool>? scroll = null)
     {
         string buffer = string.Empty;
         int historyIndex = history.Count;
@@ -75,10 +91,12 @@ internal sealed class LineEditor
         int popupRows = 0;
         bool popupDismissed = false;
         bool tabList = false;
+        ConsoleKeyInfo? pending = null;
 
         while (true)
         {
-            ConsoleKeyInfo? key = console.Input.ReadKey(intercept: true);
+            ConsoleKeyInfo? key = pending ?? console.Input.ReadKey(intercept: true);
+            pending = null;
             if (key is null)
             {
                 ClosePopup(popup, popupRows);
@@ -86,9 +104,42 @@ internal sealed class LineEditor
             }
 
             ConsoleKeyInfo info = key.Value;
-            if (ScrollDirection(info) is { } direction)
+            ScrollStep step = ScrollStep.Page;
+            int? direction = ScrollDirection(info);
+            if (IsEscape(info))
             {
-                if (scroll is not null && scroll(direction))
+                info = new ConsoleKeyInfo('', ConsoleKey.Escape, false, false, false);
+                if (console.Input.IsKeyAvailable())
+                {
+                    ConsoleKeyInfo? next = console.Input.ReadKey(intercept: true);
+                    if (next is { KeyChar: '[' })
+                    {
+                        MouseInputKind kind = ReadSequence();
+                        if (kind is not MouseInputKind.WheelUp and not MouseInputKind.WheelDown)
+                        {
+                            continue;
+                        }
+
+                        direction = kind == MouseInputKind.WheelUp ? -1 : 1;
+                        step = ScrollStep.Wheel;
+                    }
+                    else
+                    {
+                        // A plain Esc now, then that key on the next turn.
+                        if (next is null)
+                        {
+                            ClosePopup(popup, popupRows);
+                            return null;
+                        }
+
+                        pending = next;
+                    }
+                }
+            }
+
+            if (direction is { } scrollDirection)
+            {
+                if (scroll is not null && scroll(scrollDirection, step))
                 {
                     if (popupRows > 0)
                     {
@@ -195,6 +246,29 @@ internal sealed class LineEditor
             popupRows = showPopup ? DrawPopup(popup!, buffer, popupRows, tabList) : ClosePopup(popup, popupRows);
             drawn = Redraw(buffer, column, line, width, drawn, placeholder);
         }
+    }
+
+    private static bool IsEscape(ConsoleKeyInfo info) => info.Key == ConsoleKey.Escape || info.KeyChar == '\u001b';
+
+    // Reads the rest of an escape sequence whose ESC and '[' were already read, up to its end or
+    // MouseInput.MaxKeys keys, and decodes it. Waits for the keys that are still on their way (a
+    // slow connection may split a sequence). Running out of input ends the sequence; the next
+    // ReadKey then reports the end as usual.
+    private MouseInputKind ReadSequence()
+    {
+        string keys = "[";
+        while (!MouseInput.IsComplete(keys))
+        {
+            ConsoleKeyInfo? next = console.Input.ReadKey(intercept: true);
+            if (next is null)
+            {
+                return MouseInputKind.Discard;
+            }
+
+            keys += next.Value.KeyChar;
+        }
+
+        return MouseInput.Decode(keys);
     }
 
     // -1 for PageUp, Shift+PageUp and Ctrl+Up; +1 for PageDown, Shift+PageDown and Ctrl+Down;

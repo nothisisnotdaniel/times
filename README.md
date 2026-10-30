@@ -12,6 +12,16 @@ source tree:
 dotnet run --project src/Times
 ```
 
+## Mouse
+
+The mouse wheel scrolls the area above the input box, 3 lines per notch, wherever the pointer is
+(PageUp/PageDown, or Ctrl+↑/↓ in macOS Terminal, scroll by a page).
+
+To make that work, Times turns on the terminal's mouse reporting while it runs. Because of that,
+dragging with the mouse no longer selects text: while Times runs, select text with **Shift-drag**
+(**Option-drag** in macOS Terminal). The terminal's normal mouse behaviour comes back when Times
+exits, also after Ctrl+C.
+
 ## Install as a .NET tool
 
 You can install Times once as a .NET global tool and then start it from any terminal.

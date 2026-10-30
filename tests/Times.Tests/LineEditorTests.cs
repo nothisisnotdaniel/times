@@ -1,3 +1,4 @@
+using Spectre.Console;
 using Spectre.Console.Testing;
 
 namespace Times.Tests;
@@ -1184,8 +1185,8 @@ public class LineEditorTests
         console.Input.PushKey(Key(key, shift, control));
         console.Input.PushTextWithEnter("day");
 
-        Assert.Equal("/help", editor.ReadLine(5, 23, 70, scroll: d => { calls.Add(d); return true; }));
-        Assert.Equal("/today", editor.ReadLine(5, 23, 70, scroll: d => { calls.Add(d); return true; }));
+        Assert.Equal("/help", editor.ReadLine(5, 23, 70, scroll: (d, _) => { calls.Add(d); return true; }));
+        Assert.Equal("/today", editor.ReadLine(5, 23, 70, scroll: (d, _) => { calls.Add(d); return true; }));
 
         Assert.Equal([direction], calls);
         Assert.Equal(["/help", "/today"], editor.History);
@@ -1206,7 +1207,7 @@ public class LineEditorTests
         console.Input.PushKey(ConsoleKey.UpArrow);
         console.Input.PushKey(ConsoleKey.Enter);
 
-        Func<int, bool> scroll = d => { calls.Add(d); return false; };
+        Func<int, ScrollStep, bool> scroll = (d, _) => { calls.Add(d); return false; };
         editor.ReadLine(5, 23, 70, scroll: scroll);
         editor.ReadLine(5, 23, 70, scroll: scroll);
 
@@ -1227,7 +1228,7 @@ public class LineEditorTests
         console.Input.PushKey(ConsoleKey.UpArrow);
         console.Input.PushKey(ConsoleKey.Enter);
 
-        Func<int, bool> scroll = d => { calls.Add(d); return true; };
+        Func<int, ScrollStep, bool> scroll = (d, _) => { calls.Add(d); return true; };
         editor.ReadLine(5, 23, 70, scroll: scroll);
 
         Assert.Equal("/help", editor.ReadLine(5, 23, 70, scroll: scroll));
@@ -1262,7 +1263,7 @@ public class LineEditorTests
         console.Input.PushKey(ConsoleKey.Enter);
 
         int before = 0;
-        editor.ReadLine(5, 23, 70, scroll: _ =>
+        editor.ReadLine(5, 23, 70, scroll: (_, _) =>
         {
             before = console.Output.Length;
             console.Cursor.SetPosition(1, 1);
@@ -1286,7 +1287,7 @@ public class LineEditorTests
         console.Input.PushKey(ConsoleKey.Enter);
 
         int before = -1;
-        editor.ReadLine(5, 23, 70, scroll: _ =>
+        editor.ReadLine(5, 23, 70, scroll: (_, _) =>
         {
             before = console.Output.Length;
             return false;
@@ -1305,7 +1306,7 @@ public class LineEditorTests
         run.Console.Input.PushKey(ConsoleKey.Enter);
 
         int scrolledAt = -1;
-        run.Editor.ReadLine(5, 23, 70, run.Area, scroll: _ =>
+        run.Editor.ReadLine(5, 23, 70, run.Area, scroll: (_, _) =>
         {
             run.Console.Cursor.SetPosition(1, HintRow);
             run.Console.Write(new Spectre.Console.Text("scrolled"));
@@ -1316,5 +1317,324 @@ public class LineEditorTests
         List<AnsiWrite> after = AnsiWrites.Parse(run.Console.Output[scrolledAt..]);
         Assert.Contains(after, w => w.Row == HintRow && w.Text.StartsWith('/'));
         Assert.True(after.FindIndex(w => w.Row == HintRow && w.Text.StartsWith('/')) < after.FindIndex(w => w.Row == 23 && w.Column == 5));
+    }
+
+    // Mouse wheel (job 038) -----------------------------------------------------------------
+
+    private static readonly ConsoleKeyInfo Esc = new('\u001b', ConsoleKey.Escape, false, false, false);
+
+    /// <summary>Pushes Esc (with <c>KeyChar</c> ESC) and then <paramref name="rest"/> as plain characters.</summary>
+    private static void PushSequence(TestConsole console, string rest)
+    {
+        console.Input.PushKey(Esc);
+        console.Input.PushText(rest);
+    }
+
+    private const string WheelUp = "[<64;3;4M";
+    private const string WheelDown = "[<65;3;4M";
+
+    // AC-6
+    [Fact]
+    public void Wheel_CallsTheCallbackOnce_PerNotch_AsAWheelStep()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        List<(int, ScrollStep)> calls = [];
+        console.Input.PushText("/to");
+        PushSequence(console, WheelUp);
+        PushSequence(console, WheelDown);
+        PushSequence(console, WheelDown);
+        console.Input.PushTextWithEnter("day");
+
+        string? line = editor.ReadLine(5, 23, 70, scroll: (d, step) => { calls.Add((d, step)); return true; });
+
+        Assert.Equal("/today", line);
+        Assert.Equal([(-1, ScrollStep.Wheel), (1, ScrollStep.Wheel), (1, ScrollStep.Wheel)], calls);
+        Assert.Equal(["/today"], editor.History);
+    }
+
+    // AC-6
+    [Theory]
+    [InlineData("[<80;1;1M", -1)]
+    [InlineData("[<81;1;1M", 1)]
+    [InlineData("[M`!!", -1)]
+    [InlineData("[Ma!!", 1)]
+    public void Wheel_WithModifiersOrX10_ScrollsToo(string sequence, int direction)
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        List<(int, ScrollStep)> calls = [];
+        PushSequence(console, sequence);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal(string.Empty, editor.ReadLine(5, 23, 70, scroll: (d, step) => { calls.Add((d, step)); return false; }));
+        Assert.Equal([(direction, ScrollStep.Wheel)], calls);
+    }
+
+    // AC-6 (and AC-5 of 037: scroll keys are page steps)
+    [Fact]
+    public void ScrollKeys_ArePageSteps()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        List<ScrollStep> steps = [];
+        console.Input.PushKey(ConsoleKey.PageDown);
+        console.Input.PushKey(ConsoleKey.PageUp);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        editor.ReadLine(5, 23, 70, scroll: (_, step) => { steps.Add(step); return false; });
+
+        Assert.Equal([ScrollStep.Page, ScrollStep.Page], steps);
+    }
+
+    // AC-6
+    [Fact]
+    public void Wheel_DoesNotMoveTheHistoryPosition()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        console.Input.PushTextWithEnter("/prev");
+        console.Input.PushTextWithEnter("/next");
+        console.Input.PushKey(ConsoleKey.UpArrow);
+        PushSequence(console, WheelUp);
+        PushSequence(console, WheelDown);
+        console.Input.PushKey(ConsoleKey.UpArrow);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Func<int, ScrollStep, bool> scroll = (_, _) => true;
+        editor.ReadLine(5, 23, 70, scroll: scroll);
+        editor.ReadLine(5, 23, 70, scroll: scroll);
+
+        // Up, two notches, Up: two steps back through history, as if the notches were not there.
+        Assert.Equal("/prev", editor.ReadLine(5, 23, 70, scroll: scroll));
+        Assert.Equal(["/prev", "/next", "/prev"], editor.History);
+    }
+
+    // AC-6
+    [Fact]
+    public void Wheel_KeepsTheTabList_AndDrawsItAgainOnTop()
+    {
+        PopupRun run = new PopupRun();
+        run.Console.Input.PushText("/");
+        run.Console.Input.PushKey(ConsoleKey.Tab);
+        PushSequence(run.Console, WheelDown);
+        run.Console.Input.PushKey(ConsoleKey.Enter);
+
+        int scrolledAt = -1;
+        string? line = run.Editor.ReadLine(5, 23, 70, run.Area, scroll: (_, _) =>
+        {
+            scrolledAt = run.Console.Output.Length;
+            return true;
+        });
+
+        Assert.Equal("/", line);
+        Assert.True(scrolledAt > 0);
+        List<AnsiWrite> after = AnsiWrites.Parse(run.Console.Output[scrolledAt..]);
+        Assert.Contains(after, w => w.Row == HintRow && w.Text.Contains("commands start with /", StringComparison.Ordinal));
+        Assert.DoesNotContain(after, w => w.Text.Contains("64;", StringComparison.Ordinal));
+    }
+
+    // AC-6
+    [Fact]
+    public void Wheel_KeepsADismissedPopupClosed()
+    {
+        PopupRun run = new PopupRun();
+        run.Console.Input.PushText("/t");
+        run.Console.Input.PushKey(ConsoleKey.Escape);
+        PushSequence(run.Console, WheelDown);
+        run.Console.Input.PushText("o");
+        run.Console.Input.PushKey(ConsoleKey.Enter);
+
+        int scrolledAt = -1;
+        string? line = run.Editor.ReadLine(5, 23, 70, run.Area, scroll: (_, _) =>
+        {
+            scrolledAt = run.Console.Output.Length;
+            return true;
+        });
+
+        Assert.Equal("/to", line);
+        List<AnsiWrite> after = AnsiWrites.Parse(run.Console.Output[scrolledAt..]);
+        Assert.DoesNotContain(after, w => w.Column == 1 && w.Text.StartsWith('/'));
+    }
+
+    // AC-7
+    [Theory]
+    [InlineData("[<0;3;4M")]   // click
+    [InlineData("[<0;3;4m")]   // release
+    [InlineData("[<32;3;4M")]  // drag
+    [InlineData("[<66;3;4M")]  // horizontal wheel
+    [InlineData("[<67;3;4M")]
+    [InlineData("[A")]         // unknown sequences
+    [InlineData("[1;5D")]
+    [InlineData("[<64;3;4~")]
+    [InlineData("[<111111111111111111111111111111")] // 32-key limit
+    public void OtherSequences_AreIgnoredSilently(string sequence)
+    {
+        string Run(bool withSequence)
+        {
+            PopupRun run = new PopupRun();
+            List<int> calls = [];
+            run.Console.Input.PushTextWithEnter("/help");
+            run.Console.Input.PushText("/t");
+            if (withSequence)
+            {
+                PushSequence(run.Console, sequence);
+            }
+
+            run.Console.Input.PushText("o");
+            run.Console.Input.PushTextWithEnter("day");
+            run.Console.Input.PushKey(ConsoleKey.UpArrow);
+            if (withSequence)
+            {
+                PushSequence(run.Console, sequence);
+            }
+
+            run.Console.Input.PushKey(ConsoleKey.UpArrow);
+            run.Console.Input.PushKey(ConsoleKey.Enter);
+
+            Assert.Equal("/help", run.Editor.ReadLine(5, 23, 70, run.Area, scroll: (d, _) => { calls.Add(d); return true; }));
+            Assert.Equal("/today", run.Editor.ReadLine(5, 23, 70, run.Area, scroll: (d, _) => { calls.Add(d); return true; }));
+            Assert.Equal("/help", run.Editor.ReadLine(5, 23, 70, run.Area, scroll: (d, _) => { calls.Add(d); return true; }));
+            Assert.Empty(calls);
+            Assert.Equal(["/help", "/today", "/help"], run.Editor.History);
+            return run.Console.Output;
+        }
+
+        // The screen is written exactly as if the sequence had never come in.
+        Assert.Equal(Run(withSequence: false), Run(withSequence: true));
+    }
+
+    // AC-6, AC-7
+    [Fact]
+    public void Sequence_CutOffByTheEndOfInput_EndsTheLine()
+    {
+        PausingInput input = new PausingInput();
+        input.Push("ab");
+        input.Push(Esc);
+        input.Push("[<64;3");
+        LineEditor editor = new LineEditor(new InputOverrideConsole(new TestConsole().Interactive(), input), CommandRegistry.CreateDefault());
+        List<int> calls = [];
+
+        Assert.Null(editor.ReadLine(5, 23, 70, scroll: (d, _) => { calls.Add(d); return true; }));
+        Assert.Empty(calls);
+    }
+
+    /// <summary>Console input that says no key is available right after the keys marked as followed by a pause.</summary>
+    private sealed class PausingInput : IAnsiConsoleInput
+    {
+        private readonly Queue<(ConsoleKeyInfo Key, bool Pause)> keys = new();
+        private bool paused;
+
+        public void Push(ConsoleKeyInfo key, bool pause = false) => keys.Enqueue((key, pause));
+
+        public void Push(string text)
+        {
+            foreach (char c in text)
+            {
+                Push(new ConsoleKeyInfo(c, default, false, false, false));
+            }
+        }
+
+        public bool IsKeyAvailable() => !paused && keys.Count > 0;
+
+        public ConsoleKeyInfo? ReadKey(bool intercept)
+        {
+            if (keys.Count == 0)
+            {
+                return null;
+            }
+
+            (ConsoleKeyInfo key, bool pause) = keys.Dequeue();
+            paused = pause;
+            return key;
+        }
+
+        public Task<ConsoleKeyInfo?> ReadKeyAsync(bool intercept, CancellationToken cancellationToken) =>
+            Task.FromResult(ReadKey(intercept));
+    }
+
+    private static readonly ConsoleKeyInfo Enter = new('\r', ConsoleKey.Enter, false, false, false);
+
+    // AC-8
+    [Fact]
+    public void LoneEsc_WithoutPopup_ClearsTheLine()
+    {
+        PausingInput input = new PausingInput();
+        input.Push("abc");
+        input.Push(Esc, pause: true);
+        input.Push("x");
+        input.Push(Enter);
+        LineEditor editor = new LineEditor(new InputOverrideConsole(new TestConsole().Interactive(), input), CommandRegistry.CreateDefault());
+
+        Assert.Equal("x", editor.ReadLine(5, 23, 70, scroll: (_, _) => true));
+    }
+
+    // AC-8
+    [Fact]
+    public void LoneEsc_WithPopupOpen_ClosesIt_AndKeepsTheLine()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        PausingInput input = new PausingInput();
+        input.Push("/t");
+        input.Push(Esc, pause: true);
+        input.Push("o");
+        input.Push(Enter);
+        List<int> restored = [];
+        PopupArea area = new PopupArea(HintRow, 80, restored.Add);
+        LineEditor editor = new LineEditor(new InputOverrideConsole(console, input), CommandRegistry.CreateDefault());
+
+        Assert.Equal("/to", editor.ReadLine(5, 23, 70, area, scroll: (_, _) => true));
+        Assert.Contains(HintRow, restored);
+    }
+
+    // AC-8
+    [Fact]
+    public void LoneEsc_KeyCharOnly_IsAnEscToo()
+    {
+        PausingInput input = new PausingInput();
+        input.Push("abc");
+        input.Push(new ConsoleKeyInfo('\u001b', default, false, false, false), pause: true);
+        input.Push("x");
+        input.Push(Enter);
+        LineEditor editor = new LineEditor(new InputOverrideConsole(new TestConsole().Interactive(), input), CommandRegistry.CreateDefault());
+
+        Assert.Equal("x", editor.ReadLine(5, 23, 70));
+    }
+
+    // AC-8
+    [Fact]
+    public void Esc_FollowedByAnotherKey_IsEscThenThatKey()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        List<int> calls = [];
+        console.Input.PushText("xyz");
+        console.Input.PushKey(Esc);
+        console.Input.PushTextWithEnter("a");
+
+        Assert.Equal("a", editor.ReadLine(5, 23, 70, scroll: (d, _) => { calls.Add(d); return true; }));
+        Assert.Empty(calls);
+    }
+
+    // AC-8
+    [Fact]
+    public void Esc_FollowedByEsc_ThenAWheelSequence_ClearsAndScrolls()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        List<int> calls = [];
+        console.Input.PushText("xyz");
+        console.Input.PushKey(Esc);
+        PushSequence(console, WheelDown);
+        console.Input.PushTextWithEnter("a");
+
+        Assert.Equal("a", editor.ReadLine(5, 23, 70, scroll: (d, _) => { calls.Add(d); return true; }));
+        Assert.Equal([1], calls);
+    }
+
+    // AC-8
+    [Fact]
+    public void Esc_FollowedByEnter_ClearsAndReturns()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        console.Input.PushText("xyz");
+        console.Input.PushKey(Esc);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal(string.Empty, Read(editor));
     }
 }
