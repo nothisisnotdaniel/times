@@ -6,7 +6,7 @@ namespace Times;
 
 /// <summary>
 /// The interactive main screen. Each iteration clears the screen, draws the full-terminal layout
-/// (day view on top, a one-line hint row, a 3-line input box at the bottom), reads one line and dispatches it through the
+/// (quicklist panel and day view on top, a one-line hint row, a 3-line input box at the bottom), reads one line and dispatches it through the
 /// <see cref="CommandRegistry"/>. All output goes through <see cref="IAnsiConsole"/> and all clock
 /// reads through <see cref="TimeProvider"/>, so both can be faked in tests. Day files live in the
 /// injected <see cref="DayStore"/>, so tests use a temp folder.
@@ -439,10 +439,11 @@ internal sealed class App
 
     private void Draw(IRenderable? message, IRenderable? hint)
     {
+        IRenderable quicklist = RenderQuicklist();
         IRenderable day = RenderDay();
         IRenderable top = message is null
-            ? day
-            : new Rows(day, Text.Empty, message);
+            ? new Rows(quicklist, day)
+            : new Rows(quicklist, day, Text.Empty, message);
 
         Panel input = new Panel(new Markup($"[steelblue1]{Markup.Escape(Prompt)}[/][grey]{Markup.Escape(Placeholder)}[/]"))
             .Border(BoxBorder.Rounded)
@@ -459,6 +460,19 @@ internal sealed class App
         frame = Segment.SplitLines(layout.GetSegments(console));
         console.Clear(home: true);
         console.Write(new SegmentsRenderable(frame.SelectMany(l => l.Append(Segment.LineBreak)).SkipLast(1)));
+    }
+
+    // Reloads projects.json on every redraw, so a project added a moment ago shows up. Never writes.
+    private IRenderable RenderQuicklist()
+    {
+        try
+        {
+            return QuicklistPanel.Render(projectStore.Load());
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            return QuicklistPanel.RenderUnreadable($"The project list cannot be read: {Markup.Escape(ex.Message)}");
+        }
     }
 
     private IRenderable RenderDay()
