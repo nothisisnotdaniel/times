@@ -46,6 +46,17 @@ public class CommandRegistryTests
         Assert.Null(result.Hint);
     }
 
+    // Job 033 (round 2)
+    [Fact]
+    public void Help_HidesTheQuicklist_OtherResultsDoNot()
+    {
+        CommandRegistry.CreateDefault().TryGet("/help", out Command? help);
+
+        Assert.True(help!.Handler("").HideQuicklist);
+        Assert.False(CommandResult.None.HideQuicklist);
+        Assert.False(CommandResult.Error("x").HideQuicklist);
+    }
+
     [Fact]
     public void TryGet_UnknownName_ReturnsFalse()
     {

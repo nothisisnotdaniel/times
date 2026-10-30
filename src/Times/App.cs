@@ -163,7 +163,7 @@ internal sealed class App
 
         if (list.IsEmpty)
         {
-            return new CommandResult(new Markup("[grey]No projects yet. Add one with /addproject <work item> <title>.[/]"));
+            return new CommandResult(new Markup("[grey]No projects yet. Add one with /addproject <work item> <title>.[/]"), hideQuicklist: true);
         }
 
         Table table = new Table()
@@ -182,7 +182,7 @@ internal sealed class App
                 new Text(project.Title));
         }
 
-        return new CommandResult(table);
+        return new CommandResult(table, hideQuicklist: true);
     }
 
     private static string UnreadableProjects(Exception ex) =>
@@ -363,10 +363,11 @@ internal sealed class App
         LineEditor editor = new LineEditor(console, registry);
         IRenderable? message = null;
         IRenderable? hint = null;
+        bool hideQuicklist = false;
 
         while (true)
         {
-            Draw(message, hint);
+            Draw(message, hint, hideQuicklist);
 
             int height = console.Profile.Height;
             int width = console.Profile.Width;
@@ -393,6 +394,7 @@ internal sealed class App
 
             message = result.Message;
             hint = result.Hint;
+            hideQuicklist = result.HideQuicklist && result.Message is not null;
         }
     }
 
@@ -437,13 +439,24 @@ internal sealed class App
         return new Markup($"[grey]Data folder:[/] {Markup.Escape(Store.Folder)}{source}");
     }
 
-    private void Draw(IRenderable? message, IRenderable? hint)
+    // While /help or /projects output is shown (hideQuicklist), the quicklist panel is left out so the
+    // output fits; /projects shows the full list anyway. It comes back with the next command.
+    private void Draw(IRenderable? message, IRenderable? hint, bool hideQuicklist)
     {
-        IRenderable quicklist = RenderQuicklist();
-        IRenderable day = RenderDay();
-        IRenderable top = message is null
-            ? new Rows(quicklist, day)
-            : new Rows(quicklist, day, Text.Empty, message);
+        List<IRenderable> parts = [];
+        if (!hideQuicklist)
+        {
+            parts.Add(RenderQuicklist());
+        }
+
+        parts.Add(RenderDay());
+        if (message is not null)
+        {
+            parts.Add(Text.Empty);
+            parts.Add(message);
+        }
+
+        IRenderable top = new Rows(parts);
 
         Panel input = new Panel(new Markup($"[steelblue1]{Markup.Escape(Prompt)}[/][grey]{Markup.Escape(Placeholder)}[/]"))
             .Border(BoxBorder.Rounded)

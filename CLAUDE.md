@@ -14,7 +14,8 @@ Every factory agent reads this file before working on Times. Keep it short and a
     the top of the screen) and never crash the loop.
   - **How the box is built** (no extra packages): a Spectre `Layout` that fills the terminal,
     with the quicklist panel (`QuicklistPanel`, a grey `Projects` panel reloaded from `projects.json` on
-    every redraw, at most 5 content lines) and the day view on top, both fitted by `TopArea.Fit`, then
+    every redraw, at most 5 content lines; left out while `/help` or `/projects` output is shown, via
+    `CommandResult.HideQuicklist`) and the day view on top, both fitted by `TopArea.Fit`, then
     the hint line, and a 3-line bordered input panel at the bottom; the
     empty input line shows a grey `Type /help for commands` placeholder after the prompt, and a
     line wider than the box shows its tail behind a grey leading `…`.

@@ -11,9 +11,6 @@ public sealed class AppTests : IDisposable
     /// <summary>Rows the quicklist panel takes with no projects (border, one line, border): the day heading is on the next row.</summary>
     private const int EmptyPanelRows = 3;
 
-    /// <summary>A terminal height that fits the default /help below the empty quicklist panel.</summary>
-    private const int HelpHeight = 24 + EmptyPanelRows;
-
     private readonly TempFolder data = new();
 
     public void Dispose() => data.Dispose();
@@ -45,14 +42,15 @@ public sealed class AppTests : IDisposable
     private static string LastFrame(string output) => output[output.LastIndexOf(LastHeading(output), StringComparison.Ordinal)..];
 
     /// <summary>
-    /// Splits the output into drawn frames. Each frame runs from the quicklist panel's top border
-    /// (row 1, <c>╭─Projects</c>) to the bottom border of the input panel (the <c>╰</c> line right
-    /// after the <c>│ > </c> line), split on <c>\n</c>.
+    /// Splits the output into drawn frames. Each frame runs from row 1 (right after the clear-screen
+    /// sequence: the quicklist panel's top border, or the day heading while /help or /projects hides
+    /// the panel) to the bottom border of the input panel (the <c>╰</c> line right after the
+    /// <c>│ > </c> line), split on <c>\n</c>.
     /// </summary>
     private static List<string[]> Frames(string output)
     {
         List<string[]> frames = new List<string[]>();
-        List<int> starts = Regex.Matches(output, "╭─Projects").Select(m => m.Index).ToList();
+        List<int> starts = Regex.Matches(output, @"\x1b\[1;1H").Select(m => m.Index + m.Length).ToList();
         foreach (int start in starts)
         {
             string[] lines = output[start..].Split('\n');
@@ -630,12 +628,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Help_ListsNavigationCommands()
     {
-        (_, string output) = Run(c =>
-        {
-            c.Profile.Height = HelpHeight;
-            c.Input.PushTextWithEnter("/help");
-            c.Input.PushTextWithEnter("/quit");
-        });
+        (_, string output) = RunCommands("/help", "/quit");
 
         Assert.Contains("/prev", output);
         Assert.Contains("Go to the previous day", output);
@@ -1469,8 +1462,7 @@ public sealed class AppTests : IDisposable
         }
 
         string[] frame = frames[1];
-        Assert.StartsWith("╭─Projects", frame[0]);
-        Assert.Contains(Heading, frame[EmptyPanelRows]);
+        Assert.Contains(Heading, frame[0]);
         Assert.Equal(full[..7], frame[..7]);
         Assert.Equal($"… {full.Length - 7} more lines", frame[^5].TrimEnd());
         Assert.True(full.Length - 7 > 10);
@@ -1492,18 +1484,16 @@ public sealed class AppTests : IDisposable
 
     // AC-5
     [Fact]
-    public void HelpHeight_Help_Fits_WithoutCue()
+    public void DefaultHeight_Help_Fits_WithoutCue()
     {
-        // 033: the quicklist panel takes 3 rows above the day view, so /help needs 24 + 3 rows to fit uncut.
         (_, string output) = Run(c =>
         {
-            c.Profile.Height = HelpHeight;
             c.Input.PushTextWithEnter("/help");
             c.Input.PushTextWithEnter("/quit");
         }, dataFolder: Path.Combine(Path.GetPathRoot(data.Path)!, "Times")); // a short folder, so the footer is one line (nothing is written)
 
         string[] frame = Frames(output)[1];
-        AssertLayout(frame, HelpHeight);
+        AssertLayout(frame);
         Assert.DoesNotContain("more lines", output);
         Assert.Contains("/today", string.Join('\n', frame));
     }
@@ -2343,7 +2333,6 @@ public sealed class AppTests : IDisposable
         }
 
         console.Profile.Width = 300;
-        console.Profile.Height = HelpHeight;
         console.Input.PushTextWithEnter("/help");
         console.Input.PushTextWithEnter("/quit");
         int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(folder), folderFromEnvironment: folderFromEnvironment).Run([]);
@@ -2454,7 +2443,6 @@ public sealed class AppTests : IDisposable
         string[] before = WorkingDirectoryEntries();
         TestConsole console = new TestConsole().Interactive();
         console.Profile.Width = 300;
-        console.Profile.Height = HelpHeight;
         console.Input.PushTextWithEnter("/arrive 8:15");
         console.Input.PushTextWithEnter("/help");
         console.Input.PushTextWithEnter("/quit");
@@ -3073,22 +3061,76 @@ public sealed class AppTests : IDisposable
         Assert.Equal("{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}", ReadDay("2026-10-27"));
     }
 
-    // AC-11 (033)
+    // AC-11 (033, round 2)
     [Fact]
-    public void ProjectsCommand_StillShowsTable_BelowThePanel()
+    public void ProjectsCommand_StillShowsTable_AndHidesThePanelUntilTheNextCommand()
     {
         WriteProjects(2);
 
-        (_, string output) = Run(c =>
-        {
-            c.Profile.Height = 30;
-            c.Input.PushTextWithEnter("/projects");
-            c.Input.PushTextWithEnter("/quit");
-        });
+        (_, string output) = RunCommands("/projects", "", "/quit");
 
-        string[] frame = Frames(output)[1];
-        int panelRows = PanelRows(frame).Length;
-        Assert.Contains(frame[panelRows..], l => Regex.IsMatch(l, @"│ # +│ Work item +│ Title +│"));
-        Assert.Contains(frame[panelRows..], l => Regex.IsMatch(l, @"│ 2 +│ #102 +│ Project 2 +│"));
+        List<string[]> frames = Frames(output);
+        Assert.Equal(3, frames.Count);
+        string[] listed = frames[1];
+        AssertLayout(listed);
+        Assert.DoesNotContain(listed, l => l.StartsWith("╭─Projects", StringComparison.Ordinal));
+        Assert.Contains(Heading, listed[0]);
+        Assert.Contains(listed, l => Regex.IsMatch(l, @"│ # +│ Work item +│ Title +│"));
+        Assert.Contains(listed, l => Regex.IsMatch(l, @"│ 2 +│ #102 +│ Project 2 +│"));
+        Assert.Equal(4, PanelRows(frames[2]).Length);
+    }
+
+    // Feedback (033, round 2)
+    [Theory]
+    [InlineData(5)]
+    [InlineData(9)]
+    public void Help_AtDefaultHeight_WithManyProjects_ShowsTodayAndDataFolder(int projects)
+    {
+        WriteProjects(projects);
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 300;
+        console.Input.PushTextWithEnter("/help");
+        console.Input.PushTextWithEnter("/quit");
+
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+
+        string[] frame = Frames(console.Output)[1];
+        AssertLayout(frame);
+        Assert.Contains(Heading, frame[0]);
+        Assert.DoesNotContain(frame, l => l.Contains("more lines", StringComparison.Ordinal));
+        Assert.DoesNotContain(frame, l => l.StartsWith("╭─Projects", StringComparison.Ordinal));
+        Assert.Contains(frame, l => l.Contains("/today", StringComparison.Ordinal));
+        Assert.Contains(frame, l => l.TrimEnd() == $"Data folder: {data.Path}");
+    }
+
+    // Feedback (033, round 2)
+    [Fact]
+    public void Panel_ComesBack_AfterHelp()
+    {
+        WriteProjects(5);
+
+        (_, string output) = RunCommands("/help", "/next", "/quit");
+
+        List<string[]> frames = Frames(output);
+        Assert.Equal(3, frames.Count);
+        Assert.Equal(7, PanelRows(frames[0]).Length);
+        Assert.DoesNotContain(frames[1], l => l.StartsWith("╭─Projects", StringComparison.Ordinal));
+        Assert.Equal(7, PanelRows(frames[2]).Length);
+    }
+
+    // Feedback (033, round 2)
+    [Theory]
+    [InlineData("/projects x")]
+    [InlineData("/nope")]
+    public void FailedOrOtherCommands_KeepThePanel(string command)
+    {
+        WriteProjects(2);
+
+        (_, string output) = RunCommands(command, "/addproject 7 Seven", "/quit");
+
+        foreach (string[] frame in Frames(output))
+        {
+            Assert.StartsWith("╭─Projects", frame[0]);
+        }
     }
 }
