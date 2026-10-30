@@ -26,7 +26,14 @@ internal sealed class App
     private readonly ProjectStore projectStore;
 
     // The last drawn frame, one entry per screen row, so rows the command popup covered can be restored.
+    // A scroll replaces it, so the popup restores the scrolled rows.
     private List<SegmentLine> frame = [];
+
+    // The top area's rendered content lines (before fitting), and the line the window starts at.
+    // The offset goes back to 0 on every full redraw.
+    private List<SegmentLine> topLines = [];
+    private int offset;
+    private IRenderable frameHint = Text.Empty;
 
     /// <param name="folderFromEnvironment">True if the store's folder came from <see cref="DataFolder.VariableName"/>.</param>
     public App(IAnsiConsole console, TimeProvider time, DayStore store, CommandRegistry? registry = null, bool folderFromEnvironment = false)
@@ -487,7 +494,7 @@ internal sealed class App
 
             // The popup ends on the hint row (just above the input box) and grows upwards.
             PopupArea popup = new PopupArea(height - InputHeight, width, RestoreRow);
-            string? input = editor.ReadLine(column, line, width - column - 2, popup, Placeholder);
+            string? input = editor.ReadLine(column, line, width - column - 2, popup, Placeholder, Scroll);
             if (input is null)
             {
                 return 0;
@@ -549,6 +556,7 @@ internal sealed class App
 
     // While /help or /projects output is shown (hideQuicklist), the quicklist panel is left out so the
     // output fits; /projects shows the full list anyway. It comes back with the next command.
+    // The top area is rendered once here and starts unscrolled.
     private void Draw(IRenderable? message, IRenderable? hint, bool hideQuicklist)
     {
         List<IRenderable> parts = [];
@@ -565,22 +573,53 @@ internal sealed class App
         }
 
         IRenderable top = new Rows(parts);
+        topLines = Segment.SplitLines(top.Render(RenderOptions.Create(console, console.Profile.Capabilities), console.Profile.Width));
+        frameHint = hint ?? Text.Empty;
+        offset = 0;
 
+        frame = RenderFrame();
+        console.Clear(home: true);
+        console.Write(new SegmentsRenderable(frame.SelectMany(l => l.Append(Segment.LineBreak)).SkipLast(1)));
+    }
+
+    private int TopHeight => console.Profile.Height - HintHeight - InputHeight;
+
+    // Lays out the whole screen for the current top lines, offset and hint, one entry per row.
+    private List<SegmentLine> RenderFrame()
+    {
         Panel input = new Panel(new Markup($"[steelblue1]{Markup.Escape(Prompt)}[/][grey]{Markup.Escape(Placeholder)}[/]"))
             .Border(BoxBorder.Rounded)
             .BorderColor(Color.SteelBlue1)
             .Expand();
 
-        int topHeight = console.Profile.Height - HintHeight - InputHeight;
-
+        IRenderable content = new SegmentsRenderable(topLines.SelectMany(l => l.Append(Segment.LineBreak)).SkipLast(1));
         Layout layout = new Layout("Root").SplitRows(
-            new Layout("Day", TopArea.Fit(top, topHeight)),
-            new Layout("Hint", hint ?? Text.Empty).Size(HintHeight),
+            new Layout("Day", TopArea.Fit(content, TopHeight, offset)),
+            new Layout("Hint", frameHint).Size(HintHeight),
             new Layout("Input", input).Size(InputHeight));
 
-        frame = Segment.SplitLines(layout.GetSegments(console));
-        console.Clear(home: true);
-        console.Write(new SegmentsRenderable(frame.SelectMany(l => l.Append(Segment.LineBreak)).SkipLast(1)));
+        return Segment.SplitLines(layout.GetSegments(console));
+    }
+
+    // Moves the top area one page up (-1) or down (+1) and rewrites only its rows in place. Returns
+    // false, writing nothing, if the offset stays the same (at the top, at the bottom, or it fits).
+    private bool Scroll(int direction)
+    {
+        int topHeight = TopHeight;
+        int next = Math.Clamp(offset + (direction * TopArea.PageSize(topHeight)), 0, TopArea.MaxOffset(topLines.Count, topHeight));
+        if (next == offset)
+        {
+            return false;
+        }
+
+        offset = next;
+        frame = RenderFrame();
+        for (int row = 1; row <= topHeight; row++)
+        {
+            RestoreRow(row);
+        }
+
+        return true;
     }
 
     // Reloads projects.json on every redraw, so a project added a moment ago shows up. Never writes.

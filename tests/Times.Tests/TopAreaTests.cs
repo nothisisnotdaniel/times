@@ -10,17 +10,18 @@ public class TopAreaTests
         new Rows(Enumerable.Range(1, count).Select(i => new Text($"line {i}")));
 
     /// <summary>Renders <paramref name="content"/> fitted to <paramref name="height"/> and returns its lines.</summary>
-    private static string[] Render(IRenderable content, int height)
+    private static string[] Render(IRenderable content, int height, int offset = 0, int width = 80)
     {
         TestConsole console = new TestConsole();
-        console.Write(TopArea.Fit(content, height));
+        console.Profile.Width = width;
+        console.Write(TopArea.Fit(content, height, offset));
         return console.Output.Length == 0 ? [] : console.Output.TrimEnd('\n').Split('\n');
     }
 
-    private static string RenderAnsi(IRenderable content, int height)
+    private static string RenderAnsi(IRenderable content, int height, int offset = 0)
     {
         TestConsole console = new TestConsole().EmitAnsiSequences();
-        console.Write(TopArea.Fit(content, height));
+        console.Write(TopArea.Fit(content, height, offset));
         return console.Output;
     }
 
@@ -34,7 +35,7 @@ public class TopAreaTests
         Assert.Equal("line 1", lines[0].TrimEnd());
         Assert.Equal("line 2", lines[1].TrimEnd());
         Assert.Equal("line 3", lines[2].TrimEnd());
-        Assert.Equal("… 7 more lines", lines[3].TrimEnd());
+        Assert.Equal("↓ 7 more lines below · PgDn", lines[3].TrimEnd());
     }
 
     // AC-1
@@ -44,7 +45,7 @@ public class TopAreaTests
         string output = RenderAnsi(Numbered(10), 4);
 
         // Grey is colour 8 (ESC[90m in the standard palette or ESC[38;5;8m in 256 colours).
-        Assert.Matches(@"\x1b\[(90|38;5;8)m… 7 more lines", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)m↓ 7 more lines below · PgDn", output);
     }
 
     // AC-2
@@ -81,7 +82,7 @@ public class TopAreaTests
         string[] lines = Render(Numbered(5), 1);
 
         Assert.Single(lines);
-        Assert.Equal("… 5 more lines", lines[0].TrimEnd());
+        Assert.Equal("↓ 5 more lines below · PgDn", lines[0].TrimEnd());
     }
 
     // AC-3
@@ -92,5 +93,136 @@ public class TopAreaTests
     {
         Assert.Empty(Render(Numbered(5), height));
         Assert.Empty(Render(Text.Empty, height));
+    }
+
+    // Scrollable output (job 037) ----------------------------------------------------------
+
+    private static string[] Trimmed(string[] lines) => lines.Select(l => l.TrimEnd()).ToArray();
+
+    // AC-1 (037)
+    [Theory]
+    [InlineData(4, 4, 2)]
+    [InlineData(3, 5, 7)]
+    [InlineData(5, 10, -1)]
+    public void FittingContent_IgnoresTheOffset(int count, int height, int offset)
+    {
+        Assert.Equal(Render(Numbered(count), height), Render(Numbered(count), height, offset));
+        Assert.DoesNotContain(Render(Numbered(count), height, offset), l => l.Contains("more", StringComparison.Ordinal));
+    }
+
+    // AC-2 (037)
+    [Fact]
+    public void OffsetZero_ShowsFirstLines_ThenBelowCue()
+    {
+        Assert.Equal(
+            ["line 1", "line 2", "line 3", "line 4", "↓ 6 more lines below · PgDn"],
+            Trimmed(Render(Numbered(10), 5, 0)));
+    }
+
+    // AC-3 (037)
+    [Fact]
+    public void MiddleOffset_ShowsAboveCue_Lines_AndBelowCue()
+    {
+        Assert.Equal(
+            ["↑ 3 more lines above · PgUp", "line 4", "line 5", "line 6", "↓ 4 more lines below · PgDn"],
+            Trimmed(Render(Numbered(10), 5, 3)));
+    }
+
+    // AC-3 (037)
+    [Fact]
+    public void BothCues_AreGrey()
+    {
+        string output = RenderAnsi(Numbered(10), 5, 3);
+
+        Assert.Matches(@"\x1b\[(90|38;5;8)m↑ 3 more lines above · PgUp", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)m↓ 4 more lines below · PgDn", output);
+    }
+
+    // AC-4 (037)
+    [Fact]
+    public void MaxOffset_ShowsAboveCue_AndTheLastLines_WithoutBelowCue()
+    {
+        Assert.Equal(6, TopArea.MaxOffset(10, 5));
+        Assert.Equal(
+            ["↑ 6 more lines above · PgUp", "line 7", "line 8", "line 9", "line 10"],
+            Trimmed(Render(Numbered(10), 5, 6)));
+    }
+
+    // AC-4 (037)
+    [Theory]
+    [InlineData(7, 6)]
+    [InlineData(100, 6)]
+    [InlineData(-1, 0)]
+    [InlineData(-50, 0)]
+    public void OffsetsOutsideTheRange_AreClamped(int offset, int clamped)
+    {
+        Assert.Equal(Render(Numbered(10), 5, clamped), Render(Numbered(10), 5, offset));
+    }
+
+    // AC-4 (037)
+    [Theory]
+    [InlineData(10, 5, 6)]
+    [InlineData(5, 5, 0)]
+    [InlineData(4, 5, 0)]
+    [InlineData(10, 3, 8)]
+    [InlineData(10, 2, 0)]
+    [InlineData(10, 1, 0)]
+    [InlineData(10, 0, 0)]
+    public void MaxOffset_FollowsTheRule(int lineCount, int height, int expected)
+    {
+        Assert.Equal(expected, TopArea.MaxOffset(lineCount, height));
+    }
+
+    // AC-6 (037)
+    [Theory]
+    [InlineData(5, 3)]
+    [InlineData(3, 1)]
+    [InlineData(2, 1)]
+    [InlineData(1, 1)]
+    public void PageSize_IsTheRowsBetweenTheCues(int height, int expected)
+    {
+        Assert.Equal(expected, TopArea.PageSize(height));
+    }
+
+    // AC-4 (037)
+    [Fact]
+    public void HeightTwo_ShowsFirstLine_AndBelowCue_WhateverTheOffset()
+    {
+        string[] expected = ["line 1", "↓ 9 more lines below · PgDn"];
+        Assert.Equal(expected, Trimmed(Render(Numbered(10), 2, 0)));
+        Assert.Equal(expected, Trimmed(Render(Numbered(10), 2, 4)));
+    }
+
+    // AC-4 (037)
+    [Fact]
+    public void HeightOne_IgnoresTheOffset()
+    {
+        Assert.Equal(["↓ 5 more lines below · PgDn"], Trimmed(Render(Numbered(5), 1, 3)));
+    }
+
+    // AC-4 (037)
+    [Fact]
+    public void HeightThree_MiddleOffset_ShowsOneLineBetweenTheCues()
+    {
+        Assert.Equal(
+            ["↑ 1 more lines above · PgUp", "line 2", "↓ 3 more lines below · PgDn"],
+            Trimmed(Render(Numbered(5), 3, 1)));
+    }
+
+    // AC-4 (037)
+    [Fact]
+    public void Cues_AreCroppedToTheWidth()
+    {
+        string[] lines = Render(Numbered(10), 5, 3, width: 10);
+
+        Assert.Equal("↑ 3 more l", lines[0]);
+        Assert.Equal("↓ 4 more l", lines[^1]);
+    }
+
+    // AC-4 (037)
+    [Fact]
+    public void HeightZero_WithOffset_RendersNothing()
+    {
+        Assert.Empty(Render(Numbered(5), 0, 2));
     }
 }

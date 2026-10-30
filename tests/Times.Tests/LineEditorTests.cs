@@ -1156,4 +1156,165 @@ public class LineEditorTests
         Assert.Equal(new AnsiWrite(23, 5, "c"), InputWrites(console)[^1]);
         Assert.EndsWith("\u001b[23;6H", console.Output);
     }
+
+    // Scrollable output (job 037) ----------------------------------------------------------
+
+    public static TheoryData<ConsoleKey, bool, bool, int> ScrollKeys => new()
+    {
+        { ConsoleKey.PageDown, false, false, 1 },
+        { ConsoleKey.PageDown, true, false, 1 },
+        { ConsoleKey.DownArrow, false, true, 1 },
+        { ConsoleKey.PageUp, false, false, -1 },
+        { ConsoleKey.PageUp, true, false, -1 },
+        { ConsoleKey.UpArrow, false, true, -1 },
+    };
+
+    private static ConsoleKeyInfo Key(ConsoleKey key, bool shift = false, bool control = false) =>
+        new ConsoleKeyInfo('\0', key, shift, false, control);
+
+    // AC-5 (037)
+    [Theory]
+    [MemberData(nameof(ScrollKeys))]
+    public void ScrollKeys_CallTheCallback_AndKeepTheLine(ConsoleKey key, bool shift, bool control, int direction)
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        List<int> calls = [];
+        console.Input.PushTextWithEnter("/help");
+        console.Input.PushText("/to");
+        console.Input.PushKey(Key(key, shift, control));
+        console.Input.PushTextWithEnter("day");
+
+        Assert.Equal("/help", editor.ReadLine(5, 23, 70, scroll: d => { calls.Add(d); return true; }));
+        Assert.Equal("/today", editor.ReadLine(5, 23, 70, scroll: d => { calls.Add(d); return true; }));
+
+        Assert.Equal([direction], calls);
+        Assert.Equal(["/help", "/today"], editor.History);
+    }
+
+    // AC-5 (037)
+    [Theory]
+    [MemberData(nameof(ScrollKeys))]
+    public void ScrollKeys_DoNotMoveTheHistoryPosition(ConsoleKey key, bool shift, bool control, int direction)
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        List<int> calls = [];
+        console.Input.PushTextWithEnter("/prev");
+        console.Input.PushTextWithEnter("/next");
+        console.Input.PushKey(ConsoleKey.UpArrow);
+        console.Input.PushKey(Key(key, shift, control));
+        console.Input.PushKey(Key(key, shift, control));
+        console.Input.PushKey(ConsoleKey.UpArrow);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Func<int, bool> scroll = d => { calls.Add(d); return false; };
+        editor.ReadLine(5, 23, 70, scroll: scroll);
+        editor.ReadLine(5, 23, 70, scroll: scroll);
+
+        // Up, two scroll keys, Up: two steps back through history, as if the scroll keys were not there.
+        Assert.Equal("/prev", editor.ReadLine(5, 23, 70, scroll: scroll));
+        Assert.Equal([direction, direction], calls);
+    }
+
+    // AC-5 (037)
+    [Fact]
+    public void PlainUpAndDown_StayHistory_AndNeverScroll()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        List<int> calls = [];
+        console.Input.PushTextWithEnter("/help");
+        console.Input.PushKey(ConsoleKey.UpArrow);
+        console.Input.PushKey(ConsoleKey.DownArrow);
+        console.Input.PushKey(ConsoleKey.UpArrow);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Func<int, bool> scroll = d => { calls.Add(d); return true; };
+        editor.ReadLine(5, 23, 70, scroll: scroll);
+
+        Assert.Equal("/help", editor.ReadLine(5, 23, 70, scroll: scroll));
+        Assert.Empty(calls);
+    }
+
+    // AC-5 (037)
+    [Theory]
+    [MemberData(nameof(ScrollKeys))]
+    public void ScrollKeys_WithoutCallback_DoNothing(ConsoleKey key, bool shift, bool control, int direction)
+    {
+        _ = direction;
+        (TestConsole console, LineEditor editor) = Create();
+        console.Input.PushTextWithEnter("/help");
+        console.Input.PushText("/x");
+        console.Input.PushKey(Key(key, shift, control));
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Read(editor);
+
+        Assert.Equal("/x", Read(editor));
+        Assert.Equal(["/help", "/x"], editor.History);
+    }
+
+    // AC-7 (037)
+    [Fact]
+    public void Scroll_RedrawsTheInputLine_WithCursorAfterTheText()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        console.Input.PushText("abc");
+        console.Input.PushKey(ConsoleKey.PageDown);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        int before = 0;
+        editor.ReadLine(5, 23, 70, scroll: _ =>
+        {
+            before = console.Output.Length;
+            console.Cursor.SetPosition(1, 1);
+            console.Write(new Spectre.Console.Text("scrolled"));
+            return true;
+        });
+
+        string after = console.Output[before..];
+        Assert.DoesNotContain("\u001b[2J", console.Output);
+        Assert.Equal(new AnsiWrite(23, 5, "abc"), AnsiWrites.Parse(after).Last(w => w.Text.Length > 0));
+        Assert.EndsWith("\u001b[23;8H", console.Output);
+    }
+
+    // AC-6 (037)
+    [Fact]
+    public void Scroll_ThatChangesNothing_WritesNothing()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        console.Input.PushText("abc");
+        console.Input.PushKey(ConsoleKey.PageDown);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        int before = -1;
+        editor.ReadLine(5, 23, 70, scroll: _ =>
+        {
+            before = console.Output.Length;
+            return false;
+        });
+
+        Assert.Equal(before, console.Output.Length);
+    }
+
+    // AC-8 (037)
+    [Fact]
+    public void Scroll_WithPopupOpen_DrawsThePopupAgain_AfterTheScroll()
+    {
+        PopupRun run = new PopupRun();
+        run.Console.Input.PushText("/");
+        run.Console.Input.PushKey(ConsoleKey.PageDown);
+        run.Console.Input.PushKey(ConsoleKey.Enter);
+
+        int scrolledAt = -1;
+        run.Editor.ReadLine(5, 23, 70, run.Area, scroll: _ =>
+        {
+            run.Console.Cursor.SetPosition(1, HintRow);
+            run.Console.Write(new Spectre.Console.Text("scrolled"));
+            scrolledAt = run.Console.Output.Length;
+            return true;
+        });
+
+        List<AnsiWrite> after = AnsiWrites.Parse(run.Console.Output[scrolledAt..]);
+        Assert.Contains(after, w => w.Row == HintRow && w.Text.StartsWith('/'));
+        Assert.True(after.FindIndex(w => w.Row == HintRow && w.Text.StartsWith('/')) < after.FindIndex(w => w.Row == 23 && w.Column == 5));
+    }
 }

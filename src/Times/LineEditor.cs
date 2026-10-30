@@ -9,6 +9,15 @@ namespace Times;
 /// Enter, Esc (close the popup if it is open, otherwise clear the line), Tab (complete a
 /// <c>/command</c>) and Up/Down (session history).
 /// <para>
+/// PageUp/PageDown scroll the screen above the input box when a scroll callback is given:
+/// Shift+PageUp/PageDown and Ctrl+Up/Down do the same (macOS Terminal keeps plain PageUp/PageDown
+/// for its own scrollback). The editor calls the callback with -1 (up) or +1 (down); when it
+/// reports that it redrew something, the editor draws the popup (if open) again on top and then
+/// the input line, so the cursor ends after the typed text. Scroll keys never change the line, the
+/// history position or the popup state. Without a callback they do nothing. Plain Up/Down stay
+/// history.
+/// </para>
+/// <para>
 /// Tab completes a unique command prefix. When 2 or more names start with the typed prefix, Tab
 /// extends the line to their longest common prefix and enters the "Tab list" state: the popup
 /// (reopened even after Esc) lists only <see cref="CommandRegistry.StartingWith"/> for the line,
@@ -54,9 +63,11 @@ internal sealed class LineEditor
     /// <paramref name="placeholder"/> is grey text shown while the line is empty, or <c>null</c> for
     /// none. The editor assumes the caller has already drawn it at <paramref name="column"/> and
     /// redraws it (cropped to the room) whenever the line becomes empty again.
+    /// <paramref name="scroll"/> is called with -1 or +1 for a scroll key and returns <c>true</c> if
+    /// it redrew anything, or is <c>null</c> to ignore scroll keys.
     /// Returns <c>null</c> if the input has no more keys.
     /// </summary>
-    public string? ReadLine(int column, int line, int width, PopupArea? popup = null, string? placeholder = null)
+    public string? ReadLine(int column, int line, int width, PopupArea? popup = null, string? placeholder = null, Func<int, bool>? scroll = null)
     {
         string buffer = string.Empty;
         int historyIndex = history.Count;
@@ -74,9 +85,24 @@ internal sealed class LineEditor
                 return null;
             }
 
+            ConsoleKeyInfo info = key.Value;
+            if (ScrollDirection(info) is { } direction)
+            {
+                if (scroll is not null && scroll(direction))
+                {
+                    if (popupRows > 0)
+                    {
+                        popupRows = DrawPopup(popup!, buffer, popupRows, tabList);
+                    }
+
+                    drawn = Redraw(buffer, column, line, width, drawn, placeholder);
+                }
+
+                continue;
+            }
+
             tabList = false;
 
-            ConsoleKeyInfo info = key.Value;
             switch (info.Key)
             {
                 case ConsoleKey.Enter:
@@ -169,6 +195,21 @@ internal sealed class LineEditor
             popupRows = showPopup ? DrawPopup(popup!, buffer, popupRows, tabList) : ClosePopup(popup, popupRows);
             drawn = Redraw(buffer, column, line, width, drawn, placeholder);
         }
+    }
+
+    // -1 for PageUp, Shift+PageUp and Ctrl+Up; +1 for PageDown, Shift+PageDown and Ctrl+Down;
+    // null for every other key, including plain Up/Down (history).
+    private static int? ScrollDirection(ConsoleKeyInfo info)
+    {
+        bool control = (info.Modifiers & ConsoleModifiers.Control) != 0;
+        return info.Key switch
+        {
+            ConsoleKey.PageUp => -1,
+            ConsoleKey.PageDown => 1,
+            ConsoleKey.UpArrow when control => -1,
+            ConsoleKey.DownArrow when control => 1,
+            _ => null,
+        };
     }
 
     // Draws the popup for the current line so that it ends on the bottom row, and restores the rows

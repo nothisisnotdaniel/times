@@ -11,11 +11,20 @@ public sealed class AppTests : IDisposable
     /// <summary>Rows the quicklist panel takes with no projects (border, one line, border): the day heading is on the next row.</summary>
     private const int EmptyPanelRows = 3;
 
-    /// <summary>
-    /// The rows /help needs on an empty day with a one-line data folder footer: 14 commands no longer
-    /// fit the 24-row default (the "Shorter /help" backlog item), so tests about the help content use this.
-    /// </summary>
-    private const int HelpHeight = 26;
+    /// <summary>Rows of the top area on the default 24-row terminal: 24 minus the hint row and the 3-line input box.</summary>
+    private const int TopHeight = 20;
+
+    /// <summary>More PageDown presses than /help needs to reach the bottom at 24 rows; the extra ones change nothing.</summary>
+    private const int HelpPages = 4;
+
+    /// <summary>Pushes <paramref name="count"/> PageDown keys.</summary>
+    private static void PageDown(TestConsole console, int count)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            console.Input.PushKey(ConsoleKey.PageDown);
+        }
+    }
 
     private readonly TempFolder data = new();
 
@@ -48,7 +57,8 @@ public sealed class AppTests : IDisposable
     private static string LastFrame(string output) => output[output.LastIndexOf(LastHeading(output), StringComparison.Ordinal)..];
 
     /// <summary>
-    /// Splits the output into drawn frames. Each frame runs from row 1 (right after the clear-screen
+    /// Splits the output into full frames (a scroll rewrites rows in place without clearing, so it
+    /// starts no frame). Each frame runs from row 1 (right after the clear-screen
     /// sequence: the quicklist panel's top border, or the day heading while /help or /projects hides
     /// the panel) to the bottom border of the input panel (the <c>╰</c> line right after the
     /// <c>│ > </c> line), split on <c>\n</c>.
@@ -56,7 +66,7 @@ public sealed class AppTests : IDisposable
     private static List<string[]> Frames(string output)
     {
         List<string[]> frames = new List<string[]>();
-        List<int> starts = Regex.Matches(output, @"\x1b\[1;1H").Select(m => m.Index + m.Length).ToList();
+        List<int> starts = Regex.Matches(output, @"\x1b\[2J(?:\x1b\[3J)?\x1b\[1;1H").Select(m => m.Index + m.Length).ToList();
         foreach (int start in starts)
         {
             string[] lines = output[start..].Split('\n');
@@ -636,8 +646,8 @@ public sealed class AppTests : IDisposable
     {
         (_, string output) = Run(c =>
         {
-            c.Profile.Height = HelpHeight;
             c.Input.PushTextWithEnter("/help");
+            PageDown(c, HelpPages);
             c.Input.PushTextWithEnter("/quit");
         });
 
@@ -1475,7 +1485,7 @@ public sealed class AppTests : IDisposable
         string[] frame = frames[1];
         Assert.Contains(Heading, frame[0]);
         Assert.Equal(full[..7], frame[..7]);
-        Assert.Equal($"… {full.Length - 7} more lines", frame[^5].TrimEnd());
+        Assert.Equal($"↓ {full.Length - 7} more lines below · PgDn", frame[^5].TrimEnd());
         Assert.True(full.Length - 7 > 10);
     }
 
@@ -1490,24 +1500,7 @@ public sealed class AppTests : IDisposable
             c.Input.PushTextWithEnter("/quit");
         }, ManyCommands());
 
-        Assert.Matches(@"\x1b\[(90|38;5;8)m… \d+ more lines", output);
-    }
-
-    // AC-5
-    [Fact]
-    public void HelpHeight_Help_Fits_WithoutCue()
-    {
-        (_, string output) = Run(c =>
-        {
-            c.Profile.Height = HelpHeight;
-            c.Input.PushTextWithEnter("/help");
-            c.Input.PushTextWithEnter("/quit");
-        }, dataFolder: Path.Combine(Path.GetPathRoot(data.Path)!, "Times")); // a short folder, so the footer is one line (nothing is written)
-
-        string[] frame = Frames(output)[1];
-        AssertLayout(frame, HelpHeight);
-        Assert.DoesNotContain("more lines", output);
-        Assert.Contains("/today", string.Join('\n', frame));
+        Assert.Matches(@"\x1b\[(90|38;5;8)m↓ \d+ more lines below · PgDn", output);
     }
 
     // AC-6, AC-7
@@ -1539,7 +1532,7 @@ public sealed class AppTests : IDisposable
         Assert.True(popupAtCue >= 0, "the popup should cover the cue row");
         AnsiWrite restored = writes.Skip(popupAtCue + 1).First(w => w.Row == 8);
         Assert.Equal(frame[7], restored.Text);
-        Assert.StartsWith("… ", restored.Text);
+        Assert.StartsWith("↓ ", restored.Text);
 
         // The hint row (9) is never written with anything but the popup or its own restore.
         Assert.DoesNotContain(writes, w => w.Row > 9 && w.Text.Contains("more lines", StringComparison.Ordinal));
@@ -2335,7 +2328,7 @@ public sealed class AppTests : IDisposable
 
     private static string StripAnsi(string output) => Regex.Replace(output, @"\x1b\[[0-9;]*m", string.Empty);
 
-    /// <summary>Runs <c>/help</c> then <c>/quit</c> on a terminal wide enough that the data-folder line never wraps.</summary>
+    /// <summary>Runs <c>/help</c>, scrolls to its bottom, then an empty line and <c>/quit</c> on a terminal wide enough that the data-folder line never wraps.</summary>
     private static string RunHelp(string folder, bool folderFromEnvironment, bool ansi = false)
     {
         TestConsole console = new TestConsole().Interactive();
@@ -2345,8 +2338,9 @@ public sealed class AppTests : IDisposable
         }
 
         console.Profile.Width = 300;
-        console.Profile.Height = HelpHeight;
         console.Input.PushTextWithEnter("/help");
+        PageDown(console, HelpPages);
+        console.Input.PushKey(ConsoleKey.Enter);
         console.Input.PushTextWithEnter("/quit");
         int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(folder), folderFromEnvironment: folderFromEnvironment).Run([]);
         Assert.Equal(0, exitCode);
@@ -2396,16 +2390,18 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Help_ShowsDefaultDataFolder_WithoutSource()
     {
-        string output = RunHelp(data.Path, folderFromEnvironment: false);
+        string output = RunHelp(data.Path, folderFromEnvironment: false, ansi: true);
 
-        string[] frame = Frames(output)[1];
-        int line = Array.FindIndex(frame, l => l.Contains("Data folder:", StringComparison.Ordinal));
+        List<string[]> screens = TopScreens(output, 1);
+        string[] bottom = screens[^1];
+        int line = Array.FindIndex(bottom, l => l.Contains("Data folder:", StringComparison.Ordinal));
         Assert.True(line > 0);
-        Assert.Equal($"Data folder: {data.Path}", frame[line].TrimEnd());
-        Assert.StartsWith("╰", frame[line - 1]);
+        Assert.Equal($"Data folder: {data.Path}", bottom[line]);
+        Assert.StartsWith("╰", bottom[line - 1]);
+        string shown = string.Join('\n', screens.SelectMany(screen => screen));
         foreach (Command command in CommandRegistry.CreateDefault().Commands.Concat([new Command("/arrive", "", _ => CommandResult.None)]))
         {
-            Assert.Contains(command.Name, string.Join('\n', frame));
+            Assert.Contains(command.Name, shown);
         }
 
         Assert.DoesNotContain("(from TIMES_DATA_DIR)", output);
@@ -2417,10 +2413,10 @@ public sealed class AppTests : IDisposable
     {
         string output = RunHelp(data.Path, folderFromEnvironment: true);
 
-        string[] frame = Frames(output)[1];
-        Assert.Contains(frame, l => l.TrimEnd() == $"Data folder: {data.Path} (from TIMES_DATA_DIR)");
+        Assert.Contains($"Data folder: {data.Path} (from TIMES_DATA_DIR)", output);
 
         string ansi = RunHelp(data.Path, folderFromEnvironment: true, ansi: true);
+        Assert.Contains(TopScreens(ansi, 1)[^1], l => l == $"Data folder: {data.Path} (from TIMES_DATA_DIR)");
         Assert.Matches(@"\x1b\[(90|38;5;8)mData folder:", ansi);
         Assert.Matches(@"\x1b\[(90|38;5;8)m\(from TIMES_DATA_DIR\)", ansi);
     }
@@ -2456,9 +2452,9 @@ public sealed class AppTests : IDisposable
         string[] before = WorkingDirectoryEntries();
         TestConsole console = new TestConsole().Interactive();
         console.Profile.Width = 300;
-        console.Profile.Height = HelpHeight + 1; // one more row for the booked entry
         console.Input.PushTextWithEnter("/arrive 8:15");
         console.Input.PushTextWithEnter("/help");
+        PageDown(console, HelpPages);
         console.Input.PushTextWithEnter("/quit");
 
         int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(overrideFolder.Path), folderFromEnvironment: true).Run([]);
@@ -3069,7 +3065,7 @@ public sealed class AppTests : IDisposable
         {
             AssertLayout(frame, 12);
             Assert.Equal(7, PanelRows(frame).Length);
-            Assert.Matches(@"^… \d+ more lines", frame[^5]);
+            Assert.Matches(@"^↓ \d+ more lines below · PgDn", frame[^5]);
         }
 
         Assert.Equal("{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}", ReadDay("2026-10-27"));
@@ -3098,24 +3094,26 @@ public sealed class AppTests : IDisposable
     [Theory]
     [InlineData(5)]
     [InlineData(9)]
-    public void Help_AtHelpHeight_WithManyProjects_ShowsTodayAndDataFolder(int projects)
+    public void Help_AtDefaultHeight_WithManyProjects_ScrollsToTodayAndDataFolder(int projects)
     {
         WriteProjects(projects);
-        TestConsole console = new TestConsole().Interactive();
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
         console.Profile.Width = 300;
-        console.Profile.Height = HelpHeight;
         console.Input.PushTextWithEnter("/help");
+        PageDown(console, HelpPages);
+        console.Input.PushKey(ConsoleKey.Enter);
         console.Input.PushTextWithEnter("/quit");
 
         Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
 
-        string[] frame = Frames(console.Output)[1];
-        AssertLayout(frame, HelpHeight);
+        string[] frame = AnsiFrames(console.Output)[1];
+        AssertLayout(frame);
         Assert.Contains(Heading, frame[0]);
-        Assert.DoesNotContain(frame, l => l.Contains("more lines", StringComparison.Ordinal));
         Assert.DoesNotContain(frame, l => l.StartsWith("╭─Projects", StringComparison.Ordinal));
-        Assert.Contains(frame, l => l.Contains("/today", StringComparison.Ordinal));
-        Assert.Contains(frame, l => l.TrimEnd() == $"Data folder: {data.Path}");
+        List<string[]> screens = TopScreens(console.Output, 1);
+        Assert.Contains(screens.SelectMany(screen => screen), l => l.Contains("/today", StringComparison.Ordinal));
+        Assert.Contains(screens[^1], l => l == $"Data folder: {data.Path}");
+        Assert.DoesNotContain(screens[^1], l => l.Contains("more lines below", StringComparison.Ordinal));
     }
 
     // Feedback (033, round 2)
@@ -3450,8 +3448,8 @@ public sealed class AppTests : IDisposable
     {
         (_, string output) = Run(c =>
         {
-            c.Profile.Height = HelpHeight;
             c.Input.PushTextWithEnter("/help");
+            PageDown(c, HelpPages);
             c.Input.PushTextWithEnter("/quit");
         });
 
@@ -3493,5 +3491,283 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, exitCode);
         Assert.DoesNotContain("Unknown command", output);
         Assert.Equal([Checkpoint(9, 0, "Done")], LoadDay().Entries);
+    }
+
+    // Scrollable output (job 037) ----------------------------------------------------------
+
+    private const string BelowCue = "more lines below · PgDn";
+
+    /// <summary>Indexes (into <see cref="AnsiWrites.Parse"/>) of the full frames: written at 1;1 and reaching the input box.</summary>
+    private static List<int> FrameStarts(List<AnsiWrite> writes) =>
+        writes.Select((w, i) => (w, i))
+            .Where(x => x.w.Row == 1 && x.w.Column == 1 && x.w.Text.Contains('╰'))
+            .Select(x => x.i)
+            .ToList();
+
+    /// <summary>
+    /// The states of the top area's rows (1..<paramref name="topHeight"/>, trimmed) from full frame
+    /// <paramref name="index"/> up to the next full frame: the frame's own rows, then a new state for
+    /// every in-place redraw that starts at row 1 (a scroll), updated by any later writes to those rows.
+    /// </summary>
+    private static List<string[]> TopScreens(string output, int index, int topHeight = TopHeight)
+    {
+        List<AnsiWrite> writes = AnsiWrites.Parse(output);
+        List<int> starts = FrameStarts(writes);
+        int end = index + 1 < starts.Count ? starts[index + 1] : writes.Count;
+        List<string[]> screens = [writes[starts[index]].Text.Split('\n')[..topHeight].Select(l => l.TrimEnd()).ToArray()];
+        foreach (AnsiWrite write in writes.Skip(starts[index] + 1).Take(end - starts[index] - 1))
+        {
+            if (write.Column != 1 || write.Row < 1 || write.Row > topHeight)
+            {
+                continue;
+            }
+
+            if (write.Row == 1)
+            {
+                screens.Add((string[])screens[^1].Clone());
+            }
+
+            screens[^1][write.Row - 1] = write.Text.TrimEnd();
+        }
+
+        return screens;
+    }
+
+    /// <summary>The raw output between full frame <paramref name="index"/> and the next one.</summary>
+    private static string BetweenFrames(string output, int index)
+    {
+        List<int> starts = Regex.Matches(output, @"\x1b\[2J").Select(m => m.Index).ToList();
+        int end = index + 1 < starts.Count ? starts[index + 1] : output.Length;
+        return output[starts[index]..end];
+    }
+
+    // AC-6 (037)
+    [Fact]
+    public void Scroll_MovesOnePage_OfHeightMinusTwoLines()
+    {
+        string[] full = UnclippedHelpTop().Select(l => l.TrimEnd()).ToArray();
+
+        string output = RunAnsi(c =>
+        {
+            c.Profile.Height = 12;
+            c.Input.PushTextWithEnter("/help");
+            c.Input.PushKey(ConsoleKey.PageDown);
+            c.Input.PushKey(ConsoleKey.PageDown);
+            c.Input.PushKey(ConsoleKey.PageUp);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("/quit");
+        }, ManyCommands());
+
+        // 12 rows: an 8-row top area, so one page is 6 lines.
+        List<string[]> screens = TopScreens(output, 1, 8);
+        Assert.Equal(4, screens.Count);
+        Assert.Equal([.. full[..7], $"↓ {full.Length - 7} {BelowCue}"], screens[0]);
+        Assert.Equal(["↑ 6 more lines above · PgUp", .. full[6..12], $"↓ {full.Length - 12} {BelowCue}"], screens[1]);
+        Assert.Equal(["↑ 12 more lines above · PgUp", .. full[12..18], $"↓ {full.Length - 18} {BelowCue}"], screens[2]);
+        Assert.Equal(screens[1], screens[3]);
+    }
+
+    // AC-6 (037)
+    [Fact]
+    public void Scroll_ToTheBottom_IsClamped_AndShowsTheLastLines()
+    {
+        string[] full = UnclippedHelpTop().Select(l => l.TrimEnd()).ToArray();
+
+        string output = RunAnsi(c =>
+        {
+            c.Profile.Height = 12;
+            c.Input.PushTextWithEnter("/help");
+            PageDown(c, 20);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("/quit");
+        }, ManyCommands());
+
+        List<string[]> screens = TopScreens(output, 1, 8);
+        int max = full.Length - 7;
+        Assert.Equal(1 + ((max + 5) / 6), screens.Count);
+        Assert.Equal([$"↑ {max} more lines above · PgUp", .. full[^7..]], screens[^1]);
+    }
+
+    // AC-6 (037)
+    [Theory]
+    [InlineData(ConsoleKey.PageUp, "/help")] // already at the top
+    [InlineData(ConsoleKey.PageDown, "")]    // the empty day fits
+    [InlineData(ConsoleKey.PageUp, "")]
+    public void Scroll_ThatChangesNothing_WritesNothing(ConsoleKey key, string command)
+    {
+        string output = RunAnsi(c =>
+        {
+            c.Input.PushTextWithEnter(command);
+            c.Input.PushKey(key);
+            c.Input.PushKey(key);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        Assert.DoesNotContain(AnsiWrites.Parse(BetweenFrames(output, 1)).Skip(1), w => w.Text.Length > 0);
+    }
+
+    // AC-6 (037)
+    [Fact]
+    public void Scroll_PastTheBottom_WritesNothing()
+    {
+        string output = RunAnsi(c =>
+        {
+            c.Input.PushTextWithEnter("/help");
+            PageDown(c, HelpPages);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("/help");
+            PageDown(c, HelpPages + 3);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        Assert.Equal(BetweenFrames(output, 1), BetweenFrames(output, 3));
+    }
+
+    // AC-7 (037)
+    [Fact]
+    public void Scroll_RewritesOnlyTheTopRows_ThenTheInputLine_KeepingTheText()
+    {
+        string output = RunAnsi(c =>
+        {
+            c.Input.PushTextWithEnter("/help");
+            c.Input.PushText("/to");
+            c.Input.PushKey(ConsoleKey.PageDown);
+            c.Input.PushTextWithEnter("day");
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        string between = BetweenFrames(output, 1);
+        Assert.Equal(1, Count(between, ClearScreen));
+        List<AnsiWrite> writes = AnsiWrites.Parse(between);
+        int scrollStart = writes.FindIndex(w => w.Row == 1 && w.Column == 1 && w.Text.StartsWith('↑'));
+        Assert.True(scrollStart > 0);
+        Assert.Equal(Enumerable.Range(1, TopHeight), writes.Skip(scrollStart).Take(TopHeight).Select(w => w.Row));
+        Assert.All(writes.Skip(scrollStart).Take(TopHeight), w => Assert.Equal(1, w.Column));
+
+        // The input panel's borders are never written while typing.
+        Assert.DoesNotContain(writes.Skip(1), w => w.Row == 22 || w.Row == 24);
+
+        // The popup ("/to" is open) is drawn again on top, then the input line with the typed text, cursor after it.
+        List<AnsiWrite> after = writes.Skip(scrollStart + TopHeight).ToList();
+        int line = after.FindIndex(w => w.Row == 23);
+        Assert.True(line > 0);
+        Assert.Contains(after.Take(line), w => w.Text.StartsWith("/today", StringComparison.Ordinal));
+        // Only the popup writes the hint row (21) after the scroll: the scroll itself stops at row 20.
+        Assert.All(after.Take(line), w => Assert.True(w.Row < 21 || w.Text.StartsWith('/') || w.Text.StartsWith('…')));
+        Assert.Equal(new AnsiWrite(23, 5, "/to"), after[line]);
+        Assert.Equal(23, after[line + 1].Row);
+        Assert.Equal(8, after[line + 1].Column);
+        Assert.Equal(Heading, LastHeading(output));
+        Assert.DoesNotContain("Unknown command", output);
+    }
+
+    // AC-8 (037)
+    [Fact]
+    public void Scroll_WithPopupOpen_DrawsItOnTop_AndEscRestoresTheScrolledRows()
+    {
+        string scrolledOutput = RunAnsi(c =>
+        {
+            c.Profile.Height = 12;
+            c.Input.PushTextWithEnter("/help");
+            c.Input.PushKey(ConsoleKey.PageDown);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("/quit");
+        }, ManyCommands());
+        string[] scrolled = TopScreens(scrolledOutput, 1, 8)[1];
+
+        string output = RunAnsi(c =>
+        {
+            c.Profile.Height = 12;
+            c.Input.PushTextWithEnter("/help");
+            c.Input.PushText("/");
+            c.Input.PushKey(ConsoleKey.PageDown);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("/quit");
+        }, ManyCommands());
+
+        List<AnsiWrite> writes = AnsiWrites.Parse(BetweenFrames(output, 1));
+        int scrollStart = writes.FindIndex(w => w.Row == 1 && w.Column == 1 && w.Text.StartsWith('↑'));
+        Assert.True(scrollStart > 0);
+        Assert.Contains(writes.Skip(scrollStart + 8), w => w.Column == 1 && w.Row <= 9 && w.Text.StartsWith('/'));
+
+        List<string[]> screens = TopScreens(output, 1, 8);
+        Assert.Equal(scrolled, screens[^1]);
+        Assert.StartsWith("↑ 6 more lines above", screens[^1][0]);
+    }
+
+    // AC-9 (037)
+    [Theory]
+    [InlineData("")]
+    [InlineData("/nope")]
+    [InlineData("/help")]
+    [InlineData("/next")]
+    public void AfterEnter_TheNextFrame_StartsAtTheTop(string command)
+    {
+        string output = RunAnsi(c =>
+        {
+            c.Input.PushTextWithEnter("/help");
+            PageDown(c, HelpPages);
+            c.Input.PushTextWithEnter(command);
+            c.Input.PushTextWithEnter("/help");
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        Assert.StartsWith("↑", TopScreens(output, 1)[^1][0]);
+        string[] next = AnsiFrames(output)[2];
+        Assert.DoesNotContain("more lines above", next[0]);
+        string[] help = AnsiFrames(output)[3];
+        Assert.Matches(@"day, 2026-10-2\d", help[0]);
+        Assert.Contains(BelowCue, help[TopHeight - 1]);
+    }
+
+    // AC-10 (037)
+    [Fact]
+    public void Help_OnTheDefaultTerminal_ShowsBelowCue_AndScrollsToTodayAndDataFolder()
+    {
+        string folder = Path.Combine(Path.GetPathRoot(data.Path)!, "Times"); // a short folder, so the footer is one line (nothing is written)
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Input.PushTextWithEnter("/help");
+        PageDown(console, HelpPages);
+        console.Input.PushKey(ConsoleKey.Enter);
+        console.Input.PushTextWithEnter("/quit");
+
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(folder)).Run([]));
+
+        string output = console.Output;
+        string[] frame = AnsiFrames(output)[1];
+        Assert.Equal(24, frame.Length);
+        Assert.Contains(Heading, frame[0]);
+        Assert.Matches(@"^↓ \d+ more lines below · PgDn", frame[TopHeight - 1]);
+        Assert.Matches(@"\x1b\[(90|38;5;8)m↓ \d+ more lines below · PgDn", output);
+
+        List<string[]> screens = TopScreens(output, 1);
+        Assert.True(screens.Count > 1);
+        Assert.Contains(screens.SelectMany(screen => screen), l => l.Contains("/today", StringComparison.Ordinal));
+        Assert.Contains(screens[^1], l => l == $"Data folder: {folder}");
+        Assert.DoesNotContain(screens[^1], l => l.Contains(BelowCue, StringComparison.Ordinal));
+        Assert.Matches(@"^↑ \d+ more lines above · PgUp", screens[^1][0]);
+    }
+
+    // AC-5, AC-7 (037)
+    [Theory]
+    [InlineData(ConsoleKey.PageDown, true, false)]
+    [InlineData(ConsoleKey.DownArrow, false, true)]
+    public void ScrollAlternatives_ScrollTheApp_Too(ConsoleKey key, bool shift, bool control)
+    {
+        string output = RunAnsi(c =>
+        {
+            c.Input.PushTextWithEnter("/help");
+            c.Input.PushKey(new ConsoleKeyInfo('\0', key, shift, false, control));
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        List<string[]> screens = TopScreens(output, 1);
+        Assert.Equal(2, screens.Count);
+        Assert.Matches(@"^↑ \d+ more lines above · PgUp$", screens[1][0]);
     }
 }
