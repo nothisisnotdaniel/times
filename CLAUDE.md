@@ -25,6 +25,13 @@ Every factory agent reads this file before working on Times. Keep it short and a
     it is open, otherwise clear the line), Tab (complete a `/command` from the registry; if
     several match, extend to their common prefix and list them in the popup with a grey count
     footer) and ↑/↓ (history). Don't use Spectre's `Live` display: it can't run while we read input.
+  - **Scrolling:** the top area is a scrollable window (`TopArea.Fit(content, height, offset)`;
+    `TopArea.MaxOffset` and `TopArea.PageSize` hold the rule). When it is taller than its rows (and
+    has at least 3), grey cues show `↑ N more lines above · PgUp` on its first row and
+    `↓ N more lines below · PgDn` on its last. PageUp/PageDown, Shift+PageUp/PageDown and Ctrl+↑/↓
+    (for macOS Terminal) move it by a page (height - 2 lines); plain ↑/↓ stay history. Like the
+    popup, a scroll redraws in place: only the top-area rows, then the popup (if open) and the input
+    line. The offset goes back to 0 on every full redraw (after every Enter).
   - **Command popup:** while the line starts with `/`, a popup just above the input box lists the
     registered commands with their descriptions, filtered by what was typed and ranked by
     Levenshtein distance so typos still match. The popup is the one thing redrawn **while
