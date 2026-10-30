@@ -6,7 +6,7 @@ namespace Times;
 
 /// <summary>
 /// The interactive main screen. Each iteration clears the screen, draws the full-terminal layout
-/// (day view on top, a one-line hint row, a 3-line input box at the bottom), reads one line and dispatches it through the
+/// (quicklist panel and day view on top, a one-line hint row, a 3-line input box at the bottom), reads one line and dispatches it through the
 /// <see cref="CommandRegistry"/>. All output goes through <see cref="IAnsiConsole"/> and all clock
 /// reads through <see cref="TimeProvider"/>, so both can be faked in tests. Day files live in the
 /// injected <see cref="DayStore"/>, so tests use a temp folder.
@@ -163,7 +163,7 @@ internal sealed class App
 
         if (list.IsEmpty)
         {
-            return new CommandResult(new Markup("[grey]No projects yet. Add one with /addproject <work item> <title>.[/]"));
+            return new CommandResult(new Markup("[grey]No projects yet. Add one with /addproject <work item> <title>.[/]"), hideQuicklist: true);
         }
 
         Table table = new Table()
@@ -182,7 +182,7 @@ internal sealed class App
                 new Text(project.Title));
         }
 
-        return new CommandResult(table);
+        return new CommandResult(table, hideQuicklist: true);
     }
 
     private static string UnreadableProjects(Exception ex) =>
@@ -363,10 +363,11 @@ internal sealed class App
         LineEditor editor = new LineEditor(console, registry);
         IRenderable? message = null;
         IRenderable? hint = null;
+        bool hideQuicklist = false;
 
         while (true)
         {
-            Draw(message, hint);
+            Draw(message, hint, hideQuicklist);
 
             int height = console.Profile.Height;
             int width = console.Profile.Width;
@@ -393,6 +394,7 @@ internal sealed class App
 
             message = result.Message;
             hint = result.Hint;
+            hideQuicklist = result.HideQuicklist && result.Message is not null;
         }
     }
 
@@ -437,12 +439,24 @@ internal sealed class App
         return new Markup($"[grey]Data folder:[/] {Markup.Escape(Store.Folder)}{source}");
     }
 
-    private void Draw(IRenderable? message, IRenderable? hint)
+    // While /help or /projects output is shown (hideQuicklist), the quicklist panel is left out so the
+    // output fits; /projects shows the full list anyway. It comes back with the next command.
+    private void Draw(IRenderable? message, IRenderable? hint, bool hideQuicklist)
     {
-        IRenderable day = RenderDay();
-        IRenderable top = message is null
-            ? day
-            : new Rows(day, Text.Empty, message);
+        List<IRenderable> parts = [];
+        if (!hideQuicklist)
+        {
+            parts.Add(RenderQuicklist());
+        }
+
+        parts.Add(RenderDay());
+        if (message is not null)
+        {
+            parts.Add(Text.Empty);
+            parts.Add(message);
+        }
+
+        IRenderable top = new Rows(parts);
 
         Panel input = new Panel(new Markup($"[steelblue1]{Markup.Escape(Prompt)}[/][grey]{Markup.Escape(Placeholder)}[/]"))
             .Border(BoxBorder.Rounded)
@@ -459,6 +473,19 @@ internal sealed class App
         frame = Segment.SplitLines(layout.GetSegments(console));
         console.Clear(home: true);
         console.Write(new SegmentsRenderable(frame.SelectMany(l => l.Append(Segment.LineBreak)).SkipLast(1)));
+    }
+
+    // Reloads projects.json on every redraw, so a project added a moment ago shows up. Never writes.
+    private IRenderable RenderQuicklist()
+    {
+        try
+        {
+            return QuicklistPanel.Render(projectStore.Load());
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            return QuicklistPanel.RenderUnreadable($"The project list cannot be read: {Markup.Escape(ex.Message)}");
+        }
     }
 
     private IRenderable RenderDay()

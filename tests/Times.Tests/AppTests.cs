@@ -8,6 +8,9 @@ public sealed class AppTests : IDisposable
 {
     private const string Heading = "Tuesday, 2026-10-27";
 
+    /// <summary>Rows the quicklist panel takes with no projects (border, one line, border): the day heading is on the next row.</summary>
+    private const int EmptyPanelRows = 3;
+
     private readonly TempFolder data = new();
 
     public void Dispose() => data.Dispose();
@@ -39,13 +42,15 @@ public sealed class AppTests : IDisposable
     private static string LastFrame(string output) => output[output.LastIndexOf(LastHeading(output), StringComparison.Ordinal)..];
 
     /// <summary>
-    /// Splits the output into drawn frames. Each frame runs from a day heading to the bottom
-    /// border of the input panel (the <c>╰</c> line right after the <c>│ > </c> line), split on <c>\n</c>.
+    /// Splits the output into drawn frames. Each frame runs from row 1 (right after the clear-screen
+    /// sequence: the quicklist panel's top border, or the day heading while /help or /projects hides
+    /// the panel) to the bottom border of the input panel (the <c>╰</c> line right after the
+    /// <c>│ > </c> line), split on <c>\n</c>.
     /// </summary>
     private static List<string[]> Frames(string output)
     {
         List<string[]> frames = new List<string[]>();
-        List<int> starts = Regex.Matches(output, @"[A-Z][a-z]+day, \d{4}-\d{2}-\d{2}").Select(m => m.Index).ToList();
+        List<int> starts = Regex.Matches(output, @"\x1b\[1;1H").Select(m => m.Index + m.Length).ToList();
         foreach (int start in starts)
         {
             string[] lines = output[start..].Split('\n');
@@ -341,7 +346,7 @@ public sealed class AppTests : IDisposable
         string[] frame = Frames(output)[1];
         AssertOnHintRow(frame, "Unknown command /nope");
         Assert.DoesNotContain(frame[..^4], l => l.Contains("Unknown command", StringComparison.Ordinal));
-        Assert.Contains(Heading, frame[0]);
+        Assert.Contains(Heading, frame[EmptyPanelRows]);
     }
 
     // AC-2, AC-3
@@ -356,7 +361,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, exitCode);
         string[] frame = Frames(output)[1];
         AssertOnHintRow(frame, expected);
-        Assert.Contains(Heading, frame[0]);
+        Assert.Contains(Heading, frame[EmptyPanelRows]);
     }
 
     // AC-2, AC-3
@@ -369,7 +374,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, exitCode);
         string[] frame = Frames(output)[1];
         AssertOnHintRow(frame, "There is no day after this one.");
-        Assert.Contains("Friday, 9999-12-31", frame[0]);
+        Assert.Contains("Friday, 9999-12-31", frame[EmptyPanelRows]);
     }
 
     // AC-2, AC-3
@@ -388,7 +393,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, exitCode);
         string[] frame = Frames(output)[1];
         AssertOnHintRow(frame, "/boom failed: bad [thing]");
-        Assert.Contains(Heading, frame[0]);
+        Assert.Contains(Heading, frame[EmptyPanelRows]);
     }
 
     // AC-4
@@ -403,7 +408,7 @@ public sealed class AppTests : IDisposable
         {
             AssertLayout(frame);
             Assert.True(string.IsNullOrWhiteSpace(frame[^4]));
-            Assert.Contains(Heading, frame[0]);
+            Assert.Contains(Heading, frame[EmptyPanelRows]);
         }
 
         Assert.DoesNotContain(frames[2], l => l.Contains("Unknown command", StringComparison.Ordinal));
@@ -441,7 +446,7 @@ public sealed class AppTests : IDisposable
         AssertLayout(frame);
         Assert.Contains("word", frame[^4]);
         Assert.DoesNotContain(frame[..^4], l => l.Contains("word", StringComparison.Ordinal));
-        Assert.Contains(Heading, frame[0]);
+        Assert.Contains(Heading, frame[EmptyPanelRows]);
     }
 
     // AC-10
@@ -893,7 +898,7 @@ public sealed class AppTests : IDisposable
             c.Input.PushTextWithEnter("/quit");
         });
 
-        Assert.Contains("Monday, 2026-10-26", AnsiFrames(output)[1][0]);
+        Assert.Contains("Monday, 2026-10-26", AnsiFrames(output)[1][EmptyPanelRows]);
     }
 
     // AC-7
@@ -1457,7 +1462,7 @@ public sealed class AppTests : IDisposable
         }
 
         string[] frame = frames[1];
-        Assert.StartsWith(Heading, frame[0]);
+        Assert.Contains(Heading, frame[0]);
         Assert.Equal(full[..7], frame[..7]);
         Assert.Equal($"… {full.Length - 7} more lines", frame[^5].TrimEnd());
         Assert.True(full.Length - 7 > 10);
@@ -2802,5 +2807,330 @@ public sealed class AppTests : IDisposable
 
         Assert.Matches(@"/addproject +│ Add a project to the quicklist: <work item> <title>", output);
         Assert.Matches(@"/projects +│ List the projects on the quicklist", output);
+    }
+
+    // Quicklist panel (job 033) ------------------------------------------------------------
+
+    private void WriteProjects(int count) =>
+        File.WriteAllText(ProjectsFile, new ProjectList(Enumerable.Range(1, count).Select(i => new Project(100 + i, $"Project {i}"))).ToJson());
+
+    /// <summary>The rows of the quicklist panel at the top of <paramref name="frame"/>, from its top border to its bottom border.</summary>
+    private static string[] PanelRows(string[] frame)
+    {
+        Assert.StartsWith("╭─Projects", frame[0]);
+        int bottom = Array.FindIndex(frame, l => l.StartsWith('╰'));
+        return frame[..(bottom + 1)];
+    }
+
+    // AC-1 (033)
+    [Fact]
+    public void QuicklistPanel_IsOnRow1_AboveTheDayHeading()
+    {
+        WriteProjects(2);
+
+        (int exitCode, string output) = RunCommands("/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.True(output.IndexOf("╭─Projects", StringComparison.Ordinal) < output.IndexOf(Heading, StringComparison.Ordinal));
+        string[] frame = LastLayout(output);
+        AssertLayout(frame);
+        string[] panel = PanelRows(frame);
+        Assert.Equal(4, panel.Length);
+        Assert.All(panel, l => Assert.Equal(80, l.Length));
+        Assert.Contains(Heading, frame[panel.Length]);
+    }
+
+    // AC-1, AC-5 (033)
+    [Fact]
+    public void QuicklistPanel_WithNoFile_ShowsHowToAddAProject()
+    {
+        (_, string output) = RunCommands("/quit");
+
+        string[] panel = PanelRows(LastLayout(output));
+        Assert.Equal(EmptyPanelRows, panel.Length);
+        Assert.Contains("No projects yet. Add one with /addproject <work item> <title>.", panel[1]);
+    }
+
+    // AC-2 (033)
+    [Fact]
+    public void QuicklistPanel_ListsProjectsInOrder()
+    {
+        File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":99,\"title\":\"Zeta\"},{\"workItem\":1,\"title\":\"[red]Alpha[/]\"}]}");
+
+        (_, string output) = RunCommands("/quit");
+
+        string[] panel = PanelRows(LastLayout(output));
+        Assert.Equal("│ 1 #99 Zeta", panel[1].TrimEnd('│', ' '));
+        Assert.Equal("│ 2 #1 [red]Alpha[/]", panel[2].TrimEnd('│', ' '));
+    }
+
+    // AC-7, AC-11 (033)
+    [Fact]
+    public void AddProject_ShowsInPanel_OnTheNextFrame()
+    {
+        WriteProjects(1);
+
+        (_, string output) = RunCommands("/addproject 1234 Website", "/quit");
+
+        List<string[]> frames = Frames(output);
+        Assert.Equal(2, frames.Count);
+        Assert.DoesNotContain(frames[0], l => l.Contains("#1234", StringComparison.Ordinal));
+        string[] frame = frames[1];
+        AssertLayout(frame);
+        string[] panel = PanelRows(frame);
+        Assert.Equal(4, panel.Length);
+        Assert.Equal("│ 2 #1234 Website", panel[2].TrimEnd('│', ' '));
+        Assert.Contains(frame[panel.Length..^4], l => l.Contains("Added project 2: #1234 Website", StringComparison.Ordinal));
+    }
+
+    // AC-7 (033)
+    [Fact]
+    public void AddProject_FirstProject_ReplacesTheEmptyLine()
+    {
+        (_, string output) = RunCommands("/addproject 1234 Website", "/quit");
+
+        string[] panel = PanelRows(LastLayout(output));
+        Assert.Equal("│ 1 #1234 Website", panel[1].TrimEnd('│', ' '));
+        Assert.DoesNotContain(panel, l => l.Contains("No projects yet", StringComparison.Ordinal));
+    }
+
+    // AC-7 (033)
+    [Theory]
+    [InlineData("/addproject abc Title")]
+    [InlineData("/addproject 101 Duplicate")]
+    [InlineData("/addproject 5")]
+    public void FailedAddProject_LeavesPanelUnchanged(string command)
+    {
+        WriteProjects(2);
+
+        (_, string output) = RunCommands(command, "/quit");
+
+        List<string[]> frames = Frames(output);
+        Assert.Equal(2, frames.Count);
+        Assert.Equal(PanelRows(frames[0]), PanelRows(frames[1]));
+        Assert.Contains("/addproject", frames[1][^4]);
+    }
+
+    // AC-8 (033)
+    [Theory]
+    [InlineData("{not json")]
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"A\"},{\"workItem\":1,\"title\":\"B\"}]}")]
+    public void CorruptProjectsFile_ShowsRedReasonInPanel_AndBookingStillWorks(string contents)
+    {
+        File.WriteAllText(ProjectsFile, contents);
+
+        (int exitCode, string output) = RunCommands("/arrive 8:00", "/next", "/prev", "/quit");
+
+        Assert.Equal(0, exitCode);
+        List<string[]> frames = Frames(output);
+        Assert.Equal(4, frames.Count);
+        foreach (string[] frame in frames)
+        {
+            AssertLayout(frame);
+            string[] panel = PanelRows(frame);
+            Assert.Equal(3, panel.Length);
+            Assert.Contains("The project list cannot be read: projects.json is not valid.", panel[1]);
+        }
+
+        Assert.Equal("{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}", ReadDay("2026-10-27"));
+        Assert.Matches(@"1 +Arrival +08:00", string.Join('\n', frames[^1]));
+        Assert.Equal(contents, File.ReadAllText(ProjectsFile));
+        Assert.DoesNotContain("   at ", output);
+    }
+
+    // AC-8 (033)
+    [Fact]
+    public void CorruptProjectsFile_ReasonIsRed()
+    {
+        File.WriteAllText(ProjectsFile, "{not json");
+
+        string output = RunAnsi("/quit");
+
+        Assert.Matches(@"\x1b\[(91|38;5;9)mThe project list cannot be read: projects\.json is not valid\.", output);
+    }
+
+    // AC-8 (033)
+    [Fact]
+    public void TooLargeProjectsFile_ShowsReasonInPanel()
+    {
+        File.WriteAllText(ProjectsFile, new string(' ', (int)ProjectStore.MaxFileBytes + 1) + "{\"projects\":[]}");
+
+        (int exitCode, string output) = RunCommands("/quit");
+
+        Assert.Equal(0, exitCode);
+        string[] panel = PanelRows(LastLayout(output));
+        Assert.Contains("The project list cannot be read: projects.json is too large.", panel[1]);
+    }
+
+    // AC-8 (033)
+    [Fact]
+    public void UnreadableProjectsFile_AccessDenied_ShowsReasonInPanel()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        WriteProjects(1);
+        File.SetUnixFileMode(ProjectsFile, UnixFileMode.None);
+        try
+        {
+            (int exitCode, string output) = RunCommands("/arrive 8:00", "/quit");
+
+            Assert.Equal(0, exitCode);
+            string[] panel = PanelRows(LastLayout(output));
+            Assert.Equal(3, panel.Length);
+            Assert.Contains("The project list cannot be read:", panel[1]);
+            Assert.True(File.Exists(DayFile("2026-10-27")));
+        }
+        finally
+        {
+            File.SetUnixFileMode(ProjectsFile, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+    }
+
+    // AC-9 (033)
+    [Fact]
+    public void DrawingThePanel_WritesNothing()
+    {
+        (int exitCode, string output) = RunCommands("/prev", "/next", "/quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(3, Frames(output).Count);
+        Assert.False(File.Exists(ProjectsFile));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
+    }
+
+    // AC-9 (033)
+    [Fact]
+    public void DrawingThePanel_WithMissingFolder_CreatesNothing()
+    {
+        using TempFolder missing = new TempFolder(create: false);
+
+        (int exitCode, _) = Run(c =>
+        {
+            c.Input.PushTextWithEnter("/prev");
+            c.Input.PushTextWithEnter("/next");
+            c.Input.PushTextWithEnter("/quit");
+        }, dataFolder: missing.Path);
+
+        Assert.Equal(0, exitCode);
+        Assert.False(Directory.Exists(missing.Path));
+    }
+
+    // AC-6 (033)
+    [Fact]
+    public void ManyProjects_PanelShowsFirstFour_AndMoreLine()
+    {
+        WriteProjects(9);
+
+        (_, string output) = RunCommands("/quit");
+
+        string[] frame = LastLayout(output);
+        AssertLayout(frame);
+        string[] panel = PanelRows(frame);
+        Assert.Equal(7, panel.Length);
+        Assert.Equal("│ 4 #104 Project 4", panel[4].TrimEnd('│', ' '));
+        Assert.Equal("│ … 5 more. Type /projects to see all.", panel[5].TrimEnd('│', ' '));
+        Assert.Contains(Heading, frame[7]);
+    }
+
+    // AC-10 (033)
+    [Fact]
+    public void ShortTerminal_PanelIsKept_DayViewIsCutWithCue()
+    {
+        WriteProjects(5);
+
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Profile.Height = 12;
+            c.Input.PushTextWithEnter("/arrive 8:00");
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        Assert.Equal(0, exitCode);
+        List<string[]> frames = Frames(output);
+        Assert.Equal(2, frames.Count);
+        foreach (string[] frame in frames)
+        {
+            AssertLayout(frame, 12);
+            Assert.Equal(7, PanelRows(frame).Length);
+            Assert.Matches(@"^… \d+ more lines", frame[^5]);
+        }
+
+        Assert.Equal("{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}", ReadDay("2026-10-27"));
+    }
+
+    // AC-11 (033, round 2)
+    [Fact]
+    public void ProjectsCommand_StillShowsTable_AndHidesThePanelUntilTheNextCommand()
+    {
+        WriteProjects(2);
+
+        (_, string output) = RunCommands("/projects", "", "/quit");
+
+        List<string[]> frames = Frames(output);
+        Assert.Equal(3, frames.Count);
+        string[] listed = frames[1];
+        AssertLayout(listed);
+        Assert.DoesNotContain(listed, l => l.StartsWith("╭─Projects", StringComparison.Ordinal));
+        Assert.Contains(Heading, listed[0]);
+        Assert.Contains(listed, l => Regex.IsMatch(l, @"│ # +│ Work item +│ Title +│"));
+        Assert.Contains(listed, l => Regex.IsMatch(l, @"│ 2 +│ #102 +│ Project 2 +│"));
+        Assert.Equal(4, PanelRows(frames[2]).Length);
+    }
+
+    // Feedback (033, round 2)
+    [Theory]
+    [InlineData(5)]
+    [InlineData(9)]
+    public void Help_AtDefaultHeight_WithManyProjects_ShowsTodayAndDataFolder(int projects)
+    {
+        WriteProjects(projects);
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 300;
+        console.Input.PushTextWithEnter("/help");
+        console.Input.PushTextWithEnter("/quit");
+
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+
+        string[] frame = Frames(console.Output)[1];
+        AssertLayout(frame);
+        Assert.Contains(Heading, frame[0]);
+        Assert.DoesNotContain(frame, l => l.Contains("more lines", StringComparison.Ordinal));
+        Assert.DoesNotContain(frame, l => l.StartsWith("╭─Projects", StringComparison.Ordinal));
+        Assert.Contains(frame, l => l.Contains("/today", StringComparison.Ordinal));
+        Assert.Contains(frame, l => l.TrimEnd() == $"Data folder: {data.Path}");
+    }
+
+    // Feedback (033, round 2)
+    [Fact]
+    public void Panel_ComesBack_AfterHelp()
+    {
+        WriteProjects(5);
+
+        (_, string output) = RunCommands("/help", "/next", "/quit");
+
+        List<string[]> frames = Frames(output);
+        Assert.Equal(3, frames.Count);
+        Assert.Equal(7, PanelRows(frames[0]).Length);
+        Assert.DoesNotContain(frames[1], l => l.StartsWith("╭─Projects", StringComparison.Ordinal));
+        Assert.Equal(7, PanelRows(frames[2]).Length);
+    }
+
+    // Feedback (033, round 2)
+    [Theory]
+    [InlineData("/projects x")]
+    [InlineData("/nope")]
+    public void FailedOrOtherCommands_KeepThePanel(string command)
+    {
+        WriteProjects(2);
+
+        (_, string output) = RunCommands(command, "/addproject 7 Seven", "/quit");
+
+        foreach (string[] frame in Frames(output))
+        {
+            Assert.StartsWith("╭─Projects", frame[0]);
+        }
     }
 }

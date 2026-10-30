@@ -9,11 +9,13 @@ internal sealed record CommandResult
     /// <param name="message">Shown in the top area (under the day view) until the next command, or <c>null</c> for nothing.</param>
     /// <param name="quit">True to end the loop with exit code 0.</param>
     /// <param name="hint">Shown on the one-line hint row just above the input box until the next command, or <c>null</c> for nothing.</param>
-    public CommandResult(IRenderable? message = null, bool quit = false, IRenderable? hint = null)
+    /// <param name="hideQuicklist">True to leave out the quicklist panel while <paramref name="message"/> is shown, so long command output such as /help has room.</param>
+    public CommandResult(IRenderable? message = null, bool quit = false, IRenderable? hint = null, bool hideQuicklist = false)
     {
         Message = message;
         Quit = quit;
         Hint = hint;
+        HideQuicklist = hideQuicklist;
     }
 
     public static CommandResult None { get; } = new();
@@ -32,6 +34,9 @@ internal sealed record CommandResult
 
     /// <summary>True to end the loop with exit code 0.</summary>
     public bool Quit { get; }
+
+    /// <summary>True to leave out the quicklist panel until the next command, while <see cref="Message"/> is shown.</summary>
+    public bool HideQuicklist { get; }
 }
 
 /// <summary>A registered command. <see cref="Handler"/> receives the text after the name, trimmed.</summary>
@@ -68,7 +73,7 @@ internal sealed class CommandRegistry
     public static CommandRegistry CreateDefault()
     {
         CommandRegistry registry = new CommandRegistry();
-        registry.Register("/help", "List all commands", _ => new CommandResult(registry.RenderHelp()));
+        registry.Register("/help", "List all commands", _ => new CommandResult(registry.RenderHelp(), hideQuicklist: true));
         registry.Register("/quit", "Exit Times", _ => new CommandResult(quit: true));
         return registry;
     }
