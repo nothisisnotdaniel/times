@@ -40,4 +40,7 @@ Write one feature per line, in plain language.
 - [ ] Next step on read error: the red "project list cannot be read" line (panel and commands) also tells the user what to do, e.g. fix or delete `projects.json` in the data folder.
 - [ ] Panel polish: in the quicklist panel, show the `#id` work item number in a muted colour (e.g. grey) and make the `Projects` header stand out from the panel border. No layout changes.
 - [ ] Checkpoint tidy-up: re-wrap the overlong doc comments in `DayRecord.cs`, drop the redundant `projectToken is not null` check in `/checkpoint`, and make the `/checkpoint` description in `/help` and its usage hint use the same wording. No behaviour changes.
+- [ ] Scroll cue wording: the scroll cues say "1 more line" (singular) when one line is hidden, and name a key that works in macOS Terminal too, e.g. `PgDn / Ctrl+↓` and `PgUp / Ctrl+↑`.
+- [ ] Document scroll keys: add a short "Keys" section to the README that lists PgUp/PgDn, Shift+PgUp/PgDn and Ctrl+↑/↓ for scrolling and ↑/↓ for history, and notes that macOS Terminal needs Shift or Ctrl.
+- [ ] Scroll code tidy-up: make the `room` expression in `TopArea.Render` readable (named locals or a comment), and add a test for a scroll that changes nothing while the Tab list is open. No behaviour changes.
 - [ ] Terminal check: verify in a real terminal (macOS Terminal, Windows Terminal) that the full-height layout doesn't scroll by one row and the cursor sits in the input box; fix it if it does.
