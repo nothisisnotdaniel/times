@@ -51,4 +51,7 @@ Write one feature per line, in plain language.
 - [ ] Long escape sequences: an `ESC [` sequence longer than the 32-key limit is dropped whole and never shows up as typed text in the input line. Pasted text arrives as typed text, not as commands that run line by line: turn bracketed paste on while the app runs and off again on exit.
 - [ ] Command doc tidy-up: re-wrap the long Tab doc line in `LineEditor.cs`, the `Match` doc comment and the other overlong lines in `CommandRegistry.cs`, and the registry line in `CLAUDE.md`, so they match their neighbours. No behaviour changes.
 - [ ] Escape name in Register: when `CommandRegistry.Register` rejects a name, show the name in its error message escaped and with control characters removed, so the message stays safe once aliases or command names can come from user config.
+- [ ] Summary caption: give the `summary` table a caption with the viewed day's date, in the same format as the day view heading.
+- [ ] Explain open: when the `summary` table has an open checkpoint, show a grey footnote under it saying that an open checkpoint has no end on that day and counts no time.
+- [ ] Summary test tidy-up: remove the double blank line in `AppTests.cs` and the summary test that runs the same flow twice. No behaviour changes.
 - [ ] Terminal check: verify in a real terminal (macOS Terminal, Windows Terminal) that the full-height layout doesn't scroll by one row and the cursor sits in the input box; fix it if it does.
