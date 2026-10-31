@@ -93,6 +93,51 @@ internal sealed class App
         registry.Register("checkpoint", "cp", $"Book a checkpoint: [{TimeInput.Format}] [#quicklist number] <name>", Checkpoint);
         registry.Register("remove", "r", "Remove an entry from this day by its number", Remove);
         registry.Register("change", "c", $"Change the time of an entry on this day: <number> <{TimeInput.Format}>", Change);
+        registry.Register("summary", "s", "Show the time taken per work item from this day's checkpoints", NoArguments("summary", Summary));
+    }
+
+    // Shows the time taken per work item (and per name without one) on the day being viewed, as a
+    // table, or a grey note if the day has no checkpoints. Read-only: never calls Store.Save.
+    private CommandResult Summary()
+    {
+        DateOnly day = dayView.Current;
+        DayRecord record;
+        try
+        {
+            record = Store.Load(day);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            return Hint($"summary: {Markup.Escape(ex.Message)}");
+        }
+
+        // "Today" is read from the clock each time the command runs.
+        bool isToday = day == DateOnly.FromDateTime(time.GetLocalNow().DateTime);
+        IReadOnlyList<CheckpointGroup> groups = CheckpointSummary.Calculate(record, isToday, Now());
+        if (groups.Count == 0)
+        {
+            return new CommandResult(new Markup("[grey]No checkpoints on this day.[/]"));
+        }
+
+        Table table = new Table()
+            .Border(TableBorder.Rounded)
+            .BorderColor(Color.Grey)
+            .AddColumn("[grey]Work item[/]")
+            .AddColumn("[grey]Name[/]")
+            .AddColumn("[grey]Time[/]");
+
+        foreach (CheckpointGroup group in groups)
+        {
+            string workItem = group.WorkItem is { } w ? "#" + w.ToString(CultureInfo.InvariantCulture) : string.Empty;
+            string names = string.Join(", ", group.Names.Select(Markup.Escape));
+            string open = group.Open ? " [grey]open[/]" : string.Empty;
+            table.AddRow(
+                new Text(workItem),
+                new Markup(names),
+                new Markup($"[steelblue1]{DayView.FormatTimeLeft(group.Total)}[/]{open}"));
+        }
+
+        return new CommandResult(table);
     }
 
     private void RegisterProjects()
