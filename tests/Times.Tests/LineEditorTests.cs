@@ -200,12 +200,13 @@ public class LineEditorTests
         {
             Console = new TestConsole().Interactive().EmitAnsiSequences();
             CommandRegistry registry = CommandRegistry.CreateDefault();
-            registry.Register("prev", "Go to the previous day", _ => CommandResult.None);
-            registry.Register("next", "Go to the next day", _ => CommandResult.None);
-            registry.Register("today", "Go back to today", _ => CommandResult.None);
+            registry.Register("prev", "p", "Go to the previous day", _ => CommandResult.None);
+            registry.Register("next", "n", "Go to the next day", _ => CommandResult.None);
+            registry.Register("today", "t", "Go back to today", _ => CommandResult.None);
+            int aliasIndex = 0;
             foreach (string name in extra)
             {
-                registry.Register(name, $"Dummy {name}", _ => CommandResult.None);
+                registry.Register(name, $"j{(char)('a' + aliasIndex++)}", $"Dummy {name}", _ => CommandResult.None);
             }
 
             Editor = new LineEditor(Console, registry);
@@ -283,11 +284,11 @@ public class LineEditorTests
         Assert.Contains("\u001b[21;1H", output);
         List<AnsiWrite> rows = AnsiWrites.Parse(output).Where(w => w.Column == 1 && !w.Text.StartsWith("restored", StringComparison.Ordinal)).ToList();
         Assert.Equal([17, 18, 19, 20, 21], rows.Select(r => r.Row));
-        Assert.StartsWith("help   List all commands", rows[0].Text);
-        Assert.StartsWith("next   Go to the next day", rows[1].Text);
-        Assert.StartsWith("prev   Go to the previous day", rows[2].Text);
-        Assert.StartsWith("quit   Exit Times", rows[3].Text);
-        Assert.StartsWith("today  Go back to today", rows[4].Text);
+        Assert.StartsWith("help   h  List all commands", rows[0].Text);
+        Assert.StartsWith("next   n  Go to the next day", rows[1].Text);
+        Assert.StartsWith("prev   p  Go to the previous day", rows[2].Text);
+        Assert.StartsWith("quit   q  Exit Times", rows[3].Text);
+        Assert.StartsWith("today  t  Go back to today", rows[4].Text);
     }
 
     [Fact]
@@ -584,8 +585,8 @@ public class LineEditorTests
     {
         TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
         CommandRegistry registry = CommandRegistry.CreateDefault();
-        registry.Register("prev", "d", _ => CommandResult.None);
-        registry.Register("print", "d", _ => CommandResult.None);
+        registry.Register("prev", "p", "d", _ => CommandResult.None);
+        registry.Register("print", "pi", "d", _ => CommandResult.None);
         LineEditor editor = new LineEditor(console, registry);
         console.Input.PushText("p");
         console.Input.PushKey(ConsoleKey.Tab);
@@ -1650,7 +1651,7 @@ public class LineEditorTests
 
         Assert.Equal("t", run.Read());
         Assert.Equal(1, run.PopupDraws());
-        Assert.Equal("today  Go back to today", AnsiWrites.AtRow(run.Console.Output, HintRow)[0].TrimEnd());
+        Assert.Equal("today  t  Go back to today", AnsiWrites.AtRow(run.Console.Output, HintRow)[0].TrimEnd());
         Assert.DoesNotContain(AnsiWrites.Parse(run.Console.Output), w => w.Column == 1 && w.Text.StartsWith('/'));
     }
 

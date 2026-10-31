@@ -11,8 +11,11 @@ Every factory agent reads this file before working on Times. Keep it short and a
     before the lookup (only one, so a double `/` is an unknown command). Names are registered
     without `/`, and `Register` rejects a name that is empty, starts with `/` or holds whitespace.
     The set of commands (the "palette") grows feature by feature. Each feature adds its commands
-    to a single command registry (name, short description, handler), and `help` lists whatever is
-    registered. Unknown commands and other
+    to a single command registry (name, alias, short description, handler), and `help` lists whatever is
+    registered. Every command has a required, unique alias of 1–2 ASCII letters (`a` for `arrive`,
+    `cp` for `checkpoint`); `Register` rejects an alias that clashes (ignoring case) with any name
+    or alias. `TryGet` and the popup's `Match` accept the alias (exact alias first, prefix only, no
+    typo matching); Tab completion stays on names. `help` and popup rows show the alias in `steelblue1`. Unknown commands and other
     validation errors show a short `[red]` hint on the line **just above the input box** (not at
     the top of the screen) and never crash the loop.
   - **How the box is built** (no extra packages): a Spectre `Layout` that fills the terminal,

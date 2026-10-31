@@ -69,11 +69,11 @@ internal sealed class App
 
     private void RegisterNavigation()
     {
-        registry.Register("prev", "Go to the previous day", NoArguments("prev", () =>
+        registry.Register("prev", "p", "Go to the previous day", NoArguments("prev", () =>
             dayView.Previous() ? CommandResult.None : Hint("There is no day before this one.")));
-        registry.Register("next", "Go to the next day", NoArguments("next", () =>
+        registry.Register("next", "n", "Go to the next day", NoArguments("next", () =>
             dayView.Next() ? CommandResult.None : Hint("There is no day after this one.")));
-        registry.Register("today", "Go back to today", NoArguments("today", () =>
+        registry.Register("today", "t", "Go back to today", NoArguments("today", () =>
         {
             dayView.Today();
             return CommandResult.None;
@@ -82,23 +82,23 @@ internal sealed class App
 
     private void RegisterBookings()
     {
-        registry.Register("arrive", $"Book your arrival: now, or at an optional {TimeInput.Format}", argument =>
+        registry.Register("arrive", "a", $"Book your arrival: now, or at an optional {TimeInput.Format}", argument =>
             Book("arrive", argument, EntryKind.Arrival));
-        registry.Register("leave", $"Book your leaving: now, or at an optional {TimeInput.Format}", argument =>
+        registry.Register("leave", "l", $"Book your leaving: now, or at an optional {TimeInput.Format}", argument =>
             Book("leave", argument, EntryKind.Leaving));
-        registry.Register("break", $"Book the start of a break: now, or at an optional {TimeInput.Format}", argument =>
+        registry.Register("break", "b", $"Book the start of a break: now, or at an optional {TimeInput.Format}", argument =>
             Book("break", argument, EntryKind.BreakStart));
-        registry.Register("breakend", $"Book the end of a break: now, or at an optional {TimeInput.Format}", argument =>
+        registry.Register("breakend", "be", $"Book the end of a break: now, or at an optional {TimeInput.Format}", argument =>
             Book("breakend", argument, EntryKind.BreakEnd));
-        registry.Register("checkpoint", $"Book a checkpoint: [{TimeInput.Format}] [#quicklist number] <name>", Checkpoint);
-        registry.Register("remove", "Remove an entry from this day by its number", Remove);
-        registry.Register("change", $"Change the time of an entry on this day: <number> <{TimeInput.Format}>", Change);
+        registry.Register("checkpoint", "cp", $"Book a checkpoint: [{TimeInput.Format}] [#quicklist number] <name>", Checkpoint);
+        registry.Register("remove", "r", "Remove an entry from this day by its number", Remove);
+        registry.Register("change", "c", $"Change the time of an entry on this day: <number> <{TimeInput.Format}>", Change);
     }
 
     private void RegisterProjects()
     {
-        registry.Register("addproject", "Add a project to the quicklist: <work item> <title>", AddProject);
-        registry.Register("projects", "List the projects on the quicklist", NoArguments("projects", ListProjects));
+        registry.Register("addproject", "ap", "Add a project to the quicklist: <work item> <title>", AddProject);
+        registry.Register("projects", "pr", "List the projects on the quicklist", NoArguments("projects", ListProjects));
     }
 
     // Adds a project to the end of the quicklist. Nothing is written if the work item or title is

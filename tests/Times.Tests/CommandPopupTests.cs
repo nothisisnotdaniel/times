@@ -5,10 +5,10 @@ namespace Times.Tests;
 
 public class CommandPopupTests
 {
-    private static Command Cmd(string name, string description) => new(name, description, _ => CommandResult.None);
+    private static Command Cmd(string name, string description, string alias = "x") => new(name, alias, description, _ => CommandResult.None);
 
     private static List<Command> Many(int count) =>
-        Enumerable.Range(1, count).Select(i => Cmd($"c{i:00}", $"Command {i}")).ToList();
+        Enumerable.Range(1, count).Select(i => Cmd($"c{i:00}", $"Command {i}", $"x{(char)('a' + i)}")).ToList();
 
     /// <summary>Renders one markup row and returns the plain text (no ANSI) and the raw ANSI output.</summary>
     private static (string Plain, string Ansi) Render(string row, int width = 80)
@@ -24,22 +24,52 @@ public class CommandPopupTests
         return (plain.Output, ansi.Output);
     }
 
+    // AC-8 (041)
     [Fact]
-    public void Row_ShowsNamePaddedToLongest_ThenDescription()
+    public void Row_ShowsNamePaddedToLongest_ThenAliasPaddedToLongest_ThenDescription()
     {
-        IReadOnlyList<string> rows = CommandPopup.Rows([Cmd("help", "List all commands"), Cmd("today", "Go back to today")], 80, 8);
+        IReadOnlyList<string> rows = CommandPopup.Rows([Cmd("help", "List all commands", "h"), Cmd("today", "Go back to today", "td")], 80, 8);
 
         Assert.Equal(2, rows.Count);
-        Assert.StartsWith("help   List all commands", Render(rows[0]).Plain);
-        Assert.StartsWith("today  Go back to today", Render(rows[1]).Plain);
+        Assert.StartsWith("help   h   List all commands", Render(rows[0]).Plain);
+        Assert.StartsWith("today  td  Go back to today", Render(rows[1]).Plain);
     }
 
+    // AC-8 (041)
     [Fact]
-    public void Row_NameIsSteelBlue_DescriptionIsGrey()
+    public void Row_NameAndAliasAreSteelBlue_DescriptionIsGrey()
     {
-        string row = CommandPopup.Rows([Cmd("help", "List all commands")], 80, 8)[0];
+        string row = CommandPopup.Rows([Cmd("help", "List all commands", "h")], 80, 8)[0];
 
-        Assert.StartsWith("[steelblue1]help[/][grey]  List all commands[/]", row);
+        Assert.StartsWith("[steelblue1]help[/]  [steelblue1]h[/][grey]  List all commands[/]", row);
+    }
+
+    // AC-8 (041)
+    [Fact]
+    public void Alias_IsEscaped()
+    {
+        string row = CommandPopup.Rows([Cmd("help", "d", "[b]")], 80, 8)[0];
+
+        Assert.StartsWith("help  [b]  d", Render(row).Plain);
+    }
+
+    // AC-8 (041): name, gap, alias and description are cropped from the right, one after the other.
+    [Theory]
+    [InlineData(1, "c")]
+    [InlineData(10, "checkpoint")]
+    [InlineData(12, "checkpoint  ")]
+    [InlineData(13, "checkpoint  c")]
+    [InlineData(14, "checkpoint  cp")]
+    [InlineData(16, "checkpoint  cp  ")]
+    [InlineData(17, "checkpoint  cp  B")]
+    [InlineData(20, "checkpoint  cp  Book")]
+    public void NarrowRow_CropsPartsInOrder(int width, string expected)
+    {
+        string row = CommandPopup.Rows([Cmd("checkpoint", "Book a checkpoint", "cp")], width, 8)[0];
+
+        string plain = Render(row, width).Plain;
+        Assert.Equal(width, plain.Length);
+        Assert.Equal(expected.PadRight(width), plain);
     }
 
     // AC-7
@@ -104,17 +134,20 @@ public class CommandPopupTests
     {
         string row = CommandPopup.Rows([Cmd("x[y]", "Tick [x] off [/]")], 80, 8)[0];
 
-        Assert.StartsWith("x[y]  Tick [x] off [/]", Render(row).Plain);
+        Assert.StartsWith("x[y]  x  Tick [x] off [/]", Render(row).Plain);
     }
 
     // AC-10
     [Theory]
     [InlineData(80)]
     [InlineData(30)]
+    [InlineData(14)]
+    [InlineData(9)]
+    [InlineData(7)]
     [InlineData(4)]
     public void EveryRow_IsExactlyTheTerminalWidth(int width)
     {
-        List<Command> commands = [Cmd("help", new string('d', 200)), Cmd("q", "short"), Cmd("multi", "line\nbreak")];
+        List<Command> commands = [Cmd("help", new string('d', 200), "h"), Cmd("q", "short", "qq"), Cmd("multi", "line\nbreak", "m")];
 
         foreach (string row in CommandPopup.Rows(commands, width, 8))
         {
@@ -130,7 +163,7 @@ public class CommandPopupTests
     {
         string row = CommandPopup.Rows([Cmd("help", new string('d', 200))], 40, 8)[0];
 
-        Assert.Equal("help  " + new string('d', 34), Render(row, 40).Plain);
+        Assert.Equal("help  x  " + new string('d', 31), Render(row, 40).Plain);
     }
 
     // Job 011 ------------------------------------------------------------------------------
@@ -203,8 +236,8 @@ public class CommandPopupTests
         IReadOnlyList<string> rows = CommandPopup.Rows(registry.Match("/"), 80, 8);
 
         Assert.Equal(2, rows.Count);
-        Assert.StartsWith("help  List all commands", Render(rows[0]).Plain);
-        Assert.StartsWith("quit  Exit Times", Render(rows[1]).Plain);
+        Assert.StartsWith("help  h  List all commands", Render(rows[0]).Plain);
+        Assert.StartsWith("quit  q  Exit Times", Render(rows[1]).Plain);
         Assert.All(rows, r => Assert.DoesNotContain("/", Render(r).Plain));
     }
 }
