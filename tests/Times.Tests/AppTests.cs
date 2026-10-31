@@ -826,11 +826,11 @@ public sealed class AppTests : IDisposable
         Assert.Contains("\u001b[21;1H", output);
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal([14, 15, 16, 17, 18, 19, 20, 21], popup.Select(w => w.Row));
-        // Fourteen commands: the first seven by name, then a row counting the other seven.
+        // Fifteen commands: the first seven by name, then a row counting the other eight.
         Assert.Equal(
             ["addproject", "arrive", "break", "breakend", "change", "checkpoint", "help", "…"],
             popup.Select(w => w.Text.Split(' ')[0]));
-        Assert.StartsWith("… 7 more", popup[^1].Text);
+        Assert.StartsWith("… 8 more", popup[^1].Text);
         Assert.Contains("List all commands", popup[6].Text);
         Assert.Equal(80, popup[0].Text.Length);
     }
@@ -903,9 +903,9 @@ public sealed class AppTests : IDisposable
         List<string> hintRow = TypingWrites(output, 1).Where(w => w.Row == 21).Select(w => w.Text).ToList();
 
         // popup, restored (Backspace), popup, restored (Esc), popup (quit typing), ...
-        Assert.StartsWith("… 7 more", hintRow[0]);
+        Assert.StartsWith("… 8 more", hintRow[0]);
         Assert.Contains("Unknown command nope", hintRow[1]);
-        Assert.StartsWith("… 7 more", hintRow[2]);
+        Assert.StartsWith("… 8 more", hintRow[2]);
         Assert.Contains("Unknown command nope", hintRow[3]);
         Assert.Contains("Unknown command nope", hintRow[^1]);
         Assert.Contains("\u001b[38;5;9mUnknown command", output[output.LastIndexOf("\u001b[21;1H", StringComparison.Ordinal)..]);
@@ -938,8 +938,8 @@ public sealed class AppTests : IDisposable
 
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
-        // 26 commands: 7 shown, the eighth row counts the other 19.
-        Assert.StartsWith("… 19 more", popup[^1].Text);
+        // 27 commands: 7 shown, the eighth row counts the other 20.
+        Assert.StartsWith("… 20 more", popup[^1].Text);
         // Nothing is drawn on row 1 while typing (the final clear on quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
@@ -4292,6 +4292,7 @@ public sealed class AppTests : IDisposable
             ["projects"] = "pr",
             ["quit"] = "q",
             ["remove"] = "r",
+            ["summary"] = "s",
             ["today"] = "t",
         };
 
@@ -4320,5 +4321,271 @@ public sealed class AppTests : IDisposable
         // Header in grey, alias cells in steelblue1 (colour 75).
         Assert.Matches(@"\x1b\[38;5;8mAlias", console.Output);
         Assert.Matches(@"\x1b\[38;5;75mcp\x1b\[0m", console.Output);
+    }
+
+
+    // Job 043 ------------------------------------------------------------------------------
+
+    private const string SummaryDay =
+        "{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"Review\",\"workItem\":1234}," +
+        "{\"kind\":\"checkpoint\",\"time\":\"10:00\",\"name\":\"[x]\"}," +
+        "{\"kind\":\"checkpoint\",\"time\":\"10:30\",\"name\":\"Fix\",\"workItem\":1234}]}";
+
+    // AC-6, AC-4
+    [Fact]
+    public void Summary_OnToday_ShowsTableWithWorkItemsNamesAndTotals()
+    {
+        File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":1234,\"title\":\"Times\"}]}");
+
+        (int exitCode, string output) = RunCommands(
+            "cp 9:00 #1 Review", "cp 10:00 [x]", "cp 10:30 #1 Fix", "breakend 11:00", "cp 17:00 [x]", "leave 17:30", "summary", "quit");
+
+        Assert.Equal(0, exitCode);
+        string[] frame = LastLayout(output);
+        AssertLayout(frame);
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ Work item +│ Name +│ Time +│"));
+        // #1234: 9:00-10:00 and 10:30-17:00 = 7:30; [x]: 10:00-10:30 and 17:00-17:30 = 1:00.
+        int workItem = Array.FindIndex(frame, l => Regex.IsMatch(l, @"│ #1234 +│ Review, Fix +│ 7:30 +│"));
+        int name = Array.FindIndex(frame, l => Regex.IsMatch(l, @"│ +│ \[x\] +│ 1:00 +│"));
+        Assert.True(workItem > 0 && name > workItem);
+        Assert.DoesNotContain("open", string.Join("\n", frame));
+        // The quicklist stays visible.
+        Assert.Contains(frame, l => l.Contains("Projects", StringComparison.Ordinal));
+        Assert.Equal(string.Empty, frame[^4].Trim());
+    }
+
+    // AC-4
+    [Fact]
+    public void Summary_OnToday_OpenCheckpoint_CountsToTheCurrentMinute()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), "{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"17:00\",\"name\":\"Fix\"}]}");
+
+        (_, string output) = RunCommands(At183059(), "summary", "quit");
+
+        string[] frame = LastLayout(output);
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ +│ Fix +│ 1:30 +│"));
+        Assert.DoesNotContain("open", string.Join("\n", frame));
+    }
+
+    // AC-6
+    [Fact]
+    public void Summary_HeadersAndBorderAreGrey_TimeIsSteelBlue_NamesAreEscaped()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), SummaryDay);
+
+        string output = RunAnsi("summary");
+
+        Assert.Matches(@"\x1b\[(90|38;5;8)mWork item\x1b\[0m", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)mName\x1b\[0m", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)mTime\x1b\[0m", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)m╭─", output);
+        // [x] runs from 10:00 to 10:30; #1234 is 9:00-10:00 plus 10:30 to now (18:30).
+        Assert.Matches(@"\x1b\[38;5;75m0:30\x1b\[0m", output);
+        Assert.Matches(@"\x1b\[38;5;75m9:00\x1b\[0m", output);
+        Assert.Contains("[x]", output);
+    }
+
+    // AC-5
+    [Fact]
+    public void Summary_OnAPastDay_ShowsOpenAfterTheTime()
+    {
+        File.WriteAllText(DayFile("2026-10-26"), SummaryDay);
+
+        (int exitCode, string output) = RunCommands("prev", "summary", "quit");
+
+        Assert.Equal(0, exitCode);
+        string[] frame = LastLayout(output);
+        Assert.Contains("Monday, 2026-10-26", string.Join("\n", frame));
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ #1234 +│ Review, Fix +│ 1:00 open +│"));
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ +│ \[x\] +│ 0:30 +│"));
+        Assert.Matches(@"\x1b\[38;5;75m1:00\x1b\[0m \x1b\[(90|38;5;8)mopen\x1b\[0m", RunAnsiCommands("prev", "summary"));
+    }
+
+    // AC-5
+    [Fact]
+    public void Summary_OnAFutureDay_OnlyCheckpointOpen_ShowsZeroOpen()
+    {
+        File.WriteAllText(DayFile("2026-10-28"), "{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"Plan\"}]}");
+
+        (_, string output) = RunCommands("next", "summary", "quit");
+
+        Assert.Contains(LastLayout(output), l => Regex.IsMatch(l, @"│ +│ Plan +│ 0:00 open +│"));
+    }
+
+    // AC-7, AC-8
+    [Fact]
+    public void Summary_WithNoFile_ShowsGreyMessage_AndCreatesNothing()
+    {
+        (int exitCode, string output) = RunCommands("summary", "s", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("No checkpoints on this day.", LastFrame(output));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
+        Assert.Matches(@"\x1b\[(90|38;5;8)mNo checkpoints on this day\.", RunAnsi("summary"));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
+
+        using TempFolder missing = new TempFolder(create: false);
+        (_, string missingOutput) = Run(c =>
+        {
+            c.Input.PushTextWithEnter("summary");
+            c.Input.PushTextWithEnter("quit");
+        }, dataFolder: missing.Path);
+        Assert.Contains("No checkpoints on this day.", missingOutput);
+        Assert.False(Directory.Exists(missing.Path));
+    }
+
+    // AC-7, AC-8
+    [Fact]
+    public void Summary_DayWithoutCheckpoints_ShowsGreyMessage_AndLeavesBytesUnchanged()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}");
+        byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
+
+        (_, string output) = RunCommands("summary", "quit");
+
+        Assert.Contains("No checkpoints on this day.", LastFrame(output));
+        Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
+    }
+
+    // AC-8
+    [Fact]
+    public void Summary_NeverWrites_DayFileStaysByteForByte_AndNoFileIsCreated()
+    {
+        // A legacy file would be rewritten in the new format by any save.
+        File.WriteAllText(DayFile("2026-10-27"), "{\"arrival\":\"08:15\"}");
+        File.WriteAllText(DayFile("2026-10-26"), SummaryDay);
+        byte[] today = File.ReadAllBytes(DayFile("2026-10-27"));
+        byte[] past = File.ReadAllBytes(DayFile("2026-10-26"));
+
+        (int exitCode, _) = RunCommands("summary", "prev", "summary", "prev", "summary", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(today, File.ReadAllBytes(DayFile("2026-10-27")));
+        Assert.Equal(past, File.ReadAllBytes(DayFile("2026-10-26")));
+        Assert.Equal(["2026-10-26.json", "2026-10-27.json"],
+            Directory.EnumerateFileSystemEntries(data.Path).Select(Path.GetFileName).Order(StringComparer.Ordinal));
+    }
+
+    // AC-9
+    [Fact]
+    public void Summary_InvalidDayFile_ShowsRedHintAboveInputBox_AndLoopKeepsRunning()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), "{not json");
+        byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
+
+        (int exitCode, string output) = RunCommands("summary", "quit");
+
+        Assert.Equal(0, exitCode);
+        AssertOnHintRow(LastLayout(output), "summary: The file for 2026-10-27");
+        Assert.DoesNotContain("   at ", output);
+        Assert.DoesNotContain("failed:", output);
+        Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)msummary: The file for 2026-10-27", RunAnsi("summary"));
+    }
+
+    // AC-9
+    [Fact]
+    public void Summary_UnreadableDayFile_ShowsRedHint()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        File.WriteAllText(DayFile("2026-10-27"), SummaryDay);
+        UnixFileMode mode = File.GetUnixFileMode(DayFile("2026-10-27"));
+        File.SetUnixFileMode(DayFile("2026-10-27"), UnixFileMode.None);
+        try
+        {
+            if (CanRead(DayFile("2026-10-27")))
+            {
+                // Running as root: access can't be denied.
+                return;
+            }
+
+            (int exitCode, string output) = RunCommands("summary", "quit");
+
+            Assert.Equal(0, exitCode);
+            Assert.Contains("summary: ", LastLayout(output)[^4]);
+            Assert.DoesNotContain("   at ", output);
+        }
+        finally
+        {
+            File.SetUnixFileMode(DayFile("2026-10-27"), mode);
+        }
+    }
+
+    private static bool CanRead(string path)
+    {
+        try
+        {
+            File.ReadAllBytes(path);
+            return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    // AC-10
+    [Fact]
+    public void Summary_WithArgument_ShowsTakesNoArgumentsHint()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), SummaryDay);
+
+        (_, string output) = RunCommands("summary x", "quit");
+
+        string[] frame = LastLayout(output);
+        AssertOnHintRow(frame, "summary takes no arguments.");
+        Assert.DoesNotContain(frame, l => l.Contains("Work item", StringComparison.Ordinal));
+    }
+
+    // AC-10
+    [Theory]
+    [InlineData("s")]
+    [InlineData("S")]
+    [InlineData("/summary")]
+    [InlineData("/s")]
+    public void Summary_AliasAndSlash_DoTheSameAsSummary(string typed)
+    {
+        File.WriteAllText(DayFile("2026-10-27"), SummaryDay);
+
+        (_, string full) = RunCommands("summary", "quit");
+        (_, string other) = RunCommands(typed, "quit");
+
+        Assert.Equal(LastLayout(full), LastLayout(other));
+        Assert.Contains(LastLayout(other), l => Regex.IsMatch(l, @"│ #1234 +│ Review, Fix +│ 9:00 +│"));
+    }
+
+    // AC-10
+    [Fact]
+    public void Help_ListsSummary_WithAliasS_AndDescription()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 120;
+        console.Input.PushTextWithEnter("help");
+        PageDown(console, HelpPages);
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+        string plain = Regex.Replace(console.Output, @"\x1b\[[0-9;?]*[A-Za-z]", string.Empty);
+
+        Assert.Matches(@"│ summary +│ s +│ Show the time taken per work item from this day's checkpoints +│", plain);
+    }
+
+    /// <summary>Runs <paramref name="commands"/> on a wide ANSI console and returns its output, to check colours.</summary>
+    private string RunAnsiCommands(params string[] commands)
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 200;
+        foreach (string command in commands)
+        {
+            console.Input.PushTextWithEnter(command);
+        }
+
+        console.Input.PushTextWithEnter("quit");
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+        return console.Output;
     }
 }
