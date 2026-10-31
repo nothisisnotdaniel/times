@@ -125,21 +125,97 @@ internal sealed record DayRecord
     {
         TimeSpan[] result = new TimeSpan[entries.Length];
         TimeSpan left = DailyTarget;
+        IReadOnlyList<Gap> gaps = Walk();
+        for (int i = 0; i < entries.Length; i++)
+        {
+            if (gaps[i].State == WorkState.Working)
+            {
+                left -= gaps[i].Length;
+            }
+
+            result[i] = left;
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Returns the total work time: the time accrued while working in the walk of
+    /// <see cref="TimeLeft"/>, so <see cref="DailyTarget"/> minus the last time-left value.
+    /// <see cref="TimeSpan.Zero"/> for an empty day. Nothing accrues after the last entry.
+    /// </summary>
+    public TimeSpan WorkTime() => Total(WorkState.Working);
+
+    /// <summary>
+    /// Returns the total break time: the time between consecutive entries while on break in the walk
+    /// of <see cref="TimeLeft"/> (a break start to the next break end, or to the leaving that closes
+    /// an open break). Time while off is not break time. Nothing accrues after the last entry.
+    /// </summary>
+    public TimeSpan BreakTime() => Total(WorkState.OnBreak);
+
+    /// <summary>
+    /// Returns the break time required for <paramref name="worked"/>: <c>0:00</c> up to and including
+    /// 6 hours, <c>0:30</c> for more than 6 up to and including 9 hours, and <c>0:45</c> for more than 9 hours.
+    /// </summary>
+    public static TimeSpan RequiredBreak(TimeSpan worked)
+    {
+        if (worked > TimeSpan.FromHours(9))
+        {
+            return TimeSpan.FromMinutes(45);
+        }
+
+        if (worked > TimeSpan.FromHours(6))
+        {
+            return TimeSpan.FromMinutes(30);
+        }
+
+        return TimeSpan.Zero;
+    }
+
+    private TimeSpan Total(WorkState state)
+    {
+        TimeSpan total = TimeSpan.Zero;
+        foreach (Gap gap in Walk())
+        {
+            if (gap.State == state)
+            {
+                total += gap.Length;
+            }
+        }
+
+        return total;
+    }
+
+    // Parallel to entries: the time since the previous entry (zero for the first) and the state the
+    // day was in during that time. The one place that walks the transition table.
+    private IReadOnlyList<Gap> Walk()
+    {
+        Gap[] result = new Gap[entries.Length];
         WorkState state = WorkState.Off;
         for (int i = 0; i < entries.Length; i++)
         {
             DayEntry entry = entries[i];
-            if (state == WorkState.Working)
-            {
-                // Entries are sorted, so the previous entry is never after this one.
-                left -= entry.Time - entries[i - 1].Time;
-            }
 
-            result[i] = left;
+            // Entries are sorted, so the previous entry is never after this one.
+            TimeSpan length = i == 0 ? TimeSpan.Zero : entry.Time - entries[i - 1].Time;
+            result[i] = new Gap(state, length);
             state = Next(state, entry.Kind);
         }
 
         return result;
+    }
+
+    private readonly record struct Gap
+    {
+        public Gap(WorkState state, TimeSpan length)
+        {
+            State = state;
+            Length = length;
+        }
+
+        public WorkState State { get; }
+
+        public TimeSpan Length { get; }
     }
 
     private enum WorkState

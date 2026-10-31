@@ -618,4 +618,130 @@ public class DayRecordTests
         Assert.ThrowsAny<ArgumentException>(() => new DayEntry(EntryKind.Arrival, nine, "A", null));
         Assert.ThrowsAny<ArgumentException>(() => new DayEntry(EntryKind.BreakStart, nine, null, 5));
     }
+
+    // AC-1 (047)
+    [Fact]
+    public void WorkAndBreakTime_EmptyDay_AreZero()
+    {
+        Assert.Equal(TimeSpan.Zero, DayRecord.Empty.WorkTime());
+        Assert.Equal(TimeSpan.Zero, DayRecord.Empty.BreakTime());
+    }
+
+    // AC-1 (047)
+    [Fact]
+    public void WorkTime_IsDailyTargetMinusLastTimeLeft()
+    {
+        DayRecord record = new DayRecord(
+            [Arrival(7, 10), BreakStart(9, 0), BreakEnd(9, 20), Leaving(12, 0), Arrival(13, 0), BreakStart(18, 5)]);
+
+        Assert.Equal(DayRecord.DailyTarget - record.TimeLeft()[^1], record.WorkTime());
+        Assert.Equal(Hm(9, 35), record.WorkTime());
+    }
+
+    // AC-1 (047)
+    [Fact]
+    public void BreakTime_NothingAccruesAfterLastEntry_AndOffTimeIsNotBreak()
+    {
+        // The open break after 18:05 has no end, so it adds nothing; 12:00 to 13:00 is off.
+        DayRecord record = new DayRecord(
+            [Arrival(7, 10), BreakStart(9, 0), BreakEnd(9, 20), Leaving(12, 0), Arrival(13, 0), BreakStart(18, 5)]);
+
+        Assert.Equal(Hm(0, 20), record.BreakTime());
+    }
+
+    // AC-2 (047)
+    [Theory]
+    [InlineData(0, 0, 0)]
+    [InlineData(6, 0, 0)]
+    [InlineData(6, 1, 30)]
+    [InlineData(9, 0, 30)]
+    [InlineData(9, 1, 45)]
+    [InlineData(11, 0, 45)]
+    public void RequiredBreak_FollowsStrictThresholds(int hours, int minutes, int requiredMinutes)
+    {
+        Assert.Equal(TimeSpan.FromMinutes(requiredMinutes), DayRecord.RequiredBreak(Hm(hours, minutes)));
+    }
+
+    private static void AssertBreaks(DayRecord record, TimeSpan work, TimeSpan taken, TimeSpan required)
+    {
+        Assert.Equal(work, record.WorkTime());
+        Assert.Equal(taken, record.BreakTime());
+        Assert.Equal(required, DayRecord.RequiredBreak(record.WorkTime()));
+    }
+
+    // AC-3 (047)
+    [Fact]
+    public void Breaks_SixHoursWithoutBreak_NeedNone()
+    {
+        AssertBreaks(new DayRecord([Arrival(8, 0), Leaving(14, 0)]), Hm(6, 0), Hm(0, 0), Hm(0, 0));
+    }
+
+    // AC-3 (047)
+    [Fact]
+    public void Breaks_HalfHourBreak_MeetsThirtyMinutes()
+    {
+        AssertBreaks(
+            new DayRecord([Arrival(8, 0), BreakStart(12, 0), BreakEnd(12, 30), Leaving(17, 0)]),
+            Hm(8, 30), Hm(0, 30), Hm(0, 30));
+    }
+
+    // AC-3 (047)
+    [Fact]
+    public void Breaks_TwentyMinuteBreak_IsShortOfThirty()
+    {
+        AssertBreaks(
+            new DayRecord([Arrival(8, 0), BreakStart(12, 0), BreakEnd(12, 20), Leaving(17, 0)]),
+            Hm(8, 40), Hm(0, 20), Hm(0, 30));
+    }
+
+    // AC-3 (047)
+    [Fact]
+    public void Breaks_OverNineHours_NeedFortyFive()
+    {
+        AssertBreaks(
+            new DayRecord([Arrival(7, 0), BreakStart(11, 0), BreakEnd(11, 30), Leaving(17, 0)]),
+            Hm(9, 30), Hm(0, 30), Hm(0, 45));
+    }
+
+    // AC-3 (047)
+    [Fact]
+    public void Breaks_TwoBreaksAndCheckpoint_AddUp()
+    {
+        AssertBreaks(
+            new DayRecord(
+            [
+                Arrival(8, 0), BreakStart(10, 0), BreakEnd(10, 15), Checkpoint(11, 0, "A", null),
+                BreakStart(12, 0), BreakEnd(12, 30), Leaving(18, 0),
+            ]),
+            Hm(9, 15), Hm(0, 45), Hm(0, 45));
+    }
+
+    // AC-3 (047)
+    [Fact]
+    public void Breaks_UnendedBreak_CountsUpToLeaving()
+    {
+        DayRecord record = new DayRecord([Arrival(8, 0), BreakStart(12, 0), Leaving(13, 0)]);
+
+        Assert.Equal(Hm(4, 0), record.WorkTime());
+        Assert.Equal(Hm(1, 0), record.BreakTime());
+    }
+
+    // AC-3 (047)
+    [Fact]
+    public void Breaks_LeaveAndReturn_IsNotBreak()
+    {
+        AssertBreaks(
+            new DayRecord([Arrival(8, 0), Leaving(12, 0), Arrival(12, 45), Leaving(17, 0)]),
+            Hm(8, 15), Hm(0, 0), Hm(0, 30));
+    }
+
+    // AC-3 (047)
+    [Fact]
+    public void Breaks_BreakOutsideSpan_IsIgnored()
+    {
+        DayRecord record = new DayRecord([BreakStart(7, 0), BreakEnd(7, 30), Arrival(8, 0), Leaving(9, 0)]);
+
+        Assert.Equal(Hm(0, 0), record.BreakTime());
+        Assert.Equal(Hm(1, 0), record.WorkTime());
+    }
 }
