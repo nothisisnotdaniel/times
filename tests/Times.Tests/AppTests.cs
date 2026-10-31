@@ -1643,7 +1643,9 @@ public sealed class AppTests : IDisposable
         string[] frame = LastLayout(output);
         string top = string.Join('\n', frame[..^4]);
         Assert.Matches(@"1 +Arrival +08:00 +left 8:00", top);
-        Assert.Matches(@"2 +Arrival +13:00 +left 8:00", top);
+
+        // After (045): the 08:00 span is still open, so the 13:00 arrival shows the 5 hours worked so far.
+        Assert.Matches(@"2 +Arrival +13:00 +left 3:00", top);
         Assert.DoesNotContain("12:00", top);
         Assert.DoesNotMatch(@"\b3 +(Arrival|Leaving)", top);
         AssertLayout(frame);
@@ -1966,7 +1968,9 @@ public sealed class AppTests : IDisposable
         string top = string.Join('\n', frame[..^4]);
         Assert.Matches(@"1 +Leaving +12:00 +left 8:00", top);
         Assert.Matches(@"2 +Arrival +13:00 +left 8:00", top);
-        Assert.Matches(@"3 +Arrival +14:00 +left 8:00", top);
+
+        // The 13:00 arrival opens a span (045), so the second arrival at 14:00 shows an hour worked.
+        Assert.Matches(@"3 +Arrival +14:00 +left 7:00", top);
         Assert.DoesNotContain("08:00", top);
         Assert.Equal(string.Empty, frame[^4].Trim());
     }
@@ -3401,9 +3405,9 @@ public sealed class AppTests : IDisposable
         Assert.Matches(@"1 +Checkpoint +09:00 +\[red\]Fix\[/\]", LastFrame(output));
     }
 
-    // AC-8, AC-9 (036)
+    // AC-8, AC-9 (036); AC-6, AC-7 (045)
     [Fact]
-    public void Day_NumbersAllEntriesTogether_AndBreaksDoNotChangeTimeLeft()
+    public void Day_NumbersAllEntriesTogether_AndShowsTimeLeftWithoutBreaksOnEveryRow()
     {
         WriteTwoProjects();
 
@@ -3412,10 +3416,10 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, exitCode);
         string frame = LastFrame(output);
         Assert.Matches(@"1 +Arrival +08:00 +left 8:00", frame);
-        Assert.Matches(@"2 +Checkpoint +09:30 +Kickoff #1234 *\n", frame);
-        Assert.Matches(@"3 +Break start +12:00 *\n", frame);
-        Assert.Matches(@"4 +Break end +12:30 *\n", frame);
-        Assert.Matches(@"5 +Leaving +17:00 +left -1:00", frame);
+        Assert.Matches(@"2 +Checkpoint +09:30 +Kickoff #1234 +left 6:30", frame);
+        Assert.Matches(@"3 +Break start +12:00 +left 4:00", frame);
+        Assert.Matches(@"4 +Break end +12:30 +left 4:00", frame);
+        Assert.Matches(@"5 +Leaving +17:00 +left -0:30", frame);
     }
 
     // AC-10 (036)

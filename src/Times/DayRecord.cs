@@ -113,36 +113,50 @@ internal sealed record DayRecord
     public static TimeSpan DailyTarget { get; } = TimeSpan.FromHours(8);
 
     /// <summary>
-    /// Returns the work time left after each entry, parallel to <see cref="Entries"/>. Walking the
-    /// entries in time order, an arrival opens a span if none is open (further arrivals are ignored),
-    /// and a leaving closes the open span and subtracts it from <see cref="DailyTarget"/>. A leaving
-    /// with no open span, and an arrival never closed, subtract nothing. Breaks and checkpoints neither
-    /// open nor close a span. Goes negative past the target.
+    /// Returns the work time left at each entry's time, parallel to <see cref="Entries"/>. Walking the
+    /// entries in time order, the day is <em>off</em>, <em>working</em> or <em>on break</em>; work
+    /// time accrues between one entry and the next only while working. An arrival starts working when
+    /// off, a break start pauses work while working, a break end resumes it while on break, and a
+    /// leaving stops working or an open break; every other case, and every checkpoint, changes
+    /// nothing. The value for an entry is <see cref="DailyTarget"/> minus the work accrued up to its
+    /// time. Nothing accrues after the last entry. Goes negative past the target.
     /// </summary>
     public IReadOnlyList<TimeSpan> TimeLeft()
     {
         TimeSpan[] result = new TimeSpan[entries.Length];
         TimeSpan left = DailyTarget;
-        TimeOnly? open = null;
+        WorkState state = WorkState.Off;
         for (int i = 0; i < entries.Length; i++)
         {
             DayEntry entry = entries[i];
-            if (entry.Kind == EntryKind.Arrival)
+            if (state == WorkState.Working)
             {
-                open ??= entry.Time;
-            }
-            else if (entry.Kind == EntryKind.Leaving && open is { } arrival)
-            {
-                // Entries are sorted, so the leaving is never before the arrival.
-                left -= entry.Time - arrival;
-                open = null;
+                // Entries are sorted, so the previous entry is never after this one.
+                left -= entry.Time - entries[i - 1].Time;
             }
 
             result[i] = left;
+            state = Next(state, entry.Kind);
         }
 
         return result;
     }
+
+    private enum WorkState
+    {
+        Off,
+        Working,
+        OnBreak,
+    }
+
+    private static WorkState Next(WorkState state, EntryKind kind) => (state, kind) switch
+    {
+        (WorkState.Off, EntryKind.Arrival) => WorkState.Working,
+        (WorkState.Working, EntryKind.BreakStart) => WorkState.OnBreak,
+        (WorkState.OnBreak, EntryKind.BreakEnd) => WorkState.Working,
+        (WorkState.Working or WorkState.OnBreak, EntryKind.Leaving) => WorkState.Off,
+        _ => state,
+    };
 
     /// <summary>
     /// Returns a new record with <paramref name="entry"/> added in time order, after any entries

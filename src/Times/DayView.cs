@@ -57,9 +57,8 @@ internal sealed class DayView
     /// starting at 1, grey label such as <c>Arrival</c> or <c>Checkpoint</c>, <c>SteelBlue1</c> time),
     /// or <c>No entries yet.</c> if nothing is booked. If the day has a checkpoint, a details column
     /// follows the time: the checkpoint's escaped name and, if it has one, its grey work item
-    /// (<c>#5678</c>). Arrival and leaving rows end with the work time left after that entry (grey
-    /// <c>left</c> plus the right-aligned value, see <see cref="DayRecord.TimeLeft"/>); break and
-    /// checkpoint rows leave that cell empty.
+    /// (<c>#5678</c>). Every row, of every kind, ends with the work time left at that entry's time
+    /// (grey <c>left</c> plus the right-aligned value, see <see cref="DayRecord.TimeLeft"/>).
     /// </summary>
     public IRenderable Render(DayRecord day)
     {
@@ -97,8 +96,7 @@ internal sealed class DayView
                 cells.Add(Details(entry));
             }
 
-            bool hasTimeLeft = entry.Kind is EntryKind.Arrival or EntryKind.Leaving;
-            cells.Add(hasTimeLeft ? new Markup($"[grey]left[/] {FormatTimeLeft(timeLeft[i])}") : Text.Empty);
+            cells.Add(new Markup($"[grey]left[/] {FormatTimeLeft(timeLeft[i])}"));
             grid.AddRow(cells.ToArray());
         }
 
