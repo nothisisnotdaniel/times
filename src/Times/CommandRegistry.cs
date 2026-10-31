@@ -39,17 +39,23 @@ internal sealed record CommandResult
     public bool HideQuicklist { get; }
 }
 
-/// <summary>A registered command. <see cref="Handler"/> receives the text after the name, trimmed.</summary>
+/// <summary>
+/// A registered command. <see cref="Handler"/> receives the text after the name (or alias), trimmed.
+/// </summary>
 internal sealed record Command
 {
-    public Command(string name, string description, Func<string, CommandResult> handler)
+    public Command(string name, string alias, string description, Func<string, CommandResult> handler)
     {
         Name = name;
+        Alias = alias;
         Description = description;
         Handler = handler;
     }
 
     public string Name { get; }
+
+    /// <summary>A short name of one or two ASCII letters that runs the same handler.</summary>
+    public string Alias { get; }
 
     public string Description { get; }
 
@@ -59,12 +65,14 @@ internal sealed record Command
 /// <summary>
 /// The single registry of commands. Every feature adds its commands here, and <c>help</c> lists
 /// whatever is registered. Names are stored without a leading <c>/</c> and matched
-/// case-insensitively. The lookup helpers accept a prefix with or without one leading <c>/</c> and
+/// case-insensitively. Every command also has a unique alias of one or two ASCII letters, which
+/// <see cref="TryGet"/> and <see cref="Match"/> accept too. The lookup helpers accept a prefix with or without one leading <c>/</c> and
 /// keep that <c>/</c> in what they return.
 /// </summary>
 internal sealed class CommandRegistry
 {
     private readonly Dictionary<string, Command> commands = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Command> aliases = new(StringComparer.OrdinalIgnoreCase);
 
     public IEnumerable<Command> Commands => commands.Values.OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase);
 
@@ -75,25 +83,47 @@ internal sealed class CommandRegistry
     public static CommandRegistry CreateDefault()
     {
         CommandRegistry registry = new CommandRegistry();
-        registry.Register("help", "List all commands", _ => new CommandResult(registry.RenderHelp(), hideQuicklist: true));
-        registry.Register("quit", "Exit Times", _ => new CommandResult(quit: true));
+        registry.Register("help", "h", "List all commands", _ => new CommandResult(registry.RenderHelp(), hideQuicklist: true));
+        registry.Register("quit", "q", "Exit Times", _ => new CommandResult(quit: true));
         return registry;
     }
 
-    public void Register(string name, string description, Func<string, CommandResult> handler)
+    /// <summary>
+    /// Adds a command. Throws <see cref="ArgumentException"/> (and adds nothing) when the name is
+    /// empty, starts with <c>/</c> or holds whitespace; when the alias is not one or two ASCII
+    /// letters; or when the name or alias equals (ignoring case) any registered name or alias, or
+    /// the alias equals the command's own name.
+    /// </summary>
+    public void Register(string name, string alias, string description, Func<string, CommandResult> handler)
     {
         if (name.Length == 0 || name.StartsWith('/') || name.Any(char.IsWhiteSpace))
         {
             throw new ArgumentException($"Command name must not be empty, start with '/' or contain spaces: '{name}'.", nameof(name));
         }
 
-        if (!commands.TryAdd(name, new Command(name, description, handler)))
+        if (alias.Length is < 1 or > 2 || !alias.All(char.IsAsciiLetter))
+        {
+            throw new ArgumentException($"Alias of '{name}' must be one or two ASCII letters: '{alias}'.", nameof(alias));
+        }
+
+        if (commands.ContainsKey(name) || aliases.ContainsKey(name))
         {
             throw new ArgumentException($"Command '{name}' is already registered.", nameof(name));
         }
+
+        if (string.Equals(alias, name, StringComparison.OrdinalIgnoreCase) || commands.ContainsKey(alias) || aliases.ContainsKey(alias))
+        {
+            throw new ArgumentException($"Alias '{alias}' of '{name}' is already taken.", nameof(alias));
+        }
+
+        Command command = new Command(name, alias, description, handler);
+        commands.Add(name, command);
+        aliases.Add(alias, command);
     }
 
-    public bool TryGet(string name, out Command command) => commands.TryGetValue(name, out command!);
+    /// <summary>Finds a command by its name or its alias, ignoring case. Neither may carry a leading <c>/</c>.</summary>
+    public bool TryGet(string name, out Command command) =>
+        commands.TryGetValue(name, out command!) || aliases.TryGetValue(name, out command!);
 
     /// <summary>
     /// Completes a command prefix, typed with or without one leading <c>/</c>. Returns the full
@@ -170,7 +200,9 @@ internal sealed class CommandRegistry
     /// Levenshtein distance to the whole name or to its prefix of the token's length, so a prefix
     /// scores 0 and typos still match. A command is
     /// kept if its score is 0 for a 1-letter token, at most 1 for 2–3 letters and at most 2 for
-    /// longer tokens. Results are sorted by score, then by name.
+    /// longer tokens. A command is also kept (with score 0) when its alias starts with the token,
+    /// ignoring case; aliases get no typo matching. A command whose alias equals the token is listed
+    /// first, then the rest sorted by score, then by name.
     /// </summary>
     public IReadOnlyList<Command> Match(string line)
     {
@@ -205,6 +237,11 @@ internal sealed class CommandRegistry
             string name = command.Name.ToLowerInvariant();
             string prefix = name[..Math.Min(token.Length, name.Length)];
             int score = Math.Min(Levenshtein(token, name), Levenshtein(token, prefix));
+            if (command.Alias.StartsWith(token, StringComparison.OrdinalIgnoreCase))
+            {
+                score = 0;
+            }
+
             if (score <= limit)
             {
                 scored.Add((command, score));
@@ -212,7 +249,8 @@ internal sealed class CommandRegistry
         }
 
         return scored
-            .OrderBy(s => s.Score)
+            .OrderBy(s => string.Equals(s.Command.Alias, token, StringComparison.OrdinalIgnoreCase) ? 0 : 1)
+            .ThenBy(s => s.Score)
             .ThenBy(s => s.Command.Name, StringComparer.OrdinalIgnoreCase)
             .Select(s => s.Command)
             .ToList();
@@ -249,12 +287,14 @@ internal sealed class CommandRegistry
             .Border(TableBorder.Rounded)
             .BorderColor(Color.Grey)
             .AddColumn("[grey]Command[/]")
+            .AddColumn("[grey]Alias[/]")
             .AddColumn("[grey]Description[/]");
 
         foreach (Command command in Commands)
         {
             table.AddRow(
                 new Markup($"[steelblue1]{Markup.Escape(command.Name)}[/]"),
+                new Markup($"[steelblue1]{Markup.Escape(command.Alias)}[/]"),
                 new Text(command.Description));
         }
 

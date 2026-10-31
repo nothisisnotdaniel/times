@@ -6,6 +6,24 @@ as an interactive session: the current day sits above an input box where you typ
 (type `help` to list them, `quit` to leave). A leading `/` is still accepted, so typing one in
 front of a command does the same as the command on its own.
 
+## Shortcuts
+
+Every command has a short alias that does exactly the same, with the same arguments: `a 8:15`
+books the same arrival as `arrive 8:15`. `help` lists them in its `Alias` column, and the
+command popup shows them next to each name (typing an alias also finds its command there).
+
+| Command | Alias | | Command | Alias |
+|---------|-------|-|---------|-------|
+| `arrive` | `a` | | `prev` | `p` |
+| `leave` | `l` | | `next` | `n` |
+| `break` | `b` | | `today` | `t` |
+| `breakend` | `be` | | `addproject` | `ap` |
+| `checkpoint` | `cp` | | `projects` | `pr` |
+| `remove` | `r` | | `help` | `h` |
+| `change` | `c` | | `quit` | `q` |
+
+Tab still completes full command names only.
+
 It needs the [.NET 10 SDK](https://dotnet.microsoft.com/download). To run it straight from the
 source tree:
 

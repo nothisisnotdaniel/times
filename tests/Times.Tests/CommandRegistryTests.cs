@@ -1,3 +1,7 @@
+using System.Text.RegularExpressions;
+using Spectre.Console;
+using Spectre.Console.Testing;
+
 namespace Times.Tests;
 
 public class CommandRegistryTests
@@ -78,7 +82,7 @@ public class CommandRegistryTests
     {
         CommandRegistry registry = new CommandRegistry();
         string? received = null;
-        registry.Register("x", "x", a => { received = a; return CommandResult.None; });
+        registry.Register("x", "xa", "x", a => { received = a; return CommandResult.None; });
 
         registry.TryGet("x", out Command? x);
         x.Handler("some args");
@@ -96,7 +100,7 @@ public class CommandRegistryTests
     [InlineData(" x")]
     public void Register_RejectsBadNames(string name)
     {
-        Assert.Throws<ArgumentException>(() => new CommandRegistry().Register(name, "d", _ => CommandResult.None));
+        Assert.Throws<ArgumentException>(() => new CommandRegistry().Register(name, "zz", "d", _ => CommandResult.None));
     }
 
     // AC-9 (040)
@@ -105,7 +109,7 @@ public class CommandRegistryTests
     {
         CommandRegistry registry = new CommandRegistry();
 
-        registry.Register("x", "d", _ => CommandResult.None);
+        registry.Register("x", "xa", "d", _ => CommandResult.None);
 
         Assert.Equal(["x"], registry.Commands.Select(c => c.Name));
     }
@@ -115,7 +119,7 @@ public class CommandRegistryTests
     {
         CommandRegistry registry = CommandRegistry.CreateDefault();
 
-        Assert.Throws<ArgumentException>(() => registry.Register("HELP", "d", _ => CommandResult.None));
+        Assert.Throws<ArgumentException>(() => registry.Register("HELP", "zz", "d", _ => CommandResult.None));
     }
 
     // AC-11, AC-8 (040): the result keeps the user's '/' if one was typed.
@@ -148,7 +152,7 @@ public class CommandRegistryTests
     public void Complete_PrefixSharedByTwoCommands_ReturnsNull()
     {
         CommandRegistry registry = CommandRegistry.CreateDefault();
-        registry.Register("hello", "d", _ => CommandResult.None);
+        registry.Register("hello", "hl", "d", _ => CommandResult.None);
 
         Assert.Null(registry.Complete("hel"));
         Assert.Null(registry.Complete("/hel"));
@@ -159,9 +163,9 @@ public class CommandRegistryTests
     private static CommandRegistry WithNavigation()
     {
         CommandRegistry registry = CommandRegistry.CreateDefault();
-        registry.Register("prev", "Go to the previous day", _ => CommandResult.None);
-        registry.Register("next", "Go to the next day", _ => CommandResult.None);
-        registry.Register("today", "Go back to today", _ => CommandResult.None);
+        registry.Register("prev", "p", "Go to the previous day", _ => CommandResult.None);
+        registry.Register("next", "n", "Go to the next day", _ => CommandResult.None);
+        registry.Register("today", "t", "Go back to today", _ => CommandResult.None);
         return registry;
     }
 
@@ -238,9 +242,9 @@ public class CommandRegistryTests
     private static CommandRegistry WithPrefixes()
     {
         CommandRegistry registry = CommandRegistry.CreateDefault();
-        registry.Register("prev", "d", _ => CommandResult.None);
-        registry.Register("print", "d", _ => CommandResult.None);
-        registry.Register("project", "d", _ => CommandResult.None);
+        registry.Register("prev", "p", "d", _ => CommandResult.None);
+        registry.Register("print", "pi", "d", _ => CommandResult.None);
+        registry.Register("project", "pj", "d", _ => CommandResult.None);
         return registry;
     }
 
@@ -299,5 +303,229 @@ public class CommandRegistryTests
         Assert.Null(WithPrefixes().Complete("/pr"));
         Assert.Equal("print", WithPrefixes().Complete("pri"));
         Assert.Equal("/print", WithPrefixes().Complete("/pri"));
+    }
+
+    // Job 041 ------------------------------------------------------------------------------
+
+    private static CommandResult Nothing(string argument) => CommandResult.None;
+
+    // AC-1
+    [Theory]
+    [InlineData("")]
+    [InlineData("abc")]
+    [InlineData("/")]
+    [InlineData("/a")]
+    [InlineData(" ")]
+    [InlineData("a ")]
+    [InlineData("\t")]
+    [InlineData("1")]
+    [InlineData("a1")]
+    [InlineData("é")]
+    [InlineData("-")]
+    public void Register_RejectsBadAliases(string alias)
+    {
+        CommandRegistry registry = new CommandRegistry();
+
+        Assert.Throws<ArgumentException>(() => registry.Register("demo", alias, "d", Nothing));
+        Assert.Empty(registry.Commands);
+        Assert.False(registry.TryGet("demo", out _));
+    }
+
+    // AC-1
+    [Theory]
+    [InlineData("d")]
+    [InlineData("dm")]
+    [InlineData("DM")]
+    public void Register_AcceptsOneOrTwoAsciiLetters(string alias)
+    {
+        CommandRegistry registry = new CommandRegistry();
+
+        registry.Register("demo", alias, "d", Nothing);
+
+        Assert.Equal(alias, Assert.Single(registry.Commands).Alias);
+    }
+
+    // AC-2: the collision kinds, each on its own.
+    [Fact]
+    public void Register_AliasEqualToRegisteredName_Throws()
+    {
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+        registry.Register("ab", "x", "d", Nothing);
+
+        Assert.Throws<ArgumentException>(() => registry.Register("other", "AB", "d", Nothing));
+        Assert.False(registry.TryGet("other", out _));
+    }
+
+    // AC-2
+    [Fact]
+    public void Register_AliasEqualToRegisteredAlias_Throws()
+    {
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+
+        Assert.Throws<ArgumentException>(() => registry.Register("other", "H", "d", Nothing));
+        Assert.False(registry.TryGet("other", out _));
+        Assert.Equal("help", registry.TryGet("h", out Command? help) ? help.Name : null);
+    }
+
+    // AC-2
+    [Fact]
+    public void Register_NameEqualToRegisteredAlias_Throws()
+    {
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+
+        Assert.Throws<ArgumentException>(() => registry.Register("Q", "zz", "d", Nothing));
+        Assert.False(registry.TryGet("zz", out _));
+        Assert.Equal(["help", "quit"], registry.Commands.Select(c => c.Name));
+    }
+
+    // AC-2
+    [Theory]
+    [InlineData("go", "go")]
+    [InlineData("go", "GO")]
+    [InlineData("g", "g")]
+    public void Register_AliasEqualToOwnName_Throws(string name, string alias)
+    {
+        CommandRegistry registry = new CommandRegistry();
+
+        Assert.Throws<ArgumentException>(() => registry.Register(name, alias, "d", Nothing));
+        Assert.Empty(registry.Commands);
+    }
+
+    // AC-2: a duplicate name keeps the first command and does not take the new alias.
+    [Fact]
+    public void Register_DuplicateName_DoesNotAddTheAlias()
+    {
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+
+        Assert.Throws<ArgumentException>(() => registry.Register("help", "zz", "d", Nothing));
+        Assert.False(registry.TryGet("zz", out _));
+        registry.Register("other", "zz", "d", Nothing);
+        Assert.True(registry.TryGet("zz", out Command? other));
+        Assert.Equal("other", other.Name);
+    }
+
+    // AC-3
+    [Theory]
+    [InlineData("cp")]
+    [InlineData("CP")]
+    [InlineData("Cp")]
+    [InlineData("checkpoint")]
+    [InlineData("CHECKPOINT")]
+    public void TryGet_FindsByAliasOrName_IgnoringCase(string typed)
+    {
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+        registry.Register("checkpoint", "cp", "d", Nothing);
+
+        Assert.True(registry.TryGet(typed, out Command? command));
+        Assert.Equal("checkpoint", command.Name);
+    }
+
+    // AC-3
+    [Theory]
+    [InlineData("q")]
+    [InlineData("h")]
+    public void TryGet_BuiltInAliases(string alias)
+    {
+        Assert.True(CommandRegistry.CreateDefault().TryGet(alias, out Command? command));
+        Assert.Equal(alias, command.Alias);
+    }
+
+    private static CommandRegistry WithAppAliases()
+    {
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+        foreach ((string name, string alias) in new[]
+        {
+            ("arrive", "a"), ("leave", "l"), ("break", "b"), ("breakend", "be"), ("checkpoint", "cp"),
+            ("remove", "r"), ("change", "c"), ("prev", "p"), ("next", "n"), ("today", "t"),
+            ("addproject", "ap"), ("projects", "pr"),
+        })
+        {
+            registry.Register(name, alias, "d", Nothing);
+        }
+
+        return registry;
+    }
+
+    // AC-9
+    [Theory]
+    [InlineData("cp", "checkpoint")]
+    [InlineData("CP", "checkpoint")]
+    [InlineData("/cp", "checkpoint")]
+    [InlineData("cp 9:00 Standup", "checkpoint")]
+    [InlineData("b", "break")]
+    [InlineData("be", "breakend")]
+    [InlineData("c", "change")]
+    [InlineData("p", "prev")]
+    [InlineData("pr", "projects")]
+    [InlineData("ap", "addproject")]
+    [InlineData("a", "arrive")]
+    [InlineData("q", "quit")]
+    public void Match_ExactAlias_IsListedFirst(string line, string expected)
+    {
+        Assert.Equal(expected, WithAppAliases().Match(line)[0].Name);
+    }
+
+    // AC-9
+    [Fact]
+    public void Match_B_ListsBreakFirst_ThenBreakend()
+    {
+        IReadOnlyList<Command> matches = WithAppAliases().Match("b");
+
+        Assert.Equal("break", matches[0].Name);
+        Assert.Contains(matches, c => c.Name == "breakend");
+    }
+
+    // AC-9: an alias that only starts with the token keeps the command, even when its name does not.
+    [Fact]
+    public void Match_AliasPrefix_KeepsCommand()
+    {
+        CommandRegistry registry = new CommandRegistry();
+        registry.Register("zeta", "xy", "d", Nothing);
+
+        Assert.Equal(["zeta"], registry.Match("x").Select(c => c.Name));
+        Assert.Equal(["zeta"], registry.Match("/X").Select(c => c.Name));
+        Assert.Equal(["zeta"], registry.Match("xy").Select(c => c.Name));
+    }
+
+    // AC-9: aliases get no typo matching.
+    [Theory]
+    [InlineData("yx")]
+    [InlineData("xz")]
+    [InlineData("y")]
+    [InlineData("//x")]
+    public void Match_AliasTypo_DoesNotMatch(string line)
+    {
+        CommandRegistry registry = new CommandRegistry();
+        registry.Register("zeta", "xy", "d", Nothing);
+
+        Assert.Empty(registry.Match(line));
+    }
+
+    // AC-10: Tab completion and prefix lookups stay on names only.
+    [Fact]
+    public void CompletionHelpers_IgnoreAliases()
+    {
+        CommandRegistry registry = new CommandRegistry();
+        registry.Register("zeta", "xy", "d", Nothing);
+
+        Assert.Null(registry.Complete("x"));
+        Assert.Empty(registry.StartingWith("x"));
+        Assert.Equal("x", registry.CommonPrefix("x"));
+    }
+
+    // AC-7
+    [Fact]
+    public void RenderHelp_HasAliasColumn_InSteelBlue()
+    {
+        TestConsole console = new TestConsole().EmitAnsiSequences();
+        console.Profile.Width = 80;
+        console.Write(CommandRegistry.CreateDefault().RenderHelp());
+
+        string plain = Regex.Replace(console.Output, @"\x1b\[[0-9;]*m", string.Empty);
+        Assert.Matches(@"│ Command +│ Alias +│ Description +│", plain);
+        Assert.Matches(@"│ help +│ h +│ List all commands +│", plain);
+        Assert.Matches(@"│ quit +│ q +│ Exit Times +│", plain);
+        Assert.Contains("\u001b[38;5;8mAlias", console.Output);
+        Assert.Contains("\u001b[38;5;75mq\u001b[0m", console.Output);
     }
 }

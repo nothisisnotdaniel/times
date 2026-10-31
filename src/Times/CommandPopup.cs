@@ -5,7 +5,9 @@ namespace Times;
 /// <summary>
 /// Turns the commands that match the input line into the rows of the command popup that sits
 /// just above the input box. Each row is a markup string exactly <c>width</c> cells wide: the name
-/// in <c>steelblue1</c>, padded to the longest shown name, then the description in <c>grey</c>.
+/// in <c>steelblue1</c>, padded to the longest shown name, two spaces, the alias in
+/// <c>steelblue1</c>, padded to the longest shown alias, then two spaces and the description in
+/// <c>grey</c>. Parts that do not fit the width are cropped from the right.
 /// </summary>
 internal static class CommandPopup
 {
@@ -47,11 +49,12 @@ internal static class CommandPopup
         int shownCount = matches.Count <= maxRows ? matches.Count : maxRows - 1;
         List<Command> shown = matches.Take(shownCount).ToList();
         int longest = shown.Count == 0 ? 0 : shown.Max(c => c.Name.Length);
+        int longestAlias = shown.Count == 0 ? 0 : shown.Max(c => c.Alias.Length);
 
         List<string> rows = [];
         foreach (Command command in shown)
         {
-            rows.Add(Row(command, longest, width));
+            rows.Add(Row(command, longest, longestAlias, width));
         }
 
         if (shownCount < matches.Count)
@@ -62,13 +65,19 @@ internal static class CommandPopup
         return rows;
     }
 
-    private static string Row(Command command, int longest, int width)
+    private static string Row(Command command, int longest, int longestAlias, int width)
     {
         string name = Crop(command.Name.PadRight(longest), width);
         int room = width - name.Length;
+
+        // The gap and alias are only drawn when at least one alias cell fits after the gap.
+        string gap = room > Gap.Length ? Gap : string.Empty;
+        string alias = gap.Length > 0 ? Crop(Flatten(command.Alias).PadRight(longestAlias), room - gap.Length) : string.Empty;
+        room -= gap.Length + alias.Length;
+
         string description = room > Gap.Length ? Crop(Gap + Flatten(command.Description), room) : string.Empty;
-        string padding = new string(' ', width - name.Length - description.Length);
-        return $"[steelblue1]{Markup.Escape(name)}[/][grey]{Markup.Escape(description)}[/]{padding}";
+        string padding = new string(' ', room - description.Length);
+        return $"[steelblue1]{Markup.Escape(name)}[/]{gap}[steelblue1]{Markup.Escape(alias)}[/][grey]{Markup.Escape(description)}[/]{padding}";
     }
 
     private static string Grey(string text, int width)

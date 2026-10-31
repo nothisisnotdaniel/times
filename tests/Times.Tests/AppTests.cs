@@ -159,7 +159,7 @@ public sealed class AppTests : IDisposable
     public void Help_ListsEveryRegisteredCommand_IncludingOnesAddedInTest()
     {
         CommandRegistry registry = CommandRegistry.CreateDefault();
-        registry.Register("demo", "A command from the test", _ => CommandResult.None);
+        registry.Register("demo", "dm", "A command from the test", _ => CommandResult.None);
 
         (int exitCode, string output) = Run(c =>
         {
@@ -237,7 +237,7 @@ public sealed class AppTests : IDisposable
     public void HandlerException_ShowsRedHint_NotStackTrace()
     {
         CommandRegistry registry = CommandRegistry.CreateDefault();
-        registry.Register("boom", "Throws", _ => throw new InvalidOperationException("bad [thing]"));
+        registry.Register("boom", "bm", "Throws", _ => throw new InvalidOperationException("bad [thing]"));
 
         (int exitCode, string output) = Run(c =>
         {
@@ -294,7 +294,7 @@ public sealed class AppTests : IDisposable
     {
         string? received = null;
         CommandRegistry registry = CommandRegistry.CreateDefault();
-        registry.Register("echo", "Echo", a => { received = a; return CommandResult.None; });
+        registry.Register("echo", "ec", "Echo", a => { received = a; return CommandResult.None; });
 
         Run(c =>
         {
@@ -398,7 +398,7 @@ public sealed class AppTests : IDisposable
     public void HandlerExceptionHint_SitsDirectlyAboveInputBox()
     {
         CommandRegistry registry = CommandRegistry.CreateDefault();
-        registry.Register("boom", "Throws", _ => throw new InvalidOperationException("bad [thing]"));
+        registry.Register("boom", "bm", "Throws", _ => throw new InvalidOperationException("bad [thing]"));
 
         (int exitCode, string output) = Run(c =>
         {
@@ -449,7 +449,7 @@ public sealed class AppTests : IDisposable
     {
         CommandRegistry registry = CommandRegistry.CreateDefault();
         string text = string.Concat(Enumerable.Repeat("word ", 60)); // 300 characters
-        registry.Register("long", "Long hint", _ => CommandResult.Error(Markup.Escape(text)));
+        registry.Register("long", "lo", "Long hint", _ => CommandResult.Error(Markup.Escape(text)));
 
         (int exitCode, string output) = Run(c =>
         {
@@ -584,7 +584,7 @@ public sealed class AppTests : IDisposable
     {
         SettableTimeProvider time = new SettableTimeProvider(new DateTimeOffset(2026, 10, 27, 23, 0, 0, TimeSpan.Zero));
         CommandRegistry registry = CommandRegistry.CreateDefault();
-        registry.Register("tick", "Advance the test clock", _ =>
+        registry.Register("tick", "tk", "Advance the test clock", _ =>
         {
             time.UtcNow = time.UtcNow.AddHours(2);
             return CommandResult.None;
@@ -806,7 +806,7 @@ public sealed class AppTests : IDisposable
         CommandRegistry registry = CommandRegistry.CreateDefault();
         for (int i = 1; i <= 12; i++)
         {
-            registry.Register($"c{i:00}", $"Dummy command {i}", _ => CommandResult.None);
+            registry.Register($"c{i:00}", $"x{(char)('a' + i)}", $"Dummy command {i}", _ => CommandResult.None);
         }
 
         return registry;
@@ -869,7 +869,8 @@ public sealed class AppTests : IDisposable
         List<AnsiWrite> writes = TypingWrites(output, 1);
 
         // "/" and "c" both fill 8 rows (14-21); Backspace to empty gives every row back.
-        Assert.Contains(writes, w => w.Row == 14 && w.Text.StartsWith("c01", StringComparison.Ordinal));
+        // "c" is the alias of change, so change is listed first (041).
+        Assert.Contains(writes, w => w.Row == 14 && w.Text.StartsWith("change", StringComparison.Ordinal));
         Dictionary<int, string> screen = [];
         foreach (AnsiWrite write in writes)
         {
@@ -1375,8 +1376,8 @@ public sealed class AppTests : IDisposable
     {
         (_, string output) = RunCommands("help", "quit");
 
-        Assert.Matches(@"arrive +│ Book your arrival: now, or at an optional H:mm", output);
-        Assert.Matches(@"leave +│ Book your leaving: now, or at an optional H:mm", output);
+        Assert.Matches(@"arrive +│ a +│ Book your arrival: now, or at an optional H:mm", output);
+        Assert.Matches(@"leave +│ l +│ Book your leaving: now, or at an optional H:mm", output);
     }
 
     // AC-11
@@ -1858,9 +1859,15 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Help_ListsRemove_WithDescription()
     {
-        (_, string output) = RunCommands("help", "quit");
+        // With the Alias column (041) the help table no longer fits 24 rows, so scroll to its end.
+        (_, string output) = Run(c =>
+        {
+            c.Input.PushTextWithEnter("help");
+            PageDown(c, HelpPages);
+            c.Input.PushTextWithEnter("quit");
+        });
 
-        Assert.Matches(@"remove +│ Remove an entry from this day by its number", output);
+        Assert.Matches(@"remove +│ r +│ Remove an entry from this day by its number", output);
     }
 
     // AC-8 (021)
@@ -2189,7 +2196,7 @@ public sealed class AppTests : IDisposable
     {
         (_, string output) = RunWide(120, "help", "quit");
 
-        Assert.Matches(@"change +│ Change the time of an entry on this day: <number> <H:mm>", output);
+        Assert.Matches(@"change +│ c +│ Change the time of an entry on this day: <number> <H:mm>", output);
     }
 
     // AC-10 (023)
@@ -2400,7 +2407,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal($"Data folder: {data.Path}", bottom[line]);
         Assert.StartsWith("╰", bottom[line - 1]);
         string shown = string.Join('\n', screens.SelectMany(screen => screen));
-        foreach (Command command in CommandRegistry.CreateDefault().Commands.Concat([new Command("arrive", "", _ => CommandResult.None)]))
+        foreach (Command command in CommandRegistry.CreateDefault().Commands.Concat([new Command("arrive", "a", "", _ => CommandResult.None)]))
         {
             Assert.Contains(command.Name, shown);
         }
@@ -2816,8 +2823,8 @@ public sealed class AppTests : IDisposable
     {
         (_, string output) = RunWide(120, "help", "quit");
 
-        Assert.Matches(@"addproject +│ Add a project to the quicklist: <work item> <title>", output);
-        Assert.Matches(@"projects +│ List the projects on the quicklist", output);
+        Assert.Matches(@"addproject +│ ap +│ Add a project to the quicklist: <work item> <title>", output);
+        Assert.Matches(@"projects +│ pr +│ List the projects on the quicklist", output);
     }
 
     // Quicklist panel (job 033) ------------------------------------------------------------
@@ -3454,9 +3461,9 @@ public sealed class AppTests : IDisposable
             c.Input.PushTextWithEnter("quit");
         });
 
-        Assert.Matches(@"break +│ Book the start of a break: now, or at an optional H:mm", output);
-        Assert.Matches(@"breakend +│ Book the end of a break: now, or at an optional H:mm", output);
-        Assert.Matches(@"checkpoint +│ Book a checkpoint: \[H:mm\] \[#quicklist number\] <name> +│", output);
+        Assert.Matches(@"break +│ b +│ Book the start of a break: now, or at an optional H:mm", output);
+        Assert.Matches(@"breakend +│ be +│ Book the end of a break: now, or at an optional H:mm", output);
+        Assert.Matches(@"checkpoint +│ cp +│ Book a checkpoint: \[H:mm\] \[#quicklist number\] <name> +│", output);
     }
 
     // AC-11 (036)
@@ -3894,7 +3901,7 @@ public sealed class AppTests : IDisposable
     public void Run_ThatThrows_HasStillTurnedMouseReportingOff()
     {
         CommandRegistry registry = CommandRegistry.CreateDefault();
-        registry.Register("boom", "Throws while drawing", _ => new CommandResult(new ThrowingRenderable()));
+        registry.Register("boom", "bm", "Throws while drawing", _ => new CommandResult(new ThrowingRenderable()));
         TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
         console.Input.PushTextWithEnter("boom");
         console.Input.PushTextWithEnter("quit");
@@ -4160,5 +4167,158 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(0, exitCode);
         Assert.Equal("Thursday, 2026-10-29", LastHeading(output));
+    }
+
+    // Job 041 ------------------------------------------------------------------------------
+
+    /// <summary>Runs <paramref name="commands"/> in a fresh data folder (with one quicklist project) and returns the day file and exit code.</summary>
+    private static (int ExitCode, string Day, string Output) RunInFreshFolder(TimeProvider time, params string[] commands)
+    {
+        using TempFolder folder = new TempFolder();
+        File.WriteAllText(Path.Combine(folder.Path, "projects.json"), "{\"projects\":[{\"workItem\":500,\"title\":\"Times\"}]}");
+        TestConsole console = new TestConsole().Interactive();
+        foreach (string command in commands)
+        {
+            console.Input.PushTextWithEnter(command);
+        }
+
+        int exitCode = new App(console, time, new DayStore(folder.Path)).Run([]);
+        string dayFile = Path.Combine(folder.Path, "2026-10-27.json");
+        return (exitCode, File.Exists(dayFile) ? File.ReadAllText(dayFile) : string.Empty, console.Output);
+    }
+
+    // AC-4
+    [Theory]
+    [InlineData("a 8:15", "arrive 8:15")]
+    [InlineData("A 8:15", "arrive 8:15")]
+    [InlineData("/a 8:15", "arrive 8:15")]
+    [InlineData("cp 9:00 #1 Standup", "checkpoint 9:00 #1 Standup")]
+    [InlineData("b 12:00", "break 12:00")]
+    [InlineData("be 12:30", "breakend 12:30")]
+    [InlineData("l", "leave")]
+    public void Alias_BooksTheSameAsTheFullName(string alias, string full)
+    {
+        FixedTimeProvider clock =
+            new FixedTimeProvider(new DateTimeOffset(2026, 10, 27, 17, 45, 10, TimeSpan.Zero), TimeZoneInfo.Utc);
+
+        (int aliasExit, string aliasDay, _) = RunInFreshFolder(clock, alias, "quit");
+        (int fullExit, string fullDay, _) = RunInFreshFolder(clock, full, "quit");
+
+        Assert.Equal(0, aliasExit);
+        Assert.Equal(0, fullExit);
+        Assert.NotEqual(string.Empty, aliasDay);
+        Assert.Equal(fullDay, aliasDay);
+    }
+
+    // AC-4
+    [Fact]
+    public void Alias_L_WithoutArgument_BooksLeavingAtClockTime()
+    {
+        FixedTimeProvider clock =
+            new FixedTimeProvider(new DateTimeOffset(2026, 10, 27, 17, 45, 10, TimeSpan.Zero), TimeZoneInfo.Utc);
+
+        (int exitCode, string output) = RunCommands(clock, "l", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(Entries("leaving 17:45"), ReadDay("2026-10-27"));
+        Assert.Matches(@"1 +Leaving +17:45", LastFrame(output));
+    }
+
+    // AC-4
+    [Theory]
+    [InlineData("q")]
+    [InlineData("Q")]
+    [InlineData("/q")]
+    public void Alias_Q_EndsTheLoopWithZero(string typed)
+    {
+        (int exitCode, string output) = Run(c => c.Input.PushTextWithEnter(typed));
+
+        Assert.Equal(0, exitCode);
+        Assert.DoesNotContain("Unknown command", output);
+    }
+
+    // AC-4
+    [Fact]
+    public void Alias_WithDoubleSlash_IsUnknown()
+    {
+        (int exitCode, string output) = RunCommands("//a 8:15", "quit");
+
+        Assert.Equal(0, exitCode);
+        AssertOnHintRow(LastLayout(output), "Unknown command //a");
+        Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
+    }
+
+    // AC-5
+    [Theory]
+    [InlineData("a 25:00", "arrive 25:00", "arrive: 25:00 is not a time.")]
+    [InlineData("l abc", "leave abc", "leave: abc is not a time.")]
+    [InlineData("r", "remove", "remove")]
+    [InlineData("c 1", "change 1", "change")]
+    [InlineData("cp", "checkpoint", "checkpoint")]
+    [InlineData("p x", "prev x", "prev")]
+    public void Alias_ShowsTheSameHintAsTheFullName(string alias, string full, string expected)
+    {
+        FixedTimeProvider clock = FixedTimeProvider.At20261027();
+
+        (_, string aliasDay, string aliasOutput) = RunInFreshFolder(clock, alias, "quit");
+        (_, string fullDay, string fullOutput) = RunInFreshFolder(clock, full, "quit");
+
+        string aliasHint = LastLayout(aliasOutput)[^4];
+        string fullHint = LastLayout(fullOutput)[^4];
+        Assert.Contains(expected, aliasHint);
+        Assert.Equal(fullHint, aliasHint);
+        Assert.Equal(fullDay, aliasDay);
+    }
+
+    // AC-6
+    [Fact]
+    public void EveryCommand_HasItsAlias_AndAliasesAreDistinct()
+    {
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+        _ = new App(new TestConsole(), FixedTimeProvider.At20261027(), new DayStore(data.Path), registry);
+
+        Dictionary<string, string> expected = new Dictionary<string, string>
+        {
+            ["addproject"] = "ap",
+            ["arrive"] = "a",
+            ["break"] = "b",
+            ["breakend"] = "be",
+            ["change"] = "c",
+            ["checkpoint"] = "cp",
+            ["help"] = "h",
+            ["leave"] = "l",
+            ["next"] = "n",
+            ["prev"] = "p",
+            ["projects"] = "pr",
+            ["quit"] = "q",
+            ["remove"] = "r",
+            ["today"] = "t",
+        };
+
+        Assert.Equal(expected, registry.Commands.ToDictionary(c => c.Name, c => c.Alias));
+        List<string> aliases = registry.Commands.Select(c => c.Alias.ToLowerInvariant()).ToList();
+        Assert.Equal(aliases.Count, aliases.Distinct().Count());
+        Assert.All(registry.Commands, c => Assert.True(registry.TryGet(c.Alias, out Command? found) && found.Name == c.Name));
+    }
+
+    // AC-7
+    [Fact]
+    public void Help_ShowsAliasColumn()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Input.PushTextWithEnter("h");
+        PageDown(console, HelpPages);
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+        string plain = Regex.Replace(console.Output, @"\x1b\[[0-9;?]*[A-Za-z]", string.Empty);
+
+        Assert.Matches(@"│ Command +│ Alias +│ Description +│", plain);
+        Assert.Matches(@"│ checkpoint +│ cp +│ Book a checkpoint", plain);
+        Assert.Matches(@"│ arrive +│ a +│ Book your arrival", plain);
+        Assert.Matches(@"│ today +│ t +│ Go back to today", plain);
+        // Header in grey, alias cells in steelblue1 (colour 75).
+        Assert.Matches(@"\x1b\[38;5;8mAlias", console.Output);
+        Assert.Matches(@"\x1b\[38;5;75mcp\x1b\[0m", console.Output);
     }
 }
