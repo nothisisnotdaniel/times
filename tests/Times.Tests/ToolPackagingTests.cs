@@ -44,6 +44,28 @@ public sealed class ToolPackagingTests
         Assert.Contains(expected, readme, StringComparison.Ordinal);
     }
 
+    // AC-10 (040)
+    [Theory]
+    [InlineData("README.md")]
+    [InlineData("CLAUDE.md")]
+    public void Docs_NameCommandsWithoutSlash(string file)
+    {
+        string text = File.ReadAllText(Path.Combine(RepoRoot, file));
+
+        Assert.DoesNotMatch(@"`/[a-z]", text);
+        Assert.DoesNotContain("/help", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("/quit", text, StringComparison.Ordinal);
+    }
+
+    // AC-10 (040)
+    [Fact]
+    public void Readme_SaysALeadingSlashStillWorks()
+    {
+        string readme = File.ReadAllText(Path.Combine(RepoRoot, "README.md")).ReplaceLineEndings("\n");
+
+        Assert.Contains("A leading `/` is still accepted", readme, StringComparison.Ordinal);
+    }
+
     // AC-10 (038)
     [Theory]
     [InlineData("## Mouse")]

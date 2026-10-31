@@ -2,8 +2,9 @@
 
 Times is a terminal app for tracking the time you spend on projects. You check in, check out,
 book breaks and add checkpoints that are later transferred into Azure DevOps work items. It runs
-as an interactive session: the current day sits above an input box where you type `/` commands
-(type `/help` to list them, `/quit` to leave).
+as an interactive session: the current day sits above an input box where you type commands
+(type `help` to list them, `quit` to leave). A leading `/` is still accepted, so typing one in
+front of a command does the same as the command on its own.
 
 It needs the [.NET 10 SDK](https://dotnet.microsoft.com/download). To run it straight from the
 source tree:
@@ -80,4 +81,4 @@ dotnet tool update -g --add-source ./nupkg Times
 dotnet tool uninstall -g Times
 ```
 
-Uninstalling removes only the tool. Your data stays in the data folder that `/help` shows.
+Uninstalling removes only the tool. Your data stays in the data folder that `help` shows.

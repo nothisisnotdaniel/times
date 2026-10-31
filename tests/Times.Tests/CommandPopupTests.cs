@@ -8,7 +8,7 @@ public class CommandPopupTests
     private static Command Cmd(string name, string description) => new(name, description, _ => CommandResult.None);
 
     private static List<Command> Many(int count) =>
-        Enumerable.Range(1, count).Select(i => Cmd($"/c{i:00}", $"Command {i}")).ToList();
+        Enumerable.Range(1, count).Select(i => Cmd($"c{i:00}", $"Command {i}")).ToList();
 
     /// <summary>Renders one markup row and returns the plain text (no ANSI) and the raw ANSI output.</summary>
     private static (string Plain, string Ansi) Render(string row, int width = 80)
@@ -27,19 +27,19 @@ public class CommandPopupTests
     [Fact]
     public void Row_ShowsNamePaddedToLongest_ThenDescription()
     {
-        IReadOnlyList<string> rows = CommandPopup.Rows([Cmd("/help", "List all commands"), Cmd("/today", "Go back to today")], 80, 8);
+        IReadOnlyList<string> rows = CommandPopup.Rows([Cmd("help", "List all commands"), Cmd("today", "Go back to today")], 80, 8);
 
         Assert.Equal(2, rows.Count);
-        Assert.StartsWith("/help   List all commands", Render(rows[0]).Plain);
-        Assert.StartsWith("/today  Go back to today", Render(rows[1]).Plain);
+        Assert.StartsWith("help   List all commands", Render(rows[0]).Plain);
+        Assert.StartsWith("today  Go back to today", Render(rows[1]).Plain);
     }
 
     [Fact]
     public void Row_NameIsSteelBlue_DescriptionIsGrey()
     {
-        string row = CommandPopup.Rows([Cmd("/help", "List all commands")], 80, 8)[0];
+        string row = CommandPopup.Rows([Cmd("help", "List all commands")], 80, 8)[0];
 
-        Assert.StartsWith("[steelblue1]/help[/][grey]  List all commands[/]", row);
+        Assert.StartsWith("[steelblue1]help[/][grey]  List all commands[/]", row);
     }
 
     // AC-7
@@ -50,7 +50,7 @@ public class CommandPopupTests
 
         Assert.Equal(CommandPopup.MaxRows, rows.Count);
         Assert.Equal(8, rows.Count);
-        Assert.StartsWith("/c07", Render(rows[6]).Plain);
+        Assert.StartsWith("c07", Render(rows[6]).Plain);
         Assert.Equal("… 5 more", Render(rows[7]).Plain.TrimEnd());
         Assert.StartsWith("[grey]", rows[7]);
     }
@@ -102,9 +102,9 @@ public class CommandPopupTests
     [Fact]
     public void MarkupCharacters_AreDrawnLiterally()
     {
-        string row = CommandPopup.Rows([Cmd("/x[y]", "Tick [x] off [/]")], 80, 8)[0];
+        string row = CommandPopup.Rows([Cmd("x[y]", "Tick [x] off [/]")], 80, 8)[0];
 
-        Assert.StartsWith("/x[y]  Tick [x] off [/]", Render(row).Plain);
+        Assert.StartsWith("x[y]  Tick [x] off [/]", Render(row).Plain);
     }
 
     // AC-10
@@ -114,7 +114,7 @@ public class CommandPopupTests
     [InlineData(4)]
     public void EveryRow_IsExactlyTheTerminalWidth(int width)
     {
-        List<Command> commands = [Cmd("/help", new string('d', 200)), Cmd("/q", "short"), Cmd("/multi", "line\nbreak")];
+        List<Command> commands = [Cmd("help", new string('d', 200)), Cmd("q", "short"), Cmd("multi", "line\nbreak")];
 
         foreach (string row in CommandPopup.Rows(commands, width, 8))
         {
@@ -128,9 +128,9 @@ public class CommandPopupTests
     [Fact]
     public void LongDescription_IsCroppedToOneRow()
     {
-        string row = CommandPopup.Rows([Cmd("/help", new string('d', 200))], 40, 8)[0];
+        string row = CommandPopup.Rows([Cmd("help", new string('d', 200))], 40, 8)[0];
 
-        Assert.Equal("/help  " + new string('d', 33), Render(row, 40).Plain);
+        Assert.Equal("help  " + new string('d', 34), Render(row, 40).Plain);
     }
 
     // Job 011 ------------------------------------------------------------------------------
@@ -139,12 +139,12 @@ public class CommandPopupTests
     [Fact]
     public void Footer_IsLastRow_AfterMoreRow_WithinMaxRows()
     {
-        IReadOnlyList<string> rows = CommandPopup.Rows(Many(12), 80, 20, "12 commands start with /c");
+        IReadOnlyList<string> rows = CommandPopup.Rows(Many(12), 80, 20, "12 commands start with c");
 
         Assert.Equal(8, rows.Count);
-        Assert.StartsWith("/c06", Render(rows[5]).Plain);
+        Assert.StartsWith("c06", Render(rows[5]).Plain);
         Assert.Equal("… 6 more", Render(rows[6]).Plain.TrimEnd());
-        Assert.Equal("12 commands start with /c", Render(rows[7]).Plain.TrimEnd());
+        Assert.Equal("12 commands start with c", Render(rows[7]).Plain.TrimEnd());
     }
 
     // AC-7
@@ -192,5 +192,19 @@ public class CommandPopupTests
     public void NoFooter_RowsUnchanged()
     {
         Assert.Equal(CommandPopup.Rows(Many(12), 80, 8), CommandPopup.Rows(Many(12), 80, 8, null));
+    }
+
+    // AC-6 (040)
+    [Fact]
+    public void RegisteredCommands_RenderWithoutSlash()
+    {
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+
+        IReadOnlyList<string> rows = CommandPopup.Rows(registry.Match("/"), 80, 8);
+
+        Assert.Equal(2, rows.Count);
+        Assert.StartsWith("help  List all commands", Render(rows[0]).Plain);
+        Assert.StartsWith("quit  Exit Times", Render(rows[1]).Plain);
+        Assert.All(rows, r => Assert.DoesNotContain("/", Render(r).Plain));
     }
 }

@@ -7,24 +7,27 @@ Every factory agent reads this file before working on Times. Keep it short and a
   interactive session, not a set of one-shot commands. The current day's view sits above an
   **input box at the bottom of the screen**, in the style of the GitHub Copilot CLI: a bordered
   prompt line where the user types commands.
-  - Commands start with `/` (e.g. `/checkin`). The set of commands (the "palette") grows
-    feature by feature. Each feature adds its commands to a single command registry (name, short
-    description, handler), and `/help` lists whatever is registered. Unknown commands and other
+  - Commands are bare words (e.g. `arrive 8:15`); one leading `/` is still accepted and stripped
+    before the lookup (only one, so a double `/` is an unknown command). Names are registered
+    without `/`, and `Register` rejects a name that is empty, starts with `/` or holds whitespace.
+    The set of commands (the "palette") grows feature by feature. Each feature adds its commands
+    to a single command registry (name, short description, handler), and `help` lists whatever is
+    registered. Unknown commands and other
     validation errors show a short `[red]` hint on the line **just above the input box** (not at
     the top of the screen) and never crash the loop.
   - **How the box is built** (no extra packages): a Spectre `Layout` that fills the terminal,
     with the quicklist panel (`QuicklistPanel`, a grey `Projects` panel reloaded from `projects.json` on
-    every redraw, at most 5 content lines; left out while `/help` or `/projects` output is shown, via
+    every redraw, at most 5 content lines; left out while `help` or `projects` output is shown, via
     `CommandResult.HideQuicklist`) and the day view on top, both fitted by `TopArea.Fit`, then
     the hint line, and a 3-line bordered input panel at the bottom; the
-    empty input line shows a grey `Type /help for commands` placeholder after the prompt, and a
+    empty input line shows a grey `Type help for commands` placeholder after the prompt, and a
     line wider than the box shows its tail behind a grey leading `…`.
     After each command, clear the screen and redraw the whole layout. Input is read by our own
     small line editor, using `console.Cursor.SetPosition` and
     `console.Input.ReadKey(intercept: true)`: typing, Backspace, Enter, Esc (close the popup if
-    it is open, otherwise clear the line), Tab (complete a `/command` from the registry; if
-    several match, extend to their common prefix and list them in the popup with a grey count
-    footer) and ↑/↓ (history). Don't use Spectre's `Live` display: it can't run while we read input.
+    it is open, otherwise clear the line), Tab (complete a command name from the registry,
+    keeping a leading `/` if one was typed; if several match, extend to their common prefix and
+    list them in the popup with a grey count footer; nothing on an empty line) and ↑/↓ (history). Don't use Spectre's `Live` display: it can't run while we read input.
   - **Scrolling:** the top area is a scrollable window (`TopArea.Fit(content, height, offset)`;
     `TopArea.MaxOffset` and `TopArea.PageSize` hold the rule). When it is taller than its rows (and
     has at least 3), grey cues show `↑ N more lines above · PgUp` on its first row and
@@ -38,20 +41,21 @@ Every factory agent reads this file before working on Times. Keep it short and a
     The line editor reads the `ESC [ …` sequence after an Esc that has a `[` waiting and decodes it
     with `MouseInput`; a lone Esc stays Esc. On Windows, `WindowsConsole.cs` sets the console input
     mode and turns wheel records into the same SGR keys.
-  - **Command popup:** while the line starts with `/`, a popup just above the input box lists the
+  - **Command popup:** while the line is non-empty and does not start with whitespace (after Esc:
+    closed until the line is empty again; a lone `/` lists every command), a popup just above the input box lists the
     registered commands with their descriptions, filtered by what was typed and ranked by
     Levenshtein distance so typos still match. The popup is the one thing redrawn **while
     typing**: the line editor redraws only the popup's rows and the input line in place (via
     `Cursor.SetPosition`), never the whole layout. Everything else redraws only after a command.
-  - `/quit` ends the loop with exit code 0.
+  - `quit` ends the loop with exit code 0.
   - Tests drive the loop by queuing input on `TestConsole.Input` (`PushTextWithEnter`, `PushKey`)
-    and always end with `/quit`, so they can't hang.
+    and always end with `quit`, so they can't hang.
 - **Data:** stored as JSON, **one file per day**, in the user's app-data folder:
   `Environment.GetFolderPath(SpecialFolder.ApplicationData)/Times/yyyy-MM-dd.json`
   (`%APPDATA%\Times\` on Windows, `~/.config/Times/` on macOS/Linux). Setting the `TIMES_DATA_DIR`
   environment variable overrides that default; it must be an absolute path (used as given, no `~`
   expansion or trimming), otherwise Times refuses to start with exit code 2. Unset or empty means the
-  default. `DataFolder.Resolve` picks the folder and `/help` shows it. The data folder is injected,
+  default. `DataFolder.Resolve` picks the folder and `help` shows it. The data folder is injected,
   so tests use a temp folder and never touch the real app data. Use `System.Text.Json`.
   The project quicklist lives next to the day files in `projects.json` (`ProjectStore`), as
   `{"projects":[{"workItem":1234,"title":"…"}]}`; a project's number is its 1-based position.

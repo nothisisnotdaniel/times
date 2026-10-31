@@ -1,6 +1,6 @@
 namespace Times;
 
-/// <summary>Parses the time a user types after <c>/arrive</c> or <c>/leave</c>.</summary>
+/// <summary>Parses the time a user types after <c>arrive</c> or <c>leave</c>.</summary>
 internal static class TimeInput
 {
     /// <summary>The format shown in hints.</summary>

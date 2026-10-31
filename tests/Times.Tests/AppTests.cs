@@ -14,7 +14,7 @@ public sealed class AppTests : IDisposable
     /// <summary>Rows of the top area on the default 24-row terminal: 24 minus the hint row and the 3-line input box.</summary>
     private const int TopHeight = 20;
 
-    /// <summary>More PageDown presses than /help needs to reach the bottom at 24 rows; the extra ones change nothing.</summary>
+    /// <summary>More PageDown presses than help needs to reach the bottom at 24 rows; the extra ones change nothing.</summary>
     private const int HelpPages = 4;
 
     /// <summary>Pushes <paramref name="count"/> PageDown keys.</summary>
@@ -59,7 +59,7 @@ public sealed class AppTests : IDisposable
     /// <summary>
     /// Splits the output into full frames (a scroll rewrites rows in place without clearing, so it
     /// starts no frame). Each frame runs from row 1 (right after the clear-screen
-    /// sequence: the quicklist panel's top border, or the day heading while /help or /projects hides
+    /// sequence: the quicklist panel's top border, or the day heading while help or projects hides
     /// the panel) to the bottom border of the input panel (the <c>╰</c> line right after the
     /// <c>│ > </c> line), split on <c>\n</c>.
     /// </summary>
@@ -117,7 +117,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Quit_ReturnsZero_AndShowsDayHeadingAndEmptyState()
     {
-        (int exitCode, string output) = Run(c => c.Input.PushTextWithEnter("/quit"));
+        (int exitCode, string output) = Run(c => c.Input.PushTextWithEnter("quit"));
 
         Assert.Equal(0, exitCode);
         Assert.Contains(Heading, output);
@@ -128,7 +128,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void StarterOutput_IsGone()
     {
-        (_, string output) = Run(c => c.Input.PushTextWithEnter("/quit"));
+        (_, string output) = Run(c => c.Input.PushTextWithEnter("quit"));
 
         Assert.DoesNotContain("_____", output); // Figlet "Times" banner
         Assert.DoesNotContain("Zone", output);
@@ -139,7 +139,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void InputBox_IsRoundedPanel_BelowDayView_AtBottom()
     {
-        (_, string output) = Run(c => c.Input.PushTextWithEnter("/quit"));
+        (_, string output) = Run(c => c.Input.PushTextWithEnter("quit"));
 
         int heading = output.IndexOf(Heading, StringComparison.Ordinal);
         int top = output.IndexOf('╭', heading);
@@ -159,20 +159,20 @@ public sealed class AppTests : IDisposable
     public void Help_ListsEveryRegisteredCommand_IncludingOnesAddedInTest()
     {
         CommandRegistry registry = CommandRegistry.CreateDefault();
-        registry.Register("/demo", "A command from the test", _ => CommandResult.None);
+        registry.Register("demo", "A command from the test", _ => CommandResult.None);
 
         (int exitCode, string output) = Run(c =>
         {
-            c.Input.PushTextWithEnter("/help");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("help");
+            c.Input.PushTextWithEnter("quit");
         }, registry);
 
         Assert.Equal(0, exitCode);
-        Assert.Contains("/help", output);
+        Assert.Contains("help", output);
         Assert.Contains("List all commands", output);
-        Assert.Contains("/quit", output);
+        Assert.Contains("quit", output);
         Assert.Contains("Exit Times", output);
-        Assert.Contains("/demo", output);
+        Assert.Contains("demo", output);
         Assert.Contains("A command from the test", output);
     }
 
@@ -182,21 +182,21 @@ public sealed class AppTests : IDisposable
     {
         (int exitCode, string output) = Run(c =>
         {
-            c.Input.PushTextWithEnter("/nope");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("nope");
+            c.Input.PushTextWithEnter("quit");
         });
 
         Assert.Equal(0, exitCode);
-        Assert.Contains("Unknown command /nope", output);
-        Assert.Contains("Type /help to see all commands.", output);
+        Assert.Contains("Unknown command nope", output);
+        Assert.Contains("Type help to see all commands.", output);
     }
 
     [Fact]
     public void UnknownCommand_HintIsRed()
     {
         TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
-        console.Input.PushTextWithEnter("/nope");
-        console.Input.PushTextWithEnter("/quit");
+        console.Input.PushTextWithEnter("nope");
+        console.Input.PushTextWithEnter("quit");
 
         new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
 
@@ -213,7 +213,7 @@ public sealed class AppTests : IDisposable
         (int exitCode, string output) = Run(c =>
         {
             c.Input.PushTextWithEnter(typed);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         Assert.Equal(0, exitCode);
@@ -226,42 +226,42 @@ public sealed class AppTests : IDisposable
         (int exitCode, string output) = Run(c =>
         {
             c.Input.PushTextWithEnter("[red]x");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         Assert.Equal(0, exitCode);
-        Assert.Contains("Commands start with /", output);
+        Assert.Contains("Unknown command [red]x. Type help to see all commands.", output);
     }
 
     [Fact]
     public void HandlerException_ShowsRedHint_NotStackTrace()
     {
         CommandRegistry registry = CommandRegistry.CreateDefault();
-        registry.Register("/boom", "Throws", _ => throw new InvalidOperationException("bad [thing]"));
+        registry.Register("boom", "Throws", _ => throw new InvalidOperationException("bad [thing]"));
 
         (int exitCode, string output) = Run(c =>
         {
-            c.Input.PushTextWithEnter("/boom");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("boom");
+            c.Input.PushTextWithEnter("quit");
         }, registry);
 
         Assert.Equal(0, exitCode);
-        Assert.Contains("/boom failed: bad [thing]", output);
+        Assert.Contains("boom failed: bad [thing]", output);
         Assert.DoesNotContain("   at ", output);
     }
 
     // AC-7
     [Fact]
-    public void InputWithoutSlash_ShowsHint_AndLoopContinues()
+    public void UnknownWord_ShowsHint_AndLoopContinues()
     {
         (int exitCode, string output) = Run(c =>
         {
             c.Input.PushTextWithEnter("hello");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         Assert.Equal(0, exitCode);
-        Assert.Contains("Commands start with /", output);
+        Assert.Contains("Unknown command hello. Type help to see all commands.", output);
     }
 
     [Fact]
@@ -271,7 +271,7 @@ public sealed class AppTests : IDisposable
         {
             c.Input.PushTextWithEnter("");
             c.Input.PushTextWithEnter("   ");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         Assert.Equal(0, exitCode);
@@ -284,7 +284,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void CommandNames_MatchCaseInsensitively()
     {
-        (int exitCode, _) = Run(c => c.Input.PushTextWithEnter("/QUIT"));
+        (int exitCode, _) = Run(c => c.Input.PushTextWithEnter("QUIT"));
 
         Assert.Equal(0, exitCode);
     }
@@ -294,12 +294,12 @@ public sealed class AppTests : IDisposable
     {
         string? received = null;
         CommandRegistry registry = CommandRegistry.CreateDefault();
-        registry.Register("/echo", "Echo", a => { received = a; return CommandResult.None; });
+        registry.Register("echo", "Echo", a => { received = a; return CommandResult.None; });
 
         Run(c =>
         {
-            c.Input.PushTextWithEnter("/Echo  hello [world] ");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("Echo  hello [world] ");
+            c.Input.PushTextWithEnter("quit");
         }, registry);
 
         Assert.Equal("hello [world]", received);
@@ -311,8 +311,8 @@ public sealed class AppTests : IDisposable
     {
         (_, string output) = Run(c =>
         {
-            c.Input.PushTextWithEnter("/nope");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("nope");
+            c.Input.PushTextWithEnter("quit");
         });
 
         Assert.True(Count(output, Heading) >= 2);
@@ -323,30 +323,30 @@ public sealed class AppTests : IDisposable
     {
         (_, string output) = Run(c =>
         {
-            c.Input.PushTextWithEnter("/help");
-            c.Input.PushTextWithEnter("/nope");
+            c.Input.PushTextWithEnter("help");
+            c.Input.PushTextWithEnter("nope");
             c.Input.PushTextWithEnter("");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         string[] frames = output.Split(Heading).Skip(1).ToArray();
         Assert.Equal(4, frames.Length);
-        Assert.Contains("List all commands", frames[1]);           // after /help
+        Assert.Contains("List all commands", frames[1]);           // after help
         Assert.DoesNotContain("List all commands", frames[2]);     // replaced by the hint
-        Assert.Contains("Unknown command /nope", frames[2]);
+        Assert.Contains("Unknown command nope", frames[2]);
         Assert.DoesNotContain("Unknown command", frames[3]);       // cleared by the empty line
 
         // The message sits above the input panel.
         Assert.True(frames[1].IndexOf("List all commands", StringComparison.Ordinal) < frames[1].IndexOf("│ > ", StringComparison.Ordinal));
 
-        // Job 004: /help stays in the top area and the hint row stays blank (AC-6);
+        // Job 004: help stays in the top area and the hint row stays blank (AC-6);
         // the hint is on the hint row and gone after the next command (AC-7).
         List<string[]> lines = Frames(output);
         Assert.Equal(4, lines.Count);
         AssertLayout(lines[1]);
         Assert.Contains(lines[1][..^4], l => l.Contains("List all commands", StringComparison.Ordinal));
         Assert.True(string.IsNullOrWhiteSpace(lines[1][^4]));
-        AssertOnHintRow(lines[2], "Unknown command /nope");
+        AssertOnHintRow(lines[2], "Unknown command nope");
         AssertLayout(lines[3]);
         Assert.True(string.IsNullOrWhiteSpace(lines[3][^4]));
     }
@@ -357,22 +357,22 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void UnknownCommand_HintSitsDirectlyAboveInputBox()
     {
-        (_, string output) = RunCommands("/nope", "/quit");
+        (_, string output) = RunCommands("nope", "quit");
 
         string[] frame = Frames(output)[1];
-        AssertOnHintRow(frame, "Unknown command /nope");
+        AssertOnHintRow(frame, "Unknown command nope");
         Assert.DoesNotContain(frame[..^4], l => l.Contains("Unknown command", StringComparison.Ordinal));
         Assert.Contains(Heading, frame[EmptyPanelRows]);
     }
 
     // AC-2, AC-3
     [Theory]
-    [InlineData("hello", "Commands start with /")]
-    [InlineData("/next x", "/next takes no arguments.")]
-    [InlineData("/prev [red]", "/prev takes no arguments.")]
+    [InlineData("hello", "Unknown command hello.")]
+    [InlineData("next x", "next takes no arguments.")]
+    [InlineData("prev [red]", "prev takes no arguments.")]
     public void Hints_SitDirectlyAboveInputBox(string typed, string expected)
     {
-        (int exitCode, string output) = RunCommands(typed, "/quit");
+        (int exitCode, string output) = RunCommands(typed, "quit");
 
         Assert.Equal(0, exitCode);
         string[] frame = Frames(output)[1];
@@ -385,7 +385,7 @@ public sealed class AppTests : IDisposable
     public void BoundaryHint_SitsDirectlyAboveInputBox()
     {
         (int exitCode, string output) =
-            RunCommands(new SettableTimeProvider(DateTimeOffset.MaxValue), "/next", "/quit");
+            RunCommands(new SettableTimeProvider(DateTimeOffset.MaxValue), "next", "quit");
 
         Assert.Equal(0, exitCode);
         string[] frame = Frames(output)[1];
@@ -398,17 +398,17 @@ public sealed class AppTests : IDisposable
     public void HandlerExceptionHint_SitsDirectlyAboveInputBox()
     {
         CommandRegistry registry = CommandRegistry.CreateDefault();
-        registry.Register("/boom", "Throws", _ => throw new InvalidOperationException("bad [thing]"));
+        registry.Register("boom", "Throws", _ => throw new InvalidOperationException("bad [thing]"));
 
         (int exitCode, string output) = Run(c =>
         {
-            c.Input.PushTextWithEnter("/boom");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("boom");
+            c.Input.PushTextWithEnter("quit");
         }, registry);
 
         Assert.Equal(0, exitCode);
         string[] frame = Frames(output)[1];
-        AssertOnHintRow(frame, "/boom failed: bad [thing]");
+        AssertOnHintRow(frame, "boom failed: bad [thing]");
         Assert.Contains(Heading, frame[EmptyPanelRows]);
     }
 
@@ -416,7 +416,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void HintRow_IsBlank_WhenThereIsNoHint()
     {
-        (_, string output) = RunCommands("/nope", "", "/quit");
+        (_, string output) = RunCommands("nope", "", "quit");
 
         List<string[]> frames = Frames(output);
         Assert.Equal(3, frames.Count);
@@ -434,7 +434,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Hint_IsReplacedByHelp_OnNextCommand()
     {
-        (_, string output) = RunCommands("/nope", "/help", "/quit");
+        (_, string output) = RunCommands("nope", "help", "quit");
 
         string[] frame = Frames(output)[2];
         AssertLayout(frame);
@@ -449,12 +449,12 @@ public sealed class AppTests : IDisposable
     {
         CommandRegistry registry = CommandRegistry.CreateDefault();
         string text = string.Concat(Enumerable.Repeat("word ", 60)); // 300 characters
-        registry.Register("/long", "Long hint", _ => CommandResult.Error(Markup.Escape(text)));
+        registry.Register("long", "Long hint", _ => CommandResult.Error(Markup.Escape(text)));
 
         (int exitCode, string output) = Run(c =>
         {
-            c.Input.PushTextWithEnter("/long");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("long");
+            c.Input.PushTextWithEnter("quit");
         }, registry);
 
         Assert.Equal(0, exitCode);
@@ -471,7 +471,7 @@ public sealed class AppTests : IDisposable
     {
         (int exitCode, string output) = Run(c =>
         {
-            c.Input.PushText("/quiz");
+            c.Input.PushText("quiz");
             c.Input.PushKey(ConsoleKey.Backspace);
             c.Input.PushTextWithEnter("t");
         });
@@ -486,8 +486,9 @@ public sealed class AppTests : IDisposable
         (int exitCode, string output) = Run(c =>
         {
             c.Input.PushText("abc");
-            c.Input.PushKey(ConsoleKey.Escape);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushKey(ConsoleKey.Escape); // closes the popup
+            c.Input.PushKey(ConsoleKey.Escape); // clears the line
+            c.Input.PushTextWithEnter("quit");
         });
 
         Assert.Equal(0, exitCode);
@@ -501,7 +502,7 @@ public sealed class AppTests : IDisposable
     {
         (int exitCode, string output) = Run(c =>
         {
-            c.Input.PushText("/q");
+            c.Input.PushText("q");
             c.Input.PushKey(ConsoleKey.Tab);
             c.Input.PushKey(ConsoleKey.Enter);
         });
@@ -516,10 +517,10 @@ public sealed class AppTests : IDisposable
     {
         (int exitCode, string output) = Run(c =>
         {
-            c.Input.PushTextWithEnter("/help");
+            c.Input.PushTextWithEnter("help");
             c.Input.PushKey(ConsoleKey.UpArrow);
             c.Input.PushKey(ConsoleKey.Enter);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         Assert.Equal(0, exitCode);
@@ -535,7 +536,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Prev_MovesToPreviousDay()
     {
-        (int exitCode, string output) = RunCommands("/prev", "/quit");
+        (int exitCode, string output) = RunCommands("prev", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal("Monday, 2026-10-26", LastHeading(output));
@@ -545,7 +546,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Next_MovesToNextDay()
     {
-        (int exitCode, string output) = RunCommands("/next", "/quit");
+        (int exitCode, string output) = RunCommands("next", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal("Wednesday, 2026-10-28", LastHeading(output));
@@ -555,7 +556,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Today_JumpsBackToToday()
     {
-        (int exitCode, string output) = RunCommands("/prev", "/prev", "/today", "/quit");
+        (int exitCode, string output) = RunCommands("prev", "prev", "today", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Contains("Sunday, 2026-10-25", output);
@@ -564,14 +565,14 @@ public sealed class AppTests : IDisposable
 
     // AC-4
     [Theory]
-    [InlineData(2026, 1, 1, "/prev", "Wednesday, 2025-12-31")]
-    [InlineData(2026, 2, 28, "/next", "Sunday, 2026-03-01")]
+    [InlineData(2026, 1, 1, "prev", "Wednesday, 2025-12-31")]
+    [InlineData(2026, 2, 28, "next", "Sunday, 2026-03-01")]
     public void Navigation_CrossesMonthAndYearBoundaries(int year, int month, int day, string command, string expected)
     {
         SettableTimeProvider time =
             new SettableTimeProvider(new DateTimeOffset(year, month, day, 12, 0, 0, TimeSpan.Zero));
 
-        (int exitCode, string output) = RunCommands(time, command, "/quit");
+        (int exitCode, string output) = RunCommands(time, command, "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(expected, LastHeading(output));
@@ -583,7 +584,7 @@ public sealed class AppTests : IDisposable
     {
         SettableTimeProvider time = new SettableTimeProvider(new DateTimeOffset(2026, 10, 27, 23, 0, 0, TimeSpan.Zero));
         CommandRegistry registry = CommandRegistry.CreateDefault();
-        registry.Register("/tick", "Advance the test clock", _ =>
+        registry.Register("tick", "Advance the test clock", _ =>
         {
             time.UtcNow = time.UtcNow.AddHours(2);
             return CommandResult.None;
@@ -591,9 +592,9 @@ public sealed class AppTests : IDisposable
 
         (int exitCode, string output) = Run(c =>
         {
-            c.Input.PushTextWithEnter("/tick");
-            c.Input.PushTextWithEnter("/today");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("tick");
+            c.Input.PushTextWithEnter("today");
+            c.Input.PushTextWithEnter("quit");
         }, registry, time);
 
         Assert.Equal(0, exitCode);
@@ -604,7 +605,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void DayWithoutFile_ShowsHeadingAndEmptyState()
     {
-        (_, string output) = RunCommands("/next", "/quit");
+        (_, string output) = RunCommands("next", "quit");
 
         string frame = LastFrame(output);
         Assert.StartsWith("Wednesday, 2026-10-28", frame);
@@ -615,7 +616,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Browsing_LeavesExistingFolderEmpty()
     {
-        (int exitCode, _) = RunCommands("/prev", "/next", "/next", "/today", "/quit");
+        (int exitCode, _) = RunCommands("prev", "next", "next", "today", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.True(Directory.Exists(data.Path));
@@ -630,7 +631,7 @@ public sealed class AppTests : IDisposable
 
         (int exitCode, _) = Run(c =>
         {
-            foreach (string command in new[] { "/prev", "/next", "/next", "/today", "/quit" })
+            foreach (string command in new[] { "prev", "next", "next", "today", "quit" })
             {
                 c.Input.PushTextWithEnter(command);
             }
@@ -646,16 +647,16 @@ public sealed class AppTests : IDisposable
     {
         (_, string output) = Run(c =>
         {
-            c.Input.PushTextWithEnter("/help");
+            c.Input.PushTextWithEnter("help");
             PageDown(c, HelpPages);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
-        Assert.Contains("/prev", output);
+        Assert.Contains("prev", output);
         Assert.Contains("Go to the previous day", output);
-        Assert.Contains("/next", output);
+        Assert.Contains("next", output);
         Assert.Contains("Go to the next day", output);
-        Assert.Contains("/today", output);
+        Assert.Contains("today", output);
         Assert.Contains("Go back to today", output);
     }
 
@@ -663,7 +664,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void NavigationCommands_MatchCaseInsensitively()
     {
-        (int exitCode, string output) = RunCommands("/NEXT", "/quit");
+        (int exitCode, string output) = RunCommands("NEXT", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.DoesNotContain("Unknown command", output);
@@ -672,22 +673,22 @@ public sealed class AppTests : IDisposable
 
     // AC-8
     [Theory]
-    [InlineData("/pre", "Monday, 2026-10-26")]
-    [InlineData("/n", "Wednesday, 2026-10-28")]
-    [InlineData("/t", Heading)]
+    [InlineData("pre", "Monday, 2026-10-26")]
+    [InlineData("n", "Wednesday, 2026-10-28")]
+    [InlineData("t", Heading)]
     public void Tab_CompletesNavigationCommands(string prefix, string expected)
     {
         (int exitCode, string output) = Run(c =>
         {
-            if (prefix == "/t")
+            if (prefix == "t")
             {
-                c.Input.PushTextWithEnter("/next"); // so /today has somewhere to come back from
+                c.Input.PushTextWithEnter("next"); // so today has somewhere to come back from
             }
 
             c.Input.PushText(prefix);
             c.Input.PushKey(ConsoleKey.Tab);
             c.Input.PushKey(ConsoleKey.Enter);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         Assert.Equal(0, exitCode);
@@ -697,12 +698,12 @@ public sealed class AppTests : IDisposable
 
     // AC-9
     [Theory]
-    [InlineData("/next 3", "/next")]
-    [InlineData("/prev x", "/prev")]
-    [InlineData("/today [red]", "/today")]
+    [InlineData("next 3", "next")]
+    [InlineData("prev x", "prev")]
+    [InlineData("today [red]", "today")]
     public void NavigationWithArgument_ShowsHint_AndKeepsDay(string typed, string name)
     {
-        (int exitCode, string output) = RunCommands(typed, "/quit");
+        (int exitCode, string output) = RunCommands(typed, "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(Heading, LastHeading(output));
@@ -714,17 +715,17 @@ public sealed class AppTests : IDisposable
     public void NavigationWithArgument_HintIsRed_AndLoopContinues()
     {
         TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
-        console.Input.PushTextWithEnter("/next 3");
-        console.Input.PushTextWithEnter("/prev");
-        console.Input.PushTextWithEnter("/quit");
+        console.Input.PushTextWithEnter("next 3");
+        console.Input.PushTextWithEnter("prev");
+        console.Input.PushTextWithEnter("quit");
 
         int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
 
         Assert.Equal(0, exitCode);
-        Assert.Matches(@"\x1b\[(1;)?(31|91|38;5;9)(;1)?m(\x1b\[[0-9;]*m)*/next", console.Output);
+        Assert.Matches(@"\x1b\[(1;)?(31|91|38;5;9)(;1)?m(\x1b\[[0-9;]*m)*next", console.Output);
         Assert.Matches(@"\x1b\[(31|91|38;5;9)m takes no arguments\.", console.Output);
         Assert.Contains("takes no arguments.", console.Output);
-        Assert.Contains("Monday, 2026-10-26", console.Output); // the loop went on to /prev
+        Assert.Contains("Monday, 2026-10-26", console.Output); // the loop went on to prev
     }
 
     // AC-10
@@ -732,7 +733,7 @@ public sealed class AppTests : IDisposable
     public void Prev_AtMinValue_ShowsHint_AndStaysPut()
     {
         (int exitCode, string output) =
-            RunCommands(new SettableTimeProvider(DateTimeOffset.MinValue), "/prev", "/quit");
+            RunCommands(new SettableTimeProvider(DateTimeOffset.MinValue), "prev", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal("Monday, 0001-01-01", LastHeading(output));
@@ -746,7 +747,7 @@ public sealed class AppTests : IDisposable
     public void Next_AtMaxValue_ShowsHint_AndStaysPut()
     {
         (int exitCode, string output) =
-            RunCommands(new SettableTimeProvider(DateTimeOffset.MaxValue), "/next", "/quit");
+            RunCommands(new SettableTimeProvider(DateTimeOffset.MaxValue), "next", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal("Friday, 9999-12-31", LastHeading(output));
@@ -760,8 +761,8 @@ public sealed class AppTests : IDisposable
     public void BoundaryHint_IsRed()
     {
         TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
-        console.Input.PushTextWithEnter("/next");
-        console.Input.PushTextWithEnter("/quit");
+        console.Input.PushTextWithEnter("next");
+        console.Input.PushTextWithEnter("quit");
 
         new App(console, new SettableTimeProvider(DateTimeOffset.MaxValue), new DayStore(data.Path)).Run([]);
 
@@ -805,7 +806,7 @@ public sealed class AppTests : IDisposable
         CommandRegistry registry = CommandRegistry.CreateDefault();
         for (int i = 1; i <= 12; i++)
         {
-            registry.Register($"/c{i:00}", $"Dummy command {i}", _ => CommandResult.None);
+            registry.Register($"c{i:00}", $"Dummy command {i}", _ => CommandResult.None);
         }
 
         return registry;
@@ -819,7 +820,7 @@ public sealed class AppTests : IDisposable
         {
             c.Input.PushText("/");
             c.Input.PushKey(ConsoleKey.Backspace);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         Assert.Contains("\u001b[21;1H", output);
@@ -827,7 +828,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal([14, 15, 16, 17, 18, 19, 20, 21], popup.Select(w => w.Row));
         // Fourteen commands: the first seven by name, then a row counting the other seven.
         Assert.Equal(
-            ["/addproject", "/arrive", "/break", "/breakend", "/change", "/checkpoint", "/help", "…"],
+            ["addproject", "arrive", "break", "breakend", "change", "checkpoint", "help", "…"],
             popup.Select(w => w.Text.Split(' ')[0]));
         Assert.StartsWith("… 7 more", popup[^1].Text);
         Assert.Contains("List all commands", popup[6].Text);
@@ -840,35 +841,35 @@ public sealed class AppTests : IDisposable
     {
         string output = RunAnsi(c =>
         {
-            c.Input.PushTextWithEnter("/tdoay");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("tdoay");
+            c.Input.PushTextWithEnter("quit");
         });
 
         List<AnsiWrite> writes = TypingWrites(output, 0);
-        AnsiWrite lastPopupRow = writes.Last(w => w.Row == 21 && w.Text.StartsWith('/'));
-        Assert.StartsWith("/today", lastPopupRow.Text);
+        AnsiWrite lastPopupRow = writes.Last(w => w.Row == 21 && w.StartsWithCommand);
+        Assert.StartsWith("today", lastPopupRow.Text);
     }
 
     // AC-4, AC-5
     [Fact]
     public void ClosedOrShrunkPopup_RestoresTheFramesRows()
     {
-        // /help fills the top area with a long table, so the popup covers real content.
+        // help fills the top area with a long table, so the popup covers real content.
         string output = RunAnsi(c =>
         {
-            c.Input.PushTextWithEnter("/help");
-            c.Input.PushText("/c");
+            c.Input.PushTextWithEnter("help");
+            c.Input.PushText("c");
             c.Input.PushKey(ConsoleKey.Backspace);
             c.Input.PushKey(ConsoleKey.Backspace);
             c.Input.PushKey(ConsoleKey.Enter);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         }, ManyCommands());
 
         string[] frame = AnsiFrames(output)[1];
         List<AnsiWrite> writes = TypingWrites(output, 1);
 
-        // "/" and "/c" both fill 8 rows (14-21); Backspace to empty gives every row back.
-        Assert.Contains(writes, w => w.Row == 14 && w.Text.StartsWith("/c01", StringComparison.Ordinal));
+        // "/" and "c" both fill 8 rows (14-21); Backspace to empty gives every row back.
+        Assert.Contains(writes, w => w.Row == 14 && w.Text.StartsWith("c01", StringComparison.Ordinal));
         Dictionary<int, string> screen = [];
         foreach (AnsiWrite write in writes)
         {
@@ -889,23 +890,23 @@ public sealed class AppTests : IDisposable
     {
         string output = RunAnsi(c =>
         {
-            c.Input.PushTextWithEnter("/nope");
+            c.Input.PushTextWithEnter("nope");
             c.Input.PushText("/");
             c.Input.PushKey(ConsoleKey.Backspace);
             c.Input.PushText("/");
             c.Input.PushKey(ConsoleKey.Escape);
             c.Input.PushKey(ConsoleKey.Escape);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         List<string> hintRow = TypingWrites(output, 1).Where(w => w.Row == 21).Select(w => w.Text).ToList();
 
-        // popup, restored (Backspace), popup, restored (Esc), popup (/quit typing), ...
+        // popup, restored (Backspace), popup, restored (Esc), popup (quit typing), ...
         Assert.StartsWith("… 7 more", hintRow[0]);
-        Assert.Contains("Unknown command /nope", hintRow[1]);
+        Assert.Contains("Unknown command nope", hintRow[1]);
         Assert.StartsWith("… 7 more", hintRow[2]);
-        Assert.Contains("Unknown command /nope", hintRow[3]);
-        Assert.Contains("Unknown command /nope", hintRow[^1]);
+        Assert.Contains("Unknown command nope", hintRow[3]);
+        Assert.Contains("Unknown command nope", hintRow[^1]);
         Assert.Contains("\u001b[38;5;9mUnknown command", output[output.LastIndexOf("\u001b[21;1H", StringComparison.Ordinal)..]);
     }
 
@@ -915,8 +916,8 @@ public sealed class AppTests : IDisposable
     {
         string output = RunAnsi(c =>
         {
-            c.Input.PushTextWithEnter("/prev");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("prev");
+            c.Input.PushTextWithEnter("quit");
         });
 
         Assert.Contains("Monday, 2026-10-26", AnsiFrames(output)[1][EmptyPanelRows]);
@@ -931,14 +932,14 @@ public sealed class AppTests : IDisposable
             c.Input.PushText("/");
             c.Input.PushKey(ConsoleKey.Escape);
             c.Input.PushKey(ConsoleKey.Escape);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         }, ManyCommands());
 
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
         // 26 commands: 7 shown, the eighth row counts the other 19.
         Assert.StartsWith("… 19 more", popup[^1].Text);
-        // Nothing is drawn on row 1 while typing (the final clear on /quit homes the cursor there, writing nothing).
+        // Nothing is drawn on row 1 while typing (the final clear on quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
 
@@ -948,18 +949,18 @@ public sealed class AppTests : IDisposable
     {
         string output = RunAnsi(c =>
         {
-            c.Input.PushText("/tdoay");
+            c.Input.PushText("tdoay");
             c.Input.PushKey(ConsoleKey.Backspace);
             c.Input.PushKey(ConsoleKey.Tab);
             c.Input.PushKey(ConsoleKey.Escape);
             c.Input.PushKey(ConsoleKey.Escape);
-            c.Input.PushText("/he");
+            c.Input.PushText("he");
             c.Input.PushKey(ConsoleKey.Tab);
             c.Input.PushKey(ConsoleKey.Enter);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
-        // One clear per frame (start, after /help) plus one on /quit; one heading per frame.
+        // One clear per frame (start, after help) plus one on quit; one heading per frame.
         Assert.Equal(3, Count(output, ClearScreen));
         Assert.Equal(2, AnsiFrames(output).Count);
         Assert.Equal(2, Count(output, Heading));
@@ -989,7 +990,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Arrive_WithTime_CreatesDayFile_AndShowsIt()
     {
-        (int exitCode, string output) = RunCommands("/arrive 8:15", "/quit");
+        (int exitCode, string output) = RunCommands("arrive 8:15", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(["2026-10-27.json"], Directory.EnumerateFiles(data.Path).Select(Path.GetFileName));
@@ -1004,7 +1005,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Leave_WithTime_StoresLeaving_AndShowsIt()
     {
-        (int exitCode, string output) = RunCommands("/leave 17:30", "/quit");
+        (int exitCode, string output) = RunCommands("leave 17:30", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(Entries("leaving 17:30"), ReadDay("2026-10-27"));
@@ -1013,14 +1014,14 @@ public sealed class AppTests : IDisposable
 
     // AC-2
     [Theory]
-    [InlineData("/arrive", "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"18:30\"}]}")]
-    [InlineData("/leave", "{\"entries\":[{\"kind\":\"leaving\",\"time\":\"18:30\"}]}")]
+    [InlineData("arrive", "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"18:30\"}]}")]
+    [InlineData("leave", "{\"entries\":[{\"kind\":\"leaving\",\"time\":\"18:30\"}]}")]
     public void WithoutTime_BooksClockTime_SecondsDropped(string command, string expected)
     {
         FixedTimeProvider clock =
             new FixedTimeProvider(new DateTimeOffset(2026, 10, 27, 18, 30, 59, TimeSpan.Zero), TimeZoneInfo.Utc);
 
-        (int exitCode, string output) = RunCommands(clock, command, "/quit");
+        (int exitCode, string output) = RunCommands(clock, command, "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(expected, ReadDay("2026-10-27"));
@@ -1035,7 +1036,7 @@ public sealed class AppTests : IDisposable
         TimeZoneInfo zone = TimeZoneInfo.CreateCustomTimeZone("Plus2", TimeSpan.FromHours(2), "Plus2", "Plus2");
         FixedTimeProvider clock = new FixedTimeProvider(new DateTimeOffset(2026, 10, 27, 16, 30, 0, TimeSpan.Zero), zone);
 
-        RunCommands(clock, "/arrive", "/quit");
+        RunCommands(clock, "arrive", "quit");
 
         Assert.Equal(Entries("arrival 18:30"), ReadDay("2026-10-27"));
     }
@@ -1044,7 +1045,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Booking_GoesToTheViewedDay()
     {
-        (int exitCode, string output) = RunCommands("/prev", "/arrive 9:00", "/quit");
+        (int exitCode, string output) = RunCommands("prev", "arrive 9:00", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(["2026-10-26.json"], Directory.EnumerateFiles(data.Path).Select(Path.GetFileName));
@@ -1055,11 +1056,11 @@ public sealed class AppTests : IDisposable
 
     // AC-2 (017)
     [Theory]
-    [InlineData("/arrive", "arrival")]
-    [InlineData("/leave", "leaving")]
+    [InlineData("arrive", "arrival")]
+    [InlineData("leave", "leaving")]
     public void BookingAgain_AddsAnEntry_AndKeepsTheEarlierOne(string command, string kind)
     {
-        (int exitCode, string output) = RunCommands(command + " 8:15", command + " 13:00", "/quit");
+        (int exitCode, string output) = RunCommands(command + " 8:15", command + " 13:00", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(Entries(kind + " 08:15", kind + " 13:00"), ReadDay("2026-10-27"));
@@ -1073,13 +1074,13 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Booking_KeepsAllEntries_AndReopenedAppLoadsThem()
     {
-        RunCommands("/arrive 8:15", "/leave 12:00", "/arrive 13:00", "/leave 17:30", "/quit");
+        RunCommands("arrive 8:15", "leave 12:00", "arrive 13:00", "leave 17:30", "quit");
 
         Assert.Equal(
             Entries("arrival 08:15", "leaving 12:00", "arrival 13:00", "leaving 17:30"),
             ReadDay("2026-10-27"));
 
-        (int exitCode, string output) = RunCommands("/quit");
+        (int exitCode, string output) = RunCommands("quit");
         Assert.Equal(0, exitCode);
         Assert.Matches(@"1 +Arrival +08:15", output);
         Assert.Matches(@"2 +Leaving +12:00", output);
@@ -1091,7 +1092,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void ArriveAndLeave_ShowTimeLeftPerEntry()
     {
-        (int exitCode, string output) = RunCommands("/arrive 8:00", "/leave 17:00", "/quit");
+        (int exitCode, string output) = RunCommands("arrive 8:00", "leave 17:00", "quit");
 
         Assert.Equal(0, exitCode);
         string frame = LastFrame(output);
@@ -1105,7 +1106,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Booking_KeepsEntriesInTimeOrder_WhateverTheBookingOrder()
     {
-        (_, string output) = RunCommands("/leave 17:00", "/arrive 8:00", "/quit");
+        (_, string output) = RunCommands("leave 17:00", "arrive 8:00", "quit");
 
         Assert.Equal(Entries("arrival 08:00", "leaving 17:00"), ReadDay("2026-10-27"));
         string frame = LastFrame(output);
@@ -1117,19 +1118,19 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Booking_SameTime_KeepsBookingOrder_AndAllowsDuplicates()
     {
-        RunCommands("/leave 12:00", "/arrive 12:00", "/arrive 12:00", "/quit");
+        RunCommands("leave 12:00", "arrive 12:00", "arrive 12:00", "quit");
 
         Assert.Equal(Entries("leaving 12:00", "arrival 12:00", "arrival 12:00"), ReadDay("2026-10-27"));
     }
 
     // AC-6
     [Theory]
-    [InlineData("/arrive 25:00", "/arrive: 25:00 is not a time.")]
-    [InlineData("/leave abc", "/leave: abc is not a time.")]
-    [InlineData("/arrive [bold]", "/arrive: [bold] is not a time.")]
+    [InlineData("arrive 25:00", "arrive: 25:00 is not a time.")]
+    [InlineData("leave abc", "leave: abc is not a time.")]
+    [InlineData("arrive [bold]", "arrive: [bold] is not a time.")]
     public void InvalidTime_ShowsHintOnHintRow_AndWritesNothing(string typed, string expected)
     {
-        (int exitCode, string output) = RunCommands(typed, "/help", typed, "/quit");
+        (int exitCode, string output) = RunCommands(typed, "help", typed, "quit");
 
         Assert.Equal(0, exitCode);
         string[] frame = LastLayout(output);
@@ -1145,7 +1146,7 @@ public sealed class AppTests : IDisposable
         File.WriteAllText(DayFile("2026-10-27"), "{\"arrival\":\"08:00\"}");
         byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
 
-        (int exitCode, _) = RunCommands("/arrive 25:00", "/leave abc", "/arrive [bold]", "/quit");
+        (int exitCode, _) = RunCommands("arrive 25:00", "leave abc", "arrive [bold]", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
@@ -1156,25 +1157,25 @@ public sealed class AppTests : IDisposable
     public void InvalidTime_HintIsRed()
     {
         TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
-        console.Input.PushTextWithEnter("/arrive 25:00");
-        console.Input.PushTextWithEnter("/quit");
+        console.Input.PushTextWithEnter("arrive 25:00");
+        console.Input.PushTextWithEnter("quit");
 
         new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
 
-        Assert.Matches(@"\x1b\[(31|91|38;5;9)m/arrive: ", console.Output);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)marrive: ", console.Output);
     }
 
     // AC-4 (017)
     [Theory]
-    [InlineData("/arrive 9:00", "/leave 8:00", "leaving 08:00", "arrival 09:00")]
-    [InlineData("/arrive 9:00", "/leave 9:00", "arrival 09:00", "leaving 09:00")]
-    [InlineData("/leave 17:00", "/arrive 18:00", "leaving 17:00", "arrival 18:00")]
-    [InlineData("/leave 17:00", "/arrive 17:00", "leaving 17:00", "arrival 17:00")]
-    [InlineData("/arrive 8:00", "/arrive 9:00", "arrival 08:00", "arrival 09:00")]
-    [InlineData("/leave 12:00", "/leave 17:00", "leaving 12:00", "leaving 17:00")]
+    [InlineData("arrive 9:00", "leave 8:00", "leaving 08:00", "arrival 09:00")]
+    [InlineData("arrive 9:00", "leave 9:00", "arrival 09:00", "leaving 09:00")]
+    [InlineData("leave 17:00", "arrive 18:00", "leaving 17:00", "arrival 18:00")]
+    [InlineData("leave 17:00", "arrive 17:00", "leaving 17:00", "arrival 17:00")]
+    [InlineData("arrive 8:00", "arrive 9:00", "arrival 08:00", "arrival 09:00")]
+    [InlineData("leave 12:00", "leave 17:00", "leaving 12:00", "leaving 17:00")]
     public void AnyOrder_IsAccepted_WithoutHint(string first, string second, string entry1, string entry2)
     {
-        (int exitCode, string output) = RunCommands(first, second, "/quit");
+        (int exitCode, string output) = RunCommands(first, second, "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(Entries(entry1, entry2), ReadDay("2026-10-27"));
@@ -1188,7 +1189,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void LeavingWithoutArrival_IsAllowed()
     {
-        (_, string output) = RunCommands("/leave 0:00", "/quit");
+        (_, string output) = RunCommands("leave 0:00", "quit");
 
         Assert.Equal(Entries("leaving 00:00"), ReadDay("2026-10-27"));
         Assert.DoesNotContain("must be after", output);
@@ -1200,7 +1201,7 @@ public sealed class AppTests : IDisposable
     {
         File.WriteAllText(DayFile("2026-10-27"), "{\"arrival\":\"08:15\",\"leaving\":\"17:30\"}");
 
-        (int exitCode, string output) = RunCommands("/arrive 13:00", "/quit");
+        (int exitCode, string output) = RunCommands("arrive 13:00", "quit");
 
         Assert.Equal(0, exitCode);
         string first = string.Join('\n', Frames(output)[0]);
@@ -1219,7 +1220,7 @@ public sealed class AppTests : IDisposable
     {
         File.WriteAllText(DayFile("2026-10-27"), "{\"arrival\":\"09:00\",\"leaving\":\"08:00\"}");
 
-        (_, string output) = RunCommands("/quit");
+        (_, string output) = RunCommands("quit");
 
         Assert.Matches(@"1 +Leaving +08:00", output);
         Assert.Matches(@"2 +Arrival +09:00", output);
@@ -1235,7 +1236,7 @@ public sealed class AppTests : IDisposable
         File.SetLastWriteTimeUtc(path, stamp);
         byte[] before = File.ReadAllBytes(path);
 
-        (int exitCode, string output) = RunCommands("/prev", "/next", "/prev", "/quit");
+        (int exitCode, string output) = RunCommands("prev", "next", "prev", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Matches(@"1 +Arrival +08:15", LastFrame(output));
@@ -1250,7 +1251,7 @@ public sealed class AppTests : IDisposable
     {
         File.WriteAllText(DayFile("2026-10-27"), "{\"entries\":[]}");
 
-        (int exitCode, string output) = RunCommands("/quit");
+        (int exitCode, string output) = RunCommands("quit");
 
         Assert.Equal(0, exitCode);
         Assert.Contains("No entries yet.", LastFrame(output));
@@ -1268,7 +1269,7 @@ public sealed class AppTests : IDisposable
         File.WriteAllText(DayFile("2026-10-27"), contents);
         byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
 
-        (int exitCode, string output) = RunCommands("/arrive 9:00", "/quit");
+        (int exitCode, string output) = RunCommands("arrive 9:00", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
@@ -1288,7 +1289,7 @@ public sealed class AppTests : IDisposable
     {
         string[] before = WorkingDirectoryEntries();
         TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
-        console.Input.PushTextWithEnter("/arrive 8:15");
+        console.Input.PushTextWithEnter("arrive 8:15");
 
         int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(folder)).Run([]);
 
@@ -1307,7 +1308,7 @@ public sealed class AppTests : IDisposable
 
         (int exitCode, _) = Run(c =>
         {
-            foreach (string command in new[] { "/prev", "/next", "/arrive 25:00", "/leave x", "/quit" })
+            foreach (string command in new[] { "prev", "next", "arrive 25:00", "leave x", "quit" })
             {
                 c.Input.PushTextWithEnter(command);
             }
@@ -1318,8 +1319,8 @@ public sealed class AppTests : IDisposable
 
         Run(c =>
         {
-            c.Input.PushTextWithEnter("/arrive 8:15");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("arrive 8:15");
+            c.Input.PushTextWithEnter("quit");
         }, dataFolder: missing.Path);
 
         Assert.Equal(
@@ -1333,7 +1334,7 @@ public sealed class AppTests : IDisposable
     {
         File.WriteAllText(DayFile("2026-10-26"), "{\"arrival\":\"09:00\"}");
 
-        RunCommands("/prev", "/leave 8:00", "/next", "/quit");
+        RunCommands("prev", "leave 8:00", "next", "quit");
 
         Assert.Equal(["2026-10-26.json"], Directory.EnumerateFiles(data.Path).Select(Path.GetFileName));
     }
@@ -1345,7 +1346,7 @@ public sealed class AppTests : IDisposable
         File.WriteAllText(DayFile("2026-10-27"), "{not json");
         byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
 
-        (int exitCode, string output) = RunCommands("/arrive 8:00", "/leave 17:00", "/quit");
+        (int exitCode, string output) = RunCommands("arrive 8:00", "leave 17:00", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
@@ -1361,27 +1362,27 @@ public sealed class AppTests : IDisposable
     {
         File.WriteAllText(DayFile("2026-10-27"), "{not json");
         TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
-        console.Input.PushTextWithEnter("/arrive 8:00");
-        console.Input.PushTextWithEnter("/quit");
+        console.Input.PushTextWithEnter("arrive 8:00");
+        console.Input.PushTextWithEnter("quit");
 
         Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
-        Assert.Matches(@"\x1b\[(31|91|38;5;9)m/arrive: The file for 2026-10-27", console.Output);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)marrive: The file for 2026-10-27", console.Output);
     }
 
     // AC-11
     [Fact]
     public void Help_ListsArriveAndLeave_WithOptionalTime()
     {
-        (_, string output) = RunCommands("/help", "/quit");
+        (_, string output) = RunCommands("help", "quit");
 
-        Assert.Matches(@"/arrive +│ Book your arrival: now, or at an optional H:mm", output);
-        Assert.Matches(@"/leave +│ Book your leaving: now, or at an optional H:mm", output);
+        Assert.Matches(@"arrive +│ Book your arrival: now, or at an optional H:mm", output);
+        Assert.Matches(@"leave +│ Book your leaving: now, or at an optional H:mm", output);
     }
 
     // AC-11
     [Theory]
-    [InlineData("/ar", "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"18:30\"}]}")]
-    [InlineData("/l", "{\"entries\":[{\"kind\":\"leaving\",\"time\":\"18:30\"}]}")]
+    [InlineData("ar", "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"18:30\"}]}")]
+    [InlineData("l", "{\"entries\":[{\"kind\":\"leaving\",\"time\":\"18:30\"}]}")]
     public void Tab_CompletesArriveAndLeave(string prefix, string expected)
     {
         (int exitCode, string output) = Run(c =>
@@ -1389,7 +1390,7 @@ public sealed class AppTests : IDisposable
             c.Input.PushText(prefix);
             c.Input.PushKey(ConsoleKey.Tab);
             c.Input.PushKey(ConsoleKey.Enter);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         Assert.Equal(0, exitCode);
@@ -1399,9 +1400,9 @@ public sealed class AppTests : IDisposable
 
     // AC-11
     [Theory]
-    [InlineData("/ar", "/arrive")]
-    [InlineData("/lea", "/leave")]
-    [InlineData("/arive", "/arrive")]
+    [InlineData("ar", "arrive")]
+    [InlineData("lea", "leave")]
+    [InlineData("arive", "arrive")]
     public void Popup_ShowsArriveAndLeave(string typed, string expected)
     {
         string output = RunAnsi(c =>
@@ -1409,7 +1410,7 @@ public sealed class AppTests : IDisposable
             c.Input.PushText(typed);
             c.Input.PushKey(ConsoleKey.Escape);
             c.Input.PushKey(ConsoleKey.Escape);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         // One popup draw per typed key, each ending on row 21. The draw after the last key lists
@@ -1417,11 +1418,11 @@ public sealed class AppTests : IDisposable
         List<AnsiWrite> writes = TypingWrites(output, 0);
         List<int> bottoms = writes
             .Select((w, i) => (w, i))
-            .Where(x => x.w.Row == 21 && (x.w.Text.StartsWith('/') || x.w.Text.StartsWith('…')))
+            .Where(x => x.w.Row == 21 && (x.w.StartsWithCommand || x.w.Text.StartsWith('…')))
             .Select(x => x.i)
             .ToList();
         int top = bottoms[typed.Length - 1];
-        while (top > 0 && writes[top - 1].Row == writes[top].Row - 1 && writes[top - 1].Text.StartsWith('/'))
+        while (top > 0 && writes[top - 1].Row == writes[top].Row - 1 && writes[top - 1].StartsWithCommand)
         {
             top--;
         }
@@ -1443,14 +1444,14 @@ public sealed class AppTests : IDisposable
         Assert.StartsWith("╰", frame[^1]);
     }
 
-    /// <summary>The /help frame drawn on a terminal tall enough that nothing is cut: the unclipped top content lines.</summary>
+    /// <summary>The help frame drawn on a terminal tall enough that nothing is cut: the unclipped top content lines.</summary>
     private string[] UnclippedHelpTop()
     {
         (_, string output) = Run(c =>
         {
             c.Profile.Height = 80;
-            c.Input.PushTextWithEnter("/help");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("help");
+            c.Input.PushTextWithEnter("quit");
         }, ManyCommands());
 
         string[] frame = Frames(output)[1];
@@ -1470,8 +1471,8 @@ public sealed class AppTests : IDisposable
         (int exitCode, string output) = Run(c =>
         {
             c.Profile.Height = 12;
-            c.Input.PushTextWithEnter("/help");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("help");
+            c.Input.PushTextWithEnter("quit");
         }, ManyCommands());
 
         Assert.Equal(0, exitCode);
@@ -1496,8 +1497,8 @@ public sealed class AppTests : IDisposable
         string output = RunAnsi(c =>
         {
             c.Profile.Height = 12;
-            c.Input.PushTextWithEnter("/help");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("help");
+            c.Input.PushTextWithEnter("quit");
         }, ManyCommands());
 
         Assert.Matches(@"\x1b\[(90|38;5;8)m↓ \d+ more lines below · PgDn", output);
@@ -1510,11 +1511,11 @@ public sealed class AppTests : IDisposable
         string output = RunAnsi(c =>
         {
             c.Profile.Height = 12;
-            c.Input.PushTextWithEnter("/help");
+            c.Input.PushTextWithEnter("help");
             c.Input.PushText("/");
             c.Input.PushKey(ConsoleKey.Escape);
             c.Input.PushKey(ConsoleKey.Escape);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         }, ManyCommands());
 
         List<string[]> frames = AnsiFrames(output);
@@ -1528,7 +1529,7 @@ public sealed class AppTests : IDisposable
         Assert.Contains("more lines", frame[^5]);
 
         List<AnsiWrite> writes = TypingWrites(output, 1);
-        int popupAtCue = writes.FindIndex(w => w.Row == 8 && w.Text.StartsWith('/'));
+        int popupAtCue = writes.FindIndex(w => w.Row == 8 && w.StartsWithCommand);
         Assert.True(popupAtCue >= 0, "the popup should cover the cue row");
         AnsiWrite restored = writes.Skip(popupAtCue + 1).First(w => w.Row == 8);
         Assert.Equal(frame[7], restored.Text);
@@ -1540,13 +1541,13 @@ public sealed class AppTests : IDisposable
 
     // Input placeholder (job 014) ----------------------------------------------------------
 
-    private const string Placeholder = "Type /help for commands";
+    private const string Placeholder = "Type help for commands";
 
     // AC-1
     [Fact]
     public void FirstFrame_InputRow_ShowsGreyPlaceholderAfterPrompt()
     {
-        string output = RunAnsi(c => c.Input.PushTextWithEnter("/quit"));
+        string output = RunAnsi(c => c.Input.PushTextWithEnter("quit"));
 
         string[] frame = AnsiFrames(output)[0];
         Assert.Equal(24, frame.Length);
@@ -1562,11 +1563,11 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Placeholder_DoesNotMoveTheCursor_TypingStartsAfterPrompt()
     {
-        string output = RunAnsi(c => c.Input.PushTextWithEnter("/quit"));
+        string output = RunAnsi(c => c.Input.PushTextWithEnter("quit"));
 
         List<AnsiWrite> writes = AnsiWrites.Parse(output);
         // Row height - 1 = 23; column 3 + "> ".Length = 5.
-        Assert.Contains(writes, w => w.Row == 23 && w.Column == 5 && w.Text.StartsWith("/quit", StringComparison.Ordinal));
+        Assert.Contains(writes, w => w.Row == 23 && w.Column == 5 && w.Text.StartsWith("quit", StringComparison.Ordinal));
         Assert.Contains("\u001b[23;5H", output);
     }
 
@@ -1576,11 +1577,11 @@ public sealed class AppTests : IDisposable
     {
         string output = RunAnsi(c =>
         {
-            c.Input.PushTextWithEnter("/help");
-            c.Input.PushTextWithEnter("/nope");
+            c.Input.PushTextWithEnter("help");
+            c.Input.PushTextWithEnter("nope");
             c.Input.PushKey(ConsoleKey.Enter);
             c.Input.PushTextWithEnter("hello");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         List<string[]> frames = AnsiFrames(output);
@@ -1598,7 +1599,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Placeholder_IsNeverDispatched()
     {
-        (int exitCode, string output) = RunCommands(string.Empty, "/quit");
+        (int exitCode, string output) = RunCommands(string.Empty, "quit");
 
         Assert.Equal(0, exitCode);
         Assert.DoesNotContain("Commands start with", output);
@@ -1626,7 +1627,7 @@ public sealed class AppTests : IDisposable
     {
         File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
 
-        (int exitCode, string output) = RunCommands("/remove 2", "/quit");
+        (int exitCode, string output) = RunCommands("remove 2", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(Entries("arrival 08:00", "arrival 13:00"), ReadDay("2026-10-27"));
@@ -1652,7 +1653,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Remove_AfterBookingInTheSameSession_UsesTheShownNumbers()
     {
-        (int exitCode, string output) = RunCommands("/arrive 8:00", "/leave 12:00", "/arrive 13:00", "/remove 2", "/quit");
+        (int exitCode, string output) = RunCommands("arrive 8:00", "leave 12:00", "arrive 13:00", "remove 2", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(Entries("arrival 08:00", "arrival 13:00"), ReadDay("2026-10-27"));
@@ -1667,7 +1668,7 @@ public sealed class AppTests : IDisposable
         File.WriteAllText(DayFile("2026-10-26"), Entries("arrival 09:00", "leaving 17:00"));
         byte[] today = File.ReadAllBytes(DayFile("2026-10-27"));
 
-        (int exitCode, string output) = RunCommands("/prev", "/remove 1", "/quit");
+        (int exitCode, string output) = RunCommands("prev", "remove 1", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(Entries("leaving 17:00"), ReadDay("2026-10-26"));
@@ -1678,16 +1679,16 @@ public sealed class AppTests : IDisposable
 
     // AC-3 (021)
     [Theory]
-    [InlineData("/remove 0", "/remove: there is no entry 0.")]
-    [InlineData("/remove 4", "/remove: there is no entry 4.")]
-    [InlineData("/remove 99", "/remove: there is no entry 99.")]
-    [InlineData("/remove 007", "/remove: there is no entry 7.")]
+    [InlineData("remove 0", "remove: there is no entry 0.")]
+    [InlineData("remove 4", "remove: there is no entry 4.")]
+    [InlineData("remove 99", "remove: there is no entry 99.")]
+    [InlineData("remove 007", "remove: there is no entry 7.")]
     public void Remove_UnknownNumber_ShowsHintAboveInputBox_AndChangesNothing(string typed, string expected)
     {
         File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
         byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
 
-        (int exitCode, string output) = RunCommands("/help", typed, "/quit");
+        (int exitCode, string output) = RunCommands("help", typed, "quit");
 
         Assert.Equal(0, exitCode);
         AssertOnHintRow(LastLayout(output), expected);
@@ -1697,44 +1698,44 @@ public sealed class AppTests : IDisposable
 
     // AC-4 (021)
     [Theory]
-    [InlineData("/remove", "/remove: say which entry to remove.")]
-    [InlineData("/remove abc", "/remove: abc is not an entry number.")]
-    [InlineData("/remove -1", "/remove: -1 is not an entry number.")]
-    [InlineData("/remove +1", "/remove: +1 is not an entry number.")]
-    [InlineData("/remove 1.5", "/remove: 1.5 is not an entry number.")]
-    [InlineData("/remove 2 3", "/remove: 2 3 is not an entry number.")]
-    [InlineData("/remove 99999999999", "/remove: 99999999999 is not an entry number.")]
-    [InlineData("/remove [bold]", "/remove: [bold] is not an entry number.")]
-    [InlineData("/remove [red]x[/]", "/remove: [red]x[/] is not an entry number.")]
+    [InlineData("remove", "remove: say which entry to remove.")]
+    [InlineData("remove abc", "remove: abc is not an entry number.")]
+    [InlineData("remove -1", "remove: -1 is not an entry number.")]
+    [InlineData("remove +1", "remove: +1 is not an entry number.")]
+    [InlineData("remove 1.5", "remove: 1.5 is not an entry number.")]
+    [InlineData("remove 2 3", "remove: 2 3 is not an entry number.")]
+    [InlineData("remove 99999999999", "remove: 99999999999 is not an entry number.")]
+    [InlineData("remove [bold]", "remove: [bold] is not an entry number.")]
+    [InlineData("remove [red]x[/]", "remove: [red]x[/] is not an entry number.")]
     public void Remove_BadArgument_ShowsUsageHint_AndChangesNothing(string typed, string expected)
     {
         File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
         byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
 
-        (int exitCode, string output) = RunCommands("/help", typed, "/quit");
+        (int exitCode, string output) = RunCommands("help", typed, "quit");
 
         Assert.Equal(0, exitCode);
         string[] frame = LastLayout(output);
         AssertOnHintRow(frame, expected);
-        AssertOnHintRow(frame, "Use /remove <number>.");
+        AssertOnHintRow(frame, "Use remove <number>.");
         Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
         Assert.DoesNotContain("failed:", output);
     }
 
     // AC-3, AC-4 (021)
     [Theory]
-    [InlineData("/remove 4")]
-    [InlineData("/remove abc")]
-    [InlineData("/remove")]
+    [InlineData("remove 4")]
+    [InlineData("remove abc")]
+    [InlineData("remove")]
     public void Remove_Hints_AreRed(string typed)
     {
         File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
         TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
         console.Input.PushTextWithEnter(typed);
-        console.Input.PushTextWithEnter("/quit");
+        console.Input.PushTextWithEnter("quit");
 
         Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
-        Assert.Matches(@"\x1b\[(31|91|38;5;9)m/remove: ", console.Output);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mremove: ", console.Output);
     }
 
     // AC-5 (021)
@@ -1745,18 +1746,18 @@ public sealed class AppTests : IDisposable
 
         (int exitCode, string output) = Run(c =>
         {
-            c.Input.PushTextWithEnter("/remove 1");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("remove 1");
+            c.Input.PushTextWithEnter("quit");
         }, dataFolder: missing.Path);
 
         Assert.Equal(0, exitCode);
-        AssertOnHintRow(LastLayout(output), "/remove: there is no entry 1.");
+        AssertOnHintRow(LastLayout(output), "remove: there is no entry 1.");
         Assert.False(Directory.Exists(missing.Path));
 
-        (exitCode, output) = RunCommands("/remove 1", "/quit");
+        (exitCode, output) = RunCommands("remove 1", "quit");
 
         Assert.Equal(0, exitCode);
-        AssertOnHintRow(LastLayout(output), "/remove: there is no entry 1.");
+        AssertOnHintRow(LastLayout(output), "remove: there is no entry 1.");
         Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
     }
 
@@ -1764,7 +1765,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Remove_OnlyEntry_KeepsFileWithEmptyEntries_AndShowsNoEntriesYet()
     {
-        (int exitCode, string output) = RunCommands("/arrive 8:00", "/remove 1", "/quit");
+        (int exitCode, string output) = RunCommands("arrive 8:00", "remove 1", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal("{\"entries\":[]}", ReadDay("2026-10-27"));
@@ -1781,11 +1782,11 @@ public sealed class AppTests : IDisposable
         File.WriteAllText(DayFile("2026-10-27"), contents);
         byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
 
-        (int exitCode, string output) = RunCommands("/remove 1", "/quit");
+        (int exitCode, string output) = RunCommands("remove 1", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
-        AssertOnHintRow(LastLayout(output), "/remove: The file for 2026-10-27 " + expected);
+        AssertOnHintRow(LastLayout(output), "remove: The file for 2026-10-27 " + expected);
         Assert.DoesNotContain("   at ", output);
         Assert.DoesNotContain("failed:", output);
         Assert.Equal(["2026-10-27.json"], Directory.EnumerateFileSystemEntries(data.Path).Select(Path.GetFileName));
@@ -1799,12 +1800,12 @@ public sealed class AppTests : IDisposable
         byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
 
         // The hint is longer than 80 columns, so widen the terminal to see all of it.
-        (int exitCode, string output) = RunWide(120, "/remove 1", "/quit");
+        (int exitCode, string output) = RunWide(120, "remove 1", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
         string[] frame = LastLayout(output);
-        AssertOnHintRow(frame, "/remove: The file for 2026-10-27 is too large to be a day file. Nothing was removed.");
+        AssertOnHintRow(frame, "remove: The file for 2026-10-27 is too large to be a day file. Nothing was removed.");
     }
 
     // AC-7 (021)
@@ -1813,11 +1814,11 @@ public sealed class AppTests : IDisposable
     {
         File.WriteAllText(DayFile("2026-10-27"), "{not json");
         TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
-        console.Input.PushTextWithEnter("/remove 1");
-        console.Input.PushTextWithEnter("/quit");
+        console.Input.PushTextWithEnter("remove 1");
+        console.Input.PushTextWithEnter("quit");
 
         Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
-        Assert.Matches(@"\x1b\[(31|91|38;5;9)m/remove: The file for 2026-10-27", console.Output);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mremove: The file for 2026-10-27", console.Output);
     }
 
     // AC-7 (021)
@@ -1837,11 +1838,11 @@ public sealed class AppTests : IDisposable
         {
             TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
             console.Profile.Width = 200;
-            console.Input.PushTextWithEnter("/remove 2");
-            console.Input.PushTextWithEnter("/quit");
+            console.Input.PushTextWithEnter("remove 2");
+            console.Input.PushTextWithEnter("quit");
 
             Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
-            Assert.Matches(@"\x1b\[(31|91|38;5;9)m/remove: could not save the day\.", console.Output);
+            Assert.Matches(@"\x1b\[(31|91|38;5;9)mremove: could not save the day\.", console.Output);
             Assert.DoesNotContain("   at ", console.Output);
             Assert.DoesNotContain("failed:", console.Output);
         }
@@ -1857,9 +1858,9 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Help_ListsRemove_WithDescription()
     {
-        (_, string output) = RunCommands("/help", "/quit");
+        (_, string output) = RunCommands("help", "quit");
 
-        Assert.Matches(@"/remove +│ Remove an entry from this day by its number", output);
+        Assert.Matches(@"remove +│ Remove an entry from this day by its number", output);
     }
 
     // AC-8 (021)
@@ -1870,10 +1871,10 @@ public sealed class AppTests : IDisposable
 
         (int exitCode, string output) = Run(c =>
         {
-            c.Input.PushText("/rem");
+            c.Input.PushText("rem");
             c.Input.PushKey(ConsoleKey.Tab);
             c.Input.PushTextWithEnter(" 3");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         Assert.Equal(0, exitCode);
@@ -1887,26 +1888,26 @@ public sealed class AppTests : IDisposable
     {
         string output = RunAnsi(c =>
         {
-            c.Input.PushText("/rem");
+            c.Input.PushText("rem");
             c.Input.PushKey(ConsoleKey.Escape);
             c.Input.PushKey(ConsoleKey.Escape);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         List<AnsiWrite> writes = TypingWrites(output, 0);
         List<int> bottoms = writes
             .Select((w, i) => (w, i))
-            .Where(x => x.w.Row == 21 && (x.w.Text.StartsWith('/') || x.w.Text.StartsWith('…')))
+            .Where(x => x.w.Row == 21 && (x.w.StartsWithCommand || x.w.Text.StartsWith('…')))
             .Select(x => x.i)
             .ToList();
-        int top = bottoms[3];
-        while (top > 0 && writes[top - 1].Row == writes[top].Row - 1 && writes[top - 1].Text.StartsWith('/'))
+        int top = bottoms[2];
+        while (top > 0 && writes[top - 1].Row == writes[top].Row - 1 && writes[top - 1].StartsWithCommand)
         {
             top--;
         }
 
         AnsiWrite row = writes[top];
-        Assert.StartsWith("/remove", row.Text);
+        Assert.StartsWith("remove", row.Text);
         Assert.Contains("Remove an entry from this day by its number", row.Text);
     }
 
@@ -1918,7 +1919,7 @@ public sealed class AppTests : IDisposable
     {
         File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
 
-        (int exitCode, string output) = RunCommands("/change 2 12:30", "/quit");
+        (int exitCode, string output) = RunCommands("change 2 12:30", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(Entries("arrival 08:00", "leaving 12:30", "arrival 13:00"), ReadDay("2026-10-27"));
@@ -1950,7 +1951,7 @@ public sealed class AppTests : IDisposable
     {
         File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
 
-        (int exitCode, string output) = RunCommands("/change 1 14:00", "/quit");
+        (int exitCode, string output) = RunCommands("change 1 14:00", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(Entries("leaving 12:00", "arrival 13:00", "arrival 14:00"), ReadDay("2026-10-27"));
@@ -1967,7 +1968,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Change_AfterBookingInTheSameSession_UsesTheShownNumbers()
     {
-        (int exitCode, string output) = RunCommands("/arrive 8:00", "/leave 12:00", "/arrive 13:00", "/change 3 12:45", "/quit");
+        (int exitCode, string output) = RunCommands("arrive 8:00", "leave 12:00", "arrive 13:00", "change 3 12:45", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(Entries("arrival 08:00", "leaving 12:00", "arrival 12:45"), ReadDay("2026-10-27"));
@@ -1976,16 +1977,16 @@ public sealed class AppTests : IDisposable
 
     // AC-3 (023)
     [Theory]
-    [InlineData("/change 1 7:05")]
-    [InlineData("/change 1 07:05")]
-    [InlineData("/change   1    7:05")]
-    [InlineData("  /change 1 07:05   ")]
-    [InlineData("/change    1  07:05    ")]
+    [InlineData("change 1 7:05")]
+    [InlineData("change 1 07:05")]
+    [InlineData("change   1    7:05")]
+    [InlineData("  change 1 07:05   ")]
+    [InlineData("change    1  07:05    ")]
     public void Change_AcceptsShortAndLongHours_AndExtraSpaces(string typed)
     {
         File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
 
-        (int exitCode, string output) = RunCommands(typed, "/quit");
+        (int exitCode, string output) = RunCommands(typed, "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(Entries("arrival 07:05", "leaving 12:00", "arrival 13:00"), ReadDay("2026-10-27"));
@@ -2000,7 +2001,7 @@ public sealed class AppTests : IDisposable
         File.WriteAllText(DayFile("2026-10-26"), Entries("arrival 08:30", "leaving 17:00"));
         byte[] today = File.ReadAllBytes(DayFile("2026-10-27"));
 
-        (int exitCode, string output) = RunCommands("/prev", "/change 1 9:00", "/quit");
+        (int exitCode, string output) = RunCommands("prev", "change 1 9:00", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(Entries("arrival 09:00", "leaving 17:00"), ReadDay("2026-10-26"));
@@ -2011,16 +2012,16 @@ public sealed class AppTests : IDisposable
 
     // AC-5 (023)
     [Theory]
-    [InlineData("/change 0 8:00", "/change: there is no entry 0.")]
-    [InlineData("/change 4 8:00", "/change: there is no entry 4.")]
-    [InlineData("/change 99 8:00", "/change: there is no entry 99.")]
-    [InlineData("/change 004 8:00", "/change: there is no entry 4.")]
+    [InlineData("change 0 8:00", "change: there is no entry 0.")]
+    [InlineData("change 4 8:00", "change: there is no entry 4.")]
+    [InlineData("change 99 8:00", "change: there is no entry 99.")]
+    [InlineData("change 004 8:00", "change: there is no entry 4.")]
     public void Change_UnknownNumber_ShowsHintAboveInputBox_AndChangesNothing(string typed, string expected)
     {
         File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
         byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
 
-        (int exitCode, string output) = RunCommands("/help", typed, "/quit");
+        (int exitCode, string output) = RunCommands("help", typed, "quit");
 
         Assert.Equal(0, exitCode);
         AssertOnHintRow(LastLayout(output), expected);
@@ -2030,18 +2031,18 @@ public sealed class AppTests : IDisposable
 
     // AC-6 (023)
     [Theory]
-    [InlineData("/change 2 25:00", "/change: 25:00 is not a time.")]
-    [InlineData("/change 2 8:5", "/change: 8:5 is not a time.")]
-    [InlineData("/change 2 8.15", "/change: 8.15 is not a time.")]
-    [InlineData("/change 2 abc", "/change: abc is not a time.")]
-    [InlineData("/change 2 8:15:00", "/change: 8:15:00 is not a time.")]
-    [InlineData("/change 2 [red]x", "/change: [red]x is not a time.")]
+    [InlineData("change 2 25:00", "change: 25:00 is not a time.")]
+    [InlineData("change 2 8:5", "change: 8:5 is not a time.")]
+    [InlineData("change 2 8.15", "change: 8.15 is not a time.")]
+    [InlineData("change 2 abc", "change: abc is not a time.")]
+    [InlineData("change 2 8:15:00", "change: 8:15:00 is not a time.")]
+    [InlineData("change 2 [red]x", "change: [red]x is not a time.")]
     public void Change_InvalidTime_ShowsHintWithFormat_AndChangesNothing(string typed, string expected)
     {
         File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
         byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
 
-        (int exitCode, string output) = RunCommands("/help", typed, "/quit");
+        (int exitCode, string output) = RunCommands("help", typed, "quit");
 
         Assert.Equal(0, exitCode);
         string[] frame = LastLayout(output);
@@ -2053,45 +2054,45 @@ public sealed class AppTests : IDisposable
 
     // AC-7 (023)
     [Theory]
-    [InlineData("/change", "/change: say which entry and its new time.")]
-    [InlineData("/change 2", "/change: say which entry and its new time.")]
-    [InlineData("/change 2 8:00 9:00", "/change: say which entry and its new time.")]
-    [InlineData("/change abc 8:00", "/change: abc is not an entry number.")]
-    [InlineData("/change -1 8:00", "/change: -1 is not an entry number.")]
-    [InlineData("/change +1 8:00", "/change: +1 is not an entry number.")]
-    [InlineData("/change 99999999999 8:00", "/change: 99999999999 is not an entry number.")]
-    [InlineData("/change [bold] 8:00", "/change: [bold] is not an entry number.")]
-    [InlineData("/change [red]x[/] 8:00", "/change: [red]x[/] is not an entry number.")]
+    [InlineData("change", "change: say which entry and its new time.")]
+    [InlineData("change 2", "change: say which entry and its new time.")]
+    [InlineData("change 2 8:00 9:00", "change: say which entry and its new time.")]
+    [InlineData("change abc 8:00", "change: abc is not an entry number.")]
+    [InlineData("change -1 8:00", "change: -1 is not an entry number.")]
+    [InlineData("change +1 8:00", "change: +1 is not an entry number.")]
+    [InlineData("change 99999999999 8:00", "change: 99999999999 is not an entry number.")]
+    [InlineData("change [bold] 8:00", "change: [bold] is not an entry number.")]
+    [InlineData("change [red]x[/] 8:00", "change: [red]x[/] is not an entry number.")]
     public void Change_MissingOrMalformedArgument_ShowsUsageHint_AndChangesNothing(string typed, string expected)
     {
         File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
         byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
 
-        (int exitCode, string output) = RunCommands("/help", typed, "/quit");
+        (int exitCode, string output) = RunCommands("help", typed, "quit");
 
         Assert.Equal(0, exitCode);
         string[] frame = LastLayout(output);
         AssertOnHintRow(frame, expected);
-        AssertOnHintRow(frame, "Use /change <number> <H:mm>.");
+        AssertOnHintRow(frame, "Use change <number> <H:mm>.");
         Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
         Assert.DoesNotContain("failed:", output);
     }
 
     // AC-5, AC-6, AC-7 (023)
     [Theory]
-    [InlineData("/change 4 8:00")]
-    [InlineData("/change 2 25:00")]
-    [InlineData("/change abc 8:00")]
-    [InlineData("/change")]
+    [InlineData("change 4 8:00")]
+    [InlineData("change 2 25:00")]
+    [InlineData("change abc 8:00")]
+    [InlineData("change")]
     public void Change_Hints_AreRed(string typed)
     {
         File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
         TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
         console.Input.PushTextWithEnter(typed);
-        console.Input.PushTextWithEnter("/quit");
+        console.Input.PushTextWithEnter("quit");
 
         Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
-        Assert.Matches(@"\x1b\[(31|91|38;5;9)m/change: ", console.Output);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mchange: ", console.Output);
     }
 
     // AC-8 (023)
@@ -2102,18 +2103,18 @@ public sealed class AppTests : IDisposable
 
         (int exitCode, string output) = Run(c =>
         {
-            c.Input.PushTextWithEnter("/change 1 8:00");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("change 1 8:00");
+            c.Input.PushTextWithEnter("quit");
         }, dataFolder: missing.Path);
 
         Assert.Equal(0, exitCode);
-        AssertOnHintRow(LastLayout(output), "/change: there is no entry 1.");
+        AssertOnHintRow(LastLayout(output), "change: there is no entry 1.");
         Assert.False(Directory.Exists(missing.Path));
 
-        (exitCode, output) = RunCommands("/change 1 8:00", "/quit");
+        (exitCode, output) = RunCommands("change 1 8:00", "quit");
 
         Assert.Equal(0, exitCode);
-        AssertOnHintRow(LastLayout(output), "/change: there is no entry 1.");
+        AssertOnHintRow(LastLayout(output), "change: there is no entry 1.");
         Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
     }
 
@@ -2126,11 +2127,11 @@ public sealed class AppTests : IDisposable
         File.WriteAllText(DayFile("2026-10-27"), contents);
         byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
 
-        (int exitCode, string output) = RunCommands("/change 1 8:00", "/quit");
+        (int exitCode, string output) = RunCommands("change 1 8:00", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
-        AssertOnHintRow(LastLayout(output), "/change: The file for 2026-10-27 is not a valid day file. Nothing was changed.");
+        AssertOnHintRow(LastLayout(output), "change: The file for 2026-10-27 is not a valid day file. Nothing was changed.");
         Assert.DoesNotContain("   at ", output);
         Assert.DoesNotContain("failed:", output);
         Assert.Equal(["2026-10-27.json"], Directory.EnumerateFileSystemEntries(data.Path).Select(Path.GetFileName));
@@ -2142,11 +2143,11 @@ public sealed class AppTests : IDisposable
     {
         File.WriteAllText(DayFile("2026-10-27"), "{not json");
         TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
-        console.Input.PushTextWithEnter("/change 1 8:00");
-        console.Input.PushTextWithEnter("/quit");
+        console.Input.PushTextWithEnter("change 1 8:00");
+        console.Input.PushTextWithEnter("quit");
 
         Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
-        Assert.Matches(@"\x1b\[(31|91|38;5;9)m/change: The file for 2026-10-27", console.Output);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mchange: The file for 2026-10-27", console.Output);
     }
 
     // AC-9 (023)
@@ -2166,11 +2167,11 @@ public sealed class AppTests : IDisposable
         {
             TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
             console.Profile.Width = 200;
-            console.Input.PushTextWithEnter("/change 2 12:30");
-            console.Input.PushTextWithEnter("/quit");
+            console.Input.PushTextWithEnter("change 2 12:30");
+            console.Input.PushTextWithEnter("quit");
 
             Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
-            Assert.Matches(@"\x1b\[(31|91|38;5;9)m/change: could not save the day\.", console.Output);
+            Assert.Matches(@"\x1b\[(31|91|38;5;9)mchange: could not save the day\.", console.Output);
             Assert.DoesNotContain("   at ", console.Output);
             Assert.DoesNotContain("failed:", console.Output);
         }
@@ -2186,9 +2187,9 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Help_ListsChange_WithDescription()
     {
-        (_, string output) = RunWide(120, "/help", "/quit");
+        (_, string output) = RunWide(120, "help", "quit");
 
-        Assert.Matches(@"/change +│ Change the time of an entry on this day: <number> <H:mm>", output);
+        Assert.Matches(@"change +│ Change the time of an entry on this day: <number> <H:mm>", output);
     }
 
     // AC-10 (023)
@@ -2199,10 +2200,10 @@ public sealed class AppTests : IDisposable
 
         (int exitCode, string output) = Run(c =>
         {
-            c.Input.PushText("/cha");
+            c.Input.PushText("cha");
             c.Input.PushKey(ConsoleKey.Tab);
             c.Input.PushTextWithEnter(" 2 12:30");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         Assert.Equal(0, exitCode);
@@ -2216,26 +2217,26 @@ public sealed class AppTests : IDisposable
     {
         string output = RunAnsi(c =>
         {
-            c.Input.PushText("/cha");
+            c.Input.PushText("cha");
             c.Input.PushKey(ConsoleKey.Escape);
             c.Input.PushKey(ConsoleKey.Escape);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         List<AnsiWrite> writes = TypingWrites(output, 0);
         List<int> bottoms = writes
             .Select((w, i) => (w, i))
-            .Where(x => x.w.Row == 21 && (x.w.Text.StartsWith('/') || x.w.Text.StartsWith('…')))
+            .Where(x => x.w.Row == 21 && (x.w.StartsWithCommand || x.w.Text.StartsWith('…')))
             .Select(x => x.i)
             .ToList();
-        int top = bottoms[3];
-        while (top > 0 && writes[top - 1].Row == writes[top].Row - 1 && writes[top - 1].Text.StartsWith('/'))
+        int top = bottoms[2];
+        while (top > 0 && writes[top - 1].Row == writes[top].Row - 1 && writes[top - 1].StartsWithCommand)
         {
             top--;
         }
 
         AnsiWrite row = writes[top];
-        Assert.StartsWith("/change", row.Text);
+        Assert.StartsWith("change", row.Text);
         Assert.Contains("Change the time of an entry on this day: <number> <H:mm>", row.Text);
     }
 
@@ -2304,7 +2305,7 @@ public sealed class AppTests : IDisposable
     public void VersionFlag_MatchesExactlyAndOtherwiseStartsNormally(string arg)
     {
         TestConsole console = new TestConsole().Interactive();
-        console.Input.PushTextWithEnter("/quit");
+        console.Input.PushTextWithEnter("quit");
 
         int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([arg]);
 
@@ -2328,7 +2329,7 @@ public sealed class AppTests : IDisposable
 
     private static string StripAnsi(string output) => Regex.Replace(output, @"\x1b\[[0-9;]*m", string.Empty);
 
-    /// <summary>Runs <c>/help</c>, scrolls to its bottom, then an empty line and <c>/quit</c> on a terminal wide enough that the data-folder line never wraps.</summary>
+    /// <summary>Runs <c>help</c>, scrolls to its bottom, then an empty line and <c>quit</c> on a terminal wide enough that the data-folder line never wraps.</summary>
     private static string RunHelp(string folder, bool folderFromEnvironment, bool ansi = false)
     {
         TestConsole console = new TestConsole().Interactive();
@@ -2338,10 +2339,10 @@ public sealed class AppTests : IDisposable
         }
 
         console.Profile.Width = 300;
-        console.Input.PushTextWithEnter("/help");
+        console.Input.PushTextWithEnter("help");
         PageDown(console, HelpPages);
         console.Input.PushKey(ConsoleKey.Enter);
-        console.Input.PushTextWithEnter("/quit");
+        console.Input.PushTextWithEnter("quit");
         int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(folder), folderFromEnvironment: folderFromEnvironment).Run([]);
         Assert.Equal(0, exitCode);
         return console.Output;
@@ -2359,7 +2360,7 @@ public sealed class AppTests : IDisposable
         string[] before = WorkingDirectoryEntries();
         TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
         console.Profile.Width = 300; // keep the error on one line, so the text can be matched as a whole
-        console.Input.PushTextWithEnter("/arrive 8:15");
+        console.Input.PushTextWithEnter("arrive 8:15");
 
         int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(folder), folderFromEnvironment: true).Run([]);
 
@@ -2399,7 +2400,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal($"Data folder: {data.Path}", bottom[line]);
         Assert.StartsWith("╰", bottom[line - 1]);
         string shown = string.Join('\n', screens.SelectMany(screen => screen));
-        foreach (Command command in CommandRegistry.CreateDefault().Commands.Concat([new Command("/arrive", "", _ => CommandResult.None)]))
+        foreach (Command command in CommandRegistry.CreateDefault().Commands.Concat([new Command("arrive", "", _ => CommandResult.None)]))
         {
             Assert.Contains(command.Name, shown);
         }
@@ -2452,10 +2453,10 @@ public sealed class AppTests : IDisposable
         string[] before = WorkingDirectoryEntries();
         TestConsole console = new TestConsole().Interactive();
         console.Profile.Width = 300;
-        console.Input.PushTextWithEnter("/arrive 8:15");
-        console.Input.PushTextWithEnter("/help");
+        console.Input.PushTextWithEnter("arrive 8:15");
+        console.Input.PushTextWithEnter("help");
         PageDown(console, HelpPages);
-        console.Input.PushTextWithEnter("/quit");
+        console.Input.PushTextWithEnter("quit");
 
         int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(overrideFolder.Path), folderFromEnvironment: true).Run([]);
 
@@ -2495,7 +2496,7 @@ public sealed class AppTests : IDisposable
         TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
         console.Profile.Width = 200;
         console.Input.PushTextWithEnter(command);
-        console.Input.PushTextWithEnter("/quit");
+        console.Input.PushTextWithEnter("quit");
         Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
         return console.Output;
     }
@@ -2504,7 +2505,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void AddProject_SavesProject_AndConfirmsInTopArea()
     {
-        (int exitCode, string output) = RunCommands("/addproject 1234 Website relaunch", "/quit");
+        (int exitCode, string output) = RunCommands("addproject 1234 Website relaunch", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal([new Project(1234, "Website relaunch")], ReadProjects().Projects);
@@ -2519,12 +2520,12 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void AddProject_NumbersInOrder_AndKeepsNumbersAfterRestart()
     {
-        (_, string first) = RunCommands("/addproject 500 First", "/addproject 20 Second", "/quit");
+        (_, string first) = RunCommands("addproject 500 First", "addproject 20 Second", "quit");
 
         Assert.Contains("Added project 1: #500 First", first);
         Assert.Contains("Added project 2: #20 Second", first);
 
-        (_, string restarted) = RunCommands("/addproject 7 Third", "/projects", "/quit");
+        (_, string restarted) = RunCommands("addproject 7 Third", "projects", "quit");
 
         Assert.Contains("Added project 3: #7 Third", restarted);
         string frame = string.Join('\n', LastLayout(restarted));
@@ -2538,7 +2539,7 @@ public sealed class AppTests : IDisposable
     {
         File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":99,\"title\":\"Zeta\"},{\"workItem\":1,\"title\":\"Alpha\"}]}");
 
-        (int exitCode, string output) = RunCommands("/projects", "/quit");
+        (int exitCode, string output) = RunCommands("projects", "quit");
 
         Assert.Equal(0, exitCode);
         string[] frame = LastLayout(output);
@@ -2557,7 +2558,7 @@ public sealed class AppTests : IDisposable
     {
         File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":99,\"title\":\"Zeta\"}]}");
 
-        string output = RunAnsi("/projects");
+        string output = RunAnsi("projects");
 
         Assert.Matches(@"\x1b\[(90|38;5;8)m#\x1b\[0m", output);
         Assert.Matches(@"\x1b\[(90|38;5;8)mWork item\x1b\[0m", output);
@@ -2572,15 +2573,15 @@ public sealed class AppTests : IDisposable
 
         (int exitCode, string output) = Run(c =>
         {
-            c.Input.PushTextWithEnter("/projects");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("projects");
+            c.Input.PushTextWithEnter("quit");
         }, dataFolder: missing.Path);
 
         Assert.Equal(0, exitCode);
-        Assert.Contains("No projects yet. Add one with /addproject <work item> <title>.", output);
+        Assert.Contains("No projects yet. Add one with addproject <work item> <title>.", output);
         Assert.False(Directory.Exists(missing.Path));
 
-        (_, string existing) = RunCommands("/projects", "/quit");
+        (_, string existing) = RunCommands("projects", "quit");
         Assert.Contains("No projects yet.", existing);
         Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
     }
@@ -2591,31 +2592,31 @@ public sealed class AppTests : IDisposable
     {
         File.WriteAllText(ProjectsFile, "{\"projects\":[]}");
 
-        (_, string output) = RunCommands("/projects", "/quit");
+        (_, string output) = RunCommands("projects", "quit");
 
-        Assert.Contains("No projects yet. Add one with /addproject <work item> <title>.", output);
+        Assert.Contains("No projects yet. Add one with addproject <work item> <title>.", output);
         Assert.Equal("{\"projects\":[]}", File.ReadAllText(ProjectsFile));
-        Assert.Matches(@"\x1b\[(90|38;5;8)mNo projects yet\.", RunAnsi("/projects"));
+        Assert.Matches(@"\x1b\[(90|38;5;8)mNo projects yet\.", RunAnsi("projects"));
     }
 
     // AC-3 (030)
     [Fact]
     public void Projects_WithArgument_ShowsHint()
     {
-        (_, string output) = RunCommands("/projects x", "/quit");
+        (_, string output) = RunCommands("projects x", "quit");
 
-        AssertOnHintRow(LastLayout(output), "/projects takes no arguments.");
+        AssertOnHintRow(LastLayout(output), "projects takes no arguments.");
     }
 
     // AC-4 (030)
     [Theory]
-    [InlineData("/addproject 42 [red]Fix[/]", "[red]Fix[/]")]
-    [InlineData("/addproject 42    Two  inner   spaces   ", "Two  inner   spaces")]
-    [InlineData("/addproject 42 [bold]x", "[bold]x")]
-    [InlineData("/addproject 42 a]b[c", "a]b[c")]
+    [InlineData("addproject 42 [red]Fix[/]", "[red]Fix[/]")]
+    [InlineData("addproject 42    Two  inner   spaces   ", "Two  inner   spaces")]
+    [InlineData("addproject 42 [bold]x", "[bold]x")]
+    [InlineData("addproject 42 a]b[c", "a]b[c")]
     public void AddProject_TitleIsTrimmed_ShownLiterally_AndRoundTrips(string command, string title)
     {
-        (int exitCode, string output) = RunCommands(command, "/projects", "/quit");
+        (int exitCode, string output) = RunCommands(command, "projects", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal([new Project(42, title)], ReadProjects().Projects);
@@ -2628,27 +2629,27 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void AddProject_MarkupTitle_IsNotRenderedAsMarkup()
     {
-        string output = RunAnsi("/addproject 42 [red]Fix[/]");
+        string output = RunAnsi("addproject 42 [red]Fix[/]");
 
         Assert.Contains("#42 [red]Fix[/]", output);
     }
 
     // AC-5 (030)
     [Theory]
-    [InlineData("/addproject", "/addproject: say the work item number and the title.")]
-    [InlineData("/addproject   ", "/addproject: say the work item number and the title.")]
-    [InlineData("/addproject 1234", "/addproject: say the work item number and the title.")]
-    [InlineData("/addproject abc Title", "/addproject: abc is not a work item number.")]
-    [InlineData("/addproject -5 Title", "/addproject: -5 is not a work item number.")]
-    [InlineData("/addproject 0 Title", "/addproject: 0 is not a work item number.")]
-    [InlineData("/addproject 12.5 Title", "/addproject: 12.5 is not a work item number.")]
-    [InlineData("/addproject +7 Title", "/addproject: +7 is not a work item number.")]
-    [InlineData("/addproject 2147483648 Title", "/addproject: 2147483648 is not a work item number.")]
-    [InlineData("/addproject 99999999999999999999 Title", "/addproject: 99999999999999999999 is not a work item number.")]
-    [InlineData("/addproject [red]1[/] Title", "/addproject: [red]1[/] is not a work item number.")]
+    [InlineData("addproject", "addproject: say the work item number and the title.")]
+    [InlineData("addproject   ", "addproject: say the work item number and the title.")]
+    [InlineData("addproject 1234", "addproject: say the work item number and the title.")]
+    [InlineData("addproject abc Title", "addproject: abc is not a work item number.")]
+    [InlineData("addproject -5 Title", "addproject: -5 is not a work item number.")]
+    [InlineData("addproject 0 Title", "addproject: 0 is not a work item number.")]
+    [InlineData("addproject 12.5 Title", "addproject: 12.5 is not a work item number.")]
+    [InlineData("addproject +7 Title", "addproject: +7 is not a work item number.")]
+    [InlineData("addproject 2147483648 Title", "addproject: 2147483648 is not a work item number.")]
+    [InlineData("addproject 99999999999999999999 Title", "addproject: 99999999999999999999 is not a work item number.")]
+    [InlineData("addproject [red]1[/] Title", "addproject: [red]1[/] is not a work item number.")]
     public void AddProject_InvalidInput_ShowsHint_AndWritesNothing(string command, string expected)
     {
-        (int exitCode, string output) = RunWide(120, command, "/quit");
+        (int exitCode, string output) = RunWide(120, command, "quit");
 
         Assert.Equal(0, exitCode);
         AssertOnHintRow(LastLayout(output), expected);
@@ -2664,13 +2665,13 @@ public sealed class AppTests : IDisposable
         (_, string output) = Run(c =>
         {
             c.Profile.Width = 120;
-            c.Input.PushText("/addproject 12 a");
+            c.Input.PushText("addproject 12 a");
             c.Input.PushKey(new ConsoleKeyInfo('\u2028', ConsoleKey.NoName, false, false, false));
             c.Input.PushTextWithEnter("b");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
-        AssertOnHintRow(LastLayout(output), "/addproject: the title must not contain control characters.");
+        AssertOnHintRow(LastLayout(output), "addproject: the title must not contain control characters.");
         Assert.False(File.Exists(ProjectsFile));
     }
 
@@ -2678,12 +2679,12 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void AddProject_TitleTooLong_ShowsHint_AndWritesNothing()
     {
-        (_, string output) = RunWide(120, "/addproject 12 " + new string('x', 201), "/quit");
+        (_, string output) = RunWide(120, "addproject 12 " + new string('x', 201), "quit");
 
-        AssertOnHintRow(LastLayout(output), "/addproject: the title is longer than 200 characters.");
+        AssertOnHintRow(LastLayout(output), "addproject: the title is longer than 200 characters.");
         Assert.False(File.Exists(ProjectsFile));
 
-        (_, string ok) = RunCommands("/addproject 12 " + new string('x', 200), "/quit");
+        (_, string ok) = RunCommands("addproject 12 " + new string('x', 200), "quit");
         Assert.Equal(200, ReadProjects().Projects[0].Title.Length);
         Assert.DoesNotContain("longer than", ok);
     }
@@ -2695,10 +2696,10 @@ public sealed class AppTests : IDisposable
         File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":1,\"title\":\"A\"},{\"workItem\":1234,\"title\":\"B\"}]}");
         byte[] before = File.ReadAllBytes(ProjectsFile);
 
-        (int exitCode, string output) = RunCommands("/addproject 1234 Other title", "/quit");
+        (int exitCode, string output) = RunCommands("addproject 1234 Other title", "quit");
 
         Assert.Equal(0, exitCode);
-        AssertOnHintRow(LastLayout(output), "/addproject: work item #1234 is already project 2.");
+        AssertOnHintRow(LastLayout(output), "addproject: work item #1234 is already project 2.");
         Assert.Equal(before, File.ReadAllBytes(ProjectsFile));
     }
 
@@ -2706,7 +2707,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void AddProject_InvalidInput_HintIsRed()
     {
-        Assert.Matches(@"\x1b\[(31|91|38;5;9)m/addproject: ", RunAnsi("/addproject abc Title"));
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)maddproject: ", RunAnsi("addproject abc Title"));
     }
 
     // AC-7 (030)
@@ -2719,14 +2720,14 @@ public sealed class AppTests : IDisposable
         File.WriteAllText(ProjectsFile, contents);
         byte[] before = File.ReadAllBytes(ProjectsFile);
 
-        (int exitCode, string output) = RunWide(120, "/addproject 5 New", "/quit");
+        (int exitCode, string output) = RunWide(120, "addproject 5 New", "quit");
 
         Assert.Equal(0, exitCode);
-        AssertOnHintRow(LastLayout(output), "/addproject: the project list cannot be read: projects.json is not valid. Nothing was added.");
+        AssertOnHintRow(LastLayout(output), "addproject: the project list cannot be read: projects.json is not valid. Nothing was added.");
         Assert.Equal(before, File.ReadAllBytes(ProjectsFile));
 
-        (_, string listed) = RunWide(120, "/projects", "/quit");
-        AssertOnHintRow(LastLayout(listed), "/projects: the project list cannot be read: projects.json is not valid.");
+        (_, string listed) = RunWide(120, "projects", "quit");
+        AssertOnHintRow(LastLayout(listed), "projects: the project list cannot be read: projects.json is not valid.");
         Assert.DoesNotContain("   at ", output + listed);
         Assert.Equal(before, File.ReadAllBytes(ProjectsFile));
     }
@@ -2738,10 +2739,10 @@ public sealed class AppTests : IDisposable
         File.WriteAllText(ProjectsFile, new string(' ', (int)ProjectStore.MaxFileBytes + 1) + "{\"projects\":[]}");
         byte[] before = File.ReadAllBytes(ProjectsFile);
 
-        (_, string output) = RunWide(120, "/addproject 5 New", "/projects", "/quit");
+        (_, string output) = RunWide(120, "addproject 5 New", "projects", "quit");
 
-        Assert.Contains("/addproject: the project list cannot be read: projects.json is too large. Nothing was added.", output);
-        AssertOnHintRow(LastLayout(output), "/projects: the project list cannot be read: projects.json is too large.");
+        Assert.Contains("addproject: the project list cannot be read: projects.json is too large. Nothing was added.", output);
+        AssertOnHintRow(LastLayout(output), "projects: the project list cannot be read: projects.json is too large.");
         Assert.Equal(before, File.ReadAllBytes(ProjectsFile));
     }
 
@@ -2751,7 +2752,7 @@ public sealed class AppTests : IDisposable
     {
         File.WriteAllText(ProjectsFile, "{not json");
 
-        Assert.Matches(@"\x1b\[(31|91|38;5;9)m/projects: the project list cannot be read", RunAnsi("/projects"));
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mprojects: the project list cannot be read", RunAnsi("projects"));
     }
 
     // AC-7 (030)
@@ -2770,14 +2771,14 @@ public sealed class AppTests : IDisposable
         string output;
         try
         {
-            output = RunAnsi("/addproject 5 New");
+            output = RunAnsi("addproject 5 New");
         }
         finally
         {
             File.SetUnixFileMode(data.Path, mode);
         }
 
-        Assert.Matches(@"\x1b\[(31|91|38;5;9)m/addproject: could not save the project list\.", output);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)maddproject: could not save the project list\.", output);
         Assert.DoesNotContain("   at ", output);
         Assert.DoesNotContain("failed:", output);
         Assert.DoesNotContain("Added project", output);
@@ -2788,7 +2789,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void AddProject_CreatesNoDayFile_AndDayViewIgnoresProjects()
     {
-        (_, string output) = RunCommands("/addproject 1234 Website relaunch", "/prev", "/next", "/quit");
+        (_, string output) = RunCommands("addproject 1234 Website relaunch", "prev", "next", "quit");
 
         Assert.Equal(["projects.json"], Directory.EnumerateFileSystemEntries(data.Path).Select(Path.GetFileName));
         Assert.Equal(Heading, LastHeading(output));
@@ -2802,7 +2803,7 @@ public sealed class AppTests : IDisposable
     {
         File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":1,\"title\":\"A\"}]}");
 
-        (_, string output) = RunCommands("/arrive 8:00", "/quit");
+        (_, string output) = RunCommands("arrive 8:00", "quit");
 
         Assert.Equal("{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}", ReadDay("2026-10-27"));
         Assert.Equal("{\"projects\":[{\"workItem\":1,\"title\":\"A\"}]}", File.ReadAllText(ProjectsFile));
@@ -2813,10 +2814,10 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Help_ListsProjectCommands_WithDescriptions()
     {
-        (_, string output) = RunWide(120, "/help", "/quit");
+        (_, string output) = RunWide(120, "help", "quit");
 
-        Assert.Matches(@"/addproject +│ Add a project to the quicklist: <work item> <title>", output);
-        Assert.Matches(@"/projects +│ List the projects on the quicklist", output);
+        Assert.Matches(@"addproject +│ Add a project to the quicklist: <work item> <title>", output);
+        Assert.Matches(@"projects +│ List the projects on the quicklist", output);
     }
 
     // Quicklist panel (job 033) ------------------------------------------------------------
@@ -2838,7 +2839,7 @@ public sealed class AppTests : IDisposable
     {
         WriteProjects(2);
 
-        (int exitCode, string output) = RunCommands("/quit");
+        (int exitCode, string output) = RunCommands("quit");
 
         Assert.Equal(0, exitCode);
         Assert.True(output.IndexOf("╭─Projects", StringComparison.Ordinal) < output.IndexOf(Heading, StringComparison.Ordinal));
@@ -2854,11 +2855,11 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void QuicklistPanel_WithNoFile_ShowsHowToAddAProject()
     {
-        (_, string output) = RunCommands("/quit");
+        (_, string output) = RunCommands("quit");
 
         string[] panel = PanelRows(LastLayout(output));
         Assert.Equal(EmptyPanelRows, panel.Length);
-        Assert.Contains("No projects yet. Add one with /addproject <work item> <title>.", panel[1]);
+        Assert.Contains("No projects yet. Add one with addproject <work item> <title>.", panel[1]);
     }
 
     // AC-2 (033)
@@ -2867,7 +2868,7 @@ public sealed class AppTests : IDisposable
     {
         File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":99,\"title\":\"Zeta\"},{\"workItem\":1,\"title\":\"[red]Alpha[/]\"}]}");
 
-        (_, string output) = RunCommands("/quit");
+        (_, string output) = RunCommands("quit");
 
         string[] panel = PanelRows(LastLayout(output));
         Assert.Equal("│ 1 #99 Zeta", panel[1].TrimEnd('│', ' '));
@@ -2880,7 +2881,7 @@ public sealed class AppTests : IDisposable
     {
         WriteProjects(1);
 
-        (_, string output) = RunCommands("/addproject 1234 Website", "/quit");
+        (_, string output) = RunCommands("addproject 1234 Website", "quit");
 
         List<string[]> frames = Frames(output);
         Assert.Equal(2, frames.Count);
@@ -2897,7 +2898,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void AddProject_FirstProject_ReplacesTheEmptyLine()
     {
-        (_, string output) = RunCommands("/addproject 1234 Website", "/quit");
+        (_, string output) = RunCommands("addproject 1234 Website", "quit");
 
         string[] panel = PanelRows(LastLayout(output));
         Assert.Equal("│ 1 #1234 Website", panel[1].TrimEnd('│', ' '));
@@ -2906,19 +2907,19 @@ public sealed class AppTests : IDisposable
 
     // AC-7 (033)
     [Theory]
-    [InlineData("/addproject abc Title")]
-    [InlineData("/addproject 101 Duplicate")]
-    [InlineData("/addproject 5")]
+    [InlineData("addproject abc Title")]
+    [InlineData("addproject 101 Duplicate")]
+    [InlineData("addproject 5")]
     public void FailedAddProject_LeavesPanelUnchanged(string command)
     {
         WriteProjects(2);
 
-        (_, string output) = RunCommands(command, "/quit");
+        (_, string output) = RunCommands(command, "quit");
 
         List<string[]> frames = Frames(output);
         Assert.Equal(2, frames.Count);
         Assert.Equal(PanelRows(frames[0]), PanelRows(frames[1]));
-        Assert.Contains("/addproject", frames[1][^4]);
+        Assert.Contains("addproject", frames[1][^4]);
     }
 
     // AC-8 (033)
@@ -2929,7 +2930,7 @@ public sealed class AppTests : IDisposable
     {
         File.WriteAllText(ProjectsFile, contents);
 
-        (int exitCode, string output) = RunCommands("/arrive 8:00", "/next", "/prev", "/quit");
+        (int exitCode, string output) = RunCommands("arrive 8:00", "next", "prev", "quit");
 
         Assert.Equal(0, exitCode);
         List<string[]> frames = Frames(output);
@@ -2954,7 +2955,7 @@ public sealed class AppTests : IDisposable
     {
         File.WriteAllText(ProjectsFile, "{not json");
 
-        string output = RunAnsi("/quit");
+        string output = RunAnsi("quit");
 
         Assert.Matches(@"\x1b\[(91|38;5;9)mThe project list cannot be read: projects\.json is not valid\.", output);
     }
@@ -2965,7 +2966,7 @@ public sealed class AppTests : IDisposable
     {
         File.WriteAllText(ProjectsFile, new string(' ', (int)ProjectStore.MaxFileBytes + 1) + "{\"projects\":[]}");
 
-        (int exitCode, string output) = RunCommands("/quit");
+        (int exitCode, string output) = RunCommands("quit");
 
         Assert.Equal(0, exitCode);
         string[] panel = PanelRows(LastLayout(output));
@@ -2985,7 +2986,7 @@ public sealed class AppTests : IDisposable
         File.SetUnixFileMode(ProjectsFile, UnixFileMode.None);
         try
         {
-            (int exitCode, string output) = RunCommands("/arrive 8:00", "/quit");
+            (int exitCode, string output) = RunCommands("arrive 8:00", "quit");
 
             Assert.Equal(0, exitCode);
             string[] panel = PanelRows(LastLayout(output));
@@ -3003,7 +3004,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void DrawingThePanel_WritesNothing()
     {
-        (int exitCode, string output) = RunCommands("/prev", "/next", "/quit");
+        (int exitCode, string output) = RunCommands("prev", "next", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(3, Frames(output).Count);
@@ -3019,9 +3020,9 @@ public sealed class AppTests : IDisposable
 
         (int exitCode, _) = Run(c =>
         {
-            c.Input.PushTextWithEnter("/prev");
-            c.Input.PushTextWithEnter("/next");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("prev");
+            c.Input.PushTextWithEnter("next");
+            c.Input.PushTextWithEnter("quit");
         }, dataFolder: missing.Path);
 
         Assert.Equal(0, exitCode);
@@ -3034,14 +3035,14 @@ public sealed class AppTests : IDisposable
     {
         WriteProjects(9);
 
-        (_, string output) = RunCommands("/quit");
+        (_, string output) = RunCommands("quit");
 
         string[] frame = LastLayout(output);
         AssertLayout(frame);
         string[] panel = PanelRows(frame);
         Assert.Equal(7, panel.Length);
         Assert.Equal("│ 4 #104 Project 4", panel[4].TrimEnd('│', ' '));
-        Assert.Equal("│ … 5 more. Type /projects to see all.", panel[5].TrimEnd('│', ' '));
+        Assert.Equal("│ … 5 more. Type projects to see all.", panel[5].TrimEnd('│', ' '));
         Assert.Contains(Heading, frame[7]);
     }
 
@@ -3054,8 +3055,8 @@ public sealed class AppTests : IDisposable
         (int exitCode, string output) = Run(c =>
         {
             c.Profile.Height = 12;
-            c.Input.PushTextWithEnter("/arrive 8:00");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("arrive 8:00");
+            c.Input.PushTextWithEnter("quit");
         });
 
         Assert.Equal(0, exitCode);
@@ -3077,7 +3078,7 @@ public sealed class AppTests : IDisposable
     {
         WriteProjects(2);
 
-        (_, string output) = RunCommands("/projects", "", "/quit");
+        (_, string output) = RunCommands("projects", "", "quit");
 
         List<string[]> frames = Frames(output);
         Assert.Equal(3, frames.Count);
@@ -3099,10 +3100,10 @@ public sealed class AppTests : IDisposable
         WriteProjects(projects);
         TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
         console.Profile.Width = 300;
-        console.Input.PushTextWithEnter("/help");
+        console.Input.PushTextWithEnter("help");
         PageDown(console, HelpPages);
         console.Input.PushKey(ConsoleKey.Enter);
-        console.Input.PushTextWithEnter("/quit");
+        console.Input.PushTextWithEnter("quit");
 
         Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
 
@@ -3111,7 +3112,7 @@ public sealed class AppTests : IDisposable
         Assert.Contains(Heading, frame[0]);
         Assert.DoesNotContain(frame, l => l.StartsWith("╭─Projects", StringComparison.Ordinal));
         List<string[]> screens = TopScreens(console.Output, 1);
-        Assert.Contains(screens.SelectMany(screen => screen), l => l.Contains("/today", StringComparison.Ordinal));
+        Assert.Contains(screens.SelectMany(screen => screen), l => l.Contains("today", StringComparison.Ordinal));
         Assert.Contains(screens[^1], l => l == $"Data folder: {data.Path}");
         Assert.DoesNotContain(screens[^1], l => l.Contains("more lines below", StringComparison.Ordinal));
     }
@@ -3122,7 +3123,7 @@ public sealed class AppTests : IDisposable
     {
         WriteProjects(5);
 
-        (_, string output) = RunCommands("/help", "/next", "/quit");
+        (_, string output) = RunCommands("help", "next", "quit");
 
         List<string[]> frames = Frames(output);
         Assert.Equal(3, frames.Count);
@@ -3133,13 +3134,13 @@ public sealed class AppTests : IDisposable
 
     // Feedback (033, round 2)
     [Theory]
-    [InlineData("/projects x")]
-    [InlineData("/nope")]
+    [InlineData("projects x")]
+    [InlineData("nope")]
     public void FailedOrOtherCommands_KeepThePanel(string command)
     {
         WriteProjects(2);
 
-        (_, string output) = RunCommands(command, "/addproject 7 Seven", "/quit");
+        (_, string output) = RunCommands(command, "addproject 7 Seven", "quit");
 
         foreach (string[] frame in Frames(output))
         {
@@ -3149,7 +3150,7 @@ public sealed class AppTests : IDisposable
 
     // Breaks and checkpoints (job 036) -------------------------------------------------------
 
-    private const string CheckpointUsage = "Use /checkpoint [H:mm] [#project] <name>, where #project is the project's number on the quicklist.";
+    private const string CheckpointUsage = "Use checkpoint [H:mm] [#project] <name>, where #project is the project's number on the quicklist.";
 
     private void WriteTwoProjects() =>
         File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":1234,\"title\":\"Website\"},{\"workItem\":5678,\"title\":\"Controlling\"}]}");
@@ -3164,11 +3165,11 @@ public sealed class AppTests : IDisposable
 
     // AC-1 (036)
     [Theory]
-    [InlineData("/break", "breakStart", "Break start")]
-    [InlineData("/breakend", "breakEnd", "Break end")]
+    [InlineData("break", "breakStart", "Break start")]
+    [InlineData("breakend", "breakEnd", "Break end")]
     public void Break_WithoutTime_BooksCurrentMinute(string command, string kind, string label)
     {
-        (int exitCode, string output) = RunCommands(At183059(), command, "/quit");
+        (int exitCode, string output) = RunCommands(At183059(), command, "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(Entries(kind + " 18:30"), ReadDay("2026-10-27"));
@@ -3177,11 +3178,11 @@ public sealed class AppTests : IDisposable
 
     // AC-1 (036)
     [Theory]
-    [InlineData("/break", "breakStart")]
-    [InlineData("/breakend", "breakEnd")]
+    [InlineData("break", "breakStart")]
+    [InlineData("breakend", "breakEnd")]
     public void Break_WithTime_BooksThatTime_OnTheViewedDay(string command, string kind)
     {
-        (int exitCode, _) = RunCommands("/prev", command + " 9:05", "/quit");
+        (int exitCode, _) = RunCommands("prev", command + " 9:05", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(["2026-10-26.json"], Directory.EnumerateFiles(data.Path).Select(Path.GetFileName));
@@ -3190,12 +3191,12 @@ public sealed class AppTests : IDisposable
 
     // AC-1 (036)
     [Theory]
-    [InlineData("/break 25:00", "/break: 25:00 is not a time.")]
-    [InlineData("/breakend abc", "/breakend: abc is not a time.")]
-    [InlineData("/break [bold]", "/break: [bold] is not a time.")]
+    [InlineData("break 25:00", "break: 25:00 is not a time.")]
+    [InlineData("breakend abc", "breakend: abc is not a time.")]
+    [InlineData("break [bold]", "break: [bold] is not a time.")]
     public void Break_InvalidTime_ShowsHint_AndWritesNothing(string typed, string expected)
     {
-        (int exitCode, string output) = RunCommands(typed, "/quit");
+        (int exitCode, string output) = RunCommands(typed, "quit");
 
         Assert.Equal(0, exitCode);
         AssertOnHintRow(LastLayout(output), expected);
@@ -3205,18 +3206,18 @@ public sealed class AppTests : IDisposable
 
     // AC-1, AC-4 (036)
     [Theory]
-    [InlineData("/break 25:00")]
-    [InlineData("/checkpoint #abc Standup")]
+    [InlineData("break 25:00")]
+    [InlineData("checkpoint #abc Standup")]
     public void BreakAndCheckpoint_Hints_AreRed(string typed)
     {
-        Assert.Matches(@"\x1b\[(31|91|38;5;9)m/(break|checkpoint): ", RunAnsi(typed));
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)m(break|checkpoint): ", RunAnsi(typed));
     }
 
     // AC-2 (036)
     [Fact]
     public void Checkpoint_NameOnly_BooksCurrentMinute_WithoutWorkItem()
     {
-        (int exitCode, string output) = RunCommands(At183059(), "/checkpoint Standup", "/quit");
+        (int exitCode, string output) = RunCommands(At183059(), "checkpoint Standup", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal([Checkpoint(18, 30, "Standup")], LoadDay().Entries);
@@ -3226,13 +3227,13 @@ public sealed class AppTests : IDisposable
 
     // AC-2 (036)
     [Theory]
-    [InlineData("/checkpoint 9:30 Standup", "Standup")]
-    [InlineData("/checkpoint 09:30 Standup", "Standup")]
-    [InlineData("/checkpoint   9:30   Daily   stand up   ", "Daily   stand up")]
-    [InlineData("/checkpoint 9:30 10:00 sync", "10:00 sync")]
+    [InlineData("checkpoint 9:30 Standup", "Standup")]
+    [InlineData("checkpoint 09:30 Standup", "Standup")]
+    [InlineData("checkpoint   9:30   Daily   stand up   ", "Daily   stand up")]
+    [InlineData("checkpoint 9:30 10:00 sync", "10:00 sync")]
     public void Checkpoint_WithTime_BooksThatTime_AndKeepsInnerSpaces(string typed, string name)
     {
-        (int exitCode, _) = RunCommands(typed, "/quit");
+        (int exitCode, _) = RunCommands(typed, "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal([Checkpoint(9, 30, name)], LoadDay().Entries);
@@ -3240,13 +3241,13 @@ public sealed class AppTests : IDisposable
 
     // AC-3 (036)
     [Theory]
-    [InlineData("/checkpoint 9:30 #2 Standup", 9, 30)]
-    [InlineData("/checkpoint #2 Standup", 18, 30)]
+    [InlineData("checkpoint 9:30 #2 Standup", 9, 30)]
+    [InlineData("checkpoint #2 Standup", 18, 30)]
     public void Checkpoint_ProjectNumber_StoresTheProjectsWorkItem(string typed, int hour, int minute)
     {
         WriteTwoProjects();
 
-        (int exitCode, string output) = RunCommands(typed, "/quit");
+        (int exitCode, string output) = RunCommands(typed, "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal([Checkpoint(hour, minute, "Standup", 5678)], LoadDay().Entries);
@@ -3257,13 +3258,13 @@ public sealed class AppTests : IDisposable
 
     // AC-3 (036)
     [Theory]
-    [InlineData("/checkpoint 2024 review", 18, 30)]
-    [InlineData("/checkpoint 9:30 2024 review", 9, 30)]
+    [InlineData("checkpoint 2024 review", 18, 30)]
+    [InlineData("checkpoint 9:30 2024 review", 9, 30)]
     public void Checkpoint_DigitWordWithoutHash_IsPartOfTheName(string typed, int hour, int minute)
     {
         WriteTwoProjects();
 
-        RunCommands(typed, "/quit");
+        RunCommands(typed, "quit");
 
         Assert.Equal([Checkpoint(hour, minute, "2024 review")], LoadDay().Entries);
     }
@@ -3274,31 +3275,31 @@ public sealed class AppTests : IDisposable
     {
         WriteTwoProjects();
 
-        RunCommands("/checkpoint 9:30 Review #2 done", "/quit");
+        RunCommands("checkpoint 9:30 Review #2 done", "quit");
 
         Assert.Equal([Checkpoint(9, 30, "Review #2 done")], LoadDay().Entries);
     }
 
     // AC-4 (036)
     [Theory]
-    [InlineData("/checkpoint 9:30 #0 Standup", "/checkpoint: there is no project #0 on the quicklist.")]
-    [InlineData("/checkpoint #3 Standup", "/checkpoint: there is no project #3 on the quicklist.")]
-    [InlineData("/checkpoint #99 Standup", "/checkpoint: there is no project #99 on the quicklist.")]
-    [InlineData("/checkpoint #99999999999 Standup", "/checkpoint: there is no project #99999999999 on the quicklist.")]
-    [InlineData("/checkpoint # Standup", "/checkpoint: # is not a project number. " + CheckpointUsage)]
-    [InlineData("/checkpoint #abc Standup", "/checkpoint: #abc is not a project number. " + CheckpointUsage)]
-    [InlineData("/checkpoint 9:30 #2x Standup", "/checkpoint: #2x is not a project number. " + CheckpointUsage)]
-    [InlineData("/checkpoint #-1 Standup", "/checkpoint: #-1 is not a project number. " + CheckpointUsage)]
-    [InlineData("/checkpoint #[red] Standup", "/checkpoint: #[red] is not a project number. " + CheckpointUsage)]
-    [InlineData("/checkpoint #２ Standup", "/checkpoint: #２ is not a project number. " + CheckpointUsage)]
-    [InlineData("/checkpoint", "/checkpoint: say the checkpoint's name. " + CheckpointUsage)]
-    [InlineData("/checkpoint 9:30", "/checkpoint: say the checkpoint's name. " + CheckpointUsage)]
-    [InlineData("/checkpoint #2", "/checkpoint: say the checkpoint's name. " + CheckpointUsage)]
-    [InlineData("/checkpoint 9:30 #2", "/checkpoint: say the checkpoint's name. " + CheckpointUsage)]
-    [InlineData("/checkpoint 25:00 Standup", "/checkpoint: 25:00 is not a time. Use H:mm, e.g. 8:15.")]
-    [InlineData("/checkpoint 9:5 Standup", "/checkpoint: 9:5 is not a time. Use H:mm, e.g. 8:15.")]
-    [InlineData("/checkpoint 25:00", "/checkpoint: 25:00 is not a time. Use H:mm, e.g. 8:15.")]
-    [InlineData("/checkpoint a\u2028b", "/checkpoint: the name must not contain control characters.")]
+    [InlineData("checkpoint 9:30 #0 Standup", "checkpoint: there is no project #0 on the quicklist.")]
+    [InlineData("checkpoint #3 Standup", "checkpoint: there is no project #3 on the quicklist.")]
+    [InlineData("checkpoint #99 Standup", "checkpoint: there is no project #99 on the quicklist.")]
+    [InlineData("checkpoint #99999999999 Standup", "checkpoint: there is no project #99999999999 on the quicklist.")]
+    [InlineData("checkpoint # Standup", "checkpoint: # is not a project number. " + CheckpointUsage)]
+    [InlineData("checkpoint #abc Standup", "checkpoint: #abc is not a project number. " + CheckpointUsage)]
+    [InlineData("checkpoint 9:30 #2x Standup", "checkpoint: #2x is not a project number. " + CheckpointUsage)]
+    [InlineData("checkpoint #-1 Standup", "checkpoint: #-1 is not a project number. " + CheckpointUsage)]
+    [InlineData("checkpoint #[red] Standup", "checkpoint: #[red] is not a project number. " + CheckpointUsage)]
+    [InlineData("checkpoint #２ Standup", "checkpoint: #２ is not a project number. " + CheckpointUsage)]
+    [InlineData("checkpoint", "checkpoint: say the checkpoint's name. " + CheckpointUsage)]
+    [InlineData("checkpoint 9:30", "checkpoint: say the checkpoint's name. " + CheckpointUsage)]
+    [InlineData("checkpoint #2", "checkpoint: say the checkpoint's name. " + CheckpointUsage)]
+    [InlineData("checkpoint 9:30 #2", "checkpoint: say the checkpoint's name. " + CheckpointUsage)]
+    [InlineData("checkpoint 25:00 Standup", "checkpoint: 25:00 is not a time. Use H:mm, e.g. 8:15.")]
+    [InlineData("checkpoint 9:5 Standup", "checkpoint: 9:5 is not a time. Use H:mm, e.g. 8:15.")]
+    [InlineData("checkpoint 25:00", "checkpoint: 25:00 is not a time. Use H:mm, e.g. 8:15.")]
+    [InlineData("checkpoint a\u2028b", "checkpoint: the name must not contain control characters.")]
     public void Checkpoint_InvalidInput_ShowsHint_AndWritesNoFile(string typed, string expected)
     {
         WriteTwoProjects();
@@ -3314,7 +3315,7 @@ public sealed class AppTests : IDisposable
             }
 
             c.Input.PushKey(ConsoleKey.Enter);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         Assert.Equal(0, exitCode);
@@ -3329,12 +3330,12 @@ public sealed class AppTests : IDisposable
     {
         string max = new string('n', ProjectList.MaxTitleLength);
 
-        (_, string output) = RunWide(200, "/checkpoint " + max + "n", "/quit");
+        (_, string output) = RunWide(200, "checkpoint " + max + "n", "quit");
 
-        AssertOnHintRow(LastLayout(output), "/checkpoint: the name is longer than 200 characters.");
+        AssertOnHintRow(LastLayout(output), "checkpoint: the name is longer than 200 characters.");
         Assert.False(File.Exists(DayFile("2026-10-27")));
 
-        RunCommands("/checkpoint 9:00 " + max, "/quit");
+        RunCommands("checkpoint 9:00 " + max, "quit");
         Assert.Equal([Checkpoint(9, 0, max)], LoadDay().Entries);
     }
 
@@ -3346,7 +3347,7 @@ public sealed class AppTests : IDisposable
         File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
         byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
 
-        RunCommands("/checkpoint #9 X", "/checkpoint #x X", "/checkpoint 9:30", "/checkpoint 24:00 X", "/break 7", "/quit");
+        RunCommands("checkpoint #9 X", "checkpoint #x X", "checkpoint 9:30", "checkpoint 24:00 X", "break 7", "quit");
 
         Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
     }
@@ -3359,24 +3360,24 @@ public sealed class AppTests : IDisposable
     {
         File.WriteAllText(ProjectsFile, contents);
 
-        (int exitCode, string output) = RunWide(200, "/checkpoint 9:30 #1 Standup", "/quit");
+        (int exitCode, string output) = RunWide(200, "checkpoint 9:30 #1 Standup", "quit");
 
         Assert.Equal(0, exitCode);
-        AssertOnHintRow(LastLayout(output), "/checkpoint: the project list cannot be read: projects.json is not valid. Nothing was booked.");
+        AssertOnHintRow(LastLayout(output), "checkpoint: the project list cannot be read: projects.json is not valid. Nothing was booked.");
         Assert.False(File.Exists(DayFile("2026-10-27")));
         Assert.Equal(contents, File.ReadAllText(ProjectsFile));
     }
 
     // AC-5 (036)
     [Theory]
-    [InlineData("/checkpoint Standup", 18, 30, "Standup")]
-    [InlineData("/checkpoint 2024 review", 18, 30, "2024 review")]
-    [InlineData("/checkpoint 9:30 2024 review", 9, 30, "2024 review")]
+    [InlineData("checkpoint Standup", 18, 30, "Standup")]
+    [InlineData("checkpoint 2024 review", 18, 30, "2024 review")]
+    [InlineData("checkpoint 9:30 2024 review", 9, 30, "2024 review")]
     public void Checkpoint_WithoutProjectNumber_IgnoresABrokenQuicklist(string typed, int hour, int minute, string name)
     {
         File.WriteAllText(ProjectsFile, "{not json");
 
-        (int exitCode, string output) = RunWide(200, typed, "/quit");
+        (int exitCode, string output) = RunWide(200, typed, "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal([Checkpoint(hour, minute, name)], LoadDay().Entries);
@@ -3387,7 +3388,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Checkpoint_MarkupName_IsShownLiterally()
     {
-        (_, string output) = RunCommands("/checkpoint 9:00 [red]Fix[/]", "/quit");
+        (_, string output) = RunCommands("checkpoint 9:00 [red]Fix[/]", "quit");
 
         Assert.Equal([Checkpoint(9, 0, "[red]Fix[/]")], LoadDay().Entries);
         Assert.Matches(@"1 +Checkpoint +09:00 +\[red\]Fix\[/\]", LastFrame(output));
@@ -3399,7 +3400,7 @@ public sealed class AppTests : IDisposable
     {
         WriteTwoProjects();
 
-        (int exitCode, string output) = RunWide(120, "/arrive 8:00", "/leave 17:00", "/break 12:00", "/breakend 12:30", "/checkpoint 9:30 #1 Kickoff", "/quit");
+        (int exitCode, string output) = RunWide(120, "arrive 8:00", "leave 17:00", "break 12:00", "breakend 12:30", "checkpoint 9:30 #1 Kickoff", "quit");
 
         Assert.Equal(0, exitCode);
         string frame = LastFrame(output);
@@ -3415,9 +3416,9 @@ public sealed class AppTests : IDisposable
     public void Remove_RemovesBreakAndCheckpointEntries()
     {
         WriteTwoProjects();
-        RunCommands("/arrive 8:00", "/break 12:00", "/checkpoint 13:00 #2 Review", "/breakend 12:30", "/quit");
+        RunCommands("arrive 8:00", "break 12:00", "checkpoint 13:00 #2 Review", "breakend 12:30", "quit");
 
-        RunCommands("/remove 2", "/remove 3", "/quit");
+        RunCommands("remove 2", "remove 3", "quit");
 
         Assert.Equal(Entries("arrival 08:00", "breakEnd 12:30"), ReadDay("2026-10-27"));
     }
@@ -3427,9 +3428,9 @@ public sealed class AppTests : IDisposable
     public void Change_MovesBreakAndCheckpoint_KeepingKindNameAndWorkItem()
     {
         WriteTwoProjects();
-        RunCommands("/arrive 8:00", "/checkpoint 9:00 #2 Daily  sync", "/break 12:00", "/quit");
+        RunCommands("arrive 8:00", "checkpoint 9:00 #2 Daily  sync", "break 12:00", "quit");
 
-        (int exitCode, string output) = RunWide(120, "/change 2 14:00", "/change 2 7:00", "/quit");
+        (int exitCode, string output) = RunWide(120, "change 2 14:00", "change 2 7:00", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Equal(
@@ -3448,21 +3449,21 @@ public sealed class AppTests : IDisposable
     {
         (_, string output) = Run(c =>
         {
-            c.Input.PushTextWithEnter("/help");
+            c.Input.PushTextWithEnter("help");
             PageDown(c, HelpPages);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
-        Assert.Matches(@"/break +│ Book the start of a break: now, or at an optional H:mm", output);
-        Assert.Matches(@"/breakend +│ Book the end of a break: now, or at an optional H:mm", output);
-        Assert.Matches(@"/checkpoint +│ Book a checkpoint: \[H:mm\] \[#quicklist number\] <name> +│", output);
+        Assert.Matches(@"break +│ Book the start of a break: now, or at an optional H:mm", output);
+        Assert.Matches(@"breakend +│ Book the end of a break: now, or at an optional H:mm", output);
+        Assert.Matches(@"checkpoint +│ Book a checkpoint: \[H:mm\] \[#quicklist number\] <name> +│", output);
     }
 
     // AC-11 (036)
     [Theory]
-    [InlineData("/brea", "/break ", "Book the start of a break")]
-    [InlineData("/breake", "/breakend ", "Book the end of a break")]
-    [InlineData("/checkp", "/checkpoint ", "Book a checkpoint: [H:mm] [#quicklist number] <name>")]
+    [InlineData("brea", "break ", "Book the start of a break")]
+    [InlineData("breake", "breakend ", "Book the end of a break")]
+    [InlineData("checkp", "checkpoint ", "Book a checkpoint: [H:mm] [#quicklist number] <name>")]
     public void Popup_ShowsBreakAndCheckpoint(string typed, string name, string description)
     {
         string output = RunAnsi(c =>
@@ -3470,7 +3471,7 @@ public sealed class AppTests : IDisposable
             c.Input.PushText(typed);
             c.Input.PushKey(ConsoleKey.Escape);
             c.Input.PushKey(ConsoleKey.Escape);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         Assert.Contains(TypingWrites(output, 0), w => w.Text.StartsWith(name, StringComparison.Ordinal) && w.Text.Contains(description, StringComparison.Ordinal));
@@ -3482,10 +3483,10 @@ public sealed class AppTests : IDisposable
     {
         (int exitCode, string output) = Run(c =>
         {
-            c.Input.PushText("/checkp");
+            c.Input.PushText("checkp");
             c.Input.PushKey(ConsoleKey.Tab);
             c.Input.PushTextWithEnter(" 9:00 Done");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         Assert.Equal(0, exitCode);
@@ -3550,12 +3551,12 @@ public sealed class AppTests : IDisposable
         string output = RunAnsi(c =>
         {
             c.Profile.Height = 12;
-            c.Input.PushTextWithEnter("/help");
+            c.Input.PushTextWithEnter("help");
             c.Input.PushKey(ConsoleKey.PageDown);
             c.Input.PushKey(ConsoleKey.PageDown);
             c.Input.PushKey(ConsoleKey.PageUp);
             c.Input.PushKey(ConsoleKey.Enter);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         }, ManyCommands());
 
         // 12 rows: an 8-row top area, so one page is 6 lines.
@@ -3576,10 +3577,10 @@ public sealed class AppTests : IDisposable
         string output = RunAnsi(c =>
         {
             c.Profile.Height = 12;
-            c.Input.PushTextWithEnter("/help");
+            c.Input.PushTextWithEnter("help");
             PageDown(c, 20);
             c.Input.PushKey(ConsoleKey.Enter);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         }, ManyCommands());
 
         List<string[]> screens = TopScreens(output, 1, 8);
@@ -3590,7 +3591,7 @@ public sealed class AppTests : IDisposable
 
     // AC-6 (037)
     [Theory]
-    [InlineData(ConsoleKey.PageUp, "/help")] // already at the top
+    [InlineData(ConsoleKey.PageUp, "help")] // already at the top
     [InlineData(ConsoleKey.PageDown, "")]    // the empty day fits
     [InlineData(ConsoleKey.PageUp, "")]
     public void Scroll_ThatChangesNothing_WritesNothing(ConsoleKey key, string command)
@@ -3601,7 +3602,7 @@ public sealed class AppTests : IDisposable
             c.Input.PushKey(key);
             c.Input.PushKey(key);
             c.Input.PushKey(ConsoleKey.Enter);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         Assert.DoesNotContain(AnsiWrites.Parse(BetweenFrames(output, 1)).Skip(1), w => w.Text.Length > 0);
@@ -3613,13 +3614,13 @@ public sealed class AppTests : IDisposable
     {
         string output = RunAnsi(c =>
         {
-            c.Input.PushTextWithEnter("/help");
+            c.Input.PushTextWithEnter("help");
             PageDown(c, HelpPages);
             c.Input.PushKey(ConsoleKey.Enter);
-            c.Input.PushTextWithEnter("/help");
+            c.Input.PushTextWithEnter("help");
             PageDown(c, HelpPages + 3);
             c.Input.PushKey(ConsoleKey.Enter);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         Assert.Equal(BetweenFrames(output, 1), BetweenFrames(output, 3));
@@ -3631,11 +3632,11 @@ public sealed class AppTests : IDisposable
     {
         string output = RunAnsi(c =>
         {
-            c.Input.PushTextWithEnter("/help");
-            c.Input.PushText("/to");
+            c.Input.PushTextWithEnter("help");
+            c.Input.PushText("to");
             c.Input.PushKey(ConsoleKey.PageDown);
             c.Input.PushTextWithEnter("day");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         string between = BetweenFrames(output, 1);
@@ -3649,16 +3650,16 @@ public sealed class AppTests : IDisposable
         // The input panel's borders are never written while typing.
         Assert.DoesNotContain(writes.Skip(1), w => w.Row == 22 || w.Row == 24);
 
-        // The popup ("/to" is open) is drawn again on top, then the input line with the typed text, cursor after it.
+        // The popup ("to" is open) is drawn again on top, then the input line with the typed text, cursor after it.
         List<AnsiWrite> after = writes.Skip(scrollStart + TopHeight).ToList();
         int line = after.FindIndex(w => w.Row == 23);
         Assert.True(line > 0);
-        Assert.Contains(after.Take(line), w => w.Text.StartsWith("/today", StringComparison.Ordinal));
+        Assert.Contains(after.Take(line), w => w.Text.StartsWith("today", StringComparison.Ordinal));
         // Only the popup writes the hint row (21) after the scroll: the scroll itself stops at row 20.
-        Assert.All(after.Take(line), w => Assert.True(w.Row < 21 || w.Text.StartsWith('/') || w.Text.StartsWith('…')));
-        Assert.Equal(new AnsiWrite(23, 5, "/to"), after[line]);
+        Assert.All(after.Take(line), w => Assert.True(w.Row < 21 || w.StartsWithCommand || w.Text.StartsWith('…')));
+        Assert.Equal(new AnsiWrite(23, 5, "to"), after[line]);
         Assert.Equal(23, after[line + 1].Row);
-        Assert.Equal(8, after[line + 1].Column);
+        Assert.Equal(7, after[line + 1].Column);
         Assert.Equal(Heading, LastHeading(output));
         Assert.DoesNotContain("Unknown command", output);
     }
@@ -3670,29 +3671,29 @@ public sealed class AppTests : IDisposable
         string scrolledOutput = RunAnsi(c =>
         {
             c.Profile.Height = 12;
-            c.Input.PushTextWithEnter("/help");
+            c.Input.PushTextWithEnter("help");
             c.Input.PushKey(ConsoleKey.PageDown);
             c.Input.PushKey(ConsoleKey.Enter);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         }, ManyCommands());
         string[] scrolled = TopScreens(scrolledOutput, 1, 8)[1];
 
         string output = RunAnsi(c =>
         {
             c.Profile.Height = 12;
-            c.Input.PushTextWithEnter("/help");
+            c.Input.PushTextWithEnter("help");
             c.Input.PushText("/");
             c.Input.PushKey(ConsoleKey.PageDown);
             c.Input.PushKey(ConsoleKey.Escape);
             c.Input.PushKey(ConsoleKey.Escape);
             c.Input.PushKey(ConsoleKey.Enter);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         }, ManyCommands());
 
         List<AnsiWrite> writes = AnsiWrites.Parse(BetweenFrames(output, 1));
         int scrollStart = writes.FindIndex(w => w.Row == 1 && w.Column == 1 && w.Text.StartsWith('↑'));
         Assert.True(scrollStart > 0);
-        Assert.Contains(writes.Skip(scrollStart + 8), w => w.Column == 1 && w.Row <= 9 && w.Text.StartsWith('/'));
+        Assert.Contains(writes.Skip(scrollStart + 8), w => w.Column == 1 && w.Row <= 9 && w.StartsWithCommand);
 
         List<string[]> screens = TopScreens(output, 1, 8);
         Assert.Equal(scrolled, screens[^1]);
@@ -3702,18 +3703,18 @@ public sealed class AppTests : IDisposable
     // AC-9 (037)
     [Theory]
     [InlineData("")]
-    [InlineData("/nope")]
-    [InlineData("/help")]
-    [InlineData("/next")]
+    [InlineData("nope")]
+    [InlineData("help")]
+    [InlineData("next")]
     public void AfterEnter_TheNextFrame_StartsAtTheTop(string command)
     {
         string output = RunAnsi(c =>
         {
-            c.Input.PushTextWithEnter("/help");
+            c.Input.PushTextWithEnter("help");
             PageDown(c, HelpPages);
             c.Input.PushTextWithEnter(command);
-            c.Input.PushTextWithEnter("/help");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("help");
+            c.Input.PushTextWithEnter("quit");
         });
 
         Assert.StartsWith("↑", TopScreens(output, 1)[^1][0]);
@@ -3730,10 +3731,10 @@ public sealed class AppTests : IDisposable
     {
         string folder = Path.Combine(Path.GetPathRoot(data.Path)!, "Times"); // a short folder, so the footer is one line (nothing is written)
         TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
-        console.Input.PushTextWithEnter("/help");
+        console.Input.PushTextWithEnter("help");
         PageDown(console, HelpPages);
         console.Input.PushKey(ConsoleKey.Enter);
-        console.Input.PushTextWithEnter("/quit");
+        console.Input.PushTextWithEnter("quit");
 
         Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(folder)).Run([]));
 
@@ -3746,7 +3747,7 @@ public sealed class AppTests : IDisposable
 
         List<string[]> screens = TopScreens(output, 1);
         Assert.True(screens.Count > 1);
-        Assert.Contains(screens.SelectMany(screen => screen), l => l.Contains("/today", StringComparison.Ordinal));
+        Assert.Contains(screens.SelectMany(screen => screen), l => l.Contains("today", StringComparison.Ordinal));
         Assert.Contains(screens[^1], l => l == $"Data folder: {folder}");
         Assert.DoesNotContain(screens[^1], l => l.Contains(BelowCue, StringComparison.Ordinal));
         Assert.Matches(@"^↑ \d+ more lines above · PgUp", screens[^1][0]);
@@ -3760,10 +3761,10 @@ public sealed class AppTests : IDisposable
     {
         string output = RunAnsi(c =>
         {
-            c.Input.PushTextWithEnter("/help");
+            c.Input.PushTextWithEnter("help");
             c.Input.PushKey(new ConsoleKeyInfo('\0', key, shift, false, control));
             c.Input.PushKey(ConsoleKey.Enter);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         List<string[]> screens = TopScreens(output, 1);
@@ -3812,8 +3813,8 @@ public sealed class AppTests : IDisposable
     {
         (int exitCode, string output) = RunWithMouse(c =>
         {
-            c.Input.PushTextWithEnter("/help");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("help");
+            c.Input.PushTextWithEnter("quit");
         });
 
         Assert.Equal(0, exitCode);
@@ -3847,7 +3848,7 @@ public sealed class AppTests : IDisposable
     public void Run_TurnsMouseReportingOff_WhenTheInputRunsOut()
     {
         TestConsole test = new TestConsole().Interactive().EmitAnsiSequences();
-        IAnsiConsole console = new InputOverrideConsole(test, new EndingInput("/help\r"));
+        IAnsiConsole console = new InputOverrideConsole(test, new EndingInput("help\r"));
         int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), mouse: new MouseReporting(console)).Run([]);
         string output = test.Output;
 
@@ -3871,7 +3872,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void StartError_WritesNoMouseSequences()
     {
-        (int exitCode, string output) = RunWithMouse(c => c.Input.PushTextWithEnter("/quit"), folder: "relative/folder");
+        (int exitCode, string output) = RunWithMouse(c => c.Input.PushTextWithEnter("quit"), folder: "relative/folder");
 
         Assert.Equal(2, exitCode);
         Assert.Contains("Times cannot start", output);
@@ -3893,10 +3894,10 @@ public sealed class AppTests : IDisposable
     public void Run_ThatThrows_HasStillTurnedMouseReportingOff()
     {
         CommandRegistry registry = CommandRegistry.CreateDefault();
-        registry.Register("/boom", "Throws while drawing", _ => new CommandResult(new ThrowingRenderable()));
+        registry.Register("boom", "Throws while drawing", _ => new CommandResult(new ThrowingRenderable()));
         TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
-        console.Input.PushTextWithEnter("/boom");
-        console.Input.PushTextWithEnter("/quit");
+        console.Input.PushTextWithEnter("boom");
+        console.Input.PushTextWithEnter("quit");
         App app = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), registry, mouse: new MouseReporting(console));
 
         InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() => app.Run([]));
@@ -3916,13 +3917,13 @@ public sealed class AppTests : IDisposable
         string output = RunAnsi(c =>
         {
             c.Profile.Height = 12;
-            c.Input.PushTextWithEnter("/help");
+            c.Input.PushTextWithEnter("help");
             Wheel(c, 1, 2);
             Wheel(c, -1);
             c.Input.PushKey(ConsoleKey.PageDown);
             Wheel(c, 1);
             c.Input.PushKey(ConsoleKey.Enter);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         }, ManyCommands());
 
         // 12 rows: an 8-row top area, so one page is 6 lines and a notch 3.
@@ -3949,11 +3950,11 @@ public sealed class AppTests : IDisposable
         string output = RunAnsi(c =>
         {
             c.Profile.Height = 12;
-            c.Input.PushTextWithEnter("/help");
+            c.Input.PushTextWithEnter("help");
             Wheel(c, 1, 40);
             Wheel(c, -1, 40);
             c.Input.PushKey(ConsoleKey.Enter);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         }, ManyCommands());
 
         int max = full.Length - 7;
@@ -3966,7 +3967,7 @@ public sealed class AppTests : IDisposable
 
     // AC-9
     [Theory]
-    [InlineData(-1, "/help")] // already at the top
+    [InlineData(-1, "help")] // already at the top
     [InlineData(1, "")]       // the empty day fits
     [InlineData(-1, "")]
     public void Wheel_ThatChangesNothing_WritesNothing(int direction, string command)
@@ -3976,7 +3977,7 @@ public sealed class AppTests : IDisposable
             c.Input.PushTextWithEnter(command);
             Wheel(c, direction, 3);
             c.Input.PushKey(ConsoleKey.Enter);
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         Assert.DoesNotContain(AnsiWrites.Parse(BetweenFrames(output, 1)).Skip(1), w => w.Text.Length > 0);
@@ -3988,11 +3989,11 @@ public sealed class AppTests : IDisposable
     {
         string output = RunAnsi(c =>
         {
-            c.Input.PushTextWithEnter("/help");
-            c.Input.PushText("/to");
+            c.Input.PushTextWithEnter("help");
+            c.Input.PushText("to");
             Wheel(c, 1);
             c.Input.PushTextWithEnter("day");
-            c.Input.PushTextWithEnter("/quit");
+            c.Input.PushTextWithEnter("quit");
         });
 
         string between = BetweenFrames(output, 1);
@@ -4007,8 +4008,157 @@ public sealed class AppTests : IDisposable
         List<AnsiWrite> after = writes.Skip(scrollStart + TopHeight).ToList();
         int line = after.FindIndex(w => w.Row == 23);
         Assert.True(line > 0);
-        Assert.Contains(after.Take(line), w => w.Text.StartsWith("/today", StringComparison.Ordinal));
-        Assert.Equal(new AnsiWrite(23, 5, "/to"), after[line]);
+        Assert.Contains(after.Take(line), w => w.Text.StartsWith("today", StringComparison.Ordinal));
+        Assert.Equal(new AnsiWrite(23, 5, "to"), after[line]);
         Assert.Equal(Heading, LastHeading(output));
+    }
+
+    // Commands without slash (job 040) ------------------------------------------------------
+
+    // AC-1 (040)
+    [Theory]
+    [InlineData("arrive 8:15")]
+    [InlineData("/arrive 8:15")]
+    [InlineData("ARRIVE 8:15")]
+    [InlineData("/Arrive 8:15")]
+    public void Arrive_WithOrWithoutSlash_BooksTheSameArrival(string typed)
+    {
+        (int exitCode, string output) = RunCommands(typed, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(Entries("arrival 08:15"), ReadDay("2026-10-27"));
+        Assert.Matches(@"1 +Arrival +08:15", LastFrame(output));
+        Assert.DoesNotContain("Unknown command", output);
+    }
+
+    // AC-1 (040)
+    [Fact]
+    public void EveryRegisteredCommand_RunsWithAndWithoutSlash_IgnoringCase()
+    {
+        TestConsole console = new TestConsole().Interactive();
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+        App app = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), registry);
+        List<string> names = registry.Commands.Select(c => c.Name).Where(n => n != "quit").ToList();
+        Assert.Contains("arrive", names);
+        Assert.DoesNotContain(names, n => n.StartsWith('/'));
+        foreach (string name in names)
+        {
+            console.Input.PushTextWithEnter(name);
+            console.Input.PushTextWithEnter("/" + name);
+            console.Input.PushTextWithEnter(name.ToUpperInvariant());
+            console.Input.PushTextWithEnter("/" + char.ToUpperInvariant(name[0]) + name[1..]);
+        }
+
+        console.Input.PushTextWithEnter("quit");
+
+        Assert.Equal(0, app.Run([]));
+        Assert.DoesNotContain("Unknown command", console.Output);
+    }
+
+    // AC-2 (040)
+    [Theory]
+    [InlineData("quit")]
+    [InlineData("/quit")]
+    [InlineData("QUIT")]
+    [InlineData("/Quit")]
+    public void Quit_WithOrWithoutSlash_EndsTheLoopWithZero(string typed)
+    {
+        // No input follows: if the loop went on, reading the next key would throw.
+        (int exitCode, string output) = Run(c => c.Input.PushTextWithEnter(typed));
+
+        Assert.Equal(0, exitCode);
+        Assert.DoesNotContain("Unknown command", output);
+    }
+
+    // AC-3 (040)
+    [Fact]
+    public void Help_ListsEveryCommandWithoutSlash_AndShowsTheDataFolder()
+    {
+        string output = StripAnsi(RunHelp(data.Path, folderFromEnvironment: false));
+
+        string[] names = ["addproject", "arrive", "break", "breakend", "change", "checkpoint", "help", "leave", "next", "prev", "projects", "quit", "remove", "today"];
+        foreach (string name in names)
+        {
+            Assert.Matches(@"│ " + name + @" +│", output);
+        }
+
+        Assert.DoesNotMatch(@"│ /", output);
+        Assert.Contains("Data folder:", output);
+        Assert.Contains(data.Path, output);
+    }
+
+    // AC-3 (040)
+    [Fact]
+    public void Help_WithSlash_StillShowsTheTable()
+    {
+        (int exitCode, string output) = RunCommands("/help", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("List all commands", string.Join('\n', Frames(output)[1]));
+        Assert.DoesNotContain("Unknown command", output);
+    }
+
+    // AC-4 (040)
+    [Theory]
+    [InlineData("foo", "foo")]
+    [InlineData("//help", "//help")]
+    [InlineData("/", "/")]
+    [InlineData("/ arrive", "/")]
+    [InlineData("[red]x y", "[red]x")]
+    public void UnknownToken_ShowsHintAboveInputBox_AndLoopGoesOn(string typed, string token)
+    {
+        (int exitCode, string output) = RunCommands(typed, "quit");
+
+        Assert.Equal(0, exitCode);
+        string[] frame = Frames(output)[1];
+        AssertOnHintRow(frame, $"Unknown command {token}. Type help to see all commands.");
+        Assert.DoesNotContain(frame, l => l.Contains("List all commands", StringComparison.Ordinal));
+        Assert.Empty(Directory.EnumerateFiles(data.Path));
+    }
+
+    // AC-4 (040)
+    [Fact]
+    public void UnknownToken_HintIsRed_AndEscaped()
+    {
+        string output = RunAnsi("[bold]foo");
+
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mUnknown command ", output);
+        Assert.Contains("[bold]foo", output);
+    }
+
+    // AC-4 (040)
+    [Fact]
+    public void Hints_AndUsageLines_NeverShowASlashCommand()
+    {
+        (int exitCode, string output) = RunCommands(
+            "checkpoint", "remove", "change", "addproject", "next x", "prev x", "today x", "projects x",
+            "arrive 25:00", "remove 9", "change 1", "projects", "quit");
+
+        Assert.Equal(0, exitCode);
+        List<string[]> frames = Frames(output);
+        Assert.Equal(13, frames.Count);
+        foreach (string[] frame in frames)
+        {
+            Assert.DoesNotMatch(@"(^|[\s\[(])/[a-z]", string.Join('\n', frame));
+        }
+
+        Assert.Contains("Use checkpoint [H:mm] [#project] <name>", output);
+        Assert.Contains("Add one with addproject <work item> <title>.", output);
+    }
+
+    // AC-1 (040): an old "/next" line recalled from history (Up) still runs.
+    [Fact]
+    public void HistoryRecall_OfASlashLine_StillRuns()
+    {
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Input.PushTextWithEnter("/next");
+            c.Input.PushKey(ConsoleKey.UpArrow);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("Thursday, 2026-10-29", LastHeading(output));
     }
 }

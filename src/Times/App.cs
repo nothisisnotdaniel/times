@@ -16,7 +16,7 @@ internal sealed class App
     private const int HintHeight = 1;
     private const int InputHeight = 3;
     private const string Prompt = "> ";
-    private const string Placeholder = "Type /help for commands";
+    private const string Placeholder = "Type help for commands";
 
     private readonly IAnsiConsole console;
     private readonly TimeProvider time;
@@ -69,11 +69,11 @@ internal sealed class App
 
     private void RegisterNavigation()
     {
-        registry.Register("/prev", "Go to the previous day", NoArguments("/prev", () =>
+        registry.Register("prev", "Go to the previous day", NoArguments("prev", () =>
             dayView.Previous() ? CommandResult.None : Hint("There is no day before this one.")));
-        registry.Register("/next", "Go to the next day", NoArguments("/next", () =>
+        registry.Register("next", "Go to the next day", NoArguments("next", () =>
             dayView.Next() ? CommandResult.None : Hint("There is no day after this one.")));
-        registry.Register("/today", "Go back to today", NoArguments("/today", () =>
+        registry.Register("today", "Go back to today", NoArguments("today", () =>
         {
             dayView.Today();
             return CommandResult.None;
@@ -82,31 +82,31 @@ internal sealed class App
 
     private void RegisterBookings()
     {
-        registry.Register("/arrive", $"Book your arrival: now, or at an optional {TimeInput.Format}", argument =>
-            Book("/arrive", argument, EntryKind.Arrival));
-        registry.Register("/leave", $"Book your leaving: now, or at an optional {TimeInput.Format}", argument =>
-            Book("/leave", argument, EntryKind.Leaving));
-        registry.Register("/break", $"Book the start of a break: now, or at an optional {TimeInput.Format}", argument =>
-            Book("/break", argument, EntryKind.BreakStart));
-        registry.Register("/breakend", $"Book the end of a break: now, or at an optional {TimeInput.Format}", argument =>
-            Book("/breakend", argument, EntryKind.BreakEnd));
-        registry.Register("/checkpoint", $"Book a checkpoint: [{TimeInput.Format}] [#quicklist number] <name>", Checkpoint);
-        registry.Register("/remove", "Remove an entry from this day by its number", Remove);
-        registry.Register("/change", $"Change the time of an entry on this day: <number> <{TimeInput.Format}>", Change);
+        registry.Register("arrive", $"Book your arrival: now, or at an optional {TimeInput.Format}", argument =>
+            Book("arrive", argument, EntryKind.Arrival));
+        registry.Register("leave", $"Book your leaving: now, or at an optional {TimeInput.Format}", argument =>
+            Book("leave", argument, EntryKind.Leaving));
+        registry.Register("break", $"Book the start of a break: now, or at an optional {TimeInput.Format}", argument =>
+            Book("break", argument, EntryKind.BreakStart));
+        registry.Register("breakend", $"Book the end of a break: now, or at an optional {TimeInput.Format}", argument =>
+            Book("breakend", argument, EntryKind.BreakEnd));
+        registry.Register("checkpoint", $"Book a checkpoint: [{TimeInput.Format}] [#quicklist number] <name>", Checkpoint);
+        registry.Register("remove", "Remove an entry from this day by its number", Remove);
+        registry.Register("change", $"Change the time of an entry on this day: <number> <{TimeInput.Format}>", Change);
     }
 
     private void RegisterProjects()
     {
-        registry.Register("/addproject", "Add a project to the quicklist: <work item> <title>", AddProject);
-        registry.Register("/projects", "List the projects on the quicklist", NoArguments("/projects", ListProjects));
+        registry.Register("addproject", "Add a project to the quicklist: <work item> <title>", AddProject);
+        registry.Register("projects", "List the projects on the quicklist", NoArguments("projects", ListProjects));
     }
 
     // Adds a project to the end of the quicklist. Nothing is written if the work item or title is
     // invalid, the work item is already listed, or projects.json cannot be read.
     private CommandResult AddProject(string argument)
     {
-        const string Name = "/addproject";
-        const string Usage = "Use [bold]/addproject <work item> <title>[/].";
+        const string Name = "addproject";
+        const string Usage = "Use [bold]addproject <work item> <title>[/].";
         int split = argument.IndexOfAny([' ', '\t']);
         if (argument.Length == 0 || split < 0)
         {
@@ -177,12 +177,12 @@ internal sealed class App
         }
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
         {
-            return Hint($"/projects: {UnreadableProjects(ex)}");
+            return Hint($"projects: {UnreadableProjects(ex)}");
         }
 
         if (list.IsEmpty)
         {
-            return new CommandResult(new Markup("[grey]No projects yet. Add one with /addproject <work item> <title>.[/]"), hideQuicklist: true);
+            return new CommandResult(new Markup("[grey]No projects yet. Add one with addproject <work item> <title>.[/]"), hideQuicklist: true);
         }
 
         Table table = new Table()
@@ -211,8 +211,8 @@ internal sealed class App
     // plain number, there is no such entry, or the day's file cannot be read.
     private CommandResult Remove(string argument)
     {
-        const string Name = "/remove";
-        const string Usage = "Use [bold]/remove <number>[/].";
+        const string Name = "remove";
+        const string Usage = "Use [bold]remove <number>[/].";
         if (argument.Length == 0)
         {
             return Hint($"{Name}: say which entry to remove. {Usage}");
@@ -256,8 +256,8 @@ internal sealed class App
     // cannot be read.
     private CommandResult Change(string argument)
     {
-        const string Name = "/change";
-        string usage = $"Use [bold]/change <number> <{TimeInput.Format}>[/].";
+        const string Name = "change";
+        string usage = $"Use [bold]change <number> <{TimeInput.Format}>[/].";
         string[] parts = argument.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length != 2)
         {
@@ -326,8 +326,8 @@ internal sealed class App
     // when a project number is given.
     private CommandResult Checkpoint(string argument)
     {
-        const string Name = "/checkpoint";
-        string usage = $"Use [bold]{Markup.Escape($"/checkpoint [{TimeInput.Format}] [#project] <name>")}[/], " +
+        const string Name = "checkpoint";
+        string usage = $"Use [bold]{Markup.Escape($"checkpoint [{TimeInput.Format}] [#project] <name>")}[/], " +
             "where #project is the project's number on the quicklist.";
 
         string rest = argument;
@@ -542,18 +542,15 @@ internal sealed class App
             return CommandResult.None;
         }
 
-        if (!text.StartsWith('/'))
-        {
-            return Hint("Commands start with [bold]/[/]. Type [bold]/help[/] to see all commands.");
-        }
-
         int split = text.IndexOfAny([' ', '\t']);
-        string name = split < 0 ? text : text[..split];
+        string token = split < 0 ? text : text[..split];
         string argument = split < 0 ? string.Empty : text[(split + 1)..].Trim();
 
-        if (!registry.TryGet(name, out Command? command))
+        // One leading '/' is still accepted (old habit); only one, so "//help" stays unknown.
+        string name = token.StartsWith('/') ? token[1..] : token;
+        if (name.Length == 0 || !registry.TryGet(name, out Command? command))
         {
-            return Hint($"Unknown command [bold]{Markup.Escape(name)}[/]. Type [bold]/help[/] to see all commands.");
+            return Hint($"Unknown command [bold]{Markup.Escape(token)}[/]. Type [bold]help[/] to see all commands.");
         }
 
         try
@@ -568,15 +565,15 @@ internal sealed class App
 
     private static CommandResult Hint(string markup) => CommandResult.Error(markup);
 
-    // The line under the /help table, so the user can always tell where the day files are.
+    // The line under the help table, so the user can always tell where the day files are.
     private Markup RenderDataFolder()
     {
         string source = folderFromEnvironment ? $" [grey](from {DataFolder.VariableName})[/]" : string.Empty;
         return new Markup($"[grey]Data folder:[/] {Markup.Escape(Store.Folder)}{source}");
     }
 
-    // While /help or /projects output is shown (hideQuicklist), the quicklist panel is left out so the
-    // output fits; /projects shows the full list anyway. It comes back with the next command.
+    // While help or projects output is shown (hideQuicklist), the quicklist panel is left out so the
+    // output fits; projects shows the full list anyway. It comes back with the next command.
     // The top area is rendered once here and starts unscrolled.
     private void Draw(IRenderable? message, IRenderable? hint, bool hideQuicklist)
     {

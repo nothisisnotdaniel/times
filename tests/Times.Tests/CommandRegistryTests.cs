@@ -7,20 +7,20 @@ public class CommandRegistryTests
     {
         CommandRegistry registry = CommandRegistry.CreateDefault();
 
-        Assert.Equal(["/help", "/quit"], registry.Commands.Select(c => c.Name));
+        Assert.Equal(["help", "quit"], registry.Commands.Select(c => c.Name));
     }
 
     // AC-8
     [Theory]
-    [InlineData("/quit")]
-    [InlineData("/QUIT")]
-    [InlineData("/Quit")]
+    [InlineData("quit")]
+    [InlineData("QUIT")]
+    [InlineData("Quit")]
     public void TryGet_IsCaseInsensitive(string name)
     {
         CommandRegistry registry = CommandRegistry.CreateDefault();
 
         Assert.True(registry.TryGet(name, out Command? command));
-        Assert.Equal("/quit", command.Name);
+        Assert.Equal("quit", command.Name);
     }
 
     // Job 004
@@ -38,7 +38,7 @@ public class CommandRegistryTests
     [Fact]
     public void Help_SetsMessage_NotHint()
     {
-        CommandRegistry.CreateDefault().TryGet("/help", out Command? help);
+        CommandRegistry.CreateDefault().TryGet("help", out Command? help);
 
         CommandResult result = help.Handler("");
 
@@ -50,23 +50,25 @@ public class CommandRegistryTests
     [Fact]
     public void Help_HidesTheQuicklist_OtherResultsDoNot()
     {
-        CommandRegistry.CreateDefault().TryGet("/help", out Command? help);
+        CommandRegistry.CreateDefault().TryGet("help", out Command? help);
 
         Assert.True(help!.Handler("").HideQuicklist);
         Assert.False(CommandResult.None.HideQuicklist);
         Assert.False(CommandResult.Error("x").HideQuicklist);
     }
 
-    [Fact]
-    public void TryGet_UnknownName_ReturnsFalse()
+    [Theory]
+    [InlineData("nope")]
+    [InlineData("/help")] // names are stored without '/'; App strips it before the lookup
+    public void TryGet_UnknownName_ReturnsFalse(string name)
     {
-        Assert.False(CommandRegistry.CreateDefault().TryGet("/nope", out _));
+        Assert.False(CommandRegistry.CreateDefault().TryGet(name, out _));
     }
 
     [Fact]
     public void Quit_RequestsQuit()
     {
-        CommandRegistry.CreateDefault().TryGet("/quit", out Command? quit);
+        CommandRegistry.CreateDefault().TryGet("quit", out Command? quit);
 
         Assert.True(quit.Handler("").Quit);
     }
@@ -76,21 +78,36 @@ public class CommandRegistryTests
     {
         CommandRegistry registry = new CommandRegistry();
         string? received = null;
-        registry.Register("/x", "x", a => { received = a; return CommandResult.None; });
+        registry.Register("x", "x", a => { received = a; return CommandResult.None; });
 
-        registry.TryGet("/x", out Command? x);
+        registry.TryGet("x", out Command? x);
         x.Handler("some args");
 
         Assert.Equal("some args", received);
     }
 
+    // AC-9 (040)
     [Theory]
-    [InlineData("noslash")]
+    [InlineData("/x")]
     [InlineData("/")]
-    [InlineData("/two words")]
+    [InlineData("")]
+    [InlineData("a b")]
+    [InlineData("a\tb")]
+    [InlineData(" x")]
     public void Register_RejectsBadNames(string name)
     {
         Assert.Throws<ArgumentException>(() => new CommandRegistry().Register(name, "d", _ => CommandResult.None));
+    }
+
+    // AC-9 (040)
+    [Fact]
+    public void Register_BareName_Works()
+    {
+        CommandRegistry registry = new CommandRegistry();
+
+        registry.Register("x", "d", _ => CommandResult.None);
+
+        Assert.Equal(["x"], registry.Commands.Select(c => c.Name));
     }
 
     [Fact]
@@ -98,14 +115,18 @@ public class CommandRegistryTests
     {
         CommandRegistry registry = CommandRegistry.CreateDefault();
 
-        Assert.Throws<ArgumentException>(() => registry.Register("/HELP", "d", _ => CommandResult.None));
+        Assert.Throws<ArgumentException>(() => registry.Register("HELP", "d", _ => CommandResult.None));
     }
 
-    // AC-11
+    // AC-11, AC-8 (040): the result keeps the user's '/' if one was typed.
     [Theory]
+    [InlineData("q", "quit")]
     [InlineData("/q", "/quit")]
     [InlineData("/Q", "/quit")]
+    [InlineData("Q", "quit")]
+    [InlineData("he", "help")]
     [InlineData("/he", "/help")]
+    [InlineData("quit", "quit")]
     [InlineData("/quit", "/quit")]
     public void Complete_UniquePrefix_ReturnsFullName(string prefix, string expected)
     {
@@ -113,10 +134,11 @@ public class CommandRegistryTests
     }
 
     [Theory]
-    [InlineData("/x")]   // no match
-    [InlineData("/")]    // matches both
-    [InlineData("q")]    // not a command
-    [InlineData("")]
+    [InlineData("x")]   // no match
+    [InlineData("/x")]  // no match
+    [InlineData("/")]   // matches both
+    [InlineData("//q")] // only one '/' is ignored
+    [InlineData("")]    // empty prefix: no completion
     public void Complete_NoOrAmbiguousMatch_ReturnsNull(string prefix)
     {
         Assert.Null(CommandRegistry.CreateDefault().Complete(prefix));
@@ -126,8 +148,9 @@ public class CommandRegistryTests
     public void Complete_PrefixSharedByTwoCommands_ReturnsNull()
     {
         CommandRegistry registry = CommandRegistry.CreateDefault();
-        registry.Register("/hello", "d", _ => CommandResult.None);
+        registry.Register("hello", "d", _ => CommandResult.None);
 
+        Assert.Null(registry.Complete("hel"));
         Assert.Null(registry.Complete("/hel"));
     }
 
@@ -136,9 +159,9 @@ public class CommandRegistryTests
     private static CommandRegistry WithNavigation()
     {
         CommandRegistry registry = CommandRegistry.CreateDefault();
-        registry.Register("/prev", "Go to the previous day", _ => CommandResult.None);
-        registry.Register("/next", "Go to the next day", _ => CommandResult.None);
-        registry.Register("/today", "Go back to today", _ => CommandResult.None);
+        registry.Register("prev", "Go to the previous day", _ => CommandResult.None);
+        registry.Register("next", "Go to the next day", _ => CommandResult.None);
+        registry.Register("today", "Go back to today", _ => CommandResult.None);
         return registry;
     }
 
@@ -160,24 +183,30 @@ public class CommandRegistryTests
     public void Match_SlashOnly_ReturnsAllInNameOrder()
     {
         Assert.Equal(
-            ["/help", "/next", "/prev", "/quit", "/today"],
+            ["help", "next", "prev", "quit", "today"],
             WithNavigation().Match("/").Select(c => c.Name));
     }
 
-    // AC-2
-    [Fact]
-    public void Match_OneLetter_OnlyKeepsPrefixes()
+    // AC-2, AC-6 (040)
+    [Theory]
+    [InlineData("t")]
+    [InlineData("/t")]
+    public void Match_OneLetter_OnlyKeepsPrefixes(string line)
     {
-        Assert.Equal(["/today"], WithNavigation().Match("/t").Select(c => c.Name));
+        Assert.Equal(["today"], WithNavigation().Match(line).Select(c => c.Name));
     }
 
-    // AC-2
+    // AC-2, AC-6 (040)
     [Theory]
-    [InlineData("/tdoay", "/today")]
-    [InlineData("/TDOAY", "/today")]
-    [InlineData("/hepl", "/help")]
-    [InlineData("/next foo", "/next")]
-    [InlineData("/ne", "/next")]
+    [InlineData("tdoay", "today")]
+    [InlineData("/tdoay", "today")]
+    [InlineData("TDOAY", "today")]
+    [InlineData("/TDOAY", "today")]
+    [InlineData("hepl", "help")]
+    [InlineData("/hepl", "help")]
+    [InlineData("next foo", "next")]
+    [InlineData("/next foo", "next")]
+    [InlineData("ne", "next")]
     public void Match_RanksBestFirst(string line, string expected)
     {
         Assert.Equal(expected, WithNavigation().Match(line)[0].Name);
@@ -185,9 +214,10 @@ public class CommandRegistryTests
 
     // AC-2
     [Theory]
-    [InlineData("/zzzzz")]
+    [InlineData("zzzzz")]
+    [InlineData("z")]
     [InlineData("/z")]
-    [InlineData("/zz")]
+    [InlineData("zz")]
     public void Match_NoCloseCommand_IsEmpty(string line)
     {
         Assert.Empty(WithNavigation().Match(line));
@@ -197,10 +227,10 @@ public class CommandRegistryTests
     [Fact]
     public void Match_TiesAreSortedByName()
     {
-        // "xe" is one edit from the prefixes "he" (/help) and "ne" (/next), two from the rest.
-        IReadOnlyList<Command> matches = WithNavigation().Match("/xe");
+        // "xe" is one edit from the prefixes "he" (help) and "ne" (next), two from the rest.
+        IReadOnlyList<Command> matches = WithNavigation().Match("xe");
 
-        Assert.Equal(["/help", "/next"], matches.Select(c => c.Name));
+        Assert.Equal(["help", "next"], matches.Select(c => c.Name));
     }
 
     // Job 011 ------------------------------------------------------------------------------
@@ -208,39 +238,54 @@ public class CommandRegistryTests
     private static CommandRegistry WithPrefixes()
     {
         CommandRegistry registry = CommandRegistry.CreateDefault();
-        registry.Register("/prev", "d", _ => CommandResult.None);
-        registry.Register("/print", "d", _ => CommandResult.None);
-        registry.Register("/project", "d", _ => CommandResult.None);
+        registry.Register("prev", "d", _ => CommandResult.None);
+        registry.Register("print", "d", _ => CommandResult.None);
+        registry.Register("project", "d", _ => CommandResult.None);
         return registry;
     }
 
     // AC-1
     [Theory]
+    [InlineData("p")]
+    [InlineData("P")]
     [InlineData("/p")]
     [InlineData("/P")]
     public void StartingWith_ReturnsPrefixMatchesInNameOrder(string prefix)
     {
-        Assert.Equal(["/prev", "/print", "/project"], WithPrefixes().StartingWith(prefix).Select(c => c.Name));
+        Assert.Equal(["prev", "print", "project"], WithPrefixes().StartingWith(prefix).Select(c => c.Name));
     }
 
-    // AC-1
+    // AC-1, AC-8 (040)
     [Theory]
-    [InlineData("p")]
+    [InlineData("z")]
     [InlineData("/z")]
+    [InlineData("//p")]
     [InlineData("")]
-    public void StartingWith_NoSlashOrNoMatch_IsEmpty(string prefix)
+    public void StartingWith_EmptyOrNoMatch_IsEmpty(string prefix)
     {
         Assert.Empty(WithPrefixes().StartingWith(prefix));
     }
 
-    // AC-2
+    // AC-6 (040): a lone '/' still lists everything.
+    [Fact]
+    public void StartingWith_LoneSlash_ListsEveryCommand()
+    {
+        Assert.Equal(["help", "prev", "print", "project", "quit"], WithPrefixes().StartingWith("/").Select(c => c.Name));
+    }
+
+    // AC-2, AC-8 (040)
     [Theory]
+    [InlineData("p", "pr")]
+    [InlineData("PR", "pr")]
     [InlineData("/p", "/pr")]
     [InlineData("/PR", "/pr")]
+    [InlineData("pri", "pri")]
     [InlineData("/pri", "/pri")]
     [InlineData("/", "/")]
+    [InlineData("z", "z")]
     [InlineData("/z", "/z")]
-    [InlineData("/pro", "/pro")]
+    [InlineData("", "")]
+    [InlineData("pro", "pro")]
     public void CommonPrefix_ExtendsToLongestSharedPrefix(string prefix, string expected)
     {
         Assert.Equal(expected, WithPrefixes().CommonPrefix(prefix));
@@ -250,7 +295,9 @@ public class CommandRegistryTests
     [Fact]
     public void Complete_KeepsItsContract_WithAmbiguousPrefix()
     {
+        Assert.Null(WithPrefixes().Complete("pr"));
         Assert.Null(WithPrefixes().Complete("/pr"));
+        Assert.Equal("print", WithPrefixes().Complete("pri"));
         Assert.Equal("/print", WithPrefixes().Complete("/pri"));
     }
 }

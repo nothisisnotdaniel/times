@@ -188,7 +188,7 @@ public sealed class QuicklistPanelTests
         string[] lines = Render(QuicklistPanel.Render(ProjectList.Empty));
 
         Assert.Equal(3, lines.Length);
-        Assert.Equal("No projects yet. Add one with /addproject <work item> <title>.", Inner(lines[1]));
+        Assert.Equal("No projects yet. Add one with addproject <work item> <title>.", Inner(lines[1]));
         Assert.Matches(@"\x1b\[(90|38;5;8)mNo projects yet\.", RenderAnsi(QuicklistPanel.Render(ProjectList.Empty)));
     }
 
@@ -220,7 +220,7 @@ public sealed class QuicklistPanelTests
         Assert.Equal(
             ["1 #1001 Project 1", "2 #1002 Project 2", "3 #1003 Project 3", "4 #1004 Project 4"],
             lines[1..5].Select(Inner));
-        Assert.Equal($"… {more} more. Type /projects to see all.", Inner(lines[5]));
+        Assert.Equal($"… {more} more. Type projects to see all.", Inner(lines[5]));
     }
 
     // AC-6
@@ -229,7 +229,7 @@ public sealed class QuicklistPanelTests
     {
         string output = RenderAnsi(QuicklistPanel.Render(Projects(6)));
 
-        Assert.Matches(@"\x1b\[(90|38;5;8)m… 2 more\. Type /projects to see all\.", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)m… 2 more\. Type projects to see all\.", output);
     }
 
     // AC-8

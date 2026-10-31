@@ -17,6 +17,9 @@ internal sealed record AnsiWrite
     public int Column { get; }
 
     public string Text { get; }
+
+    /// <summary>True if the text starts like a command popup row: with a lowercase command name.</summary>
+    public bool StartsWithCommand => Text.Length > 0 && char.IsAsciiLetterLower(Text[0]);
 }
 
 /// <summary>Splits <c>TestConsole</c> output (with <c>EmitAnsiSequences</c>) on cursor moves (<c>ESC[row;colH</c>).</summary>

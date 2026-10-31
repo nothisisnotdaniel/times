@@ -30,7 +30,7 @@ internal sealed class QuicklistPanel
         List<IRenderable> lines = [];
         if (list.IsEmpty)
         {
-            lines.Add(new OneLine(new Markup("[grey]No projects yet. Add one with /addproject <work item> <title>.[/]")));
+            lines.Add(new OneLine(new Markup("[grey]No projects yet. Add one with addproject <work item> <title>.[/]")));
             return Frame(lines);
         }
 
@@ -47,7 +47,7 @@ internal sealed class QuicklistPanel
         if (shown < count)
         {
             string more = (count - shown).ToString(CultureInfo.InvariantCulture);
-            lines.Add(new OneLine(new Markup($"[grey]… {more} more. Type /projects to see all.[/]")));
+            lines.Add(new OneLine(new Markup($"[grey]… {more} more. Type projects to see all.[/]")));
         }
 
         return Frame(lines);
