@@ -14,7 +14,7 @@ internal enum ScrollStep
 /// after each key, redraws only the command popup's rows and the input line via
 /// <c>Cursor.SetPosition</c>, never the whole screen. Supports printable characters, Backspace,
 /// Enter, Esc (close the popup if it is open, otherwise clear the line), Tab (complete a
-/// <c>/command</c>) and Up/Down (session history).
+/// command name, with or without a leading <c>/</c>) and Up/Down (session history).
 /// <para>
 /// PageUp/PageDown scroll the screen above the input box when a scroll callback is given:
 /// Shift+PageUp/PageDown and Ctrl+Up/Down do the same (macOS Terminal keeps plain PageUp/PageDown
@@ -34,7 +34,7 @@ internal enum ScrollStep
 /// is a plain Esc, and an Esc followed by any other key is a plain Esc and then that key.
 /// </para>
 /// <para>
-/// Tab completes a unique command prefix. When 2 or more names start with the typed prefix, Tab
+/// Tab completes a unique command prefix; on an empty line it does nothing. When 2 or more names start with the typed prefix, Tab
 /// extends the line to their longest common prefix and enters the "Tab list" state: the popup
 /// (reopened even after Esc) lists only <see cref="CommandRegistry.StartingWith"/> for the line,
 /// with a grey footer <c>N commands start with …</c>. The next key of any kind leaves that state,
@@ -42,9 +42,9 @@ internal enum ScrollStep
 /// line is extended.
 /// </para>
 /// <para>
-/// When a <see cref="PopupArea"/> is given, the popup opens while the line starts with <c>/</c>
-/// and lists <see cref="CommandRegistry.Match"/> for it. Esc closes it and keeps it closed until
-/// the line stops starting with <c>/</c>. Rows the popup stops covering are handed back to
+/// When a <see cref="PopupArea"/> is given, the popup opens while the line is not empty and does
+/// not start with whitespace, and lists <see cref="CommandRegistry.Match"/> for it. Esc closes it
+/// and keeps it closed until the line is empty again. Rows the popup stops covering are handed back to
 /// <see cref="PopupArea.RestoreRow"/>, and the cursor always ends at the end of the input line.
 /// </para>
 /// <para>
@@ -237,16 +237,19 @@ internal sealed class LineEditor
                     break;
             }
 
-            if (!buffer.StartsWith('/'))
+            if (buffer.Length == 0)
             {
                 popupDismissed = false;
             }
 
-            bool showPopup = popup is not null && buffer.StartsWith('/') && !popupDismissed;
+            bool showPopup = popup is not null && OpensPopup(buffer) && !popupDismissed;
             popupRows = showPopup ? DrawPopup(popup!, buffer, popupRows, tabList) : ClosePopup(popup, popupRows);
             drawn = Redraw(buffer, column, line, width, drawn, placeholder);
         }
     }
+
+    // The popup is for a command being typed: a non-empty line whose first character is not whitespace.
+    private static bool OpensPopup(string buffer) => buffer.Length > 0 && !char.IsWhiteSpace(buffer[0]);
 
     private static bool IsEscape(ConsoleKeyInfo info) => info.Key == ConsoleKey.Escape || info.KeyChar == '\u001b';
 

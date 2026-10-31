@@ -9,7 +9,7 @@ internal sealed record CommandResult
     /// <param name="message">Shown in the top area (under the day view) until the next command, or <c>null</c> for nothing.</param>
     /// <param name="quit">True to end the loop with exit code 0.</param>
     /// <param name="hint">Shown on the one-line hint row just above the input box until the next command, or <c>null</c> for nothing.</param>
-    /// <param name="hideQuicklist">True to leave out the quicklist panel while <paramref name="message"/> is shown, so long command output such as /help has room.</param>
+    /// <param name="hideQuicklist">True to leave out the quicklist panel while <paramref name="message"/> is shown, so long command output such as help has room.</param>
     public CommandResult(IRenderable? message = null, bool quit = false, IRenderable? hint = null, bool hideQuicklist = false)
     {
         Message = message;
@@ -57,8 +57,10 @@ internal sealed record Command
 }
 
 /// <summary>
-/// The single registry of <c>/</c> commands. Every feature adds its commands here, and
-/// <c>/help</c> lists whatever is registered. Names are matched case-insensitively.
+/// The single registry of commands. Every feature adds its commands here, and <c>help</c> lists
+/// whatever is registered. Names are stored without a leading <c>/</c> and matched
+/// case-insensitively. The lookup helpers accept a prefix with or without one leading <c>/</c> and
+/// keep that <c>/</c> in what they return.
 /// </summary>
 internal sealed class CommandRegistry
 {
@@ -66,23 +68,23 @@ internal sealed class CommandRegistry
 
     public IEnumerable<Command> Commands => commands.Values.OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Shown below the <c>/help</c> table, or <c>null</c> for nothing.</summary>
+    /// <summary>Shown below the <c>help</c> table, or <c>null</c> for nothing.</summary>
     public IRenderable? HelpFooter { get; set; }
 
-    /// <summary>Creates a registry with the built-in <c>/help</c> and <c>/quit</c> commands.</summary>
+    /// <summary>Creates a registry with the built-in <c>help</c> and <c>quit</c> commands.</summary>
     public static CommandRegistry CreateDefault()
     {
         CommandRegistry registry = new CommandRegistry();
-        registry.Register("/help", "List all commands", _ => new CommandResult(registry.RenderHelp(), hideQuicklist: true));
-        registry.Register("/quit", "Exit Times", _ => new CommandResult(quit: true));
+        registry.Register("help", "List all commands", _ => new CommandResult(registry.RenderHelp(), hideQuicklist: true));
+        registry.Register("quit", "Exit Times", _ => new CommandResult(quit: true));
         return registry;
     }
 
     public void Register(string name, string description, Func<string, CommandResult> handler)
     {
-        if (!name.StartsWith('/') || name.Length < 2 || name.Any(char.IsWhiteSpace))
+        if (name.Length == 0 || name.StartsWith('/') || name.Any(char.IsWhiteSpace))
         {
-            throw new ArgumentException($"Command name must start with '/' and contain no spaces: '{name}'.", nameof(name));
+            throw new ArgumentException($"Command name must not be empty, start with '/' or contain spaces: '{name}'.", nameof(name));
         }
 
         if (!commands.TryAdd(name, new Command(name, description, handler)))
@@ -94,37 +96,42 @@ internal sealed class CommandRegistry
     public bool TryGet(string name, out Command command) => commands.TryGetValue(name, out command!);
 
     /// <summary>
-    /// Completes a command prefix. Returns the full name if exactly one command starts with
-    /// <paramref name="prefix"/>, otherwise <c>null</c>.
+    /// Completes a command prefix, typed with or without one leading <c>/</c>. Returns the full
+    /// name (with the <c>/</c> if one was typed) if exactly one command starts with the bare
+    /// prefix, otherwise <c>null</c>. An empty prefix gives <c>null</c>.
     /// </summary>
     public string? Complete(string prefix)
     {
-        if (!prefix.StartsWith('/'))
+        if (prefix.Length == 0)
         {
             return null;
         }
 
-        List<string> matches = commands.Keys.Where(n => n.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).Take(2).ToList();
-        return matches.Count == 1 ? matches[0] : null;
+        string bare = Bare(prefix);
+        List<string> matches = commands.Keys.Where(n => n.StartsWith(bare, StringComparison.OrdinalIgnoreCase)).Take(2).ToList();
+        return matches.Count == 1 ? Slash(prefix) + matches[0] : null;
     }
 
     /// <summary>
-    /// The commands whose name starts with <paramref name="prefix"/> (ordinal, ignoring case), in
-    /// name order. Empty if <paramref name="prefix"/> does not start with <c>/</c>.
+    /// The commands whose name starts with <paramref name="prefix"/> (ordinal, ignoring case, one
+    /// leading <c>/</c> ignored), in name order. Empty for an empty prefix; a lone <c>/</c> gives
+    /// every command.
     /// </summary>
     public IReadOnlyList<Command> StartingWith(string prefix)
     {
-        if (!prefix.StartsWith('/'))
+        if (prefix.Length == 0)
         {
             return [];
         }
 
-        return Commands.Where(c => c.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList();
+        string bare = Bare(prefix);
+        return Commands.Where(c => c.Name.StartsWith(bare, StringComparison.OrdinalIgnoreCase)).ToList();
     }
 
     /// <summary>
     /// The longest common prefix of the names in <see cref="StartingWith"/>, in the registered
-    /// casing, or <paramref name="prefix"/> unchanged when fewer than 2 names match.
+    /// casing and with the <c>/</c> if one was typed, or <paramref name="prefix"/> unchanged when
+    /// fewer than 2 names match.
     /// </summary>
     public string CommonPrefix(string prefix)
     {
@@ -147,14 +154,21 @@ internal sealed class CommandRegistry
             common = common[..length];
         }
 
-        return common;
+        return Slash(prefix) + common;
     }
+
+    // The prefix without its one leading '/', if it has one.
+    private static string Bare(string prefix) => prefix.StartsWith('/') ? prefix[1..] : prefix;
+
+    // "/" if the user typed one in front of the prefix, otherwise empty.
+    private static string Slash(string prefix) => prefix.StartsWith('/') ? "/" : string.Empty;
 
     /// <summary>
     /// The commands that match the command token of <paramref name="line"/> (the text up to the
-    /// first whitespace), best first. An empty token (just <c>/</c>) returns every command in name
-    /// order. Otherwise each name scores the smaller Levenshtein distance to the whole name or to
-    /// its prefix of the token's length, so a prefix scores 0 and typos still match. A command is
+    /// first whitespace, one leading <c>/</c> ignored), best first. An empty token (empty line or
+    /// just <c>/</c>) returns every command in name order. Otherwise each name scores the smaller
+    /// Levenshtein distance to the whole name or to its prefix of the token's length, so a prefix
+    /// scores 0 and typos still match. A command is
     /// kept if its score is 0 for a 1-letter token, at most 1 for 2–3 letters and at most 2 for
     /// longer tokens. Results are sorted by score, then by name.
     /// </summary>
@@ -188,7 +202,7 @@ internal sealed class CommandRegistry
         List<(Command Command, int Score)> scored = [];
         foreach (Command command in commands.Values)
         {
-            string name = command.Name[1..].ToLowerInvariant();
+            string name = command.Name.ToLowerInvariant();
             string prefix = name[..Math.Min(token.Length, name.Length)];
             int score = Math.Min(Levenshtein(token, name), Levenshtein(token, prefix));
             if (score <= limit)

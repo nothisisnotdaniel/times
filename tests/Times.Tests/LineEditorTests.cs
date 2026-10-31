@@ -17,20 +17,20 @@ public class LineEditorTests
     public void PrintableCharacters_AndEnter_ReturnTheLine()
     {
         (TestConsole console, LineEditor editor) = Create();
-        console.Input.PushTextWithEnter("/help me");
+        console.Input.PushTextWithEnter("help me");
 
-        Assert.Equal("/help me", Read(editor));
+        Assert.Equal("help me", Read(editor));
     }
 
     [Fact]
     public void TypedText_IsEchoed()
     {
         (TestConsole console, LineEditor editor) = Create();
-        console.Input.PushTextWithEnter("/hel");
+        console.Input.PushTextWithEnter("hel");
 
         Read(editor);
 
-        Assert.Contains("/hel", console.Output);
+        Assert.Contains("hel", console.Output);
     }
 
     // AC-10
@@ -38,11 +38,11 @@ public class LineEditorTests
     public void Backspace_RemovesLastCharacter()
     {
         (TestConsole console, LineEditor editor) = Create();
-        console.Input.PushText("/quiz");
+        console.Input.PushText("quiz");
         console.Input.PushKey(ConsoleKey.Backspace);
         console.Input.PushTextWithEnter("t");
 
-        Assert.Equal("/quit", Read(editor));
+        Assert.Equal("quit", Read(editor));
     }
 
     [Fact]
@@ -50,9 +50,9 @@ public class LineEditorTests
     {
         (TestConsole console, LineEditor editor) = Create();
         console.Input.PushKey(ConsoleKey.Backspace);
-        console.Input.PushTextWithEnter("/q");
+        console.Input.PushTextWithEnter("q");
 
-        Assert.Equal("/q", Read(editor));
+        Assert.Equal("q", Read(editor));
     }
 
     [Fact]
@@ -61,9 +61,9 @@ public class LineEditorTests
         (TestConsole console, LineEditor editor) = Create();
         console.Input.PushText("abc");
         console.Input.PushKey(ConsoleKey.Escape);
-        console.Input.PushTextWithEnter("/quit");
+        console.Input.PushTextWithEnter("quit");
 
-        Assert.Equal("/quit", Read(editor));
+        Assert.Equal("quit", Read(editor));
     }
 
     // AC-11
@@ -71,16 +71,16 @@ public class LineEditorTests
     public void Tab_CompletesUniquePrefix()
     {
         (TestConsole console, LineEditor editor) = Create();
-        console.Input.PushText("/q");
+        console.Input.PushText("q");
         console.Input.PushKey(ConsoleKey.Tab);
         console.Input.PushKey(ConsoleKey.Enter);
 
-        Assert.Equal("/quit", Read(editor));
+        Assert.Equal("quit", Read(editor));
     }
 
     [Theory]
-    [InlineData("/x")]  // no match
-    [InlineData("/")]   // matches /help and /quit
+    [InlineData("x")]  // no match
+    [InlineData("/")]   // matches help and quit
     public void Tab_LeavesNoOrAmbiguousMatchUnchanged(string prefix)
     {
         (TestConsole console, LineEditor editor) = Create();
@@ -95,11 +95,11 @@ public class LineEditorTests
     public void Tab_AfterArguments_DoesNothing()
     {
         (TestConsole console, LineEditor editor) = Create();
-        console.Input.PushText("/q x");
+        console.Input.PushText("q x");
         console.Input.PushKey(ConsoleKey.Tab);
         console.Input.PushKey(ConsoleKey.Enter);
 
-        Assert.Equal("/q x", Read(editor));
+        Assert.Equal("q x", Read(editor));
     }
 
     // AC-12
@@ -107,20 +107,20 @@ public class LineEditorTests
     public void Up_RecallsPreviousLine()
     {
         (TestConsole console, LineEditor editor) = Create();
-        console.Input.PushTextWithEnter("/help");
+        console.Input.PushTextWithEnter("help");
         console.Input.PushKey(ConsoleKey.UpArrow);
         console.Input.PushKey(ConsoleKey.Enter);
 
-        Assert.Equal("/help", Read(editor));
-        Assert.Equal("/help", Read(editor));
+        Assert.Equal("help", Read(editor));
+        Assert.Equal("help", Read(editor));
     }
 
     [Fact]
     public void Up_PastOldest_StaysOnOldest()
     {
         (TestConsole console, LineEditor editor) = Create();
-        console.Input.PushTextWithEnter("/one");
-        console.Input.PushTextWithEnter("/two");
+        console.Input.PushTextWithEnter("one");
+        console.Input.PushTextWithEnter("two");
         console.Input.PushKey(ConsoleKey.UpArrow);
         console.Input.PushKey(ConsoleKey.UpArrow);
         console.Input.PushKey(ConsoleKey.UpArrow);
@@ -129,15 +129,15 @@ public class LineEditorTests
 
         Read(editor);
         Read(editor);
-        Assert.Equal("/one", Read(editor));
+        Assert.Equal("one", Read(editor));
     }
 
     [Fact]
     public void Down_PastNewest_GivesEmptyLine()
     {
         (TestConsole console, LineEditor editor) = Create();
-        console.Input.PushTextWithEnter("/one");
-        console.Input.PushTextWithEnter("/two");
+        console.Input.PushTextWithEnter("one");
+        console.Input.PushTextWithEnter("two");
         console.Input.PushKey(ConsoleKey.UpArrow);
         console.Input.PushKey(ConsoleKey.UpArrow);
         console.Input.PushKey(ConsoleKey.DownArrow);
@@ -154,8 +154,8 @@ public class LineEditorTests
     public void Down_MovesToNewerEntry()
     {
         (TestConsole console, LineEditor editor) = Create();
-        console.Input.PushTextWithEnter("/one");
-        console.Input.PushTextWithEnter("/two");
+        console.Input.PushTextWithEnter("one");
+        console.Input.PushTextWithEnter("two");
         console.Input.PushKey(ConsoleKey.UpArrow);
         console.Input.PushKey(ConsoleKey.UpArrow);
         console.Input.PushKey(ConsoleKey.DownArrow);
@@ -163,7 +163,7 @@ public class LineEditorTests
 
         Read(editor);
         Read(editor);
-        Assert.Equal("/two", Read(editor));
+        Assert.Equal("two", Read(editor));
     }
 
     [Fact]
@@ -180,14 +180,14 @@ public class LineEditorTests
     public void EmptyLines_AreNotAddedToHistory()
     {
         (TestConsole console, LineEditor editor) = Create();
-        console.Input.PushTextWithEnter("/help");
+        console.Input.PushTextWithEnter("help");
         console.Input.PushTextWithEnter("");
         console.Input.PushKey(ConsoleKey.UpArrow);
         console.Input.PushKey(ConsoleKey.Enter);
 
         Read(editor);
         Read(editor);
-        Assert.Equal("/help", Read(editor));
+        Assert.Equal("help", Read(editor));
     }
 
     // Command popup (job 006) --------------------------------------------------------------
@@ -200,9 +200,9 @@ public class LineEditorTests
         {
             Console = new TestConsole().Interactive().EmitAnsiSequences();
             CommandRegistry registry = CommandRegistry.CreateDefault();
-            registry.Register("/prev", "Go to the previous day", _ => CommandResult.None);
-            registry.Register("/next", "Go to the next day", _ => CommandResult.None);
-            registry.Register("/today", "Go back to today", _ => CommandResult.None);
+            registry.Register("prev", "Go to the previous day", _ => CommandResult.None);
+            registry.Register("next", "Go to the next day", _ => CommandResult.None);
+            registry.Register("today", "Go back to today", _ => CommandResult.None);
             foreach (string name in extra)
             {
                 registry.Register(name, $"Dummy {name}", _ => CommandResult.None);
@@ -283,11 +283,11 @@ public class LineEditorTests
         Assert.Contains("\u001b[21;1H", output);
         List<AnsiWrite> rows = AnsiWrites.Parse(output).Where(w => w.Column == 1 && !w.Text.StartsWith("restored", StringComparison.Ordinal)).ToList();
         Assert.Equal([17, 18, 19, 20, 21], rows.Select(r => r.Row));
-        Assert.StartsWith("/help   List all commands", rows[0].Text);
-        Assert.StartsWith("/next   Go to the next day", rows[1].Text);
-        Assert.StartsWith("/prev   Go to the previous day", rows[2].Text);
-        Assert.StartsWith("/quit   Exit Times", rows[3].Text);
-        Assert.StartsWith("/today  Go back to today", rows[4].Text);
+        Assert.StartsWith("help   List all commands", rows[0].Text);
+        Assert.StartsWith("next   Go to the next day", rows[1].Text);
+        Assert.StartsWith("prev   Go to the previous day", rows[2].Text);
+        Assert.StartsWith("quit   Exit Times", rows[3].Text);
+        Assert.StartsWith("today  Go back to today", rows[4].Text);
     }
 
     [Fact]
@@ -295,17 +295,17 @@ public class LineEditorTests
     {
         TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
         LineEditor editor = new LineEditor(console, CommandRegistry.CreateDefault());
-        console.Input.PushTextWithEnter("/he");
+        console.Input.PushTextWithEnter("he");
 
-        Assert.Equal("/he", editor.ReadLine(5, 23, 70));
+        Assert.Equal("he", editor.ReadLine(5, 23, 70));
         Assert.DoesNotContain("List all commands", console.Output);
     }
 
     [Fact]
-    public void TextWithoutSlash_OpensNoPopup()
+    public void LineStartingWithSpace_OpensNoPopup()
     {
         PopupRun run = new PopupRun();
-        run.Console.Input.PushTextWithEnter("help");
+        run.Console.Input.PushTextWithEnter(" help");
 
         run.Read();
 
@@ -318,13 +318,13 @@ public class LineEditorTests
     public void EachKey_RedrawsPopup_WithCurrentMatch()
     {
         PopupRun run = new PopupRun();
-        run.Console.Input.PushText("/tdoay");
+        run.Console.Input.PushText("tdoay");
 
         run.Console.Input.PushKey(ConsoleKey.Enter);
         run.Read();
 
-        Assert.Equal(6, run.PopupDraws());
-        Assert.StartsWith("/today", AnsiWrites.AtRow(run.Console.Output, HintRow).Last(t => !t.StartsWith("restored", StringComparison.Ordinal)));
+        Assert.Equal(5, run.PopupDraws());
+        Assert.StartsWith("today", AnsiWrites.AtRow(run.Console.Output, HintRow).Last(t => !t.StartsWith("restored", StringComparison.Ordinal)));
     }
 
     // AC-4
@@ -338,7 +338,7 @@ public class LineEditorTests
 
         run.Read();
 
-        // "/" fills rows 17-21, "/t" only row 21: rows 17-20 come back first, row 21 on Esc.
+        // "/" fills rows 17-21, "t" only row 21: rows 17-20 come back first, row 21 on Esc.
         Assert.Equal([17, 18, 19, 20, 21], run.Restored);
         Dictionary<int, string> screen = run.Screen();
         Assert.Equal("restored 17", screen[17]);
@@ -359,7 +359,7 @@ public class LineEditorTests
 
         // After Backspace the popup lists all five commands again, starting on row 17.
         Assert.Equal(3, run.PopupDraws());
-        Assert.Equal(2, AnsiWrites.AtRow(run.Console.Output, 17).Count(t => t.StartsWith("/help", StringComparison.Ordinal)));
+        Assert.Equal(2, AnsiWrites.AtRow(run.Console.Output, 17).Count(t => t.StartsWith("help", StringComparison.Ordinal)));
     }
 
     // AC-4
@@ -367,13 +367,13 @@ public class LineEditorTests
     public void TabCompletion_RedrawsPopup()
     {
         PopupRun run = new PopupRun();
-        run.Console.Input.PushText("/q");
+        run.Console.Input.PushText("q");
         run.Console.Input.PushKey(ConsoleKey.Tab);
         run.Console.Input.PushKey(ConsoleKey.Enter);
 
-        Assert.Equal("/quit", run.Read());
-        Assert.Equal(3, run.PopupDraws());
-        Assert.Contains(AnsiWrites.Parse(run.Console.Output), w => w.Row == 23 && w.Text.StartsWith("/quit", StringComparison.Ordinal));
+        Assert.Equal("quit", run.Read());
+        Assert.Equal(2, run.PopupDraws());
+        Assert.Contains(AnsiWrites.Parse(run.Console.Output), w => w.Row == 23 && w.Text.StartsWith("quit", StringComparison.Ordinal));
     }
 
     // AC-4
@@ -381,13 +381,13 @@ public class LineEditorTests
     public void CursorReturnsToEndOfInputLine_AfterEveryPopupRedraw()
     {
         PopupRun run = new PopupRun();
-        run.Console.Input.PushText("/he");
+        run.Console.Input.PushText("he");
         run.Console.Input.PushKey(ConsoleKey.Enter);
 
         run.Read();
 
         List<AnsiWrite> writes = AnsiWrites.Parse(run.Console.Output);
-        Assert.Equal(new AnsiWrite(23, 8, string.Empty), writes[^1]);
+        Assert.Equal(new AnsiWrite(23, 7, string.Empty), writes[^1]);
         // Every popup draw on row 21 is followed, eventually, by a cursor move back to row 23.
         for (int i = 0; i < writes.Count; i++)
         {
@@ -424,7 +424,7 @@ public class LineEditorTests
         run.Console.Input.PushTextWithEnter("/tdoay x");
 
         Assert.Equal("/tdoay x", run.Read());
-        // "/" covered rows 17-21; "/t" shrank it to row 21, and Enter gives row 21 back.
+        // "/" covered rows 17-21; "t" shrank it to row 21, and Enter gives row 21 back.
         Assert.Equal([17, 18, 19, 20, 21], run.Restored);
         Dictionary<int, string> screen = run.Screen();
         for (int row = 17; row <= 21; row++)
@@ -438,9 +438,9 @@ public class LineEditorTests
     public void Enter_WithoutPopup_RestoresNothing()
     {
         PopupRun run = new PopupRun();
-        run.Console.Input.PushTextWithEnter("abc");
+        run.Console.Input.PushTextWithEnter(" abc");
 
-        Assert.Equal("abc", run.Read());
+        Assert.Equal(" abc", run.Read());
         Assert.Empty(run.Restored);
     }
 
@@ -449,15 +449,15 @@ public class LineEditorTests
     public void Escape_WithPopupOpen_ClosesIt_AndKeepsText()
     {
         PopupRun run = new PopupRun();
-        run.Console.Input.PushText("/he");
+        run.Console.Input.PushText("he");
         run.Console.Input.PushKey(ConsoleKey.Escape);
         run.Console.Input.PushKey(ConsoleKey.Enter);
 
-        Assert.Equal("/he", run.Read());
-        // "/he" matches /help and /next (rows 20-21); Esc gives both rows back.
+        Assert.Equal("he", run.Read());
+        // "he" matches help and next (rows 20-21); Esc gives both rows back.
         Assert.Equal([20, 21], run.Restored.TakeLast(2));
         Dictionary<int, string> screen = run.Screen();
-        for (int row = 17; row <= 21; row++)
+        for (int row = 20; row <= 21; row++)
         {
             Assert.Equal($"restored {row}", screen[row]);
         }
@@ -468,7 +468,7 @@ public class LineEditorTests
     public void SecondEscape_ClearsTheLine()
     {
         PopupRun run = new PopupRun();
-        run.Console.Input.PushText("/he");
+        run.Console.Input.PushText("he");
         run.Console.Input.PushKey(ConsoleKey.Escape);
         run.Console.Input.PushKey(ConsoleKey.Escape);
         run.Console.Input.PushKey(ConsoleKey.Enter);
@@ -478,23 +478,23 @@ public class LineEditorTests
 
     // AC-6
     [Fact]
-    public void AfterEscape_PopupStaysClosed_UntilLineStopsStartingWithSlash()
+    public void AfterEscape_PopupStaysClosed_UntilLineIsEmpty()
     {
         PopupRun run = new PopupRun();
-        run.Console.Input.PushText("/he");
+        run.Console.Input.PushText("he");
         run.Console.Input.PushKey(ConsoleKey.Escape);
         run.Console.Input.PushText("l");
         run.Console.Input.PushKey(ConsoleKey.Backspace);
         run.Console.Input.PushKey(ConsoleKey.Backspace);
         run.Console.Input.PushKey(ConsoleKey.Backspace);
         run.Console.Input.PushKey(ConsoleKey.Backspace);
-        run.Console.Input.PushText("/");
+        run.Console.Input.PushText("t");
         run.Console.Input.PushKey(ConsoleKey.Enter);
 
-        Assert.Equal("/", run.Read());
-        // "/", "/h", "/he" drew the popup; "l" and the Backspaces did not; the new "/" did.
-        Assert.Equal(4, run.PopupDraws());
-        Assert.Equal(2, AnsiWrites.AtRow(run.Console.Output, 17).Count(t => t.StartsWith("/help", StringComparison.Ordinal)));
+        Assert.Equal("t", run.Read());
+        // "h", "he" drew the popup; "l" and the Backspaces down to "h" did not; the new "t" did.
+        Assert.Equal(3, run.PopupDraws());
+        Assert.StartsWith("today", AnsiWrites.AtRow(run.Console.Output, HintRow).Last(t => !t.StartsWith("restored", StringComparison.Ordinal)));
     }
 
     // AC-6
@@ -502,14 +502,14 @@ public class LineEditorTests
     public void AfterSecondEscape_TypingSlash_OpensPopupAgain()
     {
         PopupRun run = new PopupRun();
-        run.Console.Input.PushText("/he");
+        run.Console.Input.PushText("he");
         run.Console.Input.PushKey(ConsoleKey.Escape);
         run.Console.Input.PushKey(ConsoleKey.Escape);
         run.Console.Input.PushText("/");
         run.Console.Input.PushKey(ConsoleKey.Enter);
 
         Assert.Equal("/", run.Read());
-        Assert.Equal(4, run.PopupDraws());
+        Assert.Equal(3, run.PopupDraws());
     }
 
     // AC-7
@@ -524,7 +524,7 @@ public class LineEditorTests
 
         List<AnsiWrite> rows = AnsiWrites.Parse(run.Console.Output).Where(w => w.Column == 1).ToList();
         Assert.DoesNotContain(rows, w => w.Row < 2);
-        Assert.Contains(rows, w => w.Row == 2 && w.Text.StartsWith("/help", StringComparison.Ordinal));
+        Assert.Contains(rows, w => w.Row == 2 && w.Text.StartsWith("help", StringComparison.Ordinal));
         Assert.Contains(rows, w => w.Row == 3 && w.Text.StartsWith("… 4 more", StringComparison.Ordinal));
     }
 
@@ -533,7 +533,7 @@ public class LineEditorTests
     public void Typing_NeverClearsTheScreen()
     {
         PopupRun run = new PopupRun();
-        run.Console.Input.PushText("/tdoay");
+        run.Console.Input.PushText("tdoay");
         run.Console.Input.PushKey(ConsoleKey.Backspace);
         run.Console.Input.PushKey(ConsoleKey.Escape);
         run.Console.Input.PushKey(ConsoleKey.Escape);
@@ -546,15 +546,15 @@ public class LineEditorTests
 
     // Tab feedback (job 011) ---------------------------------------------------------------
 
-    private static readonly string[] Prefixed = ["/print", "/project", "/ps"];
+    private static readonly string[] Prefixed = ["print", "project", "ps"];
 
     private static PopupRun PrefixRun() => new(HintRow, Prefixed);
 
     // AC-3
     [Theory]
-    [InlineData("/p", "/p")]     // /prev, /print, /project, /ps share only "/p"
-    [InlineData("/pr", "/pr")]   // /prev, /print, /project share "/pr": not extended further
-    [InlineData("/PRO", "/project")]
+    [InlineData("p", "p")]     // prev, print, project, ps share only "p"
+    [InlineData("pr", "pr")]   // prev, print, project share "pr": not extended further
+    [InlineData("PRO", "project")]
     public void Tab_ExtendsToCommonPrefix(string typed, string expected)
     {
         PopupRun run = PrefixRun();
@@ -569,13 +569,13 @@ public class LineEditorTests
     [Fact]
     public void Tab_ExtendsShortPrefix_ToCommonPrefix()
     {
-        PopupRun run = new PopupRun(HintRow, "/print", "/project");
-        run.Console.Input.PushText("/p");
+        PopupRun run = new PopupRun(HintRow, "print", "project");
+        run.Console.Input.PushText("p");
         run.Console.Input.PushKey(ConsoleKey.Tab);
         run.Console.Input.PushKey(ConsoleKey.Enter);
 
-        Assert.Equal("/pr", run.Read());
-        Assert.Contains(AnsiWrites.Parse(run.Console.Output), w => w.Row == 23 && w.Text.StartsWith("/pr", StringComparison.Ordinal));
+        Assert.Equal("pr", run.Read());
+        Assert.Contains(AnsiWrites.Parse(run.Console.Output), w => w.Row == 23 && w.Text.StartsWith("pr", StringComparison.Ordinal));
     }
 
     // AC-3
@@ -584,16 +584,16 @@ public class LineEditorTests
     {
         TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
         CommandRegistry registry = CommandRegistry.CreateDefault();
-        registry.Register("/prev", "d", _ => CommandResult.None);
-        registry.Register("/print", "d", _ => CommandResult.None);
+        registry.Register("prev", "d", _ => CommandResult.None);
+        registry.Register("print", "d", _ => CommandResult.None);
         LineEditor editor = new LineEditor(console, registry);
-        console.Input.PushText("/p");
+        console.Input.PushText("p");
         console.Input.PushKey(ConsoleKey.Tab);
         console.Input.PushKey(ConsoleKey.Enter);
 
-        Assert.Equal("/pr", editor.ReadLine(5, 23, 70));
+        Assert.Equal("pr", editor.ReadLine(5, 23, 70));
         Assert.DoesNotContain("commands start with", console.Output);
-        Assert.DoesNotContain("/prev", console.Output);
+        Assert.DoesNotContain("prev", console.Output);
     }
 
     // AC-4
@@ -601,25 +601,25 @@ public class LineEditorTests
     public void AmbiguousTab_ListsOnlyPrefixMatches_WithFooterOnHintRow()
     {
         PopupRun run = PrefixRun();
-        run.Console.Input.PushText("/pr");
+        run.Console.Input.PushText("pr");
         run.Console.Input.PushKey(ConsoleKey.Tab);
         run.Console.Input.PushKey(ConsoleKey.Enter);
 
-        Assert.Equal("/pr", run.Read());
+        Assert.Equal("pr", run.Read());
 
-        // Before Tab the fuzzy list includes /ps (one edit from "pr").
-        Dictionary<int, string> before = run.ScreenAfterKey(3);
-        Assert.Contains(before.Values, t => t.StartsWith("/ps ", StringComparison.Ordinal));
+        // Before Tab the fuzzy list includes ps (one edit from "pr").
+        Dictionary<int, string> before = run.ScreenAfterKey(2);
+        Assert.Contains(before.Values, t => t.StartsWith("ps ", StringComparison.Ordinal));
 
-        Dictionary<int, string> screen = run.ScreenAfterKey(4);
-        Assert.Equal("3 commands start with /pr", screen[HintRow]);
-        Assert.StartsWith("/prev", screen[18]);
-        Assert.StartsWith("/print", screen[19]);
-        Assert.StartsWith("/project", screen[20]);
-        // Rows above 18 were given back when "/p" shrank the popup; the Tab list does not cover them.
-        Assert.Equal("restored 17", screen[17]);
-        Assert.DoesNotContain(screen.Values, t => t.StartsWith("/ps ", StringComparison.Ordinal));
-        Assert.Contains("\u001b[38;5;8m3 commands start with /pr", run.Console.Output);
+        Dictionary<int, string> screen = run.ScreenAfterKey(3);
+        Assert.Equal("3 commands start with pr", screen[HintRow]);
+        Assert.StartsWith("prev", screen[18]);
+        Assert.StartsWith("print", screen[19]);
+        Assert.StartsWith("project", screen[20]);
+        // The popup never reached row 17; the Tab list does not cover it either.
+        Assert.False(screen.ContainsKey(17));
+        Assert.DoesNotContain(screen.Values, t => t.StartsWith("ps ", StringComparison.Ordinal));
+        Assert.Contains("\u001b[38;5;8m3 commands start with pr", run.Console.Output);
     }
 
     // AC-5
@@ -627,19 +627,19 @@ public class LineEditorTests
     public void AmbiguousTab_AfterEscape_ReopensPopup()
     {
         PopupRun run = PrefixRun();
-        run.Console.Input.PushText("/pr");
+        run.Console.Input.PushText("pr");
         run.Console.Input.PushKey(ConsoleKey.Escape);
         run.Console.Input.PushKey(ConsoleKey.Tab);
         run.Console.Input.PushKey(ConsoleKey.Enter);
 
-        Assert.Equal("/pr", run.Read());
+        Assert.Equal("pr", run.Read());
 
-        Assert.Equal("restored 21", run.ScreenAfterKey(4)[HintRow]);
-        Dictionary<int, string> screen = run.ScreenAfterKey(5);
-        Assert.Equal("3 commands start with /pr", screen[HintRow]);
-        Assert.StartsWith("/prev", screen[18]);
-        Assert.StartsWith("/print", screen[19]);
-        Assert.StartsWith("/project", screen[20]);
+        Assert.Equal("restored 21", run.ScreenAfterKey(3)[HintRow]);
+        Dictionary<int, string> screen = run.ScreenAfterKey(4);
+        Assert.Equal("3 commands start with pr", screen[HintRow]);
+        Assert.StartsWith("prev", screen[18]);
+        Assert.StartsWith("print", screen[19]);
+        Assert.StartsWith("project", screen[20]);
     }
 
     // AC-6
@@ -647,17 +647,17 @@ public class LineEditorTests
     public void AfterTabList_Backspace_GoesBackToFuzzyMatch()
     {
         PopupRun run = PrefixRun();
-        run.Console.Input.PushText("/pr");
+        run.Console.Input.PushText("pr");
         run.Console.Input.PushKey(ConsoleKey.Tab);
         run.Console.Input.PushKey(ConsoleKey.Backspace);
         run.Console.Input.PushKey(ConsoleKey.Enter);
 
-        Assert.Equal("/p", run.Read());
+        Assert.Equal("p", run.Read());
 
-        // "/p" fuzzy: /prev, /print, /project, /ps on rows 18-21, no footer.
-        Dictionary<int, string> screen = run.ScreenAfterKey(5);
-        Assert.StartsWith("/prev", screen[18]);
-        Assert.StartsWith("/ps", screen[HintRow]);
+        // "p" fuzzy: prev, print, project, ps on rows 18-21, no footer.
+        Dictionary<int, string> screen = run.ScreenAfterKey(4);
+        Assert.StartsWith("prev", screen[18]);
+        Assert.StartsWith("ps", screen[HintRow]);
         Assert.DoesNotContain(screen.Values, t => t.Contains("commands start with", StringComparison.Ordinal));
     }
 
@@ -666,18 +666,18 @@ public class LineEditorTests
     public void AfterTabList_TypingCharacter_GoesBackToFuzzyMatch()
     {
         PopupRun run = PrefixRun();
-        run.Console.Input.PushText("/pr");
+        run.Console.Input.PushText("pr");
         run.Console.Input.PushKey(ConsoleKey.Tab);
         run.Console.Input.PushText("o");
         run.Console.Input.PushKey(ConsoleKey.Enter);
 
-        Assert.Equal("/pro", run.Read());
+        Assert.Equal("pro", run.Read());
 
-        // "/pro" fuzzy: /project (0), then /prev and /print (1 edit) on rows 19-21; row 18 (footer list top) restored.
-        Dictionary<int, string> screen = run.ScreenAfterKey(5);
-        Assert.StartsWith("/project", screen[19]);
-        Assert.StartsWith("/prev", screen[20]);
-        Assert.StartsWith("/print", screen[HintRow]);
+        // "pro" fuzzy: project (0), then prev and print (1 edit) on rows 19-21; row 18 (footer list top) restored.
+        Dictionary<int, string> screen = run.ScreenAfterKey(4);
+        Assert.StartsWith("project", screen[19]);
+        Assert.StartsWith("prev", screen[20]);
+        Assert.StartsWith("print", screen[HintRow]);
         Assert.Equal("restored 18", screen[18]);
         Assert.DoesNotContain(screen.Values, t => t.Contains("commands start with", StringComparison.Ordinal));
     }
@@ -686,19 +686,19 @@ public class LineEditorTests
     [Fact]
     public void TabList_WithMoreMatchesThanFit_ShowsMoreRowAndFooter()
     {
-        PopupRun run = new PopupRun(bottomRow: 5, "/print", "/project", "/ps");
-        run.Console.Input.PushText("/p");
+        PopupRun run = new PopupRun(bottomRow: 5, "print", "project", "ps");
+        run.Console.Input.PushText("p");
         run.Console.Input.PushKey(ConsoleKey.Tab);
         run.Console.Input.PushKey(ConsoleKey.Enter);
 
         run.Read();
 
         // Rows 2-5 hold 4 rows: two matches, "… 2 more", then the footer.
-        Dictionary<int, string> screen = run.ScreenAfterKey(3);
-        Assert.StartsWith("/prev", screen[2]);
-        Assert.StartsWith("/print", screen[3]);
+        Dictionary<int, string> screen = run.ScreenAfterKey(2);
+        Assert.StartsWith("prev", screen[2]);
+        Assert.StartsWith("print", screen[3]);
         Assert.Equal("… 2 more", screen[4]);
-        Assert.Equal("4 commands start with /p", screen[5]);
+        Assert.Equal("4 commands start with p", screen[5]);
         Assert.DoesNotContain(AnsiWrites.Parse(run.Console.Output), w => w.Row < 2);
     }
 
@@ -707,13 +707,13 @@ public class LineEditorTests
     public void Tab_WithNoPrefixMatch_LeavesLineAndPopup()
     {
         PopupRun run = PrefixRun();
-        run.Console.Input.PushText("/x");
+        run.Console.Input.PushText("x");
         run.Console.Input.PushKey(ConsoleKey.Tab);
         run.Console.Input.PushKey(ConsoleKey.Enter);
 
-        Assert.Equal("/x", run.Read());
-        Assert.Equal(run.ScreenAfterKey(2), run.ScreenAfterKey(3));
-        Assert.Equal("No matching commands", run.ScreenAfterKey(3)[HintRow]);
+        Assert.Equal("x", run.Read());
+        Assert.Equal(run.ScreenAfterKey(1), run.ScreenAfterKey(2));
+        Assert.Equal("No matching commands", run.ScreenAfterKey(2)[HintRow]);
     }
 
     // AC-8
@@ -721,13 +721,13 @@ public class LineEditorTests
     public void Tab_WithNoPrefixMatch_AfterEscape_KeepsPopupClosed()
     {
         PopupRun run = PrefixRun();
-        run.Console.Input.PushText("/x");
+        run.Console.Input.PushText("x");
         run.Console.Input.PushKey(ConsoleKey.Escape);
         run.Console.Input.PushKey(ConsoleKey.Tab);
         run.Console.Input.PushKey(ConsoleKey.Enter);
 
-        Assert.Equal("/x", run.Read());
-        Assert.Equal("restored 21", run.ScreenAfterKey(4)[HintRow]);
+        Assert.Equal("x", run.Read());
+        Assert.Equal("restored 21", run.ScreenAfterKey(3)[HintRow]);
     }
 
     // AC-8
@@ -735,12 +735,12 @@ public class LineEditorTests
     public void Tab_AfterWhitespace_LeavesLineAndPopup()
     {
         PopupRun run = PrefixRun();
-        run.Console.Input.PushText("/p x");
+        run.Console.Input.PushText("p x");
         run.Console.Input.PushKey(ConsoleKey.Tab);
         run.Console.Input.PushKey(ConsoleKey.Enter);
 
-        Assert.Equal("/p x", run.Read());
-        Assert.Equal(run.ScreenAfterKey(4), run.ScreenAfterKey(5));
+        Assert.Equal("p x", run.Read());
+        Assert.Equal(run.ScreenAfterKey(3), run.ScreenAfterKey(4));
         Assert.DoesNotContain("commands start with", run.Console.Output);
     }
 
@@ -749,11 +749,11 @@ public class LineEditorTests
     public void Tab_UniquePrefix_StillCompletes_WithExtraCommands()
     {
         PopupRun run = PrefixRun();
-        run.Console.Input.PushText("/q");
+        run.Console.Input.PushText("q");
         run.Console.Input.PushKey(ConsoleKey.Tab);
         run.Console.Input.PushKey(ConsoleKey.Enter);
 
-        Assert.Equal("/quit", run.Read());
+        Assert.Equal("quit", run.Read());
     }
 
     // AC-8
@@ -761,7 +761,7 @@ public class LineEditorTests
     public void AmbiguousTab_NeverClearsScreen_AndCursorEndsOnInputLine()
     {
         PopupRun run = PrefixRun();
-        run.Console.Input.PushText("/pr");
+        run.Console.Input.PushText("pr");
         run.Console.Input.PushKey(ConsoleKey.Tab);
         run.Console.Input.PushKey(ConsoleKey.Enter);
 
@@ -769,15 +769,15 @@ public class LineEditorTests
 
         Assert.DoesNotContain("\u001b[2J", run.Console.Output);
         List<AnsiWrite> writes = AnsiWrites.Parse(run.Console.Output);
-        Assert.Equal(new AnsiWrite(23, 8, string.Empty), writes[^1]);
-        // After the Tab-list draw, the cursor goes back to the end of "/pr".
+        Assert.Equal(new AnsiWrite(23, 7, string.Empty), writes[^1]);
+        // After the Tab-list draw, the cursor goes back to the end of "pr".
         int footer = writes.FindIndex(w => w.Text.StartsWith("3 commands", StringComparison.Ordinal));
-        Assert.Contains(writes.Skip(footer + 1), w => w == new AnsiWrite(23, 8, string.Empty));
+        Assert.Contains(writes.Skip(footer + 1), w => w == new AnsiWrite(23, 7, string.Empty));
     }
 
     // Input placeholder (job 014) ----------------------------------------------------------
 
-    private const string Placeholder = "Type /help for commands";
+    private const string Placeholder = "Type help for commands";
 
     private const string Grey = @"\x1b\[(90|38;5;8)m";
 
@@ -805,7 +805,7 @@ public class LineEditorTests
         Assert.StartsWith("x", first.Text);
         Assert.True(first.Text.Length >= Placeholder.Length);
         Assert.Equal(string.Empty, first.Text.Trim()[1..]);
-        Assert.DoesNotContain("Type /help", first.Text);
+        Assert.DoesNotContain("Type help", first.Text);
     }
 
     // AC-3
@@ -814,10 +814,10 @@ public class LineEditorTests
     {
         (TestConsole console, LineEditor editor) = CreateAnsi();
         console.Input.PushKey(ConsoleKey.Enter);
-        console.Input.PushTextWithEnter("/he");
+        console.Input.PushTextWithEnter("he");
 
         Assert.Equal(string.Empty, editor.ReadLine(5, 23, 70, null, Placeholder));
-        Assert.Equal("/he", editor.ReadLine(5, 23, 70, null, Placeholder));
+        Assert.Equal("he", editor.ReadLine(5, 23, 70, null, Placeholder));
     }
 
     // AC-4
@@ -877,7 +877,7 @@ public class LineEditorTests
     public void Placeholder_UpShowsHistoryWithoutLeftovers_DownShowsPlaceholderAgain()
     {
         (TestConsole second, LineEditor next) = CreateAnsi();
-        second.Input.PushTextWithEnter("/help");
+        second.Input.PushTextWithEnter("help");
         next.ReadLine(5, 23, 70, null, Placeholder);
         int before = AnsiWrites.Parse(second.Output).Count;
 
@@ -889,9 +889,9 @@ public class LineEditorTests
         List<AnsiWrite> writes = AnsiWrites.Parse(second.Output).Skip(before).Where(w => w.Row == 23 && w.Text.Length > 0).ToList();
         Assert.Equal(2, writes.Count);
         // Up: the history entry, padded over the whole placeholder, with no placeholder text left.
-        Assert.StartsWith("/help", writes[0].Text);
+        Assert.StartsWith("help", writes[0].Text);
         Assert.True(writes[0].Text.Length >= Placeholder.Length);
-        Assert.Equal("/help", writes[0].Text.TrimEnd());
+        Assert.Equal("help", writes[0].Text.TrimEnd());
         // Down to the empty line: the placeholder again, cursor at the column.
         Assert.Equal(new AnsiWrite(23, 5, Placeholder), writes[1]);
         Assert.EndsWith("\u001b[23;5H", second.Output);
@@ -906,14 +906,14 @@ public class LineEditorTests
         console.Input.PushKey(ConsoleKey.Escape);
         console.Input.PushKey(ConsoleKey.Enter);
 
-        editor.ReadLine(5, 23, 11, null, Placeholder);
+        editor.ReadLine(5, 23, 10, null, Placeholder);
 
         List<AnsiWrite> row = InputRow(console).Where(w => w.Text.Length > 0).ToList();
-        // Room is width - 1 = 10. Typing blanks only those 10 cells, and the placeholder is cropped to them.
-        Assert.All(row, w => Assert.True(w.Column + w.Text.Length - 1 <= 5 + 10 - 1));
-        Assert.Equal("Type /help", row[^1].Text);
-        Assert.Equal("a" + new string(' ', 9), row[0].Text);
-        Assert.DoesNotContain("Type /help ", console.Output);
+        // Room is width - 1 = 9. Typing blanks only those 9 cells, and the placeholder is cropped to them.
+        Assert.All(row, w => Assert.True(w.Column + w.Text.Length - 1 <= 5 + 9 - 1));
+        Assert.Equal("Type help", row[^1].Text);
+        Assert.Equal("a" + new string(' ', 8), row[0].Text);
+        Assert.DoesNotContain("Type help ", console.Output);
     }
 
     // AC-7
@@ -930,7 +930,7 @@ public class LineEditorTests
         run.Editor.ReadLine(5, 23, 70, run.Area, Placeholder);
 
         Assert.DoesNotContain("\u001b[2J", run.Console.Output);
-        Assert.Contains(AnsiWrites.Parse(run.Console.Output), w => w.Row == HintRow && w.Text.StartsWith("/today", StringComparison.Ordinal));
+        Assert.Contains(AnsiWrites.Parse(run.Console.Output), w => w.Row == HintRow && w.Text.StartsWith("today", StringComparison.Ordinal));
     }
 
     // AC-7
@@ -944,7 +944,7 @@ public class LineEditorTests
 
         editor.ReadLine(5, 23, 70);
 
-        Assert.DoesNotContain("Type /help", console.Output);
+        Assert.DoesNotContain("Type help", console.Output);
         Assert.Equal(new AnsiWrite(23, 5, " "), AnsiWrites.Parse(console.Output).Last(w => w.Row == 23 && w.Text.Length > 0));
     }
 
@@ -1055,10 +1055,10 @@ public class LineEditorTests
     public void LongInput_Enter_ReturnsFullLine_AndAddsItToHistoryInFull()
     {
         (TestConsole console, LineEditor editor) = CreateAnsi();
-        console.Input.PushTextWithEnter("/checkin something long");
+        console.Input.PushTextWithEnter("checkin something long");
 
-        Assert.Equal("/checkin something long", editor.ReadLine(5, 23, 11));
-        Assert.Equal(["/checkin something long"], editor.History);
+        Assert.Equal("checkin something long", editor.ReadLine(5, 23, 11));
+        Assert.Equal(["checkin something long"], editor.History);
     }
 
     // AC-5
@@ -1066,10 +1066,10 @@ public class LineEditorTests
     public void LongInput_Enter_WithPopup_ReturnsFullLine_CursorAtRoomEnd()
     {
         PopupRun run = new PopupRun();
-        run.Console.Input.PushTextWithEnter("/checkin something long");
+        run.Console.Input.PushTextWithEnter("checkin something long");
 
-        Assert.Equal("/checkin something long", run.Editor.ReadLine(5, 23, 11, run.Area));
-        Assert.Equal(["/checkin something long"], run.Editor.History);
+        Assert.Equal("checkin something long", run.Editor.ReadLine(5, 23, 11, run.Area));
+        Assert.Equal(["checkin something long"], run.Editor.History);
         Assert.EndsWith("\u001b[23;15H", run.Console.Output);
     }
 
@@ -1100,13 +1100,13 @@ public class LineEditorTests
         console.Input.PushKey(ConsoleKey.Escape);
         console.Input.PushKey(ConsoleKey.Enter);
 
-        Assert.Equal(string.Empty, editor.ReadLine(5, 23, 11, null, Placeholder));
+        Assert.Equal(string.Empty, editor.ReadLine(5, 23, 10, null, Placeholder));
 
-        // The cropped placeholder fills all 10 cells, so nothing of the cue or tail can remain.
+        // The cropped placeholder fills all 9 cells, so nothing of the cue or tail can remain.
         AnsiWrite last = InputWrites(console)[^1];
-        Assert.Equal(new AnsiWrite(23, 5, "Type /help"), last);
+        Assert.Equal(new AnsiWrite(23, 5, "Type help"), last);
         Assert.DoesNotContain(Ellipsis, last.Text);
-        Assert.Matches(Grey + "Type /help", console.Output);
+        Assert.Matches(Grey + "Type help", console.Output);
         Assert.EndsWith("\u001b[23;5H", console.Output);
     }
 
@@ -1126,17 +1126,17 @@ public class LineEditorTests
 
     // AC-7
     [Fact]
-    public void LongInput_SlashLine_WithPopup_PopupRedrawnPerKey_CursorAtRoomEnd_NoClear()
+    public void LongInput_CommandLine_WithPopup_PopupRedrawnPerKey_CursorAtRoomEnd_NoClear()
     {
         PopupRun run = new PopupRun();
-        run.Console.Input.PushText("/checkin_x_y_z");
+        run.Console.Input.PushText("checkin_x_y_z");
         run.Console.Input.PushKey(ConsoleKey.Enter);
 
         run.Editor.ReadLine(5, 23, 11, run.Area);
 
         string output = run.Console.Output;
         Assert.DoesNotContain("\u001b[2J", output);
-        Assert.Equal(14, run.PopupDraws());
+        Assert.Equal(13, run.PopupDraws());
         List<AnsiWrite> writes = AnsiWrites.Parse(output).Where(w => w.Row == 23 && w.Text.Length > 0).ToList();
         Assert.Equal(new AnsiWrite(23, 5, Ellipsis + "kin_x_y_z"), writes[^1]);
         AssertInsideRoom(writes, 5, 10);
@@ -1180,16 +1180,16 @@ public class LineEditorTests
     {
         (TestConsole console, LineEditor editor) = Create();
         List<int> calls = [];
-        console.Input.PushTextWithEnter("/help");
-        console.Input.PushText("/to");
+        console.Input.PushTextWithEnter("help");
+        console.Input.PushText("to");
         console.Input.PushKey(Key(key, shift, control));
         console.Input.PushTextWithEnter("day");
 
-        Assert.Equal("/help", editor.ReadLine(5, 23, 70, scroll: (d, _) => { calls.Add(d); return true; }));
-        Assert.Equal("/today", editor.ReadLine(5, 23, 70, scroll: (d, _) => { calls.Add(d); return true; }));
+        Assert.Equal("help", editor.ReadLine(5, 23, 70, scroll: (d, _) => { calls.Add(d); return true; }));
+        Assert.Equal("today", editor.ReadLine(5, 23, 70, scroll: (d, _) => { calls.Add(d); return true; }));
 
         Assert.Equal([direction], calls);
-        Assert.Equal(["/help", "/today"], editor.History);
+        Assert.Equal(["help", "today"], editor.History);
     }
 
     // AC-5 (037)
@@ -1199,8 +1199,8 @@ public class LineEditorTests
     {
         (TestConsole console, LineEditor editor) = Create();
         List<int> calls = [];
-        console.Input.PushTextWithEnter("/prev");
-        console.Input.PushTextWithEnter("/next");
+        console.Input.PushTextWithEnter("prev");
+        console.Input.PushTextWithEnter("next");
         console.Input.PushKey(ConsoleKey.UpArrow);
         console.Input.PushKey(Key(key, shift, control));
         console.Input.PushKey(Key(key, shift, control));
@@ -1212,7 +1212,7 @@ public class LineEditorTests
         editor.ReadLine(5, 23, 70, scroll: scroll);
 
         // Up, two scroll keys, Up: two steps back through history, as if the scroll keys were not there.
-        Assert.Equal("/prev", editor.ReadLine(5, 23, 70, scroll: scroll));
+        Assert.Equal("prev", editor.ReadLine(5, 23, 70, scroll: scroll));
         Assert.Equal([direction, direction], calls);
     }
 
@@ -1222,7 +1222,7 @@ public class LineEditorTests
     {
         (TestConsole console, LineEditor editor) = Create();
         List<int> calls = [];
-        console.Input.PushTextWithEnter("/help");
+        console.Input.PushTextWithEnter("help");
         console.Input.PushKey(ConsoleKey.UpArrow);
         console.Input.PushKey(ConsoleKey.DownArrow);
         console.Input.PushKey(ConsoleKey.UpArrow);
@@ -1231,7 +1231,7 @@ public class LineEditorTests
         Func<int, ScrollStep, bool> scroll = (d, _) => { calls.Add(d); return true; };
         editor.ReadLine(5, 23, 70, scroll: scroll);
 
-        Assert.Equal("/help", editor.ReadLine(5, 23, 70, scroll: scroll));
+        Assert.Equal("help", editor.ReadLine(5, 23, 70, scroll: scroll));
         Assert.Empty(calls);
     }
 
@@ -1242,15 +1242,15 @@ public class LineEditorTests
     {
         _ = direction;
         (TestConsole console, LineEditor editor) = Create();
-        console.Input.PushTextWithEnter("/help");
-        console.Input.PushText("/x");
+        console.Input.PushTextWithEnter("help");
+        console.Input.PushText("x");
         console.Input.PushKey(Key(key, shift, control));
         console.Input.PushKey(ConsoleKey.Enter);
 
         Read(editor);
 
-        Assert.Equal("/x", Read(editor));
-        Assert.Equal(["/help", "/x"], editor.History);
+        Assert.Equal("x", Read(editor));
+        Assert.Equal(["help", "x"], editor.History);
     }
 
     // AC-7 (037)
@@ -1315,8 +1315,8 @@ public class LineEditorTests
         });
 
         List<AnsiWrite> after = AnsiWrites.Parse(run.Console.Output[scrolledAt..]);
-        Assert.Contains(after, w => w.Row == HintRow && w.Text.StartsWith('/'));
-        Assert.True(after.FindIndex(w => w.Row == HintRow && w.Text.StartsWith('/')) < after.FindIndex(w => w.Row == 23 && w.Column == 5));
+        Assert.Contains(after, w => w.Row == HintRow && w.StartsWithCommand);
+        Assert.True(after.FindIndex(w => w.Row == HintRow && w.StartsWithCommand) < after.FindIndex(w => w.Row == 23 && w.Column == 5));
     }
 
     // Mouse wheel (job 038) -----------------------------------------------------------------
@@ -1339,7 +1339,7 @@ public class LineEditorTests
     {
         (TestConsole console, LineEditor editor) = Create();
         List<(int, ScrollStep)> calls = [];
-        console.Input.PushText("/to");
+        console.Input.PushText("to");
         PushSequence(console, WheelUp);
         PushSequence(console, WheelDown);
         PushSequence(console, WheelDown);
@@ -1347,9 +1347,9 @@ public class LineEditorTests
 
         string? line = editor.ReadLine(5, 23, 70, scroll: (d, step) => { calls.Add((d, step)); return true; });
 
-        Assert.Equal("/today", line);
+        Assert.Equal("today", line);
         Assert.Equal([(-1, ScrollStep.Wheel), (1, ScrollStep.Wheel), (1, ScrollStep.Wheel)], calls);
-        Assert.Equal(["/today"], editor.History);
+        Assert.Equal(["today"], editor.History);
     }
 
     // AC-6
@@ -1389,8 +1389,8 @@ public class LineEditorTests
     public void Wheel_DoesNotMoveTheHistoryPosition()
     {
         (TestConsole console, LineEditor editor) = Create();
-        console.Input.PushTextWithEnter("/prev");
-        console.Input.PushTextWithEnter("/next");
+        console.Input.PushTextWithEnter("prev");
+        console.Input.PushTextWithEnter("next");
         console.Input.PushKey(ConsoleKey.UpArrow);
         PushSequence(console, WheelUp);
         PushSequence(console, WheelDown);
@@ -1402,8 +1402,8 @@ public class LineEditorTests
         editor.ReadLine(5, 23, 70, scroll: scroll);
 
         // Up, two notches, Up: two steps back through history, as if the notches were not there.
-        Assert.Equal("/prev", editor.ReadLine(5, 23, 70, scroll: scroll));
-        Assert.Equal(["/prev", "/next", "/prev"], editor.History);
+        Assert.Equal("prev", editor.ReadLine(5, 23, 70, scroll: scroll));
+        Assert.Equal(["prev", "next", "prev"], editor.History);
     }
 
     // AC-6
@@ -1435,7 +1435,7 @@ public class LineEditorTests
     public void Wheel_KeepsADismissedPopupClosed()
     {
         PopupRun run = new PopupRun();
-        run.Console.Input.PushText("/t");
+        run.Console.Input.PushText("t");
         run.Console.Input.PushKey(ConsoleKey.Escape);
         PushSequence(run.Console, WheelDown);
         run.Console.Input.PushText("o");
@@ -1448,9 +1448,9 @@ public class LineEditorTests
             return true;
         });
 
-        Assert.Equal("/to", line);
+        Assert.Equal("to", line);
         List<AnsiWrite> after = AnsiWrites.Parse(run.Console.Output[scrolledAt..]);
-        Assert.DoesNotContain(after, w => w.Column == 1 && w.Text.StartsWith('/'));
+        Assert.DoesNotContain(after, w => w.Column == 1 && w.StartsWithCommand);
     }
 
     // AC-7
@@ -1470,8 +1470,8 @@ public class LineEditorTests
         {
             PopupRun run = new PopupRun();
             List<int> calls = [];
-            run.Console.Input.PushTextWithEnter("/help");
-            run.Console.Input.PushText("/t");
+            run.Console.Input.PushTextWithEnter("help");
+            run.Console.Input.PushText("t");
             if (withSequence)
             {
                 PushSequence(run.Console, sequence);
@@ -1488,11 +1488,11 @@ public class LineEditorTests
             run.Console.Input.PushKey(ConsoleKey.UpArrow);
             run.Console.Input.PushKey(ConsoleKey.Enter);
 
-            Assert.Equal("/help", run.Editor.ReadLine(5, 23, 70, run.Area, scroll: (d, _) => { calls.Add(d); return true; }));
-            Assert.Equal("/today", run.Editor.ReadLine(5, 23, 70, run.Area, scroll: (d, _) => { calls.Add(d); return true; }));
-            Assert.Equal("/help", run.Editor.ReadLine(5, 23, 70, run.Area, scroll: (d, _) => { calls.Add(d); return true; }));
+            Assert.Equal("help", run.Editor.ReadLine(5, 23, 70, run.Area, scroll: (d, _) => { calls.Add(d); return true; }));
+            Assert.Equal("today", run.Editor.ReadLine(5, 23, 70, run.Area, scroll: (d, _) => { calls.Add(d); return true; }));
+            Assert.Equal("help", run.Editor.ReadLine(5, 23, 70, run.Area, scroll: (d, _) => { calls.Add(d); return true; }));
             Assert.Empty(calls);
-            Assert.Equal(["/help", "/today", "/help"], run.Editor.History);
+            Assert.Equal(["help", "today", "help"], run.Editor.History);
             return run.Console.Output;
         }
 
@@ -1571,7 +1571,7 @@ public class LineEditorTests
     {
         TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
         PausingInput input = new PausingInput();
-        input.Push("/t");
+        input.Push("t");
         input.Push(Esc, pause: true);
         input.Push("o");
         input.Push(Enter);
@@ -1579,7 +1579,7 @@ public class LineEditorTests
         PopupArea area = new PopupArea(HintRow, 80, restored.Add);
         LineEditor editor = new LineEditor(new InputOverrideConsole(console, input), CommandRegistry.CreateDefault());
 
-        Assert.Equal("/to", editor.ReadLine(5, 23, 70, area, scroll: (_, _) => true));
+        Assert.Equal("to", editor.ReadLine(5, 23, 70, area, scroll: (_, _) => true));
         Assert.Contains(HintRow, restored);
     }
 
@@ -1636,5 +1636,119 @@ public class LineEditorTests
         console.Input.PushKey(ConsoleKey.Enter);
 
         Assert.Equal(string.Empty, Read(editor));
+    }
+
+    // Commands without slash (job 040) ------------------------------------------------------
+
+    // AC-6 (040)
+    [Fact]
+    public void FirstCharacter_OpensPopup_ListingBareNames()
+    {
+        PopupRun run = new PopupRun();
+        run.Console.Input.PushText("t");
+        run.Console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal("t", run.Read());
+        Assert.Equal(1, run.PopupDraws());
+        Assert.Equal("today  Go back to today", AnsiWrites.AtRow(run.Console.Output, HintRow)[0].TrimEnd());
+        Assert.DoesNotContain(AnsiWrites.Parse(run.Console.Output), w => w.Column == 1 && w.Text.StartsWith('/'));
+    }
+
+    // AC-6 (040)
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData(" t")]
+    public void EmptyLine_OrLeadingWhitespace_DrawsNoPopup(string typed)
+    {
+        PopupRun run = new PopupRun();
+        run.Console.Input.PushText(typed);
+        run.Console.Input.PushKey(ConsoleKey.Enter);
+
+        run.Read();
+
+        Assert.Equal(0, run.PopupDraws());
+        Assert.Empty(run.Restored);
+    }
+
+    // AC-7 (040)
+    [Fact]
+    public void Escape_KeepsPopupClosedWhileTyping_UntilLineIsClearedByBackspace()
+    {
+        PopupRun run = new PopupRun();
+        run.Console.Input.PushText("t");
+        run.Console.Input.PushKey(ConsoleKey.Escape);
+        run.Console.Input.PushText("oday");
+        run.Console.Input.PushKey(ConsoleKey.Backspace);
+        run.Console.Input.PushKey(ConsoleKey.Backspace);
+        run.Console.Input.PushKey(ConsoleKey.Backspace);
+        run.Console.Input.PushKey(ConsoleKey.Backspace);
+        run.Console.Input.PushKey(ConsoleKey.Backspace);
+        run.Console.Input.PushText("n");
+        run.Console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal("n", run.Read());
+        // "t" drew it; Esc closed it; "oday" and the Backspaces down to "" did not; "n" did again.
+        Assert.Equal(2, run.PopupDraws());
+        Assert.Equal("restored 21", run.ScreenAfterKey(2)[HintRow]);
+        Assert.StartsWith("next", AnsiWrites.AtRow(run.Console.Output, HintRow).Last(t => !t.StartsWith("restored", StringComparison.Ordinal)));
+    }
+
+    // AC-8 (040)
+    [Theory]
+    [InlineData("he", "help")]
+    [InlineData("/he", "/help")]
+    [InlineData("HE", "help")]
+    [InlineData("/He", "/help")]
+    public void Tab_CompletesBareName_KeepingTheUsersSlash(string typed, string expected)
+    {
+        PopupRun run = new PopupRun();
+        run.Console.Input.PushText(typed);
+        run.Console.Input.PushKey(ConsoleKey.Tab);
+        run.Console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal(expected, run.Read());
+    }
+
+    // AC-8 (040)
+    [Fact]
+    public void Tab_OnB_ExtendsToBreak_AndShowsTheTabList()
+    {
+        PopupRun run = new PopupRun(HintRow, "break", "breakend");
+        run.Console.Input.PushText("b");
+        run.Console.Input.PushKey(ConsoleKey.Tab);
+        run.Console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal("break", run.Read());
+        Dictionary<int, string> screen = run.ScreenAfterKey(2);
+        Assert.Equal("2 commands start with break", screen[HintRow]);
+        Assert.StartsWith("break ", screen[19]);
+        Assert.StartsWith("breakend", screen[20]);
+    }
+
+    // AC-8 (040)
+    [Fact]
+    public void Tab_OnEmptyLine_DoesNothing_AndOpensNoPopup()
+    {
+        PopupRun run = new PopupRun();
+        run.Console.Input.PushKey(ConsoleKey.Tab);
+        run.Console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal(string.Empty, run.Read());
+        Assert.Equal(0, run.PopupDraws());
+        Assert.Empty(run.Restored);
+    }
+
+    // AC-6 (040): a lone '/' still opens the popup with every command, and Tab gives the full Tab list.
+    [Fact]
+    public void Tab_OnLoneSlash_ListsEveryCommand()
+    {
+        PopupRun run = new PopupRun();
+        run.Console.Input.PushText("/");
+        run.Console.Input.PushKey(ConsoleKey.Tab);
+        run.Console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal("/", run.Read());
+        Assert.Equal("5 commands start with /", run.ScreenAfterKey(2)[HintRow]);
     }
 }
