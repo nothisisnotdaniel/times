@@ -4592,4 +4592,30 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
         return console.Output;
     }
+
+    // AC-7 (047)
+    [Fact]
+    public void Day_ShortBreak_ShowsBreakLineAndWarning()
+    {
+        (int exitCode, string output) = RunWide(120, "arrive 8:00", "break 12:00", "breakend 12:20", "leave 17:00", "quit");
+
+        Assert.Equal(0, exitCode);
+        string frame = LastFrame(output);
+        Assert.Contains("Breaks 0:20 taken · 0:30 required", frame);
+        Assert.Contains("Breaks too short: 0:10 missing", frame);
+    }
+
+    // AC-7 (047)
+    [Fact]
+    public void Day_BreakEndChanged_ClearsWarning()
+    {
+        (int exitCode, string output) =
+            RunWide(120, "arrive 8:00", "break 12:00", "breakend 12:20", "leave 17:00", "change 3 12:30", "quit");
+
+        Assert.Equal(0, exitCode);
+        string frame = LastFrame(output);
+        Assert.Matches(@"3 +Break end +12:30", frame);
+        Assert.Contains("Breaks 0:30 taken · 0:30 required", frame);
+        Assert.DoesNotContain("too short", frame);
+    }
 }

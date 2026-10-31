@@ -161,10 +161,11 @@ public class DayViewTests
         console.Write(view.Render(record));
 
         string[] lines = console.Lines.Select(l => l.Trim()).Where(l => l.Length > 0).ToArray();
-        Assert.Equal(4, lines.Length);
+        Assert.Equal(5, lines.Length);
         Assert.Matches(@"^1 +Arrival +08:15 +left +8:00$", lines[1]);
         Assert.Matches(@"^2 +Leaving +12:00 +left +4:15$", lines[2]);
         Assert.Matches(@"^3 +Arrival +13:00 +left +4:15$", lines[3]);
+        Assert.Equal("Breaks 0:00 taken · 0:00 required", lines[4]);
         Assert.DoesNotContain("—", console.Output);
     }
 
@@ -256,14 +257,16 @@ public class DayViewTests
         console.Write(view.Render(record));
 
         string[] lines = console.Lines.Select(l => l.TrimEnd()).Where(l => l.Trim().Length > 0).ToArray();
-        Assert.Equal(5, lines.Length);
+        Assert.Equal(7, lines.Length);
         Assert.Matches(@"^1 +Arrival +08:00 +left +8:00$", lines[1]);
         Assert.Matches(@"^2 +Leaving +12:00 +left +4:00$", lines[2]);
         Assert.Matches(@"^3 +Arrival +12:30 +left +4:00$", lines[3]);
         Assert.Matches(@"^4 +Leaving +17:00 +left -0:30$", lines[4]);
+        Assert.Equal("Breaks 0:00 taken · 0:30 required", lines[5]);
+        Assert.Equal("Breaks too short: 0:30 missing", lines[6]);
 
-        // The value column is right-aligned, so every row ends at the same column.
-        int[] ends = lines[1..].Select(l => l.Length).Distinct().ToArray();
+        // The value column is right-aligned, so every entry row ends at the same column.
+        int[] ends = lines[1..5].Select(l => l.Length).Distinct().ToArray();
         Assert.Single(ends);
     }
 
@@ -328,7 +331,7 @@ public class DayViewTests
         console.Write(new DayView(FixedTimeProvider.At20261027()).Render(AllKinds()));
 
         string[] lines = console.Lines.Select(l => l.TrimEnd()).Where(l => l.Trim().Length > 0).ToArray();
-        Assert.Equal(7, lines.Length);
+        Assert.Equal(8, lines.Length);
         Assert.Matches(@"^1 +Arrival +08:00 +left +8:00$", lines[1]);
         Assert.Matches(@"^2 +Checkpoint +09:30 +Standup #5678 +left +6:30$", lines[2]);
         Assert.Matches(@"^3 +Break start +12:00 +left +4:00$", lines[3]);
@@ -336,9 +339,10 @@ public class DayViewTests
         Assert.Matches(@"^5 +Checkpoint +15:00 +2024 review +left +1:30$", lines[5]);
         Assert.Matches(@"^6 +Leaving +17:00 +left +-0:30$", lines[6]);
         Assert.DoesNotContain("#", lines[5]);
+        Assert.Equal("Breaks 0:30 taken · 0:30 required", lines[7]);
 
         // The left cell is the right-aligned last column, so every entry row ends at the same column.
-        Assert.Single(lines[1..].Select(l => l.Length).Distinct());
+        Assert.Single(lines[1..7].Select(l => l.Length).Distinct());
     }
 
     // AC-5 (045)
@@ -430,7 +434,8 @@ public class DayViewTests
         Assert.Matches(@"^1 +Arrival +08:00 +left +8:00$", lines[1]);
         Assert.Matches(@"^2 +Break start +12:00 +left +4:00$", lines[2]);
         Assert.Matches(@"^3 +Leaving +17:00 +left +4:00$", lines[3]);
-        Assert.Single(lines[1..].Select(l => l.Length).Distinct());
+        Assert.Equal("Breaks 5:00 taken · 0:00 required", lines[4]);
+        Assert.Single(lines[1..4].Select(l => l.Length).Distinct());
 
         // Same single space between the time and "left" as a day with only arrival and leaving.
         TestConsole plain = new TestConsole();
@@ -438,6 +443,135 @@ public class DayViewTests
             [new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)), new DayEntry(EntryKind.Leaving, new TimeOnly(12, 0))])));
         string[] plainLines = plain.Lines.Select(l => l.TrimEnd()).Where(l => l.Trim().Length > 0).ToArray();
         Assert.Equal(plainLines[1][plainLines[1].IndexOf("08:00", StringComparison.Ordinal)..], lines[1][lines[1].IndexOf("08:00", StringComparison.Ordinal)..]);
+    }
+
+    private static string[] BreakLines(DayRecord record)
+    {
+        TestConsole console = new TestConsole();
+        console.Profile.Width = 120;
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record));
+        return console.Lines.Select(l => l.TrimEnd()).Where(l => l.Trim().Length > 0).ToArray();
+    }
+
+    private static string BreakAnsi(DayRecord record)
+    {
+        TestConsole console = new TestConsole().EmitAnsiSequences();
+        console.Profile.Width = 120;
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record));
+        return console.Output;
+    }
+
+    private static DayRecord ShortBreakDay() => new DayRecord(
+    [
+        new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)),
+        new DayEntry(EntryKind.BreakStart, new TimeOnly(12, 0)),
+        new DayEntry(EntryKind.BreakEnd, new TimeOnly(12, 20)),
+        new DayEntry(EntryKind.Leaving, new TimeOnly(17, 0)),
+    ]);
+
+    private static DayRecord LongBreakDay() => new DayRecord(
+    [
+        new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)),
+        new DayEntry(EntryKind.BreakStart, new TimeOnly(12, 0)),
+        new DayEntry(EntryKind.BreakEnd, new TimeOnly(12, 40)),
+        new DayEntry(EntryKind.Leaving, new TimeOnly(17, 0)),
+    ]);
+
+    // AC-4, AC-5 (047)
+    [Fact]
+    public void Render_BreakLine_FollowsLastEntryRow_ThenWarningWhenShort()
+    {
+        string[] lines = BreakLines(ShortBreakDay());
+
+        Assert.Equal(7, lines.Length);
+        Assert.Matches(@"^4 +Leaving +17:00 +left", lines[4]);
+        Assert.Equal("Breaks 0:20 taken · 0:30 required", lines[5]);
+        Assert.Equal("Breaks too short: 0:10 missing", lines[6]);
+    }
+
+    // AC-4 (047)
+    [Fact]
+    public void Render_BreakLine_GreyWords_SteelBlueValues()
+    {
+        string output = BreakAnsi(ShortBreakDay());
+
+        Assert.Contains("\u001b[38;5;8mBreaks\u001b[0m \u001b[38;5;75m0:20\u001b[0m \u001b[38;5;8mtaken · \u001b[0m\u001b[38;5;75m0:30\u001b[0m \u001b[38;5;8mrequired", output);
+    }
+
+    // AC-5 (047)
+    [Fact]
+    public void Render_ShortBreak_WarningIsYellow()
+    {
+        string output = BreakAnsi(ShortBreakDay());
+
+        Assert.Contains("\u001b[38;5;11mBreaks too short: 0:10 missing", output);
+    }
+
+    // AC-5 (047)
+    [Fact]
+    public void Render_LongerBreakThanRequired_NoWarningAndNoYellow()
+    {
+        string[] lines = BreakLines(LongBreakDay());
+        string output = BreakAnsi(LongBreakDay());
+
+        Assert.Equal("Breaks 0:40 taken · 0:30 required", lines[^1]);
+        Assert.DoesNotContain("too short", output);
+        Assert.DoesNotContain("\u001b[93m", output);
+        Assert.DoesNotContain("\u001b[33m", output);
+        Assert.DoesNotContain("\u001b[38;5;11m", output);
+    }
+
+    // AC-5 (047)
+    [Fact]
+    public void Render_BreakEqualToRequired_OrNoneRequired_NoWarning()
+    {
+        DayRecord equal = new DayRecord(
+        [
+            new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)),
+            new DayEntry(EntryKind.BreakStart, new TimeOnly(12, 0)),
+            new DayEntry(EntryKind.BreakEnd, new TimeOnly(12, 30)),
+            new DayEntry(EntryKind.Leaving, new TimeOnly(17, 0)),
+        ]);
+        DayRecord none = new DayRecord(
+            [new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)), new DayEntry(EntryKind.Leaving, new TimeOnly(14, 0))]);
+
+        Assert.Equal("Breaks 0:30 taken · 0:30 required", BreakLines(equal)[^1]);
+        Assert.Equal("Breaks 0:00 taken · 0:00 required", BreakLines(none)[^1]);
+        foreach (string output in new[] { BreakAnsi(equal), BreakAnsi(none) })
+        {
+            Assert.DoesNotContain("too short", output);
+            Assert.DoesNotContain("\u001b[93m", output);
+            Assert.DoesNotContain("\u001b[33m", output);
+            Assert.DoesNotContain("\u001b[38;5;11m", output);
+        }
+    }
+
+    // AC-6 (047)
+    [Fact]
+    public void Render_EmptyDay_HasNoBreakLine()
+    {
+        TestConsole console = new TestConsole();
+
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(DayRecord.Empty));
+
+        string[] lines = console.Lines.Select(l => l.Trim()).Where(l => l.Length > 0).ToArray();
+        Assert.Equal(2, lines.Length);
+        Assert.Equal("No entries yet.", lines[1]);
+        Assert.DoesNotContain("Breaks", console.Output);
+    }
+
+    // AC-6 (047)
+    [Fact]
+    public void RenderUnreadable_HasNoBreakLine()
+    {
+        TestConsole console = new TestConsole();
+
+        console.Write(new DayView(FixedTimeProvider.At20261027()).RenderUnreadable("Could not read the day."));
+
+        string[] lines = console.Lines.Select(l => l.Trim()).Where(l => l.Length > 0).ToArray();
+        Assert.Equal(2, lines.Length);
+        Assert.Equal("Could not read the day.", lines[1]);
+        Assert.DoesNotContain("Breaks", console.Output);
     }
 
     private static int CountOf(string text, string value)

@@ -59,6 +59,11 @@ internal sealed class DayView
     /// follows the time: the checkpoint's escaped name and, if it has one, its grey work item
     /// (<c>#5678</c>). Every row, of every kind, ends with the work time left at that entry's time
     /// (grey <c>left</c> plus the right-aligned value, see <see cref="DayRecord.TimeLeft"/>).
+    /// Below the last entry row, a break line shows the break taken and the break required for the
+    /// day's work time (<c>Breaks 0:20 taken · 0:30 required</c>, grey words, <c>SteelBlue1</c>
+    /// values, see <see cref="DayRecord.BreakTime"/> and <see cref="DayRecord.RequiredBreak"/>). When
+    /// the break taken is shorter than required, a yellow line follows:
+    /// <c>Breaks too short: 0:10 missing</c>. The empty day shows neither line.
     /// </summary>
     public IRenderable Render(DayRecord day)
     {
@@ -100,7 +105,17 @@ internal sealed class DayView
             grid.AddRow(cells.ToArray());
         }
 
-        return new Rows(HeadingRule(), grid);
+        List<IRenderable> rows = [HeadingRule(), grid];
+        TimeSpan taken = day.BreakTime();
+        TimeSpan required = DayRecord.RequiredBreak(day.WorkTime());
+        rows.Add(new Markup(
+            $"[grey]Breaks[/] [steelblue1]{FormatTimeLeft(taken)}[/] [grey]taken · [/][steelblue1]{FormatTimeLeft(required)}[/] [grey]required[/]"));
+        if (taken < required)
+        {
+            rows.Add(new Markup($"[yellow]Breaks too short: {FormatTimeLeft(required - taken)} missing[/]"));
+        }
+
+        return new Rows(rows);
     }
 
     private static string Label(EntryKind kind) => kind switch
