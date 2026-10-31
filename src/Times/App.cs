@@ -24,6 +24,7 @@ internal sealed class App
     private readonly DayView dayView;
     private readonly bool folderFromEnvironment;
     private readonly ProjectStore projectStore;
+    private readonly MouseReporting? mouse;
 
     // The last drawn frame, one entry per screen row, so rows the command popup covered can be restored.
     // A scroll replaces it, so the popup restores the scrolled rows.
@@ -35,9 +36,15 @@ internal sealed class App
     private int offset;
     private IRenderable frameHint = Text.Empty;
 
+    /// <summary>Lines one mouse-wheel notch moves the top area.</summary>
+    public const int WheelLines = 3;
+
     /// <param name="folderFromEnvironment">True if the store's folder came from <see cref="DataFolder.VariableName"/>.</param>
-    public App(IAnsiConsole console, TimeProvider time, DayStore store, CommandRegistry? registry = null, bool folderFromEnvironment = false)
+    /// <param name="mouse">Turned on while the loop runs and off on every way out of it, or <c>null</c> for none.</param>
+    public App(IAnsiConsole console, TimeProvider time, DayStore store, CommandRegistry? registry = null,
+        bool folderFromEnvironment = false, MouseReporting? mouse = null)
     {
+        this.mouse = mouse;
         this.console = console;
         this.time = time;
         this.folderFromEnvironment = folderFromEnvironment;
@@ -475,6 +482,20 @@ internal sealed class App
             return 2;
         }
 
+        // Mouse reporting is on only while the loop runs: off again on every exit, even an exception.
+        mouse?.Enable();
+        try
+        {
+            return Loop();
+        }
+        finally
+        {
+            mouse?.Disable();
+        }
+    }
+
+    private int Loop()
+    {
         LineEditor editor = new LineEditor(console, registry);
         IRenderable? message = null;
         IRenderable? hint = null;
@@ -601,12 +622,14 @@ internal sealed class App
         return Segment.SplitLines(layout.GetSegments(console));
     }
 
-    // Moves the top area one page up (-1) or down (+1) and rewrites only its rows in place. Returns
-    // false, writing nothing, if the offset stays the same (at the top, at the bottom, or it fits).
-    private bool Scroll(int direction)
+    // Moves the top area one page or one wheel notch (WheelLines) up (-1) or down (+1) and rewrites
+    // only its rows in place. Returns false, writing nothing, if the offset stays the same (at the
+    // top, at the bottom, or it fits).
+    private bool Scroll(int direction, ScrollStep step)
     {
         int topHeight = TopHeight;
-        int next = Math.Clamp(offset + (direction * TopArea.PageSize(topHeight)), 0, TopArea.MaxOffset(topLines.Count, topHeight));
+        int lines = step == ScrollStep.Wheel ? WheelLines : TopArea.PageSize(topHeight);
+        int next = Math.Clamp(offset + (direction * lines), 0, TopArea.MaxOffset(topLines.Count, topHeight));
         if (next == offset)
         {
             return false;

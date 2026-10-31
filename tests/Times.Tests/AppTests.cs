@@ -3770,4 +3770,245 @@ public sealed class AppTests : IDisposable
         Assert.Equal(2, screens.Count);
         Assert.Matches(@"^↑ \d+ more lines above · PgUp$", screens[1][0]);
     }
+
+    // Mouse wheel (job 038) -----------------------------------------------------------------
+
+    private const string MouseOn = "\u001b[?1000h\u001b[?1006h";
+    private const string MouseOff = "\u001b[?1006l\u001b[?1000l";
+
+    /// <summary>Pushes one SGR wheel notch: Esc, then <c>[&lt;64;…M</c> (up) or <c>[&lt;65;…M</c> (down).</summary>
+    private static void Wheel(TestConsole console, int direction, int count = 1)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            console.Input.PushKey(new ConsoleKeyInfo('\u001b', ConsoleKey.Escape, false, false, false));
+            console.Input.PushText(direction < 0 ? "[<64;10;5M" : "[<65;10;5M");
+        }
+    }
+
+    private (int ExitCode, string Output) RunWithMouse(Action<TestConsole> input, string[]? args = null, string? folder = null, CommandRegistry? registry = null)
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        input(console);
+        App app = new App(console, FixedTimeProvider.At20261027(), new DayStore(folder ?? data.Path), registry, mouse: new MouseReporting(console));
+        int exitCode = app.Run(args ?? []);
+        return (exitCode, console.Output);
+    }
+
+    private static void AssertMouseOnThenOff(string output, int lastFrameEnd)
+    {
+        Assert.Equal(1, Count(output, MouseOn));
+        Assert.Equal(1, Count(output, MouseOff));
+        int on = output.IndexOf(MouseOn, StringComparison.Ordinal);
+        int off = output.IndexOf(MouseOff, StringComparison.Ordinal);
+        Assert.True(on < output.IndexOf(ClearScreen, StringComparison.Ordinal), "mouse on before the first clear");
+        Assert.True(off >= lastFrameEnd, "mouse off after the last frame");
+        Assert.DoesNotContain("\u001b[?100", output[(off + MouseOff.Length)..]);
+    }
+
+    // AC-1
+    [Fact]
+    public void Run_TurnsMouseReportingOn_BeforeTheFirstClear_AndOffAfterQuit()
+    {
+        (int exitCode, string output) = RunWithMouse(c =>
+        {
+            c.Input.PushTextWithEnter("/help");
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        Assert.Equal(0, exitCode);
+        AssertMouseOnThenOff(output, output.LastIndexOf(ClearScreen, StringComparison.Ordinal) + ClearScreen.Length);
+        Assert.EndsWith(MouseOff, output);
+    }
+
+    /// <summary>Console input that hands out its keys and then reports the end of input (null), unlike <c>TestConsoleInput</c>.</summary>
+    private sealed class EndingInput : IAnsiConsoleInput
+    {
+        private readonly Queue<ConsoleKeyInfo> keys = new();
+
+        public EndingInput(string text)
+        {
+            foreach (char c in text)
+            {
+                keys.Enqueue(c == '\r' ? new ConsoleKeyInfo(c, ConsoleKey.Enter, false, false, false) : new ConsoleKeyInfo(c, default, false, false, false));
+            }
+        }
+
+        public bool IsKeyAvailable() => keys.Count > 0;
+
+        public ConsoleKeyInfo? ReadKey(bool intercept) => keys.Count > 0 ? keys.Dequeue() : null;
+
+        public Task<ConsoleKeyInfo?> ReadKeyAsync(bool intercept, CancellationToken cancellationToken) =>
+            Task.FromResult(ReadKey(intercept));
+    }
+
+    // AC-1
+    [Fact]
+    public void Run_TurnsMouseReportingOff_WhenTheInputRunsOut()
+    {
+        TestConsole test = new TestConsole().Interactive().EmitAnsiSequences();
+        IAnsiConsole console = new InputOverrideConsole(test, new EndingInput("/help\r"));
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), mouse: new MouseReporting(console)).Run([]);
+        string output = test.Output;
+
+        Assert.Equal(0, exitCode);
+        AssertMouseOnThenOff(output, output.LastIndexOf('╰') + 1);
+        Assert.EndsWith(MouseOff, output);
+    }
+
+    // AC-2
+    [Fact]
+    public void Version_WritesNoMouseSequences()
+    {
+        (int exitCode, string output) = RunWithMouse(_ => { }, ["--version"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains($"Times {AppVersion.Current}", output);
+        Assert.DoesNotContain("\u001b[?100", output);
+    }
+
+    // AC-2
+    [Fact]
+    public void StartError_WritesNoMouseSequences()
+    {
+        (int exitCode, string output) = RunWithMouse(c => c.Input.PushTextWithEnter("/quit"), folder: "relative/folder");
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("Times cannot start", output);
+        Assert.DoesNotContain("\u001b[?100", output);
+    }
+
+    /// <summary>A message that throws when it is drawn.</summary>
+    private sealed class ThrowingRenderable : Spectre.Console.Rendering.IRenderable
+    {
+        public Spectre.Console.Rendering.Measurement Measure(Spectre.Console.Rendering.RenderOptions options, int maxWidth) =>
+            throw new InvalidOperationException("boom");
+
+        public IEnumerable<Spectre.Console.Rendering.Segment> Render(Spectre.Console.Rendering.RenderOptions options, int maxWidth) =>
+            throw new InvalidOperationException("boom");
+    }
+
+    // AC-3
+    [Fact]
+    public void Run_ThatThrows_HasStillTurnedMouseReportingOff()
+    {
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+        registry.Register("/boom", "Throws while drawing", _ => new CommandResult(new ThrowingRenderable()));
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Input.PushTextWithEnter("/boom");
+        console.Input.PushTextWithEnter("/quit");
+        App app = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), registry, mouse: new MouseReporting(console));
+
+        InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() => app.Run([]));
+
+        Assert.Equal("boom", ex.Message);
+        string output = console.Output;
+        AssertMouseOnThenOff(output, output.LastIndexOf('╰') + 1);
+        Assert.EndsWith(MouseOff, output);
+    }
+
+    // AC-9
+    [Fact]
+    public void Wheel_MovesTheTopAreaByThreeLines()
+    {
+        string[] full = UnclippedHelpTop().Select(l => l.TrimEnd()).ToArray();
+
+        string output = RunAnsi(c =>
+        {
+            c.Profile.Height = 12;
+            c.Input.PushTextWithEnter("/help");
+            Wheel(c, 1, 2);
+            Wheel(c, -1);
+            c.Input.PushKey(ConsoleKey.PageDown);
+            Wheel(c, 1);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("/quit");
+        }, ManyCommands());
+
+        // 12 rows: an 8-row top area, so one page is 6 lines and a notch 3.
+        string[] At(int offset) =>
+            [$"↑ {offset} more lines above · PgUp", .. full[offset..(offset + 6)], $"↓ {full.Length - offset - 6} {BelowCue}"];
+
+        List<string[]> screens = TopScreens(output, 1, 8);
+        Assert.Equal(6, screens.Count);
+        Assert.Equal(At(3), screens[1]);
+        Assert.Equal(At(6), screens[2]);
+        Assert.Equal(At(3), screens[3]);
+        Assert.Equal(At(9), screens[4]);
+        Assert.Equal(At(12), screens[5]);
+        Assert.DoesNotContain("Unknown command", output);
+        Assert.DoesNotContain("64;10", output);
+    }
+
+    // AC-9
+    [Fact]
+    public void Wheel_IsClamped_AtTheBottom_AndAtTheTop()
+    {
+        string[] full = UnclippedHelpTop().Select(l => l.TrimEnd()).ToArray();
+
+        string output = RunAnsi(c =>
+        {
+            c.Profile.Height = 12;
+            c.Input.PushTextWithEnter("/help");
+            Wheel(c, 1, 40);
+            Wheel(c, -1, 40);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("/quit");
+        }, ManyCommands());
+
+        int max = full.Length - 7;
+        int steps = (max + 2) / 3;
+        List<string[]> screens = TopScreens(output, 1, 8);
+        Assert.Equal(1 + (2 * steps), screens.Count);
+        Assert.Equal([$"↑ {max} more lines above · PgUp", .. full[^7..]], screens[steps]);
+        Assert.Equal(screens[0], screens[^1]);
+    }
+
+    // AC-9
+    [Theory]
+    [InlineData(-1, "/help")] // already at the top
+    [InlineData(1, "")]       // the empty day fits
+    [InlineData(-1, "")]
+    public void Wheel_ThatChangesNothing_WritesNothing(int direction, string command)
+    {
+        string output = RunAnsi(c =>
+        {
+            c.Input.PushTextWithEnter(command);
+            Wheel(c, direction, 3);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        Assert.DoesNotContain(AnsiWrites.Parse(BetweenFrames(output, 1)).Skip(1), w => w.Text.Length > 0);
+    }
+
+    // AC-9
+    [Fact]
+    public void Wheel_RewritesOnlyTheTopRows_ThenThePopup_ThenTheInputLine()
+    {
+        string output = RunAnsi(c =>
+        {
+            c.Input.PushTextWithEnter("/help");
+            c.Input.PushText("/to");
+            Wheel(c, 1);
+            c.Input.PushTextWithEnter("day");
+            c.Input.PushTextWithEnter("/quit");
+        });
+
+        string between = BetweenFrames(output, 1);
+        Assert.Equal(1, Count(between, ClearScreen));
+        List<AnsiWrite> writes = AnsiWrites.Parse(between);
+        int scrollStart = writes.FindIndex(w => w.Row == 1 && w.Column == 1 && w.Text.StartsWith("↑ 3 more lines above", StringComparison.Ordinal));
+        Assert.True(scrollStart > 0);
+        Assert.Equal(Enumerable.Range(1, TopHeight), writes.Skip(scrollStart).Take(TopHeight).Select(w => w.Row));
+        Assert.All(writes.Skip(scrollStart).Take(TopHeight), w => Assert.Equal(1, w.Column));
+        Assert.DoesNotContain(writes.Skip(1), w => w.Row == 22 || w.Row == 24);
+
+        List<AnsiWrite> after = writes.Skip(scrollStart + TopHeight).ToList();
+        int line = after.FindIndex(w => w.Row == 23);
+        Assert.True(line > 0);
+        Assert.Contains(after.Take(line), w => w.Text.StartsWith("/today", StringComparison.Ordinal));
+        Assert.Equal(new AnsiWrite(23, 5, "/to"), after[line]);
+        Assert.Equal(Heading, LastHeading(output));
+    }
 }
