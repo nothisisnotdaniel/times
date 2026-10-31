@@ -173,13 +173,13 @@ public class DayRecordTests
         Assert.Empty(DayRecord.Empty.TimeLeft());
     }
 
-    // AC-1, AC-3 (019)
+    // AC-1, AC-3 (019); AC-4, AC-7 (045)
     [Fact]
-    public void TimeLeft_SecondArrivalWhileOpen_IsIgnored()
+    public void TimeLeft_SecondArrivalWhileOpen_ShowsWorkSoFar()
     {
         DayRecord record = new DayRecord([Arrival(9, 0), Arrival(10, 0), Leaving(12, 0)]);
 
-        Assert.Equal([Hm(8, 0), Hm(8, 0), Hm(5, 0)], record.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(7, 0), Hm(5, 0)], record.TimeLeft());
     }
 
     // AC-1, AC-3 (019)
@@ -500,30 +500,89 @@ public class DayRecordTests
             new DayRecord([Arrival(8, 15), Leaving(12, 0)]).ToJson());
     }
 
-    // AC-9 (036)
+    // AC-9 (036); AC-1, AC-7 (045)
     [Fact]
-    public void TimeLeft_BreaksAndCheckpoints_ChangeNothing()
+    public void TimeLeft_BreakIsNotWork_CheckpointChangesNothing()
     {
-        DayRecord plain = new DayRecord([Arrival(8, 0), Leaving(17, 0)]);
-        DayRecord withBreak = new DayRecord(
+        DayRecord record = new DayRecord(
             [Arrival(8, 0), BreakStart(12, 0), Checkpoint(12, 15, "Lunch talk", 5), BreakEnd(12, 30), Leaving(17, 0)]);
 
-        Assert.Equal(plain.TimeLeft()[^1], withBreak.TimeLeft()[^1]);
-        Assert.Equal(
-            [TimeSpan.FromHours(8), TimeSpan.FromHours(8), TimeSpan.FromHours(8), TimeSpan.FromHours(8), TimeSpan.FromHours(-1)],
-            withBreak.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(4, 0), Hm(0, -30)], record.TimeLeft());
     }
 
-    // AC-9 (036)
+    // AC-9 (036); AC-1, AC-7 (045)
     [Fact]
-    public void TimeLeft_BreakEnd_NeverClosesAnArrival()
+    public void TimeLeft_BreakEndWithoutBreak_IsIgnored_CheckpointShowsWorkSoFar()
     {
         DayRecord record = new DayRecord([Arrival(8, 0), BreakEnd(10, 0), Checkpoint(11, 0, "X"), BreakStart(12, 0), Leaving(13, 0)]);
 
-        // Only the 13:00 leaving closes the 08:00 arrival: 5 hours.
-        Assert.Equal(
-            [TimeSpan.FromHours(8), TimeSpan.FromHours(8), TimeSpan.FromHours(8), TimeSpan.FromHours(8), TimeSpan.FromHours(3)],
-            record.TimeLeft());
+        // Work runs 08:00 to 12:00; the break from 12:00 ends at the 13:00 leaving.
+        Assert.Equal([Hm(8, 0), Hm(6, 0), Hm(5, 0), Hm(4, 0), Hm(4, 0)], record.TimeLeft());
+    }
+
+    // AC-1, AC-2 (045)
+    [Fact]
+    public void TimeLeft_EveryKind_ShowsWorkLeftAtItsTime_WithoutBreaks()
+    {
+        DayRecord record = new DayRecord(
+            [Arrival(8, 0), Checkpoint(9, 30, "Kickoff"), BreakStart(12, 0), BreakEnd(12, 30), Checkpoint(15, 0, "Review"), Leaving(17, 0)]);
+
+        Assert.Equal([Hm(8, 0), Hm(6, 30), Hm(4, 0), Hm(4, 0), Hm(1, 30), Hm(0, -30)], record.TimeLeft());
+    }
+
+    // AC-4 (045)
+    [Fact]
+    public void TimeLeft_OpenArrivalThenCheckpoint_CountsUpToTheCheckpoint()
+    {
+        DayRecord record = new DayRecord([Arrival(8, 0), Checkpoint(10, 0, "X")]);
+
+        Assert.Equal([Hm(8, 0), Hm(6, 0)], record.TimeLeft());
+    }
+
+    // AC-4 (045)
+    [Fact]
+    public void TimeLeft_BreakNeverEnded_EndsAtTheLeaving()
+    {
+        DayRecord record = new DayRecord([Arrival(8, 0), BreakStart(12, 0), Leaving(13, 0), Arrival(14, 0), Leaving(15, 0)]);
+
+        Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(4, 0), Hm(3, 0)], record.TimeLeft());
+    }
+
+    // AC-4 (045)
+    [Fact]
+    public void TimeLeft_BreakEndWithoutBreakStart_IsIgnored()
+    {
+        DayRecord record = new DayRecord([Arrival(8, 0), BreakEnd(10, 0), Leaving(12, 0)]);
+
+        Assert.Equal([Hm(8, 0), Hm(6, 0), Hm(4, 0)], record.TimeLeft());
+    }
+
+    // AC-4 (045)
+    [Fact]
+    public void TimeLeft_BreakOutsideASpan_IsIgnored()
+    {
+        DayRecord record = new DayRecord([BreakStart(7, 0), Arrival(8, 0), BreakEnd(9, 0), Leaving(10, 0)]);
+
+        Assert.Equal([Hm(8, 0), Hm(8, 0), Hm(7, 0), Hm(6, 0)], record.TimeLeft());
+    }
+
+    // AC-4 (045)
+    [Fact]
+    public void TimeLeft_SecondBreakStartAndArrivalDuringBreak_AreIgnored()
+    {
+        DayRecord record = new DayRecord(
+            [Arrival(8, 0), BreakStart(10, 0), BreakStart(11, 0), Arrival(11, 30), BreakEnd(12, 0), Leaving(13, 0)]);
+
+        Assert.Equal([Hm(8, 0), Hm(6, 0), Hm(6, 0), Hm(6, 0), Hm(6, 0), Hm(5, 0)], record.TimeLeft());
+    }
+
+    // AC-4 (045)
+    [Fact]
+    public void TimeLeft_CheckpointWithoutArrival_IsTheTarget()
+    {
+        DayRecord record = new DayRecord([Checkpoint(9, 0, "X")]);
+
+        Assert.Equal([Hm(8, 0)], record.TimeLeft());
     }
 
     // AC-10 (036)
