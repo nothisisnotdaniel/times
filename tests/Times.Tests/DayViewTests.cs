@@ -1,3 +1,4 @@
+using Spectre.Console;
 using Spectre.Console.Testing;
 
 namespace Times.Tests;
@@ -374,7 +375,7 @@ public class DayViewTests
         console.Write(new DayView(FixedTimeProvider.At20261027()).Render(AllKinds()));
 
         string output = console.Output;
-        Assert.Equal(6, CountOf(output, "\u001b[38;5;8mleft"));
+        Assert.Equal(6, CountOf(output, GreyLeft()));
         Assert.Contains("-0:30", output);
         Assert.DoesNotContain("\u001b[31m", output);
         Assert.DoesNotContain("\u001b[91m", output);
@@ -572,6 +573,14 @@ public class DayViewTests
         Assert.Equal(2, lines.Length);
         Assert.Equal("Could not read the day.", lines[1]);
         Assert.DoesNotContain("Breaks", console.Output);
+    }
+
+    /// <summary>The ANSI text Spectre writes for a grey <c>left</c>, taken from a grey <see cref="Text"/> instead of a raw colour code.</summary>
+    private static string GreyLeft()
+    {
+        TestConsole console = new TestConsole().EmitAnsiSequences();
+        console.Write(new Text("left", new Style(Color.Grey)));
+        return console.Output.TrimEnd('\n').Replace("\u001b[0m", string.Empty);
     }
 
     private static int CountOf(string text, string value)
