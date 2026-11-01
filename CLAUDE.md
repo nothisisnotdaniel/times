@@ -63,6 +63,8 @@ Every factory agent reads this file before working on Times. Keep it short and a
   so tests use a temp folder and never touch the real app data. Use `System.Text.Json`.
   The project quicklist lives next to the day files in `projects.json` (`ProjectStore`), as
   `{"projects":[{"workItem":1234,"title":"…"}]}`; a project's number is its 1-based position.
+  `projects.json` must be a regular file (its final link target, checked by `FileKind` before it is
+  opened, so a FIFO or device is refused without blocking) of at most 64 KiB, read through a capped stream.
   Project titles and checkpoint names (`ProjectList.IsValidTitle`) must be non-blank, at most 200
   characters, and hold no control characters, no Unicode Format (Cf) code points (bidi overrides,
   zero-width characters, soft hyphens, tag characters) and no unpaired surrogates; this is checked
