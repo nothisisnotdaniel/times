@@ -60,4 +60,6 @@ Write one feature per line, in plain language.
 - [ ] Lunch gap counts: count the gap between a leaving and the next arrival on the same day as break time in the break check, so a lunch booked as leave and return satisfies the required break. Time left stays as it is.
 - [ ] Walk tidy-up: walk the day only once per render and drop the extra arrays in `DayRecord.Walk()`. No behaviour changes.
 - [ ] Split Order loop: break the long `Order` loop in `DayRecord.cs` into smaller named steps (find same-time groups, move checkpoints after the last opener). No behaviour changes.
+- [ ] Hide format characters: also remove invisible Unicode format characters (such as the right-to-left override U+202E and zero-width characters) from the `TIMES_DATA_DIR` value shown in the startup error, so the shown value can't look different from the real one.
+- [ ] Clean other folder lines: clean the folder shown in the default-folder startup error and in `help`'s `Data folder:` line the same way as the `TIMES_DATA_DIR` error (`DataFolder.ForDisplay`).
 - [ ] Terminal check: verify in a real terminal (macOS Terminal, Windows Terminal) that the full-height layout doesn't scroll by one row and the cursor sits in the input box; fix it if it does.
