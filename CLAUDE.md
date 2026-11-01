@@ -88,6 +88,10 @@ Every factory agent reads this file before working on Times. Keep it short and a
   - `Times.slnx`: the solution.
   - `src/Times/`: the app. `Program.cs` only wires things up, and the logic starts in `App.cs`.
   - `tests/Times.Tests/`: one test class per production class (`AppTests.cs` tests `App.cs`).
+  - `.github/workflows/release.yml`: on a pushed `vX.Y.Z` tag, tests, packs with `-p:Version` from the
+    tag (the `ValidateVersion` target in `Times.csproj` refuses non-SemVer), smoke-installs the tool and
+    creates the GitHub release with the `.nupkg`. `<Version>0.1.0</Version>` is only the local default;
+    `help` shows the running version above `Data folder:`.
 - **Style:**
   - Write all output through an injected `IAnsiConsole`, never `Console.*` or the static
     `AnsiConsole.*` methods (except in `Program.cs`). Tests use `TestConsole` and assert on `.Output`.

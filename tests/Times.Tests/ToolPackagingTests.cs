@@ -54,13 +54,235 @@ public sealed class ToolPackagingTests
         Assert.Contains(expected, readme, StringComparison.Ordinal);
     }
 
-    // AC-4 (055)
+    // AC-6 (replaces 055 AC-4 "Readme_HasNoAddSource")
     [Fact]
-    public void Readme_HasNoAddSource()
+    public void Readme_EveryAddSourceLinePinsVersion()
     {
-        string readme = File.ReadAllText(Path.Combine(RepoRoot, "README.md"));
+        string[] lines = File.ReadAllLines(Path.Combine(RepoRoot, "README.md"));
 
-        Assert.DoesNotContain("--add-source", readme, StringComparison.Ordinal);
+        List<string> addSource = lines.Where(line => line.Contains("--add-source", StringComparison.Ordinal)).ToList();
+        Assert.NotEmpty(addSource);
+        Assert.All(addSource, line => Assert.Contains("--version", line, StringComparison.Ordinal));
+    }
+
+    // AC-6
+    [Fact]
+    public void Readme_HasInstallFromReleaseSection_InsideInstallSection()
+    {
+        string readme = "\n" + File.ReadAllText(Path.Combine(RepoRoot, "README.md")).ReplaceLineEndings("\n");
+
+        int install = readme.IndexOf("\n## Install as a .NET tool\n", StringComparison.Ordinal);
+        int release = readme.IndexOf("\n### Install from a GitHub release\n", StringComparison.Ordinal);
+        int shortcuts = readme.IndexOf("\n## Shortcuts\n", StringComparison.Ordinal);
+        Assert.True(install >= 0, "README has no '## Install as a .NET tool' section");
+        Assert.True(install < release, "'### Install from a GitHub release' must come after '## Install as a .NET tool'");
+        Assert.True(release < shortcuts, "'### Install from a GitHub release' must come before '## Shortcuts'");
+
+        string section = readme[release..shortcuts];
+        Assert.Contains("dotnet tool install --global --add-source <folder> --version <version> Times", section, StringComparison.Ordinal);
+    }
+
+    // AC-6
+    [Fact]
+    public void Readme_HasReleasingSection_AfterMouse()
+    {
+        string readme = "\n" + File.ReadAllText(Path.Combine(RepoRoot, "README.md")).ReplaceLineEndings("\n");
+
+        int mouse = readme.IndexOf("\n## Mouse\n", StringComparison.Ordinal);
+        int releasing = readme.IndexOf("\n## Releasing\n", StringComparison.Ordinal);
+        Assert.True(mouse >= 0, "README has no '## Mouse' section");
+        Assert.True(releasing > mouse, "'## Releasing' must come after '## Mouse'");
+
+        int next = readme.IndexOf("\n## ", releasing + 1, StringComparison.Ordinal);
+        string section = next < 0 ? readme[releasing..] : readme[releasing..next];
+        Assert.Contains("git tag v1.2.3", section, StringComparison.Ordinal);
+        Assert.Contains("git push origin v1.2.3", section, StringComparison.Ordinal);
+        Assert.Contains(".github/workflows/release.yml", section, StringComparison.Ordinal);
+    }
+
+    // AC-1 (070)
+    [Fact]
+    public void ReleaseWorkflow_TriggersOnlyOnVersionTagPush()
+    {
+        string workflow = ReadWorkflow();
+
+        string on = TopLevelBlock(workflow, "on");
+        List<string> keys = ChildLines(on).Select(line => line.Trim()).ToList();
+        Assert.Equal(["push:", "tags:", "- \"v*\""], keys);
+        Assert.DoesNotContain("branches", on, StringComparison.Ordinal);
+        Assert.DoesNotContain("pull_request", workflow, StringComparison.Ordinal);
+        Assert.DoesNotContain("workflow_dispatch", workflow, StringComparison.Ordinal);
+    }
+
+    // AC-1 (070)
+    [Fact]
+    public void ReleaseWorkflow_GrantsContentsWriteOnly()
+    {
+        string permissions = TopLevelBlock(ReadWorkflow(), "permissions");
+
+        Assert.Equal(["contents: write"], ChildLines(permissions).Select(line => line.Trim()).ToList());
+    }
+
+    // AC-1 (070), security note: only GitHub-owned actions.
+    [Fact]
+    public void ReleaseWorkflow_UsesOnlyGitHubOwnedActions()
+    {
+        List<string> uses = ReadWorkflow().Split('\n')
+            .Select(line => line.Trim())
+            .Where(line => line.StartsWith("uses:", StringComparison.Ordinal) || line.StartsWith("- uses:", StringComparison.Ordinal))
+            .Select(line => line[(line.IndexOf("uses:", StringComparison.Ordinal) + 5)..].Trim())
+            .ToList();
+
+        Assert.NotEmpty(uses);
+        Assert.All(uses, action => Assert.Matches(@"^actions/(checkout|setup-dotnet)@", action));
+        Assert.Contains("dotnet-version: \"10.0.x\"", ReadWorkflow(), StringComparison.Ordinal);
+    }
+
+    // AC-2 (070)
+    [Fact]
+    public void ReleaseWorkflow_TestsBeforePack_AndPacksWithVersionFromTag()
+    {
+        string scripts = string.Join("\n", RunScripts(ReadWorkflow()));
+
+        int strip = scripts.IndexOf("VERSION=\"${GITHUB_REF_NAME#v}\"", StringComparison.Ordinal);
+        int test = scripts.IndexOf("dotnet test -c Release", StringComparison.Ordinal);
+        int pack = scripts.IndexOf("dotnet pack src/Times -c Release -p:Version=\"$VERSION\"", StringComparison.Ordinal);
+        Assert.True(strip >= 0, "no VERSION=\"${GITHUB_REF_NAME#v}\" in a run script");
+        Assert.True(test > strip, "dotnet test must run after VERSION is set");
+        Assert.True(pack > test, "dotnet pack must run after dotnet test");
+        Assert.DoesNotContain(RunScripts(ReadWorkflow()), script => script.Contains("dotnet test", StringComparison.Ordinal) && script.Contains("-p:Version", StringComparison.Ordinal));
+    }
+
+    // AC-2 (070)
+    [Fact]
+    public void ReleaseWorkflow_RunScriptsHaveNoExpressionInterpolation()
+    {
+        List<string> scripts = RunScripts(ReadWorkflow());
+
+        Assert.NotEmpty(scripts);
+        Assert.All(scripts, script =>
+        {
+            Assert.DoesNotContain("${{ github.ref", script, StringComparison.Ordinal);
+            Assert.DoesNotContain("${{ github.ref_name", script, StringComparison.Ordinal);
+            Assert.DoesNotContain("${{", script, StringComparison.Ordinal);
+        });
+    }
+
+    // AC-3 (070)
+    [Fact]
+    public void ReleaseWorkflow_SmokeChecksInstalledToolBeforeRelease()
+    {
+        List<string> scripts = RunScripts(ReadWorkflow());
+        string all = string.Join("\n", scripts);
+
+        string smoke = Assert.Single(scripts, script => script.Contains("tm --version", StringComparison.Ordinal));
+        int temp = smoke.IndexOf("cd \"$RUNNER_TEMP\"", StringComparison.Ordinal);
+        int install = smoke.IndexOf("dotnet tool install --global --configfile \"$RUNNER_TEMP/smoke-nuget.config\" --add-source \"$REPO/nupkg\" --version \"$VERSION\" Times", StringComparison.Ordinal);
+        Assert.True(temp >= 0, "the smoke check must cd to $RUNNER_TEMP");
+        Assert.True(install > temp, "the tool must be installed from outside the repo");
+        Assert.True(smoke.IndexOf("tm --version", StringComparison.Ordinal) > install);
+        Assert.Contains("!= \"Times $VERSION\"", smoke, StringComparison.Ordinal);
+        Assert.Contains("exit 1", smoke, StringComparison.Ordinal);
+
+        int pack = all.IndexOf("dotnet pack", StringComparison.Ordinal);
+        int check = all.IndexOf("tm --version", StringComparison.Ordinal);
+        int release = all.IndexOf("gh release create", StringComparison.Ordinal);
+        Assert.True(pack < check, "the smoke check must run after dotnet pack");
+        Assert.True(check < release, "gh release create must run after the smoke check");
+        Assert.Contains("gh release create \"$GITHUB_REF_NAME\" \"nupkg/Times.$VERSION.nupkg\" --title \"Times $VERSION\" --generate-notes", all, StringComparison.Ordinal);
+        Assert.Contains("--prerelease", all, StringComparison.Ordinal);
+        Assert.Contains("GH_TOKEN: ${{ github.token }}", ReadWorkflow(), StringComparison.Ordinal);
+    }
+
+    // AC-3 (070), security review round 1: the smoke install sees only the local folder, never nuget.org.
+    [Fact]
+    public void ReleaseWorkflow_SmokeInstallUsesIsolatedNugetConfig()
+    {
+        string smoke = Assert.Single(RunScripts(ReadWorkflow()), script => script.Contains("tm --version", StringComparison.Ordinal));
+        string[] lines = smoke.Split('\n').Select(line => line.Trim()).ToArray();
+
+        int cd = Array.IndexOf(lines, "cd \"$RUNNER_TEMP\"");
+        int write = Array.IndexOf(lines, "cat > smoke-nuget.config <<XML");
+        int end = Array.IndexOf(lines, "XML");
+        int install = Array.FindIndex(lines, line => line.StartsWith("dotnet tool install", StringComparison.Ordinal));
+        Assert.True(cd >= 0 && cd < write, "the config must be written in $RUNNER_TEMP");
+        Assert.True(write < end && end < install, "the config must be written before the install");
+
+        string[] config = lines[(write + 1)..end];
+        Assert.Contains("<clear />", config);
+        Assert.Equal(["<add key=\"local\" value=\"$REPO/nupkg\" />"], config.Where(line => line.StartsWith("<add", StringComparison.Ordinal)).ToArray());
+        Assert.True(Array.IndexOf(config, "<clear />") < Array.FindIndex(config, line => line.StartsWith("<add", StringComparison.Ordinal)));
+        Assert.Contains("--configfile \"$RUNNER_TEMP/smoke-nuget.config\"", lines[install], StringComparison.Ordinal);
+    }
+
+    // Security review round 1: the checkout does not leave the write token in .git/config.
+    [Fact]
+    public void ReleaseWorkflow_CheckoutDoesNotPersistCredentials()
+    {
+        string[] lines = ReadWorkflow().Split('\n');
+
+        int checkout = Array.FindIndex(lines, line => line.Trim() == "uses: actions/checkout@v4");
+        Assert.True(checkout >= 0, "workflow has no actions/checkout step");
+        int next = Array.FindIndex(lines, checkout + 1, line => line.TrimStart().StartsWith("- ", StringComparison.Ordinal));
+        string[] step = lines[(checkout + 1)..(next < 0 ? lines.Length : next)];
+        Assert.Contains(step, line => line.Trim() == "persist-credentials: false");
+    }
+
+    // Security review round 1: the tag is checked against SemVer where it enters, before msbuild.
+    [Fact]
+    public void ReleaseWorkflow_ChecksTagIsSemVerBeforeExportingIt()
+    {
+        string script = Assert.Single(RunScripts(ReadWorkflow()), s => s.Contains("GITHUB_REF_NAME#v", StringComparison.Ordinal));
+
+        int check = script.IndexOf("grep -Eq '^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$'", StringComparison.Ordinal);
+        int export = script.IndexOf(">> \"$GITHUB_ENV\"", StringComparison.Ordinal);
+        Assert.True(check >= 0, "no SemVer check on the tag");
+        Assert.True(check < export, "the tag must be checked before VERSION is exported");
+        Assert.Contains("exit 1", script[check..export], StringComparison.Ordinal);
+    }
+
+    // AC-4 (070)
+    [Theory]
+    [InlineData("1.2.3", true)]
+    [InlineData("0.1.0", true)]
+    [InlineData("1.2.3-beta.1", true)]
+    [InlineData("v1.2.3", false)]
+    [InlineData("1.2", false)]
+    [InlineData("1.2.3.4", false)]
+    [InlineData("01.2.3", false)]
+    [InlineData("1.2.3+abc", false)]
+    [InlineData("abc", false)]
+    [InlineData("", false)]
+    public async Task ProjectFile_ValidateVersion_AcceptsOnlySemVer(string version, bool valid)
+    {
+        ProcessStartInfo startInfo = new ProcessStartInfo("dotnet")
+        {
+            WorkingDirectory = RepoRoot,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        startInfo.ArgumentList.Add("msbuild");
+        startInfo.ArgumentList.Add(Path.Combine("src", "Times", "Times.csproj"));
+        startInfo.ArgumentList.Add("-t:ValidateVersion");
+        startInfo.ArgumentList.Add("-p:Version=" + version);
+        startInfo.ArgumentList.Add("-nologo");
+        startInfo.ArgumentList.Add("-nodeReuse:false");
+
+        using Process process = Process.Start(startInfo)!;
+        Task<string> error = process.StandardError.ReadToEndAsync();
+        string output = await process.StandardOutput.ReadToEndAsync() + await error;
+        await process.WaitForExitAsync();
+
+        if (valid)
+        {
+            Assert.True(process.ExitCode == 0, "ValidateVersion exit " + process.ExitCode + ": " + output);
+        }
+        else
+        {
+            Assert.True(process.ExitCode != 0, "ValidateVersion accepted '" + version + "'");
+            Assert.Contains("Version '" + version + "' is not a valid SemVer version", output, StringComparison.Ordinal);
+        }
     }
 
     // AC-1 (055)
@@ -285,6 +507,82 @@ public sealed class ToolPackagingTests
 
         int end = readme.IndexOf("\n## ", start, StringComparison.Ordinal);
         return end < 0 ? readme[start..] : readme[start..end];
+    }
+
+    private static string ReadWorkflow()
+    {
+        return File.ReadAllText(Path.Combine(RepoRoot, ".github", "workflows", "release.yml")).ReplaceLineEndings("\n");
+    }
+
+    /// <summary>The lines of the top-level <c>key:</c> block, up to the next top-level line (comments and blank lines skipped).</summary>
+    private static string TopLevelBlock(string yaml, string key)
+    {
+        string[] lines = yaml.Split('\n');
+        int start = Array.FindIndex(lines, line => line == key + ":");
+        Assert.True(start >= 0, "workflow has no top-level '" + key + ":'");
+
+        List<string> block = [lines[start]];
+        for (int i = start + 1; i < lines.Length; i++)
+        {
+            string line = lines[i];
+            if (line.Trim().Length == 0 || line.TrimStart().StartsWith('#'))
+            {
+                continue;
+            }
+
+            if (!char.IsWhiteSpace(line[0]))
+            {
+                break;
+            }
+
+            block.Add(line);
+        }
+
+        return string.Join('\n', block);
+    }
+
+    private static IEnumerable<string> ChildLines(string block)
+    {
+        return block.Split('\n').Skip(1);
+    }
+
+    /// <summary>The body of every <c>run:</c> key: the inline value, or the indented lines of a <c>run: |</c> block.</summary>
+    private static List<string> RunScripts(string yaml)
+    {
+        string[] lines = yaml.Split('\n');
+        List<string> scripts = [];
+        for (int i = 0; i < lines.Length; i++)
+        {
+            string trimmed = lines[i].TrimStart();
+            if (trimmed.StartsWith("- ", StringComparison.Ordinal))
+            {
+                trimmed = trimmed[2..].TrimStart();
+            }
+
+            if (!trimmed.StartsWith("run:", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            string value = trimmed[4..].Trim();
+            if (value != "|" && value != ">")
+            {
+                scripts.Add(value);
+                continue;
+            }
+
+            int indent = lines[i].Length - lines[i].TrimStart().Length;
+            List<string> body = [];
+            while (i + 1 < lines.Length && (lines[i + 1].Trim().Length == 0 || lines[i + 1].Length - lines[i + 1].TrimStart().Length > indent))
+            {
+                i++;
+                body.Add(lines[i]);
+            }
+
+            scripts.Add(string.Join('\n', body));
+        }
+
+        return scripts;
     }
 
     private static XElement LoadNugetConfig()
