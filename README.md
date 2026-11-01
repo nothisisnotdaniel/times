@@ -82,7 +82,7 @@ dotnet tool install --global --add-source ~/Downloads/times --version 1.2.3 Time
 Run this from outside the repo, and always pass `--version` along with `--add-source`. The
 folder is added next to your usual feeds (nuget.org included) instead of replacing them, so if a
 package named `Times` ever appeared on nuget.org, a version you did not download could be picked.
-Check the result with `tm --version`. To move to a newer release, uninstall first (see below),
+Check the result with `tm --version`. To move to a newer release, uninstall first (see [Uninstall](#uninstall)),
 then install the new file the same way.
 
 ### Update
