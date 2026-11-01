@@ -73,3 +73,4 @@ Write one feature per line, in plain language.
 - [?] review-ux 1 — the spec accepts cropping hint rows on narrow terminals, and the panel line still shows the next step. Wrapping the hint row would change the layout and needs its own job. (from 059-read-error-next-step)
 - [?] review-ux 1 — the reviewer says no change is needed; plain-text tests already check that the cut row is exactly the panel width. (from 060-panel-polish)
 - [?] review-code 1 — an observation, not a fix request: dropping `projectToken` entirely is allowed by the spec ("using `token`") and behaviour is identical. Putting the variable back would only add the null-flow issue the spec wanted gone. (from 061-checkpoint-tidy-up)
+- [?] review-ux 1 — the reviewer confirms the Keys table already matches the on-screen cue names (`PgUp / Ctrl+↑`) and says "No change needed". (from 063-document-scroll-keys)
