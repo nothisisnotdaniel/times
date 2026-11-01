@@ -57,8 +57,9 @@ Every factory agent reads this file before working on Times. Keep it short and a
   `Environment.GetFolderPath(SpecialFolder.ApplicationData)/Times/yyyy-MM-dd.json`
   (`%APPDATA%\Times\` on Windows, `~/.config/Times/` on macOS/Linux). Setting the `TIMES_DATA_DIR`
   environment variable overrides that default; it must be an absolute path (used as given, no `~`
-  expansion or trimming), otherwise Times refuses to start with exit code 2. Unset or empty means the
-  default. `DataFolder.Resolve` picks the folder and `help` shows it. The data folder is injected,
+  expansion or trimming), otherwise Times refuses to start with exit code 2. A value that starts or
+  ends with whitespace (`char.IsWhiteSpace`) is also refused with exit code 2 ("starts or ends
+  with whitespace"). Unset or empty means the default. `DataFolder.Resolve` picks the folder and `help` shows it. The data folder is injected,
   so tests use a temp folder and never touch the real app data. Use `System.Text.Json`.
   The project quicklist lives next to the day files in `projects.json` (`ProjectStore`), as
   `{"projects":[{"workItem":1234,"title":"…"}]}`; a project's number is its 1-based position.

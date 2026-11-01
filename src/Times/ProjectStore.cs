@@ -82,7 +82,7 @@ internal sealed class ProjectStore
     {
         if (!DayStore.IsValidFolder(Folder))
         {
-            throw new InvalidOperationException("The data folder is not an absolute path.");
+            throw new InvalidOperationException("The data folder is not valid.");
         }
     }
 }
