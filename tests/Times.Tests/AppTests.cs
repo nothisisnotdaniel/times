@@ -2378,7 +2378,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(2, exitCode);
         Assert.Matches(@"\x1b\[(31|91|38;5;9)mTimes cannot start", console.Output);
         string text = StripAnsi(console.Output).TrimEnd();
-        Assert.Contains($"the data folder {folder} from TIMES_DATA_DIR is not an absolute path", text);
+        Assert.Contains($"the data folder \"{folder}\" from TIMES_DATA_DIR is not an absolute path", text);
         Assert.EndsWith("Nothing was saved.", text);
         Assert.DoesNotContain("app-data folder could not be found", text);
         Assert.DoesNotContain(Heading, console.Output);
@@ -2395,7 +2395,43 @@ public sealed class AppTests : IDisposable
         int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore("[red]x[/]"), folderFromEnvironment: true).Run([]);
 
         Assert.Equal(2, exitCode);
-        Assert.Contains("the data folder [red]x[/] from TIMES_DATA_DIR", console.Output);
+        Assert.Contains("the data folder \"[red]x[/]\" from TIMES_DATA_DIR", console.Output);
+    }
+
+    // 050 AC-5
+    [Fact]
+    public void InvalidOverride_MarkupAndControlCharacters_DoesNotThrow_AndShowsTheBracket()
+    {
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 300;
+
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore("[\u0007"), folderFromEnvironment: true).Run([]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("the data folder \"[\" from TIMES_DATA_DIR", console.Output);
+        Assert.DoesNotContain("\u0007", console.Output, StringComparison.Ordinal);
+    }
+
+    // 050 AC-4
+    [Fact]
+    public void InvalidOverride_RemovesControlCharactersFromTheShownValue()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 300;
+
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore("rel\u001b[2Jdir\nx\ty"), folderFromEnvironment: true).Run([]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("the data folder \"rel[2Jdirxy\" from TIMES_DATA_DIR", StripAnsi(console.Output));
+        string raw = console.Output;
+        Assert.DoesNotContain("\u001b[2J", raw, StringComparison.Ordinal);
+        Assert.DoesNotContain("\t", raw, StringComparison.Ordinal);
+        int start = raw.IndexOf("Times cannot start", StringComparison.Ordinal);
+        int end = raw.IndexOf("Nothing was saved.", StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start);
+        string line = raw[start..end];
+        Assert.DoesNotContain("\n", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("\r", line, StringComparison.Ordinal);
     }
 
     // AC-5

@@ -512,7 +512,7 @@ internal sealed class App
             string reason;
             if (folderFromEnvironment)
             {
-                reason = $"the data folder [bold]{Markup.Escape(Store.Folder)}[/] from {DataFolder.VariableName} is not an absolute path";
+                reason = $"the data folder [bold]\"{Markup.Escape(DataFolder.ForDisplay(Store.Folder))}\"[/] from {DataFolder.VariableName} is not an absolute path";
             }
             else if (string.IsNullOrWhiteSpace(Store.Folder))
             {

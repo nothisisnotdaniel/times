@@ -62,4 +62,39 @@ public sealed class DataFolderTests
     {
         Assert.Equal("TIMES_DATA_DIR", DataFolder.VariableName);
     }
+
+    // 050 AC-1
+    [Theory]
+    [InlineData("/a\tb\n", "/ab")]
+    [InlineData("\u001b[31mx", "[31mx")]
+    [InlineData("\t/a", "/a")]
+    [InlineData("/a\nb", "/ab")]
+    [InlineData("/a\r", "/a")]
+    [InlineData("\0/a\0b\0", "/ab")]
+    [InlineData("\u001b/a\u001b", "/a")]
+    [InlineData("\u0007/a\u0007b", "/ab")]
+    [InlineData("\u007f/a\u007fb\u007f", "/ab")]
+    [InlineData("\u0085/a\u0085b\u0085", "/ab")]
+    [InlineData("\u009b/a\u009b2Jb\u009b", "/a2Jb")]
+    [InlineData("\u2028/a\u2028b\u2028", "/ab")]
+    [InlineData("\u2029/a\u2029b\u2029", "/ab")]
+    [InlineData("\t\n\r\0\u001b\u0007\u007f\u0085\u009b\u2028\u2029", "")]
+    public void ForDisplay_RemovesControlCharactersAndSeparators(string value, string expected)
+    {
+        Assert.Equal(expected, DataFolder.ForDisplay(value));
+    }
+
+    // 050 AC-2
+    [Theory]
+    [InlineData("   ")]
+    [InlineData(" a b ")]
+    [InlineData("[red]x[/]")]
+    [InlineData("~/times")]
+    [InlineData("C:dir")]
+    [InlineData("dätä")]
+    [InlineData("")]
+    public void ForDisplay_KeepsEverythingElse(string value)
+    {
+        Assert.Equal(value, DataFolder.ForDisplay(value));
+    }
 }
