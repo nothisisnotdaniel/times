@@ -22,11 +22,16 @@ internal sealed class DayStore
     public string Folder { get; }
 
     /// <summary>
-    /// True only for a non-empty, non-whitespace, fully qualified path, so nothing is ever written
-    /// relative to the working directory.
+    /// True only for a non-empty, non-whitespace, fully qualified path that does not start or end
+    /// with whitespace, so nothing is ever written relative to the working directory or into a
+    /// folder whose name has invisible padding. Whitespace inside the path is fine.
     /// </summary>
     public static bool IsValidFolder(string folder) =>
-        !string.IsNullOrWhiteSpace(folder) && Path.IsPathFullyQualified(folder);
+        !string.IsNullOrWhiteSpace(folder) && !HasEdgeWhitespace(folder) && Path.IsPathFullyQualified(folder);
+
+    /// <summary>True if <paramref name="folder"/> is non-empty and starts or ends with a whitespace character (<see cref="char.IsWhiteSpace(char)"/>).</summary>
+    internal static bool HasEdgeWhitespace(string folder) =>
+        folder.Length > 0 && (char.IsWhiteSpace(folder[0]) || char.IsWhiteSpace(folder[^1]));
 
     /// <summary>The file path for <paramref name="day"/>, formatted with the invariant culture.</summary>
     public string PathFor(DateOnly day) =>

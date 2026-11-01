@@ -96,6 +96,68 @@ public class DayStoreTests
         Assert.Equal(before, WorkingDirectoryEntries());
     }
 
+    // 051 AC-1
+    [Theory]
+    [InlineData("", " ")]
+    [InlineData("", "\t")]
+    [InlineData("", "\u00a0")]
+    [InlineData("", "\u2003")]
+    [InlineData("", "\n")]
+    [InlineData(" ", "")]
+    [InlineData("\t", " ")]
+    public void IsValidFolder_RejectsEdgeWhitespace(string before, string after)
+    {
+        using TempFolder temp = new TempFolder(create: false);
+
+        Assert.False(DayStore.IsValidFolder(before + temp.Path + after));
+    }
+
+    // 051 AC-1
+    [Fact]
+    public void IsValidFolder_AcceptsASpaceInsideThePath()
+    {
+        using TempFolder temp = new TempFolder(create: false);
+
+        Assert.True(DayStore.IsValidFolder(Path.Combine(temp.Path, "my times")));
+    }
+
+    // 051 AC-6
+    [Theory]
+    [InlineData("", " ")]
+    [InlineData("", "\t")]
+    [InlineData("", "\u00a0")]
+    [InlineData(" ", "")]
+    public void Save_WithEdgeWhitespace_ThrowsAndCreatesNothing(string before, string after)
+    {
+        using TempFolder temp = new TempFolder(create: false);
+        string padded = before + temp.Path + after;
+
+        Assert.Throws<InvalidOperationException>(() =>
+            new DayStore(padded).Save(Day, DayRecord.Empty.Add(Arrival(8, 15))));
+
+        Assert.False(Directory.Exists(padded));
+        Assert.False(File.Exists(padded));
+        Assert.False(Directory.Exists(temp.Path));
+    }
+
+    // 051 AC-6
+    [Theory]
+    [InlineData("", " ")]
+    [InlineData("", "\t")]
+    [InlineData(" ", "")]
+    public void ProjectStoreSave_WithEdgeWhitespace_ThrowsAndCreatesNothing(string before, string after)
+    {
+        using TempFolder temp = new TempFolder(create: false);
+        string padded = before + temp.Path + after;
+
+        Assert.Throws<InvalidOperationException>(() =>
+            new ProjectStore(padded).Save(ProjectList.Empty.Add(new Project(1, "first"))));
+
+        Assert.False(Directory.Exists(padded));
+        Assert.False(File.Exists(padded));
+        Assert.False(Directory.Exists(temp.Path));
+    }
+
     // AC-1, AC-4
     [Fact]
     public void SaveThenLoad_RoundTrips()

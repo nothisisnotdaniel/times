@@ -2385,6 +2385,115 @@ public sealed class AppTests : IDisposable
         Assert.Equal(before, WorkingDirectoryEntries());
     }
 
+    // 051 AC-2, AC-3
+    [Theory]
+    [InlineData("", " ", true)]
+    [InlineData(" ", "", true)]
+    [InlineData("", "\u00a0", true)]
+    [InlineData(" ", " ", false)]
+    public void OverrideWithEdgeWhitespace_ReturnsTwo_NamesTheCause_AndCreatesNothing(string before, string after, bool absolute)
+    {
+        using TempFolder temp = new TempFolder(create: false);
+        string folder = before + (absolute ? temp.Path : "rel") + after;
+        string[] entries = WorkingDirectoryEntries();
+        string cwd = Directory.GetCurrentDirectory();
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 300; // keep the error on one line, so the text can be matched as a whole
+        console.Input.PushTextWithEnter("arrive 8:15");
+
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(folder), folderFromEnvironment: true).Run([]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Matches(@"^\s*\x1b\[(31|91|38;5;9)mTimes cannot start", console.Output);
+        string text = StripAnsi(console.Output).TrimEnd();
+        Assert.Contains($"the data folder \"{folder}\" from TIMES_DATA_DIR starts or ends with whitespace", text);
+        Assert.EndsWith("Nothing was saved.", text);
+        Assert.DoesNotContain("is not an absolute path", text);
+        Assert.DoesNotContain(Heading, console.Output);
+        Assert.Equal(entries, WorkingDirectoryEntries());
+        Assert.Equal(cwd, Directory.GetCurrentDirectory());
+        Assert.False(Directory.Exists(folder));
+        Assert.False(Directory.Exists(temp.Path));
+    }
+
+    // 051 AC-2 (a tab is removed from the shown value, but the cause is still named)
+    [Fact]
+    public void OverrideWithTrailingTab_NamesTheCause()
+    {
+        using TempFolder temp = new TempFolder(create: false);
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 300;
+
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(temp.Path + "\t"), folderFromEnvironment: true).Run([]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains($"the data folder \"{temp.Path}\" from TIMES_DATA_DIR starts or ends with whitespace", console.Output);
+        Assert.False(Directory.Exists(temp.Path + "\t"));
+    }
+
+    // 051 AC-4
+    [Theory]
+    [InlineData("", " ", true)]
+    [InlineData(" ", "", true)]
+    [InlineData(" ", " ", false)]
+    public void DefaultFolderWithEdgeWhitespace_ReturnsTwo_NamesTheCause_AndCreatesNothing(string before, string after, bool absolute)
+    {
+        using TempFolder temp = new TempFolder(create: false);
+        string folder = before + (absolute ? temp.Path : "rel") + after;
+        string[] entries = WorkingDirectoryEntries();
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 300;
+        console.Input.PushTextWithEnter("arrive 8:15");
+
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(folder), folderFromEnvironment: false).Run([]);
+
+        Assert.Equal(2, exitCode);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mTimes cannot start", console.Output);
+        string text = StripAnsi(console.Output).TrimEnd();
+        Assert.Contains($"the data folder {folder} starts or ends with whitespace", text);
+        Assert.EndsWith("Nothing was saved.", text);
+        Assert.DoesNotContain("app-data folder could not be found", text);
+        Assert.DoesNotContain("is not an absolute path", text);
+        Assert.DoesNotContain("TIMES_DATA_DIR", text);
+        Assert.DoesNotContain(Heading, console.Output);
+        Assert.Equal(entries, WorkingDirectoryEntries());
+        Assert.False(Directory.Exists(folder));
+        Assert.False(Directory.Exists(temp.Path));
+    }
+
+    // 051 AC-7
+    [Fact]
+    public void ValidOverrideWithoutEdgeWhitespace_StartsNormally()
+    {
+        using TempFolder temp = new TempFolder(create: false);
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 300;
+        console.Input.PushTextWithEnter("quit");
+
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(Path.Combine(temp.Path, "my times")), folderFromEnvironment: true).Run([]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(Heading, console.Output);
+        Assert.DoesNotContain("Times cannot start", console.Output);
+    }
+
+    // 051 AC-7
+    [Theory]
+    [InlineData("", " ")]
+    [InlineData(" ", "")]
+    public void VersionFlag_WorksWithAnOverrideWithEdgeWhitespace(string before, string after)
+    {
+        using TempFolder temp = new TempFolder(create: false);
+        string folder = before + temp.Path + after;
+        TestConsole console = new TestConsole().Interactive();
+
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(folder), folderFromEnvironment: true).Run(["--version"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal($"Times {AppVersion.Current}", console.Output.Trim());
+        Assert.False(Directory.Exists(folder));
+    }
+
     // AC-4
     [Fact]
     public void InvalidOverride_ShowsMarkupInTheValueLiterally()

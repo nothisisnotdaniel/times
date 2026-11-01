@@ -510,7 +510,14 @@ internal sealed class App
         if (!DayStore.IsValidFolder(Store.Folder))
         {
             string reason;
-            if (folderFromEnvironment)
+            if (!string.IsNullOrWhiteSpace(Store.Folder) && DayStore.HasEdgeWhitespace(Store.Folder))
+            {
+                string shown = Markup.Escape(DataFolder.ForDisplay(Store.Folder));
+                reason = folderFromEnvironment
+                    ? $"the data folder [bold]\"{shown}\"[/] from {DataFolder.VariableName} starts or ends with whitespace"
+                    : $"the data folder [bold]{shown}[/] starts or ends with whitespace";
+            }
+            else if (folderFromEnvironment)
             {
                 reason = $"the data folder [bold]\"{Markup.Escape(DataFolder.ForDisplay(Store.Folder))}\"[/] from {DataFolder.VariableName} is not an absolute path";
             }

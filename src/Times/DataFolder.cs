@@ -6,7 +6,8 @@ namespace Times;
 /// <summary>
 /// Where the day files live: the <see cref="VariableName"/> override if it is set, otherwise
 /// <c>&lt;ApplicationData&gt;/Times</c>. Resolving reads no environment variables itself, so it can be
-/// tested without touching process-wide state. Validation is left to <see cref="DayStore.IsValidFolder"/>.
+/// tested without touching process-wide state. The value is never trimmed or changed: validation,
+/// including refusing a value that starts or ends with whitespace, is left to <see cref="DayStore.IsValidFolder"/>.
 /// </summary>
 internal sealed class DataFolder
 {
@@ -29,7 +30,8 @@ internal sealed class DataFolder
     /// A null or empty <paramref name="environmentValue"/> means the default: <c>""</c> if
     /// <paramref name="appData"/> is null or empty (so the startup check rejects it), otherwise
     /// <c>Path.Combine(appData, "Times")</c>. Any other value is used exactly as given: no trimming,
-    /// no <c>~</c> expansion and no resolving against the working directory.
+    /// no <c>~</c> expansion and no resolving against the working directory. A value with leading or
+    /// trailing whitespace is kept as it is, so <see cref="DayStore.IsValidFolder"/> can reject it.
     /// </summary>
     internal static DataFolder Resolve(string? environmentValue, string? appData)
     {
