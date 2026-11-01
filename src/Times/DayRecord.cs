@@ -116,42 +116,61 @@ internal sealed record DayRecord
         int start = 0;
         while (start < sorted.Length)
         {
-            int end = start;
-            while (end < sorted.Length && sorted[end].Time == sorted[start].Time)
-            {
-                end++;
-            }
-
-            int lastOpener = -1;
-            for (int i = start; i < end; i++)
-            {
-                if (IsOpener(sorted[i].Kind))
-                {
-                    lastOpener = i;
-                }
-            }
-
-            List<DayEntry> moved = [];
-            for (int i = start; i < end; i++)
-            {
-                DayEntry entry = sorted[i];
-                if (i < lastOpener && entry.Kind == EntryKind.Checkpoint)
-                {
-                    moved.Add(entry);
-                    continue;
-                }
-
-                result.Add(entry);
-                if (i == lastOpener)
-                {
-                    result.AddRange(moved);
-                }
-            }
-
+            int end = SameTimeGroupEnd(sorted, start);
+            AppendGroup(sorted, start, end, result);
             start = end;
         }
 
         return result.ToArray();
+    }
+
+    // The index after the last entry that has the same time as sorted[start].
+    private static int SameTimeGroupEnd(DayEntry[] sorted, int start)
+    {
+        int end = start;
+        while (end < sorted.Length && sorted[end].Time == sorted[start].Time)
+        {
+            end++;
+        }
+
+        return end;
+    }
+
+    // The index of the group's last arrival or break end, or -1 if it has none.
+    private static int LastOpener(DayEntry[] sorted, int start, int end)
+    {
+        int lastOpener = -1;
+        for (int i = start; i < end; i++)
+        {
+            if (IsOpener(sorted[i].Kind))
+            {
+                lastOpener = i;
+            }
+        }
+
+        return lastOpener;
+    }
+
+    // Adds sorted[start..end] to result, with the checkpoints before the last opener moved after it.
+    private static void AppendGroup(DayEntry[] sorted, int start, int end, List<DayEntry> result)
+    {
+        int lastOpener = LastOpener(sorted, start, end);
+        List<DayEntry> moved = [];
+        for (int i = start; i < end; i++)
+        {
+            DayEntry entry = sorted[i];
+            if (i < lastOpener && entry.Kind == EntryKind.Checkpoint)
+            {
+                moved.Add(entry);
+                continue;
+            }
+
+            result.Add(entry);
+            if (i == lastOpener)
+            {
+                result.AddRange(moved);
+            }
+        }
     }
 
     private static bool IsOpener(EntryKind kind) => kind is EntryKind.Arrival or EntryKind.BreakEnd;
@@ -181,15 +200,15 @@ internal sealed record DayRecord
     {
         TimeSpan[] result = new TimeSpan[entries.Length];
         TimeSpan left = DailyTarget;
-        IReadOnlyList<Gap> gaps = Walk();
-        for (int i = 0; i < entries.Length; i++)
+        int i = 0;
+        foreach (Gap gap in Walk())
         {
-            if (gaps[i].State == WorkState.Working)
+            if (gap.State == WorkState.Working)
             {
-                left -= gaps[i].Length;
+                left -= gap.Length;
             }
 
-            result[i] = left;
+            result[i++] = left;
         }
 
         return result;
@@ -245,9 +264,8 @@ internal sealed record DayRecord
 
     // Parallel to entries: the time since the previous entry (zero for the first) and the state the
     // day was in during that time. The one place that walks the transition table.
-    private IReadOnlyList<Gap> Walk()
+    private IEnumerable<Gap> Walk()
     {
-        Gap[] result = new Gap[entries.Length];
         WorkState state = WorkState.Off;
         for (int i = 0; i < entries.Length; i++)
         {
@@ -255,11 +273,9 @@ internal sealed record DayRecord
 
             // Entries are sorted, so the previous entry is never after this one.
             TimeSpan length = i == 0 ? TimeSpan.Zero : entry.Time - entries[i - 1].Time;
-            result[i] = new Gap(state, length);
+            yield return new Gap(state, length);
             state = Next(state, entry.Kind);
         }
-
-        return result;
     }
 
     private readonly record struct Gap
