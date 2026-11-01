@@ -66,3 +66,6 @@ Write one feature per line, in plain language.
 - [?] review-security 1 — catching `InvalidOperationException` in `DayStore.Load` / `ProjectStore.Load` (lone surrogate in a key, `kind` or `time`) changes load behaviour outside the spec's title/name scope and needs its own tests; suggest a backlog job. (from 056-safer-titles-names)
 - [?] review-security 2 — rejecting non-Cf invisible code points (U+3164, U+115F, variation selectors, U+2800) widens the rule; the spec puts confusables out of scope. Revisit with the Azure DevOps import. (from 056-safer-titles-names)
 - [?] review-ux 1 — telling the user what to do would change the hint text that AC-3/AC-4 fix exactly; it needs its own job. (from 056-safer-titles-names)
+- [?] review-code 1 — reviewer calls the "supported" guard fine as is; nothing to change. (from 058-bounded-projects-read)
+- [?] review-security 1 — `ResolveLinkTarget` race: App already catches `IOException`, and TOCTOU is out of scope. (from 058-bounded-projects-read)
+- [?] review-security 2 — `DayStore.Load` hardening is new behaviour and needs its own job (follow-up). (from 058-bounded-projects-read)
