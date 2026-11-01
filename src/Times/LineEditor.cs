@@ -355,11 +355,12 @@ internal sealed class LineEditor
                 else
                 {
                     // A stray Esc is a control character: dropped. The key after it is pasted as usual.
-                    pending = next;
                     if (next is null)
                     {
                         return null;
                     }
+
+                    pending = next;
                 }
 
                 afterCarriageReturn = false;
