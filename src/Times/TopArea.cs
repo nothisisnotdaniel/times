@@ -6,9 +6,9 @@ namespace Times;
 /// <summary>
 /// Fits the top area (quicklist panel, day view plus any message) into a fixed number of rows, as a
 /// scrollable window. Content that fits is passed through line for line, whatever the offset. Taller
-/// content shows a window that starts at the given offset: a grey <c>↑ N more lines above · PgUp</c>
-/// cue on the first row when lines are hidden above, and a grey <c>↓ N more lines below · PgDn</c>
-/// cue on the last row when lines are hidden below. Scrolling needs at least 3 rows; with 1 or 2
+/// content shows a window that starts at the given offset: a grey <c>↑ N more lines above · PgUp / Ctrl+↑</c>
+/// cue on the first row when lines are hidden above, and a grey <c>↓ N more lines below · PgDn / Ctrl+↓</c>
+/// cue on the last row when lines are hidden below (<c>1 more line</c> when only one line is hidden). Scrolling needs at least 3 rows; with 1 or 2
 /// rows the window always starts at the top and only the below cue is shown.
 /// </summary>
 internal sealed class TopArea : IRenderable
@@ -63,7 +63,7 @@ internal sealed class TopArea : IRenderable
         List<SegmentLine> kept = [];
         if (start > 0)
         {
-            kept.Add(Cue($"↑ {start} more lines above · PgUp", maxWidth));
+            kept.Add(Cue(CueText(start, above: true), maxWidth));
         }
 
         // Rows left for content once the cues have their rows.
@@ -72,10 +72,23 @@ internal sealed class TopArea : IRenderable
         int below = lines.Count - start - room;
         if (below > 0)
         {
-            kept.Add(Cue($"↓ {below} more lines below · PgDn", maxWidth));
+            kept.Add(Cue(CueText(below, above: false), maxWidth));
         }
 
         return Join(kept);
+    }
+
+    /// <summary>
+    /// The text of a scroll cue for <paramref name="count"/> hidden lines: the above cue
+    /// (<c>↑ N more lines above · PgUp / Ctrl+↑</c>) or the below cue
+    /// (<c>↓ N more lines below · PgDn / Ctrl+↓</c>), with <c>line</c> when the count is 1.
+    /// </summary>
+    internal static string CueText(int count, bool above)
+    {
+        string noun = count == 1 ? "line" : "lines";
+        return above
+            ? $"↑ {count} more {noun} above · PgUp / Ctrl+↑"
+            : $"↓ {count} more {noun} below · PgDn / Ctrl+↓";
     }
 
     private static SegmentLine Cue(string text, int maxWidth)

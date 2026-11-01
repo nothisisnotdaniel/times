@@ -34,8 +34,8 @@ Every factory agent reads this file before working on Times. Keep it short and a
     list them in the popup with a grey count footer; nothing on an empty line) and ↑/↓ (history). Don't use Spectre's `Live` display: it can't run while we read input.
   - **Scrolling:** the top area is a scrollable window (`TopArea.Fit(content, height, offset)`;
     `TopArea.MaxOffset` and `TopArea.PageSize` hold the rule). When it is taller than its rows (and
-    has at least 3), grey cues show `↑ N more lines above · PgUp` on its first row and
-    `↓ N more lines below · PgDn` on its last. PageUp/PageDown, Shift+PageUp/PageDown and Ctrl+↑/↓
+    has at least 3), grey cues show `↑ N more lines above · PgUp / Ctrl+↑` on its first row and
+    `↓ N more lines below · PgDn / Ctrl+↓` on its last (`1 more line` when one line is hidden). PageUp/PageDown, Shift+PageUp/PageDown and Ctrl+↑/↓
     (for macOS Terminal) move it by a page (height - 2 lines); plain ↑/↓ stay history. Like the
     popup, a scroll redraws in place: only the top-area rows, then the popup (if open) and the input
     line. The offset goes back to 0 on every full redraw (after every Enter).

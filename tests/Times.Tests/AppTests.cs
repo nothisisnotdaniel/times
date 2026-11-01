@@ -1491,7 +1491,7 @@ public sealed class AppTests : IDisposable
         string[] frame = frames[1];
         Assert.Contains(Heading, frame[0]);
         Assert.Equal(full[..7], frame[..7]);
-        Assert.Equal($"↓ {full.Length - 7} more lines below · PgDn", frame[^5].TrimEnd());
+        Assert.Equal($"↓ {full.Length - 7} more lines below · PgDn / Ctrl+↓", frame[^5].TrimEnd());
         Assert.True(full.Length - 7 > 10);
     }
 
@@ -1506,7 +1506,7 @@ public sealed class AppTests : IDisposable
             c.Input.PushTextWithEnter("quit");
         }, ManyCommands());
 
-        Assert.Matches(@"\x1b\[(90|38;5;8)m↓ \d+ more lines below · PgDn", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)m↓ \d+ more lines below · PgDn / Ctrl\+↓", output);
     }
 
     // AC-6, AC-7
@@ -3339,7 +3339,7 @@ public sealed class AppTests : IDisposable
         {
             AssertLayout(frame, 12);
             Assert.Equal(7, PanelRows(frame).Length);
-            Assert.Matches(@"^↓ \d+ more lines below · PgDn", frame[^5]);
+            Assert.Matches(@"^↓ \d+ more lines below · PgDn / Ctrl\+↓", frame[^5]);
         }
 
         Assert.Equal("{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}", ReadDay("2026-10-27"));
@@ -3785,7 +3785,7 @@ public sealed class AppTests : IDisposable
 
     // Scrollable output (job 037) ----------------------------------------------------------
 
-    private const string BelowCue = "more lines below · PgDn";
+    private const string BelowCue = "more lines below · PgDn / Ctrl+↓";
 
     /// <summary>Indexes (into <see cref="AnsiWrites.Parse"/>) of the full frames: written at 1;1 and reaching the input box.</summary>
     private static List<int> FrameStarts(List<AnsiWrite> writes) =>
@@ -3852,8 +3852,8 @@ public sealed class AppTests : IDisposable
         List<string[]> screens = TopScreens(output, 1, 8);
         Assert.Equal(4, screens.Count);
         Assert.Equal([.. full[..7], $"↓ {full.Length - 7} {BelowCue}"], screens[0]);
-        Assert.Equal(["↑ 6 more lines above · PgUp", .. full[6..12], $"↓ {full.Length - 12} {BelowCue}"], screens[1]);
-        Assert.Equal(["↑ 12 more lines above · PgUp", .. full[12..18], $"↓ {full.Length - 18} {BelowCue}"], screens[2]);
+        Assert.Equal(["↑ 6 more lines above · PgUp / Ctrl+↑", .. full[6..12], $"↓ {full.Length - 12} {BelowCue}"], screens[1]);
+        Assert.Equal(["↑ 12 more lines above · PgUp / Ctrl+↑", .. full[12..18], $"↓ {full.Length - 18} {BelowCue}"], screens[2]);
         Assert.Equal(screens[1], screens[3]);
     }
 
@@ -3875,7 +3875,7 @@ public sealed class AppTests : IDisposable
         List<string[]> screens = TopScreens(output, 1, 8);
         int max = full.Length - 7;
         Assert.Equal(1 + ((max + 5) / 6), screens.Count);
-        Assert.Equal([$"↑ {max} more lines above · PgUp", .. full[^7..]], screens[^1]);
+        Assert.Equal([$"↑ {max} more lines above · PgUp / Ctrl+↑", .. full[^7..]], screens[^1]);
     }
 
     // AC-6 (037)
@@ -4031,15 +4031,15 @@ public sealed class AppTests : IDisposable
         string[] frame = AnsiFrames(output)[1];
         Assert.Equal(24, frame.Length);
         Assert.Contains(Heading, frame[0]);
-        Assert.Matches(@"^↓ \d+ more lines below · PgDn", frame[TopHeight - 1]);
-        Assert.Matches(@"\x1b\[(90|38;5;8)m↓ \d+ more lines below · PgDn", output);
+        Assert.Matches(@"^↓ \d+ more lines below · PgDn / Ctrl\+↓", frame[TopHeight - 1]);
+        Assert.Matches(@"\x1b\[(90|38;5;8)m↓ \d+ more lines below · PgDn / Ctrl\+↓", output);
 
         List<string[]> screens = TopScreens(output, 1);
         Assert.True(screens.Count > 1);
         Assert.Contains(screens.SelectMany(screen => screen), l => l.Contains("today", StringComparison.Ordinal));
         Assert.Contains(screens[^1], l => l == $"Data folder: {folder}");
         Assert.DoesNotContain(screens[^1], l => l.Contains(BelowCue, StringComparison.Ordinal));
-        Assert.Matches(@"^↑ \d+ more lines above · PgUp", screens[^1][0]);
+        Assert.Matches(@"^↑ \d+ more lines above · PgUp / Ctrl\+↑", screens[^1][0]);
     }
 
     // AC-5, AC-7 (037)
@@ -4058,7 +4058,31 @@ public sealed class AppTests : IDisposable
 
         List<string[]> screens = TopScreens(output, 1);
         Assert.Equal(2, screens.Count);
-        Assert.Matches(@"^↑ \d+ more lines above · PgUp$", screens[1][0]);
+        Assert.Matches(@"^↑ \d+ more lines above · PgUp / Ctrl\+↑$", screens[1][0]);
+    }
+
+    // AC-5 (062)
+    [Fact]
+    public void ScrollCues_UseTheNewWording_InEveryFrame()
+    {
+        string output = RunAnsi(c =>
+        {
+            c.Input.PushTextWithEnter("help");
+            c.Input.PushKey(new ConsoleKeyInfo('\0', ConsoleKey.DownArrow, false, false, true));
+            c.Input.PushKey(new ConsoleKeyInfo('\0', ConsoleKey.UpArrow, false, false, true));
+            c.Input.PushKey(ConsoleKey.PageDown);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        List<string[]> screens = TopScreens(output, 1);
+        Assert.Equal(4, screens.Count);
+        Assert.Matches(@"^↓ \d+ more lines below · PgDn / Ctrl\+↓$", screens[0][TopHeight - 1]);
+        Assert.Matches(@"^↑ \d+ more lines above · PgUp / Ctrl\+↑$", screens[1][0]);
+        Assert.Equal(screens[0], screens[2]);
+        Assert.Matches(@"^↑ \d+ more lines above · PgUp / Ctrl\+↑$", screens[3][0]);
+        Assert.DoesNotMatch(@"more lines? above · PgUp(?! / Ctrl\+↑)", output);
+        Assert.DoesNotMatch(@"more lines? below · PgDn(?! / Ctrl\+↓)", output);
     }
 
     // Mouse wheel (job 038) -----------------------------------------------------------------
@@ -4217,7 +4241,7 @@ public sealed class AppTests : IDisposable
 
         // 12 rows: an 8-row top area, so one page is 6 lines and a notch 3.
         string[] At(int offset) =>
-            [$"↑ {offset} more lines above · PgUp", .. full[offset..(offset + 6)], $"↓ {full.Length - offset - 6} {BelowCue}"];
+            [$"↑ {offset} more lines above · PgUp / Ctrl+↑", .. full[offset..(offset + 6)], $"↓ {full.Length - offset - 6} {BelowCue}"];
 
         List<string[]> screens = TopScreens(output, 1, 8);
         Assert.Equal(6, screens.Count);
@@ -4250,7 +4274,7 @@ public sealed class AppTests : IDisposable
         int steps = (max + 2) / 3;
         List<string[]> screens = TopScreens(output, 1, 8);
         Assert.Equal(1 + (2 * steps), screens.Count);
-        Assert.Equal([$"↑ {max} more lines above · PgUp", .. full[^7..]], screens[steps]);
+        Assert.Equal([$"↑ {max} more lines above · PgUp / Ctrl+↑", .. full[^7..]], screens[steps]);
         Assert.Equal(screens[0], screens[^1]);
     }
 
