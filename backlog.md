@@ -56,4 +56,7 @@ Write one feature per line, in plain language.
 - [ ] Summary test tidy-up: remove the double blank line in `AppTests.cs` and the summary test that runs the same flow twice. No behaviour changes.
 - [ ] Unended break warning: in the day view, show a yellow hint when a break start has no break end before the next leaving (or the end of the day), or when a break start or break end falls outside an arrival-to-leaving span. The time left calculation stays as it is.
 - [ ] Sturdier grey test: make the `DayView` test that checks the `left` cell is grey compare against Spectre's grey style instead of counting the raw ANSI code `38;5;8m`, so it survives a palette change. No behaviour changes.
+- [ ] Break line polish: give the yellow `Breaks too short` warning a leading `!` so it stands out on monochrome terminals, and indent the break lines so they line up with the entry rows.
+- [ ] Lunch gap counts: count the gap between a leaving and the next arrival on the same day as break time in the break check, so a lunch booked as leave and return satisfies the required break. Time left stays as it is.
+- [ ] Walk tidy-up: walk the day only once per render and drop the extra arrays in `DayRecord.Walk()`. No behaviour changes.
 - [ ] Terminal check: verify in a real terminal (macOS Terminal, Windows Terminal) that the full-height layout doesn't scroll by one row and the cursor sits in the input box; fix it if it does.
