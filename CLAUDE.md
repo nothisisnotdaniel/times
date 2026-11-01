@@ -63,6 +63,10 @@ Every factory agent reads this file before working on Times. Keep it short and a
   so tests use a temp folder and never touch the real app data. Use `System.Text.Json`.
   The project quicklist lives next to the day files in `projects.json` (`ProjectStore`), as
   `{"projects":[{"workItem":1234,"title":"…"}]}`; a project's number is its 1-based position.
+  Project titles and checkpoint names (`ProjectList.IsValidTitle`) must be non-blank, at most 200
+  characters, and hold no control characters, no Unicode Format (Cf) code points (bidi overrides,
+  zero-width characters, soft hyphens, tag characters) and no unpaired surrogates; this is checked
+  when typed (red hint) and when `projects.json` or a day file is loaded (file is unreadable).
 - **Days:** the app always shows one "current" day, starting at today. The user can move to
   the previous or next day or jump to a date. Navigating to a day with no file shows it as an
   empty day **without creating a file**. The day's file is created only when the first

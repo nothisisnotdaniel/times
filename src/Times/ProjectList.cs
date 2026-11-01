@@ -23,7 +23,7 @@ internal sealed record Project
 /// 1-based position and is not stored. Saved as
 /// <c>{"projects":[{"workItem":1234,"title":"Website relaunch"},…]}</c>. Work item numbers are
 /// positive and unique; titles are non-blank, at most <see cref="MaxTitleLength"/> characters and
-/// hold no control characters.
+/// hold no control characters, invisible formatting characters or broken (unpaired) surrogates.
 /// </summary>
 internal sealed record ProjectList
 {
@@ -55,16 +55,54 @@ internal sealed record ProjectList
 
     /// <summary>
     /// True if <paramref name="title"/> can be a project title: not blank, at most
-    /// <see cref="MaxTitleLength"/> characters, and free of control characters and line or paragraph
-    /// separators, so it can never break up a one-line hint or a table row.
+    /// <see cref="MaxTitleLength"/> characters, free of control characters and line or paragraph
+    /// separators, so it can never break up a one-line hint or a table row, and free of formatting
+    /// characters and unpaired surrogates (see <see cref="HasFormatOrBrokenCharacters"/>), so what is
+    /// shown never differs from what is stored.
     /// </summary>
     public static bool IsValidTitle(string title) =>
-        !string.IsNullOrWhiteSpace(title) && title.Length <= MaxTitleLength && !HasControlCharacters(title);
+        !string.IsNullOrWhiteSpace(title)
+        && title.Length <= MaxTitleLength
+        && !HasControlCharacters(title)
+        && !HasFormatOrBrokenCharacters(title);
 
     /// <summary>True if <paramref name="text"/> holds a control character or a line or paragraph separator.</summary>
     public static bool HasControlCharacters(string text) =>
         text.Any(c => char.IsControl(c)
             || CharUnicodeInfo.GetUnicodeCategory(c) is UnicodeCategory.LineSeparator or UnicodeCategory.ParagraphSeparator);
+
+    /// <summary>
+    /// True if <paramref name="text"/> holds a code point of Unicode category Format (Cf), such as a
+    /// bidi override, a zero-width character, a soft hyphen or a tag character, or a high or low
+    /// surrogate that is not part of a valid pair. Valid pairs (e.g. emoji) are fine.
+    /// </summary>
+    public static bool HasFormatOrBrokenCharacters(string text)
+    {
+        for (int i = 0; i < text.Length; i++)
+        {
+            char c = text[i];
+            if (char.IsHighSurrogate(c))
+            {
+                if (i + 1 >= text.Length || !char.IsLowSurrogate(text[i + 1]))
+                {
+                    return true;
+                }
+
+                if (CharUnicodeInfo.GetUnicodeCategory(char.ConvertToUtf32(c, text[i + 1])) == UnicodeCategory.Format)
+                {
+                    return true;
+                }
+
+                i++;
+            }
+            else if (char.IsLowSurrogate(c) || CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.Format)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     /// <summary>The quicklist number of the project with <paramref name="workItem"/>, or <c>null</c> if there is none.</summary>
     public int? NumberOf(int workItem)
@@ -235,10 +273,20 @@ internal sealed record ProjectList
 
     private static string ReadTitle(JsonElement value)
     {
-        string? title = value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+        string? title;
+        try
+        {
+            title = value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+        }
+        catch (InvalidOperationException ex)
+        {
+            // An escaped lone surrogate such as \ud800 cannot be turned into a string.
+            throw new JsonException("A title in the project file is empty, too long or holds control, formatting or broken characters.", ex);
+        }
+
         if (title is null || !IsValidTitle(title))
         {
-            throw new JsonException("A title in the project file is empty, too long or holds control characters.");
+            throw new JsonException("A title in the project file is empty, too long or holds control, formatting or broken characters.");
         }
 
         return title;

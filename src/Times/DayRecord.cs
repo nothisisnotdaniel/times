@@ -534,10 +534,20 @@ internal sealed record DayRecord
 
     private static string ReadName(JsonElement value)
     {
-        string? name = value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+        string? name;
+        try
+        {
+            name = value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+        }
+        catch (InvalidOperationException ex)
+        {
+            // An escaped lone surrogate such as \ud800 cannot be turned into a string.
+            throw new JsonException("A checkpoint name in the day file is empty, too long or holds control, formatting or broken characters.", ex);
+        }
+
         if (name is null || !ProjectList.IsValidTitle(name))
         {
-            throw new JsonException("A checkpoint name in the day file is empty, too long or holds control characters.");
+            throw new JsonException("A checkpoint name in the day file is empty, too long or holds control, formatting or broken characters.");
         }
 
         return name;

@@ -1265,6 +1265,10 @@ public sealed class AppTests : IDisposable
     [InlineData("{\"entries\":[{\"kind\":\"arrival\"}]}")]
     [InlineData("{\"entries\":{}}")]
     [InlineData("{\"entries\":[],\"arrival\":\"08:15\"}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"abc\u202Edef\"}]}")] // AC-8 (056)
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"abc\\u202edef\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"abc\\ud800def\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"abc\\udc00def\"}]}")]
     public void InvalidEntriesFile_ShowsHint_AndNothingIsBooked(string contents)
     {
         File.WriteAllText(DayFile("2026-10-27"), contents);
@@ -2870,6 +2874,9 @@ public sealed class AppTests : IDisposable
     [InlineData("{not json")]
     [InlineData("{\"projects\":{}}")]
     [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"A\"},{\"workItem\":1,\"title\":\"B\"}]}")]
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"abc\u202Edef\"}]}")] // AC-7 (056)
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"abc\\u200bdef\"}]}")]
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"abc\\ud800def\"}]}")]
     public void UnreadableProjectsFile_ShowsHint_AndAddProjectLeavesBytesUnchanged(string contents)
     {
         File.WriteAllText(ProjectsFile, contents);
@@ -3081,6 +3088,9 @@ public sealed class AppTests : IDisposable
     [Theory]
     [InlineData("{not json")]
     [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"A\"},{\"workItem\":1,\"title\":\"B\"}]}")]
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"abc\u202Edef\"}]}")] // AC-7 (056)
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"abc\\u200bdef\"}]}")]
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"abc\\ud800def\"}]}")]
     public void CorruptProjectsFile_ShowsRedReasonInPanel_AndBookingStillWorks(string contents)
     {
         File.WriteAllText(ProjectsFile, contents);
@@ -4777,5 +4787,139 @@ public sealed class AppTests : IDisposable
         Assert.Matches(@"3 +Break end +12:30", frame);
         Assert.Contains("Breaks 0:30 taken · 0:30 required", frame);
         Assert.DoesNotContain("too short", frame);
+    }
+
+    // Safer titles and names (job 056) ---------------------------------------------------------
+
+    private const string AddProjectFormatHint = "addproject: the title must not contain invisible formatting or broken characters.";
+    private const string CheckpointFormatHint = "checkpoint: the name must not contain invisible formatting or broken characters.";
+
+    /// <summary>
+    /// Types <paramref name="escaped"/> (unescaped with <see cref="Regex.Unescape"/>, so lone surrogates
+    /// never go through xUnit's test case serialization) key by key, then Enter, then <c>quit</c>.
+    /// </summary>
+    private (int ExitCode, string Output) TypeEscaped(string escaped, bool ansi = false)
+    {
+        Action<TestConsole> input = c =>
+        {
+            c.Profile.Width = 200;
+            foreach (char ch in Regex.Unescape(escaped))
+            {
+                // TestConsoleInput.PushText only takes characters with a ConsoleKey (below 256).
+                c.Input.PushKey(new ConsoleKeyInfo(ch, ch < 256 ? (ConsoleKey)char.ToUpperInvariant(ch) : ConsoleKey.NoName, false, false, false));
+            }
+
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("quit");
+        };
+
+        if (ansi)
+        {
+            return (0, RunAnsi(input));
+        }
+
+        return Run(input);
+    }
+
+    // AC-3, AC-5 (056)
+    [Theory]
+    [InlineData("addproject 1234 abc\\u202Edef")]
+    [InlineData("addproject 1234 abc\\u200Bdef")]
+    [InlineData("addproject 1234 abc\\uD800def")]
+    [InlineData("addproject 1234 \\u200B")]
+    [InlineData("addproject 1234 abc\\uDB40\\uDC41def")]
+    public void AddProject_FormatOrBrokenTitle_ShowsHint_AndWritesNothing(string escaped)
+    {
+        (int exitCode, string output) = TypeEscaped(escaped);
+
+        Assert.Equal(0, exitCode);
+        string[] frame = LastLayout(output);
+        AssertOnHintRow(frame, AddProjectFormatHint);
+        Assert.DoesNotContain("abc", frame[^4]);
+        Assert.DoesNotContain("def", frame[^4]);
+        Assert.False(File.Exists(ProjectsFile));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
+    }
+
+    // AC-3 (056)
+    [Fact]
+    public void AddProject_FormatTitle_LeavesExistingFileUnchanged_AndHintIsRed()
+    {
+        WriteTwoProjects();
+        byte[] before = File.ReadAllBytes(ProjectsFile);
+
+        (_, string output) = TypeEscaped("addproject 1234 abc\\u202Edef", ansi: true);
+
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)maddproject: the title must not contain invisible formatting or broken characters\.", output);
+        Assert.Equal(before, File.ReadAllBytes(ProjectsFile));
+    }
+
+    // AC-3 (056)
+    [Fact]
+    public void AddProject_EmojiTitle_IsAdded()
+    {
+        (int exitCode, _) = TypeEscaped("addproject 1234 Launch \\uD83D\\uDE80");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("Launch 🚀", ReadProjects().Projects[0].Title);
+    }
+
+    // AC-4, AC-5 (056)
+    [Theory]
+    [InlineData("checkpoint abc\\u202Edef")]
+    [InlineData("checkpoint 9:30 #1 abc\\u202Edef")]
+    [InlineData("checkpoint abc\\u200Ddef")]
+    [InlineData("checkpoint abc\\uDC00def")]
+    [InlineData("checkpoint 9:30 abc\\uFEFFdef")]
+    public void Checkpoint_FormatOrBrokenName_ShowsHint_AndWritesNoFile(string escaped)
+    {
+        WriteTwoProjects();
+        byte[] projects = File.ReadAllBytes(ProjectsFile);
+
+        (int exitCode, string output) = TypeEscaped(escaped);
+
+        Assert.Equal(0, exitCode);
+        string[] frame = LastLayout(output);
+        AssertOnHintRow(frame, CheckpointFormatHint);
+        Assert.DoesNotContain("abc", frame[^4]);
+        Assert.DoesNotContain("def", frame[^4]);
+        Assert.False(File.Exists(DayFile("2026-10-27")));
+        Assert.Equal(projects, File.ReadAllBytes(ProjectsFile));
+    }
+
+    // AC-4 (056)
+    [Fact]
+    public void Checkpoint_FormatName_LeavesExistingDayUnchanged_AndHintIsRed()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
+        byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
+
+        (_, string output) = TypeEscaped("checkpoint abc\\u202Edef", ansi: true);
+
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mcheckpoint: the name must not contain invisible formatting or broken characters\.", output);
+        Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
+    }
+
+    // AC-4 (056)
+    [Fact]
+    public void Checkpoint_EmojiName_IsBooked()
+    {
+        (int exitCode, _) = TypeEscaped("checkpoint 9:00 Launch \\uD83D\\uDE80");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal([Checkpoint(9, 0, "Launch 🚀")], LoadDay().Entries);
+    }
+
+    // AC-9 (056): the control-character check still comes first.
+    [Theory]
+    [InlineData("checkpoint a\\u2028\\u202Eb", "checkpoint: the name must not contain control characters.")]
+    [InlineData("addproject 12 a\\u2028\\u202Eb", "addproject: the title must not contain control characters.")]
+    public void FormatAndControlCharacters_ControlHintWins(string escaped, string expected)
+    {
+        (_, string output) = TypeEscaped(escaped);
+
+        AssertOnHintRow(LastLayout(output), expected);
+        Assert.False(File.Exists(ProjectsFile));
+        Assert.False(File.Exists(DayFile("2026-10-27")));
     }
 }

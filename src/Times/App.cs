@@ -179,6 +179,11 @@ internal sealed class App
             return Hint($"{Name}: the title must not contain control characters.");
         }
 
+        if (ProjectList.HasFormatOrBrokenCharacters(title))
+        {
+            return Hint($"{Name}: the title must not contain invisible formatting or broken characters.");
+        }
+
         ProjectList current;
         try
         {
@@ -418,6 +423,11 @@ internal sealed class App
         if (ProjectList.HasControlCharacters(checkpoint))
         {
             return Hint($"{Name}: the name must not contain control characters.");
+        }
+
+        if (ProjectList.HasFormatOrBrokenCharacters(checkpoint))
+        {
+            return Hint($"{Name}: the name must not contain invisible formatting or broken characters.");
         }
 
         int? workItem = null;
