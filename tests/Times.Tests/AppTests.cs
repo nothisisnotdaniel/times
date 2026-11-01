@@ -2895,14 +2895,14 @@ public sealed class AppTests : IDisposable
         File.WriteAllText(ProjectsFile, contents);
         byte[] before = File.ReadAllBytes(ProjectsFile);
 
-        (int exitCode, string output) = RunWide(120, "addproject 5 New", "quit");
+        (int exitCode, string output) = RunWide(200, "addproject 5 New", "quit");
 
         Assert.Equal(0, exitCode);
-        AssertOnHintRow(LastLayout(output), "addproject: the project list cannot be read: projects.json is not valid. Nothing was added.");
+        AssertOnHintRow(LastLayout(output), "addproject: the project list cannot be read: projects.json is not valid. Nothing was added. Fix or delete projects.json in the data folder (help shows where).");
         Assert.Equal(before, File.ReadAllBytes(ProjectsFile));
 
-        (_, string listed) = RunWide(120, "projects", "quit");
-        AssertOnHintRow(LastLayout(listed), "projects: the project list cannot be read: projects.json is not valid.");
+        (_, string listed) = RunWide(200, "projects", "quit");
+        AssertOnHintRow(LastLayout(listed), "projects: the project list cannot be read: projects.json is not valid. Fix or delete projects.json in the data folder (help shows where).");
         Assert.DoesNotContain("   at ", output + listed);
         Assert.Equal(before, File.ReadAllBytes(ProjectsFile));
     }
@@ -2914,10 +2914,10 @@ public sealed class AppTests : IDisposable
         File.WriteAllText(ProjectsFile, new string(' ', (int)ProjectStore.MaxFileBytes + 1) + "{\"projects\":[]}");
         byte[] before = File.ReadAllBytes(ProjectsFile);
 
-        (_, string output) = RunWide(120, "addproject 5 New", "projects", "quit");
+        (_, string output) = RunWide(200, "addproject 5 New", "projects", "quit");
 
-        Assert.Contains("addproject: the project list cannot be read: projects.json is too large. Nothing was added.", output);
-        AssertOnHintRow(LastLayout(output), "projects: the project list cannot be read: projects.json is too large.");
+        Assert.Contains("addproject: the project list cannot be read: projects.json is too large. Nothing was added. Fix or delete projects.json in the data folder (help shows where).", output);
+        AssertOnHintRow(LastLayout(output), "projects: the project list cannot be read: projects.json is too large. Fix or delete projects.json in the data folder (help shows where).");
         Assert.Equal(before, File.ReadAllBytes(ProjectsFile));
     }
 
@@ -2927,7 +2927,44 @@ public sealed class AppTests : IDisposable
     {
         File.WriteAllText(ProjectsFile, "{not json");
 
-        Assert.Matches(@"\x1b\[(31|91|38;5;9)mprojects: the project list cannot be read", RunAnsi("projects"));
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mprojects: the project list cannot be read: projects\.json is not valid\. Fix or delete projects\.json in the data folder \(help shows where\)\.", RunAnsi("projects"));
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)maddproject: the project list cannot be read: projects\.json is not valid\. Nothing was added\. Fix or delete", RunAnsi("addproject 5 New"));
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mcheckpoint: the project list cannot be read: projects\.json is not valid\. Nothing was booked\. Fix or delete", RunAnsi("checkpoint 9:30 #1 Standup"));
+    }
+
+    // AC-7 (059)
+    [Fact]
+    public void UnreadableProjectsFile_PanelAndAllHints_ShareOneNextStep()
+    {
+        File.WriteAllText(ProjectsFile, "{not json");
+        const string Next = "Fix or delete projects.json in the data folder (help shows where).";
+        Assert.Equal(Next, App.UnreadableProjectsNextStep);
+
+        (_, string listed) = RunWide(200, "projects", "quit");
+        (_, string added) = RunWide(200, "addproject 5 New", "quit");
+        (_, string booked) = RunWide(200, "checkpoint 9:30 #1 Standup", "quit");
+
+        Assert.Contains(Next, PanelRows(LastLayout(added))[2]);
+        Assert.EndsWith("valid. " + Next, LastLayout(listed)[^4].TrimEnd());
+        Assert.EndsWith("added. " + Next, LastLayout(added)[^4].TrimEnd());
+        Assert.EndsWith("booked. " + Next, LastLayout(booked)[^4].TrimEnd());
+        Assert.False(File.Exists(DayFile("2026-10-27")));
+        Assert.Equal("{not json", File.ReadAllText(ProjectsFile));
+    }
+
+    // AC-6 (059)
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    [InlineData(7)]
+    public void ReadableProjectsFile_ShowsNoNextStep(int count)
+    {
+        WriteProjects(count);
+
+        (_, string output) = RunWide(200, "projects", "addproject 999 New", "checkpoint 9:30 #1 Standup", "quit");
+
+        Assert.DoesNotContain("Fix or delete", output);
+        Assert.DoesNotContain("cannot be read", output);
     }
 
     // AC-7 (030)
@@ -3117,8 +3154,9 @@ public sealed class AppTests : IDisposable
         {
             AssertLayout(frame);
             string[] panel = PanelRows(frame);
-            Assert.Equal(3, panel.Length);
+            Assert.Equal(4, panel.Length);
             Assert.Contains("The project list cannot be read: projects.json is not valid.", panel[1]);
+            Assert.Contains(App.UnreadableProjectsNextStep, panel[2]);
         }
 
         Assert.Equal("{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}", ReadDay("2026-10-27"));
@@ -3136,6 +3174,7 @@ public sealed class AppTests : IDisposable
         string output = RunAnsi("quit");
 
         Assert.Matches(@"\x1b\[(91|38;5;9)mThe project list cannot be read: projects\.json is not valid\.", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)mFix or delete projects\.json in the data folder \(help shows where\)\.", output);
     }
 
     // AC-8 (033)
@@ -3148,7 +3187,9 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(0, exitCode);
         string[] panel = PanelRows(LastLayout(output));
+        Assert.Equal(4, panel.Length);
         Assert.Contains("The project list cannot be read: projects.json is too large.", panel[1]);
+        Assert.Contains(App.UnreadableProjectsNextStep, panel[2]);
     }
 
     // AC-6 (058)
@@ -3168,7 +3209,9 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(0, exitCode);
         string[] panel = PanelRows(LastLayout(output));
+        Assert.Equal(4, panel.Length);
         Assert.Contains("The project list cannot be read: projects.json is not a regular file.", panel[1]);
+        Assert.Contains(App.UnreadableProjectsNextStep, panel[2]);
         Assert.Matches(@"\x1b\[(91|38;5;9)mThe project list cannot be read: projects\.json is not a regular file\.", RunAnsi("quit"));
         Assert.True(SpecialFiles.IsFifo(ProjectsFile));
     }
@@ -3194,9 +3237,9 @@ public sealed class AppTests : IDisposable
             (_, booked) = RunWide(200, "checkpoint #1 Foo", "quit");
         }));
 
-        AssertOnHintRow(LastLayout(listed), "projects: the project list cannot be read: projects.json is not a regular file.");
-        AssertOnHintRow(LastLayout(added), "addproject: the project list cannot be read: projects.json is not a regular file. Nothing was added.");
-        AssertOnHintRow(LastLayout(booked), "checkpoint: the project list cannot be read: projects.json is not a regular file. Nothing was booked.");
+        AssertOnHintRow(LastLayout(listed), "projects: the project list cannot be read: projects.json is not a regular file. Fix or delete projects.json in the data folder (help shows where).");
+        AssertOnHintRow(LastLayout(added), "addproject: the project list cannot be read: projects.json is not a regular file. Nothing was added. Fix or delete projects.json in the data folder (help shows where).");
+        AssertOnHintRow(LastLayout(booked), "checkpoint: the project list cannot be read: projects.json is not a regular file. Nothing was booked. Fix or delete projects.json in the data folder (help shows where).");
         Assert.DoesNotContain("   at ", listed + added + booked);
         Assert.True(SpecialFiles.IsFifo(ProjectsFile));
         Assert.Equal([ProjectsFile], Directory.EnumerateFileSystemEntries(data.Path));
@@ -3219,8 +3262,9 @@ public sealed class AppTests : IDisposable
 
             Assert.Equal(0, exitCode);
             string[] panel = PanelRows(LastLayout(output));
-            Assert.Equal(3, panel.Length);
+            Assert.Equal(4, panel.Length);
             Assert.Contains("The project list cannot be read:", panel[1]);
+            Assert.Contains(App.UnreadableProjectsNextStep, panel[2]);
             Assert.True(File.Exists(DayFile("2026-10-27")));
         }
         finally
@@ -3592,7 +3636,7 @@ public sealed class AppTests : IDisposable
         (int exitCode, string output) = RunWide(200, "checkpoint 9:30 #1 Standup", "quit");
 
         Assert.Equal(0, exitCode);
-        AssertOnHintRow(LastLayout(output), "checkpoint: the project list cannot be read: projects.json is not valid. Nothing was booked.");
+        AssertOnHintRow(LastLayout(output), "checkpoint: the project list cannot be read: projects.json is not valid. Nothing was booked. Fix or delete projects.json in the data folder (help shows where).");
         Assert.False(File.Exists(DayFile("2026-10-27")));
         Assert.Equal(contents, File.ReadAllText(ProjectsFile));
     }

@@ -18,6 +18,9 @@ internal sealed class App
     private const string Prompt = "> ";
     private const string Placeholder = "Type help for commands";
 
+    /// <summary>What to do when <c>projects.json</c> cannot be read, shown in the quicklist panel and in every command hint about it.</summary>
+    public const string UnreadableProjectsNextStep = "Fix or delete projects.json in the data folder (help shows where).";
+
     private readonly IAnsiConsole console;
     private readonly TimeProvider time;
     private readonly CommandRegistry registry;
@@ -192,7 +195,7 @@ internal sealed class App
         }
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
         {
-            return Hint($"{Name}: {UnreadableProjects(ex)} Nothing was added.");
+            return Hint($"{Name}: {UnreadableProjects(ex)} Nothing was added. {UnreadableProjectsNextStep}");
         }
 
         if (current.NumberOf(workItem) is { } existing)
@@ -227,7 +230,7 @@ internal sealed class App
         }
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
         {
-            return Hint($"projects: {UnreadableProjects(ex)}");
+            return Hint($"projects: {UnreadableProjects(ex)} {UnreadableProjectsNextStep}");
         }
 
         if (list.IsEmpty)
@@ -441,7 +444,7 @@ internal sealed class App
             }
             catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
             {
-                return Hint($"{Name}: {UnreadableProjects(ex)} Nothing was booked.");
+                return Hint($"{Name}: {UnreadableProjects(ex)} Nothing was booked. {UnreadableProjectsNextStep}");
             }
 
             if (number < 1 || number > projects.Projects.Count)
@@ -719,7 +722,9 @@ internal sealed class App
         }
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException or InvalidOperationException)
         {
-            return QuicklistPanel.RenderUnreadable($"The project list cannot be read: {Markup.Escape(ex.Message)}");
+            return QuicklistPanel.RenderUnreadable(
+                $"The project list cannot be read: {Markup.Escape(ex.Message)}",
+                Markup.Escape(UnreadableProjectsNextStep));
         }
     }
 
