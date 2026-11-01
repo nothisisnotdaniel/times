@@ -31,10 +31,22 @@ source tree:
 dotnet run --project src/Times
 ```
 
+## Keys
+
+| Keys | What they do |
+|------|--------------|
+| `PgUp` / `PgDn` | Scroll the area above the input box up / down by a page |
+| `Shift+PgUp` / `Shift+PgDn` | The same |
+| `Ctrl+↑` / `Ctrl+↓` | The same |
+| `↑` / `↓` | Previous / next command from the history (they do not scroll) |
+
+macOS Terminal keeps plain PgUp/PgDn for its own scrollback, so there use Shift+PgUp/PgDn or
+Ctrl+↑/↓ instead.
+
 ## Mouse
 
 The mouse wheel scrolls the area above the input box, 3 lines per notch, wherever the pointer is
-(PageUp/PageDown, or Ctrl+↑/↓ in macOS Terminal, scroll by a page).
+(the keys under [Keys](#keys) scroll by a page).
 
 To make that work, Times turns on the terminal's mouse reporting while it runs. Because of that,
 dragging with the mouse no longer selects text: while Times runs, select text with **Shift-drag**
