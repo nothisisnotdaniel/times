@@ -77,3 +77,5 @@ Write one feature per line, in plain language.
 - [ ] Terminal check: verify in a real terminal (macOS Terminal, Windows Terminal) that the full-height layout doesn't scroll by one row and the cursor sits in the input box; fix it if it does.
 - [?] review-security 1 — no size cap on pasted text. A cap changes behaviour, and the spec puts it out of scope ("a length cap on pasted text"). It needs its own job. (from 066-long-escape-sequences)
 - [?] review-ux 1 — same as review-security 1 (no length cap on pasted text). Out of scope per the spec. (from 066-long-escape-sequences)
+- [?] review-code 1 — the reviewer marks the surrogate handling in `Quote` as correct and says no change is needed. Shortening it would mean rewriting security-relevant code, and that change would need another review. (from 068-escape-register-name)
+- [?] review-security 1 — this is an observation, not a requested change: only name and alias are quoted, as the spec says. Nothing to fix. (from 068-escape-register-name)
