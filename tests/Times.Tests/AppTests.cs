@@ -2795,9 +2795,19 @@ public sealed class AppTests : IDisposable
 
     // AC-5 (030)
     [Theory]
-    [InlineData("addproject", "addproject: say the work item number and the title.")]
-    [InlineData("addproject   ", "addproject: say the work item number and the title.")]
-    [InlineData("addproject 1234", "addproject: say the work item number and the title.")]
+    [InlineData("addproject", "addproject: say the work item number and the title. Use addproject <work item> <title>.")] // AC-5 (057)
+    [InlineData("addproject   ", "addproject: say the work item number and the title. Use addproject <work item> <title>.")] // AC-5 (057)
+    [InlineData("addproject 1234", "addproject: the title is missing. Use addproject <work item> <title>.")] // AC-1 (057)
+    [InlineData("addproject 1234   ", "addproject: the title is missing. Use addproject <work item> <title>.")] // AC-4 (057)
+    [InlineData("ap 1234", "addproject: the title is missing. Use addproject <work item> <title>.")] // AC-4 (057)
+    [InlineData("addproject abc", "addproject: abc is not a work item number. Use addproject <work item> <title>.")] // AC-2 (057)
+    [InlineData("addproject -5", "addproject: -5 is not a work item number.")] // AC-3 (057)
+    [InlineData("addproject 0", "addproject: 0 is not a work item number.")] // AC-3 (057)
+    [InlineData("addproject 12.5", "addproject: 12.5 is not a work item number.")] // AC-3 (057)
+    [InlineData("addproject +7", "addproject: +7 is not a work item number.")] // AC-3 (057)
+    [InlineData("addproject 2147483648", "addproject: 2147483648 is not a work item number.")] // AC-3 (057)
+    [InlineData("addproject 99999999999999999999", "addproject: 99999999999999999999 is not a work item number.")] // AC-3 (057)
+    [InlineData("addproject [red]1[/]", "addproject: [red]1[/] is not a work item number.")] // AC-3 (057)
     [InlineData("addproject abc Title", "addproject: abc is not a work item number.")]
     [InlineData("addproject -5 Title", "addproject: -5 is not a work item number.")]
     [InlineData("addproject 0 Title", "addproject: 0 is not a work item number.")]
@@ -2863,10 +2873,13 @@ public sealed class AppTests : IDisposable
     }
 
     // AC-5 (030)
-    [Fact]
-    public void AddProject_InvalidInput_HintIsRed()
+    [Theory]
+    [InlineData("addproject abc Title")]
+    [InlineData("addproject 1234")] // AC-7 (057)
+    [InlineData("addproject abc")] // AC-7 (057)
+    public void AddProject_InvalidInput_HintIsRed(string command)
     {
-        Assert.Matches(@"\x1b\[(31|91|38;5;9)maddproject: ", RunAnsi("addproject abc Title"));
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)maddproject: ", RunAnsi(command));
     }
 
     // AC-7 (030)
