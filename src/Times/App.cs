@@ -151,14 +151,15 @@ internal sealed class App
     {
         const string Name = "addproject";
         const string Usage = "Use [bold]addproject <work item> <title>[/].";
-        int split = argument.IndexOfAny([' ', '\t']);
-        if (argument.Length == 0 || split < 0)
+        const string TitleMissing = "the title is missing.";
+        if (argument.Length == 0)
         {
             return Hint($"{Name}: say the work item number and the title. {Usage}");
         }
 
-        string number = argument[..split];
-        string title = argument[(split + 1)..].Trim();
+        int split = argument.IndexOfAny([' ', '\t']);
+        string number = split < 0 ? argument : argument[..split];
+        string title = split < 0 ? string.Empty : argument[(split + 1)..].Trim();
         if (!int.TryParse(number, NumberStyles.None, CultureInfo.InvariantCulture, out int workItem) || workItem < 1)
         {
             return Hint($"{Name}: [bold]{Markup.Escape(number)}[/] is not a work item number. {Usage}");
@@ -166,7 +167,7 @@ internal sealed class App
 
         if (title.Length == 0)
         {
-            return Hint($"{Name}: say the title. {Usage}");
+            return Hint($"{Name}: {TitleMissing} {Usage}");
         }
 
         if (title.Length > ProjectList.MaxTitleLength)
