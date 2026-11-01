@@ -232,12 +232,17 @@ public sealed class ToolPackagingTests
     {
         string readme = "\n" + File.ReadAllText(Path.Combine(RepoRoot, "README.md")).ReplaceLineEndings("\n");
         List<string> headings = [];
-        int index = readme.IndexOf("\n## ", StringComparison.Ordinal);
-        while (index >= 0)
+        bool inFence = false;
+        foreach (string line in readme.Split('\n'))
         {
-            int end = readme.IndexOf('\n', index + 1);
-            headings.Add(readme[(index + 1)..end]);
-            index = readme.IndexOf("\n## ", end, StringComparison.Ordinal);
+            if (line.StartsWith("```", StringComparison.Ordinal))
+            {
+                inFence = !inFence;
+            }
+            else if (!inFence && line.StartsWith("## ", StringComparison.Ordinal))
+            {
+                headings.Add(line);
+            }
         }
 
         int install = headings.IndexOf("## Install as a .NET tool");
