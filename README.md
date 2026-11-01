@@ -51,21 +51,31 @@ would run its own `times` and never reach the app.
 The package is not published to nuget.org or any other feed. You build it yourself into the
 local `nupkg/` folder at the repo root and install it from there.
 
+The repo root holds a `nuget.config` whose `packageSourceMapping` maps the `Times` package to
+`./nupkg` only, so a `Times` package on nuget.org is never used. All other packages still come
+from nuget.org, and `<clear />` keeps your user- and machine-level feeds out. NuGet only reads
+this file when you run the commands from the repo root (where `nuget.config` lives); run the
+install and update commands from there. `./nupkg` is resolved relative to `nuget.config`, not to
+your shell's working directory.
+
 1. Build the package (from the repo root). This writes `nupkg/Times.<version>.nupkg`:
 
    ```sh
    dotnet pack src/Times -c Release
    ```
 
-2. Install it from the local folder:
+2. Install it from the local folder (from the repo root):
 
    ```sh
-   dotnet tool install -g --add-source ./nupkg Times
+   dotnet tool install -g Times
    ```
 
-   `--add-source` adds `./nupkg` next to your configured feeds; it does not replace them. Always
-   build first, and to make it much more likely you get the package you just built, pin the
-   version, for example `dotnet tool install -g --add-source ./nupkg Times --version 0.1.0`.
+   If `nupkg/` holds no `Times` package, the install fails instead of falling back to
+   nuget.org, so always build first.
+
+   NuGet may reuse a `Times` package of the same version that it cached earlier in its global
+   packages folder. If an install looks wrong, clear that cache with
+   `dotnet nuget locals global-packages --clear` and install again.
 
 3. Check the install. This prints the installed version, for example `Times 0.1.0`:
 
@@ -86,12 +96,11 @@ macOS/Linux, `%USERPROFILE%\.dotnet\tools` on Windows) is on your `PATH`.
 
 After changing the code, raise `<Version>` in `src/Times/Times.csproj` (with the same version,
 .NET may reuse the build it already cached instead of your new one), build the package again,
-then update, pinning the new version so a higher-versioned `Times` package from another feed
-is not picked up:
+then update, again from the repo root:
 
 ```sh
 dotnet pack src/Times -c Release
-dotnet tool update -g --add-source ./nupkg Times --version <new version>
+dotnet tool update -g Times
 ```
 
 ### Uninstall
