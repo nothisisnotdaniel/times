@@ -64,7 +64,7 @@ local `nupkg/` folder at the repo root and install it from there.
    ```
 
    `--add-source` adds `./nupkg` next to your configured feeds; it does not replace them. Always
-   build first, and to be sure you get the package you just built, pin the version, for example
+   build first, and to make it much more likely you get the package you just built, pin the version, for example
    `dotnet tool install -g --add-source ./nupkg Times --version 0.1.0`.
 
 3. Check the install. This prints the installed version, for example `Times 0.1.0`:
@@ -86,11 +86,11 @@ macOS/Linux, `%USERPROFILE%\.dotnet\tools` on Windows) is on your `PATH`.
 
 After changing the code, raise `<Version>` in `src/Times/Times.csproj` (with the same version,
 .NET may reuse the build it already cached instead of your new one), build the package again,
-then update:
+then update, pinning the new version so a higher-versioned `Times` package from another feed is not picked up:
 
 ```sh
 dotnet pack src/Times -c Release
-dotnet tool update -g --add-source ./nupkg Times
+dotnet tool update -g --add-source ./nupkg Times --version <new version>
 ```
 
 ### Uninstall
