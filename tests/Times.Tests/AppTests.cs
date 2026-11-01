@@ -3151,6 +3151,57 @@ public sealed class AppTests : IDisposable
         Assert.Contains("The project list cannot be read: projects.json is too large.", panel[1]);
     }
 
+    // AC-6 (058)
+    [Fact]
+    public void FifoProjectsFile_AppStartsWithoutHanging_AndShowsReasonInPanel()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        SpecialFiles.MakeFifo(ProjectsFile);
+        int exitCode = -1;
+        string output = string.Empty;
+
+        Assert.Null(SpecialFiles.RunWithin(TimeSpan.FromSeconds(10), () => (exitCode, output) = RunCommands("quit")));
+
+        Assert.Equal(0, exitCode);
+        string[] panel = PanelRows(LastLayout(output));
+        Assert.Contains("The project list cannot be read: projects.json is not a regular file.", panel[1]);
+        Assert.Matches(@"\x1b\[(91|38;5;9)mThe project list cannot be read: projects\.json is not a regular file\.", RunAnsi("quit"));
+        Assert.True(SpecialFiles.IsFifo(ProjectsFile));
+    }
+
+    // AC-7 (058)
+    [Fact]
+    public void FifoProjectsFile_CommandsShowHint_AndChangeNothing()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        SpecialFiles.MakeFifo(ProjectsFile);
+        string listed = string.Empty;
+        string added = string.Empty;
+        string booked = string.Empty;
+
+        Assert.Null(SpecialFiles.RunWithin(TimeSpan.FromSeconds(10), () =>
+        {
+            (_, listed) = RunWide(200, "projects", "quit");
+            (_, added) = RunWide(200, "addproject 1234 Foo", "quit");
+            (_, booked) = RunWide(200, "checkpoint #1 Foo", "quit");
+        }));
+
+        AssertOnHintRow(LastLayout(listed), "projects: the project list cannot be read: projects.json is not a regular file.");
+        AssertOnHintRow(LastLayout(added), "addproject: the project list cannot be read: projects.json is not a regular file. Nothing was added.");
+        AssertOnHintRow(LastLayout(booked), "checkpoint: the project list cannot be read: projects.json is not a regular file. Nothing was booked.");
+        Assert.DoesNotContain("   at ", listed + added + booked);
+        Assert.True(SpecialFiles.IsFifo(ProjectsFile));
+        Assert.Equal([ProjectsFile], Directory.EnumerateFileSystemEntries(data.Path));
+    }
+
     // AC-8 (033)
     [Fact]
     public void UnreadableProjectsFile_AccessDenied_ShowsReasonInPanel()

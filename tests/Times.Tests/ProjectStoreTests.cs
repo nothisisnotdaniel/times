@@ -113,4 +113,172 @@ public class ProjectStoreTests
 
         Assert.Equal(before, Directory.EnumerateFileSystemEntries(Directory.GetCurrentDirectory()).Order(StringComparer.Ordinal).ToArray());
     }
+
+    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(5);
+
+    private const string NotRegular = "projects.json is not a regular file.";
+
+    private static void AssertRefused(ProjectStore store, string message)
+    {
+        Exception? thrown = SpecialFiles.RunWithin(Timeout, () => store.Load());
+
+        InvalidDataException ex = Assert.IsType<InvalidDataException>(thrown);
+        Assert.Equal(message, ex.Message);
+    }
+
+    // AC-1 (058)
+    [Fact]
+    public void Load_Fifo_IsRefused_WithoutBlocking_AndStaysAFifo()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder temp = new TempFolder();
+        ProjectStore store = new ProjectStore(temp.Path);
+        SpecialFiles.MakeFifo(store.FilePath);
+
+        AssertRefused(store, NotRegular);
+
+        Assert.True(SpecialFiles.IsFifo(store.FilePath));
+    }
+
+    // AC-2, AC-8 (058)
+    [Theory]
+    [InlineData("fifo")]
+    [InlineData("/dev/null")]
+    [InlineData("/dev/zero")]
+    [InlineData("dir")]
+    [InlineData("gone")]
+    public void Load_LinkToNonRegularTarget_IsRefused_AndLinkIsUnchanged(string target)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder temp = new TempFolder();
+        ProjectStore store = new ProjectStore(temp.Path);
+        string targetPath = target.StartsWith('/') ? target : Path.Combine(temp.Path, target);
+        if (target == "fifo")
+        {
+            SpecialFiles.MakeFifo(targetPath);
+        }
+        else if (target == "dir")
+        {
+            Directory.CreateDirectory(targetPath);
+        }
+
+        File.CreateSymbolicLink(store.FilePath, targetPath);
+
+        AssertRefused(store, NotRegular);
+
+        Assert.Equal(targetPath, new FileInfo(store.FilePath).LinkTarget);
+    }
+
+    // AC-3 (058)
+    [Fact]
+    public void Load_Directory_IsRefused()
+    {
+        using TempFolder temp = new TempFolder();
+        ProjectStore store = new ProjectStore(temp.Path);
+        Directory.CreateDirectory(store.FilePath);
+
+        AssertRefused(store, NotRegular);
+
+        Assert.True(Directory.Exists(store.FilePath));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(store.FilePath));
+    }
+
+    // AC-4 (058)
+    [Fact]
+    public void Load_LinkToValidFile_LoadsThatList()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder temp = new TempFolder();
+        ProjectStore store = new ProjectStore(temp.Path);
+        string target = Path.Combine(temp.Path, "real.json");
+        ProjectList list = ProjectList.Empty.Add(new Project(1234, "Website"));
+        File.WriteAllText(target, list.ToJson());
+        File.CreateSymbolicLink(store.FilePath, target);
+
+        Assert.Equal(list, store.Load());
+    }
+
+    // AC-4, AC-5 (058)
+    [Fact]
+    public void Load_LinkToOversizedFile_IsTooLarge_AndLeavesBothUnchanged()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder temp = new TempFolder();
+        ProjectStore store = new ProjectStore(temp.Path);
+        string target = Path.Combine(temp.Path, "big.json");
+        File.WriteAllText(target, new string(' ', (int)ProjectStore.MaxFileBytes - 14) + "{\"projects\":[]}");
+        Assert.Equal(ProjectStore.MaxFileBytes + 1, new FileInfo(target).Length);
+        byte[] before = File.ReadAllBytes(target);
+        File.CreateSymbolicLink(store.FilePath, target);
+
+        AssertRefused(store, "projects.json is too large.");
+
+        Assert.Equal(before, File.ReadAllBytes(target));
+        Assert.Equal(target, new FileInfo(store.FilePath).LinkTarget);
+    }
+
+    // AC-5 (058)
+    [Fact]
+    public void Load_EmptyFile_IsNotValid()
+    {
+        using TempFolder temp = new TempFolder();
+        ProjectStore store = new ProjectStore(temp.Path);
+        File.WriteAllBytes(store.FilePath, []);
+
+        AssertRefused(store, "projects.json is not valid.");
+
+        Assert.Empty(File.ReadAllBytes(store.FilePath));
+    }
+
+    // AC-5 (058)
+    [Fact]
+    public void Load_FileWithUtf8Bom_Loads()
+    {
+        using TempFolder temp = new TempFolder();
+        ProjectStore store = new ProjectStore(temp.Path);
+        ProjectList list = ProjectList.Empty.Add(new Project(7, "Wébsite"));
+        File.WriteAllText(store.FilePath, list.ToJson(), new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+        Assert.Equal(0xEF, File.ReadAllBytes(store.FilePath)[0]);
+
+        Assert.Equal(list, store.Load());
+    }
+
+    // AC-8 (058)
+    [Fact]
+    public void ReadAtMost_CutsALongerStreamAtTheLimit()
+    {
+        using MemoryStream stream = new MemoryStream(new byte[100_000]);
+
+        byte[] bytes = ProjectStore.ReadAtMost(stream, ProjectStore.MaxFileBytes + 1);
+
+        Assert.Equal(ProjectStore.MaxFileBytes + 1, bytes.Length);
+        Assert.Equal(ProjectStore.MaxFileBytes + 1, stream.Position);
+    }
+
+    // AC-8 (058)
+    [Fact]
+    public void ReadAtMost_ReadsAShorterStreamToItsEnd()
+    {
+        byte[] data = System.Text.Encoding.UTF8.GetBytes("{\"projects\":[]}");
+        using MemoryStream stream = new MemoryStream(data);
+
+        Assert.Equal(data, ProjectStore.ReadAtMost(stream, ProjectStore.MaxFileBytes + 1));
+    }
 }
+
