@@ -4661,7 +4661,6 @@ public sealed class AppTests : IDisposable
         Assert.Matches(@"\x1b\[38;5;75mcp\x1b\[0m", console.Output);
     }
 
-
     // Job 043 ------------------------------------------------------------------------------
 
     private const string SummaryDay =
@@ -4754,7 +4753,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Summary_WithNoFile_ShowsGreyMessage_AndCreatesNothing()
     {
-        (int exitCode, string output) = RunCommands("summary", "s", "quit");
+        (int exitCode, string output) = RunCommands("summary", "quit");
 
         Assert.Equal(0, exitCode);
         Assert.Contains("No checkpoints on this day.", LastFrame(output));
@@ -5114,7 +5113,6 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, exitCode);
         Assert.Equal(["a quit rec b"], calls);
     }
-
 
     // Job 069 ------------------------------------------------------------------------------
 
