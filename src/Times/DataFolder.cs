@@ -1,3 +1,6 @@
+using System.Globalization;
+using System.Text;
+
 namespace Times;
 
 /// <summary>
@@ -37,5 +40,27 @@ internal sealed class DataFolder
 
         string folder = string.IsNullOrEmpty(appData) ? string.Empty : System.IO.Path.Combine(appData, "Times");
         return new DataFolder(folder, fromEnvironment: false);
+    }
+
+    /// <summary>
+    /// <paramref name="value"/> without control characters (C0, DEL, C1) and line or paragraph
+    /// separators, so it can be shown on one terminal line without sending anything to the terminal.
+    /// Every other character, spaces included, is kept. Escape the result before it goes into markup.
+    /// </summary>
+    internal static string ForDisplay(string value)
+    {
+        StringBuilder shown = new StringBuilder(value.Length);
+        foreach (char c in value)
+        {
+            if (char.IsControl(c)
+                || CharUnicodeInfo.GetUnicodeCategory(c) is UnicodeCategory.LineSeparator or UnicodeCategory.ParagraphSeparator)
+            {
+                continue;
+            }
+
+            shown.Append(c);
+        }
+
+        return shown.ToString();
     }
 }
