@@ -540,8 +540,16 @@ public sealed class ToolPackagingTests
         startInfo.ArgumentList.Add(build);
 
         using Process process = Process.Start(startInfo)!;
-        await process.StandardInput.WriteAsync(tags);
-        process.StandardInput.Close();
+        try
+        {
+            Stream input = process.StandardInput.BaseStream;
+            await input.WriteAsync(System.Text.Encoding.UTF8.GetBytes(tags));
+            input.Close();
+        }
+        catch (IOException)
+        {
+            // The script refuses a bad build number before it reads stdin, so the pipe can already be closed.
+        }
         Task<string> error = process.StandardError.ReadToEndAsync();
         string output = await process.StandardOutput.ReadToEndAsync();
         await error;
