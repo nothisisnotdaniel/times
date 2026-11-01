@@ -528,4 +528,93 @@ public class CommandRegistryTests
         Assert.Contains("\u001b[38;5;8mAlias", console.Output);
         Assert.Contains("\u001b[38;5;75mq\u001b[0m", console.Output);
     }
+
+    // AC-1 (068): ESC is removed and '[' escaped in the quoted name.
+    [Fact]
+    public void Register_RejectedName_IsCleanedAndEscapedInMessage()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(
+            () => new CommandRegistry().Register("x\u001b[31m y", "zz", "d", Nothing));
+
+        Assert.All(ex.Message, c => Assert.False(char.IsControl(c)));
+        Assert.Contains("x[[31m y", ex.Message);
+    }
+
+    // AC-2 (068)
+    [Fact]
+    public void Register_RejectedName_WithMarkup_IsSafeMarkup()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(
+            () => new CommandRegistry().Register("[red] x", "zz", "d", Nothing));
+
+        Assert.Contains("'[[red]] x'", ex.Message);
+        Markup markup = new Markup(ex.Message);
+        Assert.NotNull(markup);
+    }
+
+    // AC-3 (068): bidi override and zero-width space are removed.
+    [Theory]
+    [InlineData("a\u202Eb c", "\u202E")]
+    [InlineData("a\u200Bb c", "\u200B")]
+    public void Register_RejectedName_DropsFormatCharacters(string name, string removed)
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(
+            () => new CommandRegistry().Register(name, "zz", "d", Nothing));
+
+        Assert.Contains("'ab c'", ex.Message);
+        Assert.DoesNotContain(removed, ex.Message, StringComparison.Ordinal);
+    }
+
+    // AC-3 (068), reviewer note: unpaired surrogates are dropped, paired ones kept.
+    [Fact]
+    public void Register_RejectedName_DropsUnpairedSurrogates()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(
+            () => new CommandRegistry().Register("a\uD800b\uDC00c \uD83D\uDE00", "zz", "d", Nothing));
+
+        Assert.Contains("'abc \uD83D\uDE00'", ex.Message);
+    }
+
+    // AC-4 (068)
+    [Fact]
+    public void Register_RejectedAlias_IsCleanedAndEscapedInMessage()
+    {
+        ArgumentException ex = Assert.Throws<ArgumentException>(
+            () => new CommandRegistry().Register("ok", "\u001b[", "d", Nothing));
+
+        Assert.Equal("alias", ex.ParamName);
+        Assert.Contains("'[['", ex.Message);
+        Assert.All(ex.Message, c => Assert.False(char.IsControl(c)));
+    }
+
+    // AC-5 (068)
+    [Fact]
+    public void Register_DuplicateMessages_UseTheSameEscaping()
+    {
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+
+        ArgumentException duplicate = Assert.Throws<ArgumentException>(
+            () => registry.Register("HELP", "zz", "d", Nothing));
+        ArgumentException taken = Assert.Throws<ArgumentException>(
+            () => registry.Register("x[y", "h", "d", Nothing));
+
+        Assert.Contains("Command 'HELP' is already registered.", duplicate.Message);
+        Assert.Contains("Alias 'h' of 'x[[y' is already taken.", taken.Message);
+    }
+
+    // AC-6 (068): a failed Register still adds nothing.
+    [Theory]
+    [InlineData("x\u001b[31m y", "zz")]
+    [InlineData("ok", "\u001b[")]
+    [InlineData("HELP", "zz")]
+    [InlineData("x[y", "h")]
+    public void Register_Rejected_LeavesCommandCountUnchanged(string name, string alias)
+    {
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+        int before = registry.Commands.Count();
+
+        Assert.Throws<ArgumentException>(() => registry.Register(name, alias, "d", Nothing));
+
+        Assert.Equal(before, registry.Commands.Count());
+    }
 }

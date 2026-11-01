@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text;
 using Spectre.Console;
 using Spectre.Console.Rendering;
 
@@ -120,39 +122,81 @@ internal sealed class CommandRegistry
     /// Adds a command. Throws <see cref="ArgumentException"/> (and adds nothing) when the name is
     /// empty, starts with <c>/</c> or holds whitespace; when the alias is not one or two ASCII
     /// letters; or when the name or alias equals (ignoring case) any registered name or alias, or
-    /// the alias equals the command's own name.
+    /// the alias equals the command's own name. The name and alias quoted in the exception message
+    /// have their control characters, Unicode Format (Cf) code points and unpaired surrogates
+    /// removed and are then escaped with <see cref="Markup.Escape"/>.
     /// </summary>
     public void Register(string name, string alias, string description, Func<string, CommandResult> handler)
     {
         if (name.Length == 0 || name.StartsWith('/') || name.Any(char.IsWhiteSpace))
         {
             throw new ArgumentException(
-                $"Command name must not be empty, start with '/' or contain spaces: '{name}'.",
+                $"Command name must not be empty, start with '/' or contain spaces: '{Quote(name)}'.",
                 nameof(name));
         }
 
         if (alias.Length is < 1 or > 2 || !alias.All(char.IsAsciiLetter))
         {
             throw new ArgumentException(
-                $"Alias of '{name}' must be one or two ASCII letters: '{alias}'.",
+                $"Alias of '{Quote(name)}' must be one or two ASCII letters: '{Quote(alias)}'.",
                 nameof(alias));
         }
 
         if (commands.ContainsKey(name) || aliases.ContainsKey(name))
         {
-            throw new ArgumentException($"Command '{name}' is already registered.", nameof(name));
+            throw new ArgumentException($"Command '{Quote(name)}' is already registered.", nameof(name));
         }
 
         if (string.Equals(alias, name, StringComparison.OrdinalIgnoreCase)
             || commands.ContainsKey(alias)
             || aliases.ContainsKey(alias))
         {
-            throw new ArgumentException($"Alias '{alias}' of '{name}' is already taken.", nameof(alias));
+            throw new ArgumentException($"Alias '{Quote(alias)}' of '{Quote(name)}' is already taken.", nameof(alias));
         }
 
         Command command = new Command(name, alias, description, handler);
         commands.Add(name, command);
         aliases.Add(alias, command);
+    }
+
+    /// <summary>
+    /// Makes <paramref name="text"/> safe to quote in an exception message: removes control
+    /// characters, Unicode Format (Cf) code points and unpaired surrogates, then escapes the rest
+    /// with <see cref="Markup.Escape"/> (after the removal, so removal cannot leave an unescaped
+    /// bracket).
+    /// </summary>
+    private static string Quote(string text)
+    {
+        StringBuilder kept = new StringBuilder(text.Length);
+        for (int i = 0; i < text.Length; i++)
+        {
+            char c = text[i];
+            if (char.IsHighSurrogate(c))
+            {
+                if (i + 1 < text.Length && char.IsLowSurrogate(text[i + 1]))
+                {
+                    if (CharUnicodeInfo.GetUnicodeCategory(text, i) != UnicodeCategory.Format)
+                    {
+                        kept.Append(c).Append(text[i + 1]);
+                    }
+
+                    i++;
+                }
+
+                continue;
+            }
+
+            if (char.IsLowSurrogate(c)
+                || char.IsControl(c)
+                || CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.Format)
+            {
+                continue;
+            }
+
+            kept.Append(c);
+        }
+
+        return Markup.Escape(kept.ToString());
     }
 
     /// <summary>
