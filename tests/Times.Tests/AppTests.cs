@@ -5114,7 +5114,6 @@ public sealed class AppTests : IDisposable
         Assert.Equal(["a quit rec b"], calls);
     }
 
-
     // Job 069 ------------------------------------------------------------------------------
 
     /// <summary>The first non-empty line below the summary table's bottom border (the one with column joins), trimmed.</summary>
