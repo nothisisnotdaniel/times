@@ -67,8 +67,12 @@ internal sealed class TopArea : IRenderable
             kept.Add(Cue(CueText(start, above: true), maxWidth));
         }
 
-        // Rows left for content once the cues have their rows.
-        int room = height - (start > 0 ? 1 : 0) - (start < max || max == 0 ? 1 : 0);
+        // One row for the above cue if lines are hidden above, one for the below cue if lines
+        // are hidden below. max == 0 is the 1-2 row case (no page to scroll by), where the
+        // below cue always shows.
+        bool aboveCue = start > 0;
+        bool belowCue = start < max || max == 0;
+        int room = height - (aboveCue ? 1 : 0) - (belowCue ? 1 : 0);
         kept.AddRange(lines.Skip(start).Take(room));
         int below = lines.Count - start - room;
         if (below > 0)
