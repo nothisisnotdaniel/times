@@ -17,19 +17,35 @@ internal enum MouseInputKind
     /// <summary>A click, release, drag or horizontal wheel: ignored.</summary>
     OtherMouse,
 
-    /// <summary>Some other <c>ESC [</c> sequence, or one cut off at <see cref="MouseInput.MaxKeys"/>: ignored.</summary>
+    /// <summary>Some other <c>ESC [</c> sequence, or one longer than <see cref="MouseInput.MaxKeys"/>: ignored.</summary>
     Discard,
+
+    /// <summary>The start of a bracketed paste, <c>ESC [ 200 ~</c>.</summary>
+    PasteStart,
+
+    /// <summary>The end of a bracketed paste, <c>ESC [ 201 ~</c>.</summary>
+    PasteEnd,
 }
 
 /// <summary>
 /// Decodes the keys that follow an Esc into a mouse event. Pure: it only looks at the characters it
 /// is given (the <c>KeyChar</c> of each key), never reads or writes anything. Supports SGR
-/// (<c>ESC [ &lt; b ; x ; y M|m</c>, mode 1006) only. The pointer position is never used.
+/// (<c>ESC [ &lt; b ; x ; y M|m</c>, mode 1006) only. The pointer position is never used. It also
+/// recognises the bracketed paste markers <c>ESC [ 200 ~</c> and <c>ESC [ 201 ~</c> (mode 2004).
 /// </summary>
 internal static class MouseInput
 {
-    /// <summary>The most keys (after the Esc, starting with <c>[</c>) read for one sequence.</summary>
+    /// <summary>
+    /// The most keys (after the Esc, starting with <c>[</c>) a sequence may have to be decoded. Longer
+    /// sequences are still read to their final character, but only to be dropped.
+    /// </summary>
     public const int MaxKeys = 32;
+
+    /// <summary>The keys after the Esc that start a bracketed paste.</summary>
+    public const string PasteStartKeys = "[200~";
+
+    /// <summary>The keys after the Esc that end a bracketed paste.</summary>
+    public const string PasteEndKeys = "[201~";
 
     // Button-code bits: 4 Shift, 8 Alt/Meta, 16 Ctrl. They do not change what the wheel does.
     private const int ModifierBits = 4 | 8 | 16;
@@ -38,8 +54,8 @@ internal static class MouseInput
 
     /// <summary>
     /// True once <paramref name="keys"/> (everything after the Esc) is a whole sequence: a <c>[…</c>
-    /// at its final character (<c>@</c>–<c>~</c>), or at <see cref="MaxKeys"/> keys. Also true for
-    /// keys that do not start with <c>[</c>.
+    /// at its final character (<c>@</c>–<c>~</c>), however long it is. Also true for keys that do not
+    /// start with <c>[</c>.
     /// </summary>
     public static bool IsComplete(string keys)
     {
@@ -48,7 +64,7 @@ internal static class MouseInput
             return false;
         }
 
-        if (keys[0] != '[' || keys.Length >= MaxKeys)
+        if (keys[0] != '[')
         {
             return true;
         }
@@ -56,12 +72,25 @@ internal static class MouseInput
         return keys.Length >= 2 && IsFinal(keys[^1]);
     }
 
-    /// <summary>Decodes everything after the Esc. Incomplete or unknown sequences are <see cref="MouseInputKind.Discard"/>.</summary>
+    /// <summary>
+    /// Decodes everything after the Esc. Incomplete or unknown sequences, and any longer than
+    /// <see cref="MaxKeys"/>, are <see cref="MouseInputKind.Discard"/>.
+    /// </summary>
     public static MouseInputKind Decode(string keys)
     {
         if (keys.Length == 0 || keys[0] != '[')
         {
             return MouseInputKind.NotASequence;
+        }
+
+        if (keys == PasteStartKeys)
+        {
+            return MouseInputKind.PasteStart;
+        }
+
+        if (keys == PasteEndKeys)
+        {
+            return MouseInputKind.PasteEnd;
         }
 
         if (keys.Length < 3 || keys[1] != '<' || keys.Length > MaxKeys || (keys[^1] != 'M' && keys[^1] != 'm'))
@@ -108,5 +137,6 @@ internal static class MouseInput
         return MouseInputKind.OtherMouse;
     }
 
-    private static bool IsFinal(char c) => c is >= '@' and <= '~';
+    /// <summary>True for the final character of an <c>ESC [</c> sequence: <c>@</c>–<c>~</c>.</summary>
+    public static bool IsFinal(char c) => c is >= '@' and <= '~';
 }

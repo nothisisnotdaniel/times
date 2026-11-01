@@ -4109,8 +4109,18 @@ public sealed class AppTests : IDisposable
         return (exitCode, console.Output);
     }
 
+    private const string PasteOn = "\u001b[?2004h";
+    private const string PasteOff = "\u001b[?2004l";
+
+    // Also checks bracketed paste (066 AC-10): on once before the first clear, off once after the last frame.
     private static void AssertMouseOnThenOff(string output, int lastFrameEnd)
     {
+        Assert.Equal(1, Count(output, PasteOn));
+        Assert.Equal(1, Count(output, PasteOff));
+        Assert.True(output.IndexOf(PasteOn, StringComparison.Ordinal) < output.IndexOf(ClearScreen, StringComparison.Ordinal), "paste on before the first clear");
+        Assert.True(output.IndexOf(PasteOff, StringComparison.Ordinal) >= lastFrameEnd, "paste off after the last frame");
+        Assert.DoesNotContain("\u001b[?2004", output[(output.IndexOf(PasteOff, StringComparison.Ordinal) + PasteOff.Length)..]);
+
         Assert.Equal(1, Count(output, MouseOn));
         Assert.Equal(1, Count(output, MouseOff));
         int on = output.IndexOf(MouseOn, StringComparison.Ordinal);
@@ -4179,6 +4189,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, exitCode);
         Assert.Contains($"Times {AppVersion.Current}", output);
         Assert.DoesNotContain("\u001b[?100", output);
+        Assert.DoesNotContain("\u001b[?2004", output);
     }
 
     // AC-2
@@ -5053,5 +5064,33 @@ public sealed class AppTests : IDisposable
         AssertOnHintRow(LastLayout(output), expected);
         Assert.False(File.Exists(ProjectsFile));
         Assert.False(File.Exists(DayFile("2026-10-27")));
+    }
+
+    // Bracketed paste (job 066) ---------------------------------------------------------------
+
+    // AC-7
+    [Fact]
+    public void Paste_WithLineBreaks_RunsOneCommand_OnlyOnEnter()
+    {
+        List<string> calls = [];
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+        registry.Register("rec", "rc", "Records its argument", args => { calls.Add(args); return CommandResult.None; });
+
+        (int exitCode, _) = RunWithMouse(c =>
+        {
+            c.Input.PushKey(new ConsoleKeyInfo('\u001b', ConsoleKey.Escape, false, false, false));
+            c.Input.PushText("[200~rec a");
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushText("quit");
+            c.Input.PushKey(new ConsoleKeyInfo('\n', ConsoleKey.Enter, false, false, false));
+            c.Input.PushText("rec b");
+            c.Input.PushKey(new ConsoleKeyInfo('\u001b', ConsoleKey.Escape, false, false, false));
+            c.Input.PushText("[201~");
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("quit");
+        }, registry: registry);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(["a quit rec b"], calls);
     }
 }

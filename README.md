@@ -122,3 +122,7 @@ To make that work, Times turns on the terminal's mouse reporting while it runs. 
 dragging with the mouse no longer selects text: while Times runs, select text with **Shift-drag**
 (**Option-drag** in macOS Terminal). The terminal's normal mouse behaviour comes back when Times
 exits, also after Ctrl+C.
+
+Times also turns on bracketed paste: pasted text lands in the input line for you to check and edit,
+with each line break and Tab turned into a space, and only runs when you press Enter. An unusually
+long or garbled `ESC [` sequence from the terminal is dropped whole, never typed into the line.

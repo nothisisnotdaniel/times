@@ -51,15 +51,42 @@ public sealed class MouseInputTests
         Assert.Equal(expected, MouseInput.Decode(keys).ToString());
     }
 
-    // AC-5
+    // AC-5 (066): the key limit no longer ends a sequence; only its final character does.
     [Fact]
-    public void Decode_AtTheKeyLimit_IsDiscarded()
+    public void IsComplete_PastTheKeyLimit_WaitsForTheFinalCharacter()
     {
-        string keys = "[<" + new string('1', MouseInput.MaxKeys - 2);
+        string keys = "[" + new string('1', 40);
 
+        Assert.False(MouseInput.IsComplete(keys));
+        Assert.False(MouseInput.IsComplete("[<" + new string('1', MouseInput.MaxKeys - 2)));
+        Assert.True(MouseInput.IsComplete(keys + "~"));
+        Assert.Equal(MouseInputKind.Discard, MouseInput.Decode(keys + "~"));
+    }
+
+    // AC-3, AC-5 (066)
+    [Fact]
+    public void Decode_LongerThanTheKeyLimit_IsDiscarded()
+    {
+        string wheel = "[<64;" + new string('1', 40) + "M";
+        string atLimit = "[<64;1;" + new string('0', MouseInput.MaxKeys - 9) + "1M";
+
+        Assert.Equal(MouseInput.MaxKeys, atLimit.Length);
+        Assert.Equal(MouseInputKind.WheelUp, MouseInput.Decode(atLimit));
+        Assert.Equal(MouseInputKind.Discard, MouseInput.Decode(wheel));
+        Assert.Equal(MouseInputKind.Discard, MouseInput.Decode("[<64;1;" + new string('0', MouseInput.MaxKeys - 8) + "1M"));
+    }
+
+    // AC-6, AC-9 (066)
+    [Theory]
+    [InlineData("[200~", nameof(MouseInputKind.PasteStart))]
+    [InlineData("[201~", nameof(MouseInputKind.PasteEnd))]
+    [InlineData("[202~", nameof(MouseInputKind.Discard))]
+    [InlineData("[2000~", nameof(MouseInputKind.Discard))]
+    [InlineData("[200;1~", nameof(MouseInputKind.Discard))]
+    public void Decode_RecognisesThePasteMarkers(string keys, string expected)
+    {
         Assert.True(MouseInput.IsComplete(keys));
-        Assert.Equal(MouseInputKind.Discard, MouseInput.Decode(keys));
-        Assert.False(MouseInput.IsComplete(keys[..^1]));
+        Assert.Equal(expected, MouseInput.Decode(keys).ToString());
     }
 
     [Theory]
