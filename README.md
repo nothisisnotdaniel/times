@@ -176,6 +176,9 @@ the GitHub release `v1.2.3` with `Times.1.2.3.nupkg` attached and generated note
 pre-release part, such as `v1.2.3-beta.1`, makes a pre-release.
 A release tag whose commit is not on `main` fails before anything is built, and so does a
 hand-pushed `-develop` tag (only develop builds make those).
+These checks live in the workflow file of the tagged commit, so they catch mistakes, not someone
+who can push and edit `release.yml`; to enforce them, add a GitHub tag ruleset for `v*` and branch
+protection on `main`.
 A tag that is not SemVer (`v1.2`, `v1.2.3.4`, `v01.2.3`) fails, and no release is made.
 `help` shows the running version, and `<Version>` in `src/Times/Times.csproj` stays the default
 for local builds.
