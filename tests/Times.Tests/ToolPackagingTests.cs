@@ -138,6 +138,60 @@ public sealed class ToolPackagingTests
         Assert.Contains(expected, readme, StringComparison.Ordinal);
     }
 
+    // AC-1 (063)
+    [Fact]
+    public void Readme_HasKeysSectionBeforeMouse()
+    {
+        string readme = "\n" + File.ReadAllText(Path.Combine(RepoRoot, "README.md")).ReplaceLineEndings("\n");
+
+        int keys = readme.IndexOf("\n## Keys\n", StringComparison.Ordinal);
+        int mouse = readme.IndexOf("\n## Mouse\n", StringComparison.Ordinal);
+
+        Assert.True(keys >= 0, "README has no '## Keys' line");
+        Assert.True(keys < mouse, "'## Keys' must come before '## Mouse'");
+    }
+
+    // AC-2 (063)
+    [Fact]
+    public void Readme_KeysSectionListsScrollKeys()
+    {
+        string section = ReadmeKeysSection();
+
+        Assert.Contains("PgUp", section, StringComparison.Ordinal);
+        Assert.Contains("PgDn", section, StringComparison.Ordinal);
+        Assert.Contains("Shift+PgUp", section, StringComparison.Ordinal);
+        Assert.Contains("Shift+PgDn", section, StringComparison.Ordinal);
+        Assert.Contains("Ctrl+↑", section, StringComparison.Ordinal);
+        Assert.Contains("Ctrl+↓", section, StringComparison.Ordinal);
+        Assert.Contains("scroll", section, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // AC-3 (063)
+    [Fact]
+    public void Readme_KeysSectionSaysArrowsWalkHistory()
+    {
+        string section = ReadmeKeysSection();
+
+        Assert.Contains("↑", section, StringComparison.Ordinal);
+        Assert.Contains("↓", section, StringComparison.Ordinal);
+        Assert.Contains("history", section, StringComparison.Ordinal);
+    }
+
+    // AC-4 (063)
+    [Fact]
+    public void Readme_KeysSectionExplainsMacOsTerminal()
+    {
+        string section = ReadmeKeysSection();
+
+        string? paragraph = section
+            .Split("\n\n", StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault(part => part.Contains("macOS Terminal", StringComparison.Ordinal));
+
+        Assert.NotNull(paragraph);
+        Assert.Contains("Shift", paragraph, StringComparison.Ordinal);
+        Assert.Contains("Ctrl", paragraph, StringComparison.Ordinal);
+    }
+
     // AC-6
     [Theory]
     [InlineData("nupkg/x.nupkg")]
@@ -170,6 +224,16 @@ public sealed class ToolPackagingTests
         }
 
         return string.Equals(pattern, "Times", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ReadmeKeysSection()
+    {
+        string readme = File.ReadAllText(Path.Combine(RepoRoot, "README.md")).ReplaceLineEndings("\n");
+        int start = readme.IndexOf("## Keys\n", StringComparison.Ordinal);
+        Assert.True(start >= 0, "README has no '## Keys' section");
+
+        int end = readme.IndexOf("\n## ", start, StringComparison.Ordinal);
+        return end < 0 ? readme[start..] : readme[start..end];
     }
 
     private static XElement LoadNugetConfig()
