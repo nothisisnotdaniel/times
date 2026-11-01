@@ -6,10 +6,11 @@ namespace Times;
 /// <summary>
 /// Fits the top area (quicklist panel, day view plus any message) into a fixed number of rows, as a
 /// scrollable window. Content that fits is passed through line for line, whatever the offset. Taller
-/// content shows a window that starts at the given offset: a grey <c>↑ N more lines above · PgUp / Ctrl+↑</c>
-/// cue on the first row when lines are hidden above, and a grey <c>↓ N more lines below · PgDn / Ctrl+↓</c>
-/// cue on the last row when lines are hidden below (<c>1 more line</c> when only one line is hidden). Scrolling needs at least 3 rows; with 1 or 2
-/// rows the window always starts at the top and only the below cue is shown.
+/// content shows a window that starts at the given offset: a grey
+/// <c>↑ N more lines above · PgUp / Ctrl+↑</c> cue on the first row when lines are hidden above,
+/// and a grey <c>↓ N more lines below · PgDn / Ctrl+↓</c> cue on the last row when lines are hidden
+/// below (<c>1 more line</c> when only one line is hidden). Scrolling needs at least 3 rows; with 1
+/// or 2 rows the window always starts at the top and only the below cue is shown.
 /// </summary>
 internal sealed class TopArea : IRenderable
 {
