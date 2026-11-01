@@ -73,6 +73,10 @@ your shell's working directory.
    If `nupkg/` holds no `Times` package, the install fails instead of falling back to
    nuget.org, so always build first.
 
+   NuGet may reuse a `Times` package of the same version that it cached earlier in its global
+   packages folder. If an install looks wrong, clear that cache with
+   `dotnet nuget locals global-packages --clear` and install again.
+
 3. Check the install. This prints the installed version, for example `Times 0.1.0`:
 
    ```sh

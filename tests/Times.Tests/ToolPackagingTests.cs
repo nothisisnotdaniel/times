@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
 
 namespace Times.Tests;
@@ -44,10 +45,10 @@ public sealed class ToolPackagingTests
     [InlineData("nuget.config")]
     [InlineData("packageSourceMapping")]
     [InlineData("from the repo root (where `nuget.config` lives)")]
-    [InlineData("maps the `Times` package to\n`./nupkg` only, so a `Times` package on nuget.org is never used")]
+    [InlineData("maps the `Times` package to `./nupkg` only, so a `Times` package on nuget.org is never used")]
     public void Readme_ExplainsToolInstall(string expected)
     {
-        string readme = File.ReadAllText(Path.Combine(RepoRoot, "README.md")).ReplaceLineEndings("\n");
+        string readme = Regex.Replace(File.ReadAllText(Path.Combine(RepoRoot, "README.md")), @"\s+", " ");
 
         Assert.Contains("## Install as a .NET tool", readme, StringComparison.Ordinal);
         Assert.Contains(expected, readme, StringComparison.Ordinal);
@@ -94,9 +95,9 @@ public sealed class ToolPackagingTests
         Assert.Equal(new[] { "*" }, patternsBySource[NugetOrg]);
         foreach (KeyValuePair<string, List<string>> pair in patternsBySource)
         {
-            if (pair.Key != LocalFolder)
+            if (pair.Key != LocalFolder && pair.Key != NugetOrg)
             {
-                Assert.DoesNotContain("Times", pair.Value, StringComparer.OrdinalIgnoreCase);
+                Assert.DoesNotContain(pair.Value, pattern => PatternMatchesTimes(pattern));
             }
         }
     }
@@ -159,6 +160,16 @@ public sealed class ToolPackagingTests
         process.WaitForExit();
 
         Assert.True(process.ExitCode == 0, "git check-ignore exit " + process.ExitCode + ": " + error);
+    }
+
+    private static bool PatternMatchesTimes(string pattern)
+    {
+        if (pattern.EndsWith('*'))
+        {
+            return "Times".StartsWith(pattern[..^1], StringComparison.OrdinalIgnoreCase);
+        }
+
+        return string.Equals(pattern, "Times", StringComparison.OrdinalIgnoreCase);
     }
 
     private static XElement LoadNugetConfig()
