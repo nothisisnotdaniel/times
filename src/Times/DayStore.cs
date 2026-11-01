@@ -97,7 +97,7 @@ internal sealed class DayStore
     {
         if (!IsValidFolder(Folder))
         {
-            throw new InvalidOperationException("The data folder is not an absolute path.");
+            throw new InvalidOperationException("The data folder is not valid.");
         }
     }
 
