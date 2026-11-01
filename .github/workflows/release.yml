@@ -1,10 +1,14 @@
 # Builds, tests and packs Times as a .NET tool, then attaches the .nupkg to a GitHub release.
 # - A push to develop makes a prerelease X.Y.(Z+1)-develop.<run number>, one patch above the
 #   highest release tag (.github/scripts/develop-version.sh).
+# - A merged pull request from develop into main titled "release vX.Y.Z" makes the release vX.Y.Z
+#   (and its tag) on the merge commit (.github/scripts/release-pr-version.sh). Closed-unmerged PRs,
+#   PRs from other branches and fork PRs are skipped by the job's if:.
 # - A pushed version tag vX.Y.Z makes the release for that tag. The tag's commit must be on main,
 #   and -develop tags are refused (those are only made by develop builds).
-# Refs and the run number reach the shell only through environment variables (GITHUB_REF_NAME,
-# GITHUB_REF_TYPE, GITHUB_RUN_NUMBER, GITHUB_SHA), never through ${{ }} inside a run: script.
+# Refs, PR fields and the run number reach the shell only through environment variables (GITHUB_REF_NAME,
+# GITHUB_REF_TYPE, GITHUB_RUN_NUMBER, GITHUB_SHA, and the Version step's env:), never through ${{ }}
+# inside a run: script.
 name: Release
 
 on:
@@ -13,12 +17,19 @@ on:
       - "develop"
     tags:
       - "v*"
+  pull_request:
+    types:
+      - "closed"
+    branches:
+      - "main"
 
 permissions:
   contents: write
 
 jobs:
   release:
+    # Every push runs; a pull_request event runs only for a merged PR from develop in this repository.
+    if: github.event_name == 'push' || (github.event.pull_request.merged == true && github.event.pull_request.head.ref == 'develop' && github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     steps:
       - name: Check out
@@ -29,6 +40,8 @@ jobs:
           # All history and tags: develop builds read the release tags, and release tags are
           # checked against origin/main (without it the check fails rather than passes).
           fetch-depth: 0
+          # A release PR builds its merge commit; empty for pushes, which keep the pushed commit.
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v4
@@ -36,11 +49,57 @@ jobs:
           dotnet-version: "10.0.x"
 
       - name: Version
+        # PR fields are attacker-influenced text: they reach the shell only as quoted variables.
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_MERGED: ${{ github.event.pull_request.merged }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
         run: |
-          if [ "$GITHUB_REF_TYPE" = "branch" ]; then
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            # Merged release PR: re-check what the job's if: checked, then take the version from the title.
+            if [ "$PR_MERGED" != "true" ]; then
+              echo "Pull request is not merged; nothing to release" >&2
+              exit 1
+            fi
+            if [ "$PR_HEAD_REF" != "develop" ]; then
+              echo "Release pull requests must come from develop" >&2
+              exit 1
+            fi
+            if [ "$PR_HEAD_REPO" != "$GITHUB_REPOSITORY" ]; then
+              echo "Release pull requests must come from this repository" >&2
+              exit 1
+            fi
+            case "$MERGE_SHA" in
+              '' | *[!0-9a-f]*)
+                echo "Merge commit '$MERGE_SHA' is not a lowercase hex commit id" >&2
+                exit 1
+                ;;
+            esac
+            if [ "${#MERGE_SHA}" -ne 40 ]; then
+              echo "Merge commit '$MERGE_SHA' is not 40 characters long" >&2
+              exit 1
+            fi
+            if [ "$(git rev-parse HEAD)" != "$MERGE_SHA" ]; then
+              echo "Checked-out commit is not the merge commit '$MERGE_SHA'" >&2
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$MERGE_SHA" origin/main; then
+              echo "Merge commit '$MERGE_SHA' is not on main" >&2
+              exit 1
+            fi
+            if ! VERSION="$(git tag --list 'v*' | sh .github/scripts/release-pr-version.sh "$PR_TITLE")"; then
+              echo "Release pull request title must be exactly 'release vX.Y.Z' for a new version" >&2
+              exit 1
+            fi
+            TAG="v$VERSION"
+            TARGET="$MERGE_SHA"
+          elif [ "$GITHUB_REF_TYPE" = "branch" ]; then
             # Push to develop: one patch above the highest release tag, as a prerelease.
             VERSION="$(git tag --list 'v*' | sh .github/scripts/develop-version.sh "$GITHUB_RUN_NUMBER")"
             TAG="v$VERSION"
+            TARGET="$GITHUB_SHA"
           else
             # Pushed tag: refuse develop tags and tags whose commit is not on main.
             case "$GITHUB_REF_NAME" in
@@ -55,6 +114,7 @@ jobs:
             fi
             VERSION="${GITHUB_REF_NAME#v}"
             TAG="$GITHUB_REF_NAME"
+            TARGET="$GITHUB_SHA"
           fi
           # Check the version where it enters, before it reaches msbuild (-p: would split on ';').
           if ! printf '%s' "$VERSION" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'; then
@@ -63,6 +123,7 @@ jobs:
           fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "TARGET=$TARGET" >> "$GITHUB_ENV"
 
       # The tests run on the normal build (no version override): some tests pin the csproj version.
       - name: Test
@@ -104,4 +165,4 @@ jobs:
           case "$VERSION" in
             *-*) PRERELEASE="--prerelease" ;;
           esac
-          gh release create "$TAG" "nupkg/Times.$VERSION.nupkg" --title "Times $VERSION" --generate-notes --target "$GITHUB_SHA" $PRERELEASE
+          gh release create "$TAG" "nupkg/Times.$VERSION.nupkg" --title "Times $VERSION" --generate-notes --target "$TARGET" $PRERELEASE

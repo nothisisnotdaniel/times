@@ -101,17 +101,43 @@ public sealed class ToolPackagingTests
         Assert.Contains(".github/workflows/release.yml", section, StringComparison.Ordinal);
     }
 
-    // AC-1 (071, replaces 070 "ReleaseWorkflow_TriggersOnlyOnVersionTagPush")
+    // AC-1 (072, replaces 071 "ReleaseWorkflow_TriggersOnDevelopPushAndVersionTagPush")
     [Fact]
-    public void ReleaseWorkflow_TriggersOnDevelopPushAndVersionTagPush()
+    public void ReleaseWorkflow_TriggersOnDevelopPushVersionTagPushAndClosedPrIntoMain()
     {
         string workflow = ReadWorkflow();
 
         string on = TopLevelBlock(workflow, "on");
         List<string> keys = ChildLines(on).Select(line => line.Trim()).ToList();
-        Assert.Equal(["push:", "branches:", "- \"develop\"", "tags:", "- \"v*\""], keys);
-        Assert.DoesNotContain("pull_request", workflow, StringComparison.Ordinal);
+        Assert.Equal(
+            ["push:", "branches:", "- \"develop\"", "tags:", "- \"v*\"", "pull_request:", "types:", "- \"closed\"", "branches:", "- \"main\""],
+            keys);
+        Assert.DoesNotContain("pull_request_target", workflow, StringComparison.Ordinal);
         Assert.DoesNotContain("workflow_dispatch", workflow, StringComparison.Ordinal);
+    }
+
+    // AC-1 (072): the job runs for every push, and for a pull_request only when merged from develop in this repo.
+    [Fact]
+    public void ReleaseWorkflow_JobIfSkipsUnmergedForeignAndForkPullRequests()
+    {
+        string jobs = TopLevelBlock(ReadWorkflow(), "jobs");
+        string ifLine = Assert.Single(jobs.Split('\n'), line => line.StartsWith("    if:", StringComparison.Ordinal));
+
+        Assert.Equal(
+            "    if: github.event_name == 'push' || (github.event.pull_request.merged == true && github.event.pull_request.head.ref == 'develop' && github.event.pull_request.head.repo.full_name == github.repository)",
+            ifLine);
+        int runsOn = jobs.IndexOf("    runs-on:", StringComparison.Ordinal);
+        int steps = jobs.IndexOf("    steps:", StringComparison.Ordinal);
+        Assert.True(jobs.IndexOf(ifLine, StringComparison.Ordinal) < steps && runsOn < steps, "the if: must be on the job, not a step");
+    }
+
+    // AC-1 (072): a release PR checks out its merge commit; pushes keep the default (the expression is empty).
+    [Fact]
+    public void ReleaseWorkflow_CheckoutUsesMergeCommitForPullRequests()
+    {
+        string[] step = CheckoutStep();
+
+        Assert.Contains(step, line => line.Trim() == "ref: ${{ github.event.pull_request.merge_commit_sha }}");
     }
 
     // AC-1 (071): full history, so the tags and origin/main are there.
@@ -199,7 +225,7 @@ public sealed class ToolPackagingTests
         int release = all.IndexOf("gh release create", StringComparison.Ordinal);
         Assert.True(pack < check, "the smoke check must run after dotnet pack");
         Assert.True(check < release, "gh release create must run after the smoke check");
-        Assert.Contains("gh release create \"$TAG\" \"nupkg/Times.$VERSION.nupkg\" --title \"Times $VERSION\" --generate-notes --target \"$GITHUB_SHA\" $PRERELEASE", all, StringComparison.Ordinal);
+        Assert.Contains("gh release create \"$TAG\" \"nupkg/Times.$VERSION.nupkg\" --title \"Times $VERSION\" --generate-notes --target \"$TARGET\" $PRERELEASE", all, StringComparison.Ordinal);
         Assert.Contains("--prerelease", all, StringComparison.Ordinal);
         Assert.Contains("GH_TOKEN: ${{ github.token }}", ReadWorkflow(), StringComparison.Ordinal);
     }
@@ -249,6 +275,7 @@ public sealed class ToolPackagingTests
         Assert.Equal(script.LastIndexOf(SemVerGrep, StringComparison.Ordinal), check);
         Assert.Contains("echo \"VERSION=$VERSION\" >> \"$GITHUB_ENV\"", script[check..], StringComparison.Ordinal);
         Assert.Contains("echo \"TAG=$TAG\" >> \"$GITHUB_ENV\"", script[check..], StringComparison.Ordinal);
+        Assert.Contains("echo \"TARGET=$TARGET\" >> \"$GITHUB_ENV\"", script[check..], StringComparison.Ordinal);
     }
 
     // AC-4 (070)
@@ -566,27 +593,188 @@ public sealed class ToolPackagingTests
         }
     }
 
-    // AC-3 (071)
+    // AC-3 (071), AC-5 (072): pull_request first, then develop push, then tag push; one SemVer check after all three.
     [Fact]
     public void ReleaseWorkflow_DevelopPushComputesVersionFromTags()
     {
         string script = VersionScript();
 
-        int branch = script.IndexOf("if [ \"$GITHUB_REF_TYPE\" = \"branch\" ]; then", StringComparison.Ordinal);
+        int pr = script.IndexOf("if [ \"$GITHUB_EVENT_NAME\" = \"pull_request\" ]; then", StringComparison.Ordinal);
+        int prTarget = script.IndexOf("TARGET=\"$MERGE_SHA\"", StringComparison.Ordinal);
+        int branch = script.IndexOf("elif [ \"$GITHUB_REF_TYPE\" = \"branch\" ]; then", StringComparison.Ordinal);
         int compute = script.IndexOf("VERSION=\"$(git tag --list 'v*' | sh .github/scripts/develop-version.sh \"$GITHUB_RUN_NUMBER\")\"", StringComparison.Ordinal);
-        int tag = script.IndexOf("TAG=\"v$VERSION\"", StringComparison.Ordinal);
-        int otherwise = script.IndexOf("else", branch, StringComparison.Ordinal);
+        int tag = script.IndexOf("TAG=\"v$VERSION\"", branch, StringComparison.Ordinal);
+        int developTarget = script.IndexOf("TARGET=\"$GITHUB_SHA\"", branch, StringComparison.Ordinal);
+        int otherwise = LineIndex(script, "else", branch);
         int fromRef = script.IndexOf("VERSION=\"${GITHUB_REF_NAME#v}\"", StringComparison.Ordinal);
         int refTag = script.IndexOf("TAG=\"$GITHUB_REF_NAME\"", StringComparison.Ordinal);
+        int refTarget = script.IndexOf("TARGET=\"$GITHUB_SHA\"", refTag, StringComparison.Ordinal);
+        int fi = LineIndex(script, "fi", refTarget);
         int check = script.IndexOf(SemVerGrep, StringComparison.Ordinal);
-        Assert.True(branch >= 0, "no GITHUB_REF_TYPE branch test");
-        Assert.True(branch < compute && compute < tag && tag < otherwise, "develop branch must compute VERSION and TAG");
-        Assert.True(otherwise < fromRef && fromRef < refTag, "tag push must take VERSION and TAG from the ref");
-        Assert.True(refTag < check, "the SemVer check must come after both branches");
+        Assert.True(pr >= 0, "no GITHUB_EVENT_NAME pull_request test");
+        Assert.True(pr < prTarget && prTarget < branch, "the pull_request branch must come first and set TARGET");
+        Assert.True(branch < compute && compute < tag && tag < developTarget && developTarget < otherwise, "develop branch must compute VERSION, TAG and TARGET");
+        Assert.True(otherwise < fromRef && fromRef < refTag && refTag < refTarget && refTarget < fi, "tag push must take VERSION and TAG from the ref and TARGET from GITHUB_SHA");
+        Assert.True(fi < check, "the SemVer check must come after all three branches");
         Assert.True(File.Exists(Path.Combine(RepoRoot, ".github", "scripts", "develop-version.sh")));
     }
 
-    // AC-4 (071)
+    // AC-4 (072): PR fields come only from the step env:, are re-checked, and all refusals run before dotnet test.
+    [Fact]
+    public void ReleaseWorkflow_PullRequestBranchRechecksPrAndMergeCommit()
+    {
+        string workflow = ReadWorkflow();
+        string[] lines = workflow.Split('\n');
+        int versionStep = Array.FindIndex(lines, line => line.Trim() == "- name: Version");
+        int run = Array.FindIndex(lines, versionStep, line => line.Trim() == "run: |");
+        List<string> env = lines[(versionStep + 1)..run]
+            .Select(line => line.Trim())
+            .Where(line => line.Length > 0 && !line.StartsWith('#'))
+            .ToList();
+        Assert.Equal(
+            [
+                "env:",
+                "PR_TITLE: ${{ github.event.pull_request.title }}",
+                "PR_MERGED: ${{ github.event.pull_request.merged }}",
+                "PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}",
+                "PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}",
+                "MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}",
+            ],
+            env);
+
+        string script = VersionScript();
+        int pr = script.IndexOf("if [ \"$GITHUB_EVENT_NAME\" = \"pull_request\" ]; then", StringComparison.Ordinal);
+        string[] checks =
+        [
+            "if [ \"$PR_MERGED\" != \"true\" ]; then",
+            "if [ \"$PR_HEAD_REF\" != \"develop\" ]; then",
+            "if [ \"$PR_HEAD_REPO\" != \"$GITHUB_REPOSITORY\" ]; then",
+            "'' | *[!0-9a-f]*)",
+            "if [ \"${#MERGE_SHA}\" -ne 40 ]; then",
+            "if [ \"$(git rev-parse HEAD)\" != \"$MERGE_SHA\" ]; then",
+            "if ! git merge-base --is-ancestor \"$MERGE_SHA\" origin/main; then",
+            "if ! VERSION=\"$(git tag --list 'v*' | sh .github/scripts/release-pr-version.sh \"$PR_TITLE\")\"; then",
+        ];
+        int at = pr;
+        foreach (string check in checks)
+        {
+            int next = script.IndexOf(check, at, StringComparison.Ordinal);
+            Assert.True(next > at, "'" + check + "' missing or out of order");
+            int end = script.IndexOf("elif [", next, StringComparison.Ordinal);
+            string after = script[next..script.IndexOf("fi\n", next, StringComparison.Ordinal)];
+            if (check.EndsWith(')'))
+            {
+                after = script[next..script.IndexOf(";;", next, StringComparison.Ordinal)];
+            }
+
+            Assert.True(end > next, "'" + check + "' must be in the pull_request branch");
+            Assert.Contains(">&2", after, StringComparison.Ordinal);
+            Assert.Contains("exit 1", after, StringComparison.Ordinal);
+            at = next;
+        }
+
+        int tag = script.IndexOf("TAG=\"v$VERSION\"", at, StringComparison.Ordinal);
+        int target = script.IndexOf("TARGET=\"$MERGE_SHA\"", at, StringComparison.Ordinal);
+        Assert.True(at < tag && tag < target, "TAG and TARGET must be set after the version");
+
+        string branch = script[pr..script.IndexOf("elif [", pr, StringComparison.Ordinal)];
+        Assert.DoesNotContain("eval", branch, StringComparison.Ordinal);
+        Assert.DoesNotContain("sh -c", branch, StringComparison.Ordinal);
+        Assert.DoesNotContain("github.event", branch, StringComparison.Ordinal);
+
+        string all = string.Join("\n", RunScripts(workflow));
+        Assert.True(all.IndexOf("release-pr-version.sh", StringComparison.Ordinal) < all.IndexOf("dotnet test", StringComparison.Ordinal), "the PR checks must run before dotnet test");
+        Assert.True(File.Exists(Path.Combine(RepoRoot, ".github", "scripts", "release-pr-version.sh")));
+    }
+
+    // AC-2, AC-3 (072)
+    [Theory]
+    [InlineData("release v1.2.3", "", "1.2.3", true)]
+    [InlineData("release v0.1.0", "", "0.1.0", true)]
+    [InlineData("release v1.2.3-beta.1", "", "1.2.3-beta.1", true)]
+    [InlineData("release v1.2.3", "v1.2.30\nv1.2.3-beta.1\n", "1.2.3", true)]
+    [InlineData("release v1.2.3", "v1.2.30\nv1.2.3-beta.1", "1.2.3", true)]
+    [InlineData("release v1.2.3", "v1.2.2\nv1.2.3\n", "", false)]
+    [InlineData("release v1.2.3", "v1.2.2\nv1.2.3", "", false)]
+    [InlineData("Release v1.2.3", "", "", false)]
+    [InlineData("release 1.2.3", "", "", false)]
+    [InlineData(" release v1.2.3", "", "", false)]
+    [InlineData("release v1.2.3 ", "", "", false)]
+    [InlineData("release  v1.2.3", "", "", false)]
+    [InlineData("release v1.2", "", "", false)]
+    [InlineData("release v01.2.3", "", "", false)]
+    [InlineData("release v1.2.3.4", "", "", false)]
+    [InlineData("release v1.2.3+abc", "", "", false)]
+    [InlineData("release v1.2.3-develop.4", "", "", false)]
+    [InlineData("release v1.2.3;x", "", "", false)]
+    [InlineData("release v1.2.3\nrelease v1.2.4", "", "", false)]
+    [InlineData("release v1.2.3\n", "", "", false)]
+    [InlineData("release v1.2.3\r", "", "", false)]
+    [InlineData("release v$(id)", "", "", false)]
+    [InlineData("", "", "", false)]
+    public async Task ReleasePrVersionScript_AcceptsOnlyExactReleaseTitleForNewTag(string title, string tags, string expected, bool succeeds)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        ProcessStartInfo startInfo = new ProcessStartInfo("bash")
+        {
+            WorkingDirectory = RepoRoot,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        startInfo.ArgumentList.Add(Path.Combine(".github", "scripts", "release-pr-version.sh"));
+        startInfo.ArgumentList.Add(title);
+
+        using Process process = Process.Start(startInfo)!;
+        try
+        {
+            Stream input = process.StandardInput.BaseStream;
+            await input.WriteAsync(System.Text.Encoding.UTF8.GetBytes(tags));
+            input.Close();
+        }
+        catch (IOException)
+        {
+            // The script refuses a bad title before it reads stdin, so the pipe can already be closed.
+        }
+        Task<string> error = process.StandardError.ReadToEndAsync();
+        string output = await process.StandardOutput.ReadToEndAsync();
+        await error;
+        await process.WaitForExitAsync();
+
+        if (succeeds)
+        {
+            Assert.Equal(expected + "\n", output);
+            Assert.True(process.ExitCode == 0, "release-pr-version.sh exit " + process.ExitCode + ": " + await error);
+        }
+        else
+        {
+            Assert.Equal(string.Empty, output);
+            Assert.NotEqual(0, process.ExitCode);
+            Assert.NotEqual(string.Empty, await error);
+        }
+    }
+
+    // AC-2 (072): the title is only compared, never evaluated.
+    [Fact]
+    public void ReleasePrVersionScript_NeverEvaluatesTheTitle()
+    {
+        string source = File.ReadAllText(Path.Combine(RepoRoot, ".github", "scripts", "release-pr-version.sh")).ReplaceLineEndings("\n");
+        string code = string.Join("\n", source.Split('\n').Where(line => !line.TrimStart().StartsWith('#')));
+
+        Assert.StartsWith("#!/bin/sh\n", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("eval", code, StringComparison.Ordinal);
+        Assert.DoesNotContain("sh -c", code, StringComparison.Ordinal);
+        Assert.Contains("title=\"${1-}\"", code, StringComparison.Ordinal);
+        Assert.DoesNotMatch(@"[^""{]\$title", code);
+        Assert.DoesNotMatch(@"[^""]\$version", code.Replace("v$version", "", StringComparison.Ordinal));
+    }
+
+    // AC-4 (071), AC-5 (072)
     [Fact]
     public void ReleaseWorkflow_TagPushRefusesDevelopTagsAndTagsNotOnMain()
     {
@@ -594,7 +782,7 @@ public sealed class ToolPackagingTests
         string all = string.Join("\n", scripts);
         string script = VersionScript();
 
-        int otherwise = script.IndexOf("else", StringComparison.Ordinal);
+        int otherwise = LineIndex(script, "else", 0);
         int develop = script.IndexOf("*-develop*)", StringComparison.Ordinal);
         int main = script.IndexOf("if ! git merge-base --is-ancestor \"$GITHUB_SHA\" origin/main; then", StringComparison.Ordinal);
         int fromRef = script.IndexOf("VERSION=\"${GITHUB_REF_NAME#v}\"", StringComparison.Ordinal);
@@ -611,7 +799,7 @@ public sealed class ToolPackagingTests
         Assert.True(all.IndexOf("*-develop*)", StringComparison.Ordinal) < test, "the -develop check must run before dotnet test");
     }
 
-    // AC-6 (071)
+    // AC-6 (071), AC-6 (072): the release lands on $TARGET (the merge commit for a release PR).
     [Fact]
     public void ReleaseWorkflow_MarksVersionsWithHyphenAsPrerelease()
     {
@@ -619,7 +807,8 @@ public sealed class ToolPackagingTests
 
         Assert.Contains("case \"$VERSION\" in", release, StringComparison.Ordinal);
         Assert.Contains("*-*) PRERELEASE=\"--prerelease\" ;;", release, StringComparison.Ordinal);
-        Assert.Contains("--target \"$GITHUB_SHA\" $PRERELEASE", release, StringComparison.Ordinal);
+        Assert.Contains("--target \"$TARGET\" $PRERELEASE", release, StringComparison.Ordinal);
+        Assert.DoesNotContain("$GITHUB_SHA", release, StringComparison.Ordinal);
     }
 
     // AC-7 (071)
@@ -654,6 +843,26 @@ public sealed class ToolPackagingTests
         Assert.Contains("hand-pushed `-develop` tag", flat, StringComparison.Ordinal);
     }
 
+    // AC-7 (072): after develop builds, releasing by a merged develop -> main PR; tag push stays the alternative.
+    [Fact]
+    public void Readme_ReleasingDescribesReleasePullRequestBeforeTagAlternative()
+    {
+        string section = ReadmeSection("## Releasing");
+        string flat = Regex.Replace(section, @"\s+", " ");
+
+        int develop = section.IndexOf("-develop.<run>", StringComparison.Ordinal);
+        int pr = section.IndexOf("\ngh pr create --base main --head develop --title \"release v1.2.3\"\n", StringComparison.Ordinal);
+        int tag = section.IndexOf("\ngit tag v1.2.3\n", StringComparison.Ordinal);
+        Assert.True(develop >= 0 && pr > develop, "the release PR command must come after the develop builds");
+        Assert.True(tag > pr, "the tag push must stay documented, after the release PR");
+        Assert.Contains("Open a pull request from `develop` into `main` titled `release v1.2.3` and merge it", flat, StringComparison.Ordinal);
+        Assert.Contains("The title must be exactly `release vX.Y.Z`", flat, StringComparison.Ordinal);
+        Assert.Contains("A title whose tag already exists, or with a `-develop` version, fails", flat, StringComparison.Ordinal);
+        Assert.Contains("closed without merging, or one from another branch or a fork, releases nothing", flat, StringComparison.Ordinal);
+        Assert.Contains("on the merge commit", flat, StringComparison.Ordinal);
+        Assert.Contains("As an alternative", flat, StringComparison.Ordinal);
+    }
+
     // AC-7 (071)
     [Fact]
     public void ClaudeMd_ReleaseWorkflowNoteMentionsDevelopBuildsAndMainOnly()
@@ -669,6 +878,20 @@ public sealed class ToolPackagingTests
         Assert.Contains("`main`", note, StringComparison.Ordinal);
     }
 
+    // AC-8 (072)
+    [Fact]
+    public void ClaudeMd_ReleaseWorkflowNoteMentionsReleasePullRequestOnMergeCommit()
+    {
+        string claude = File.ReadAllText(Path.Combine(RepoRoot, "CLAUDE.md")).ReplaceLineEndings("\n");
+        int start = claude.IndexOf("`.github/workflows/release.yml`:", StringComparison.Ordinal);
+        Assert.True(start >= 0, "CLAUDE.md has no release.yml layout note");
+        int end = claude.IndexOf("\n  - ", start, StringComparison.Ordinal);
+        string note = Regex.Replace(end < 0 ? claude[start..] : claude[start..end], @"\s+", " ");
+
+        Assert.Contains("a merged `develop` -> `main` pull request titled `release vX.Y.Z`", note, StringComparison.Ordinal);
+        Assert.Contains("made on the merge commit", note, StringComparison.Ordinal);
+    }
+
     private static string ReadmeSection(string heading)
     {
         string readme = "\n" + File.ReadAllText(Path.Combine(RepoRoot, "README.md")).ReplaceLineEndings("\n");
@@ -677,6 +900,13 @@ public sealed class ToolPackagingTests
 
         int end = readme.IndexOf("\n## ", start + 1, StringComparison.Ordinal);
         return end < 0 ? readme[start..] : readme[start..end];
+    }
+
+    /// <summary>The index of the first line at or after <paramref name="start"/> whose trimmed text is <paramref name="text"/>, or -1.</summary>
+    private static int LineIndex(string script, string text, int start)
+    {
+        Match match = Regex.Match(script[start..], @"(?m)^[ \t]*" + Regex.Escape(text) + @"[ \t]*$");
+        return match.Success ? start + match.Index : -1;
     }
 
     private static string VersionScript()
