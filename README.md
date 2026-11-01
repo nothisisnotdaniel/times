@@ -150,18 +150,32 @@ long or garbled `ESC [` sequence from the terminal is dropped whole, never typed
 
 ## Releasing
 
-Releases are built by GitHub Actions from version tags; nobody edits `<Version>` for a release.
-Tag the commit on `main` with `v` plus a SemVer version and push the tag:
+Releases are built by GitHub Actions (`.github/workflows/release.yml`); nobody edits `<Version>`
+for a release.
+
+**Develop builds.** Every push to `develop` makes a GitHub prerelease for testers, versioned
+`X.Y.(Z+1)-develop.<run>`: one patch above the highest release tag, plus the workflow run number.
+After `v0.1.0` (or `v0.1.0-beta`), run 12 gives `0.1.1-develop.12`, tagged `v0.1.1-develop.12`,
+with `Times.0.1.1-develop.12.nupkg` attached. These sort above the latest release and below the
+next one, so nobody tags them by hand.
+
+**Releases.** Merge `develop` into `main`, tag the merge on `main` with `v` plus a SemVer version
+and push both:
 
 ```sh
+git checkout main
+git merge --no-ff develop
 git tag v1.2.3
+git push origin main
 git push origin v1.2.3
 ```
 
-`.github/workflows/release.yml` then runs the tests, packs Times with version `1.2.3` (taken from
-the tag, without the `v`), installs the package once to check that `tm --version` prints
-`Times 1.2.3`, and creates the GitHub release `v1.2.3` with `Times.1.2.3.nupkg` attached and
-generated notes. A tag with a pre-release part, such as `v1.2.3-beta.1`, makes a pre-release.
-A tag that is not SemVer (`v1.2`, `v1.2.3.4`, `v01.2.3`) fails the pack, and no release is made.
+The workflow then runs the tests, packs Times with version `1.2.3` (taken from the tag, without
+the `v`), installs the package once to check that `tm --version` prints `Times 1.2.3`, and creates
+the GitHub release `v1.2.3` with `Times.1.2.3.nupkg` attached and generated notes. A tag with a
+pre-release part, such as `v1.2.3-beta.1`, makes a pre-release.
+A release tag whose commit is not on `main` fails before anything is built, and so does a
+hand-pushed `-develop` tag (only develop builds make those).
+A tag that is not SemVer (`v1.2`, `v1.2.3.4`, `v01.2.3`) fails, and no release is made.
 `help` shows the running version, and `<Version>` in `src/Times/Times.csproj` stays the default
 for local builds.
