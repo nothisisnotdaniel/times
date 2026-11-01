@@ -744,4 +744,166 @@ public class DayRecordTests
         Assert.Equal(Hm(0, 0), record.BreakTime());
         Assert.Equal(Hm(1, 0), record.WorkTime());
     }
+
+    // Same-time order (049) ------------------------------------------------------------------
+
+    // AC-1 (049)
+    [Fact]
+    public void Add_BreakEndAfterCheckpointAtSameTime_GoesBeforeIt()
+    {
+        DayRecord record = DayRecord.Empty.Add(Checkpoint(12, 30, "Review")).Add(BreakEnd(12, 30));
+
+        Assert.Equal([BreakEnd(12, 30), Checkpoint(12, 30, "Review")], record.Entries);
+    }
+
+    // AC-2 (049)
+    [Fact]
+    public void Add_ArrivalAfterCheckpointAtSameTime_GoesBeforeIt()
+    {
+        DayRecord record = DayRecord.Empty.Add(Checkpoint(8, 0, "Review")).Add(Arrival(8, 0));
+
+        Assert.Equal([Arrival(8, 0), Checkpoint(8, 0, "Review")], record.Entries);
+    }
+
+    // AC-3 (049)
+    [Fact]
+    public void Add_SeveralCheckpointsBeforeBreakEnd_AllMoveAfterIt_InOrder()
+    {
+        DayRecord record = DayRecord.Empty.Add(Checkpoint(12, 30, "A")).Add(Checkpoint(12, 30, "B")).Add(BreakEnd(12, 30));
+
+        Assert.Equal([BreakEnd(12, 30), Checkpoint(12, 30, "A"), Checkpoint(12, 30, "B")], record.Entries);
+    }
+
+    // AC-3 (049)
+    [Fact]
+    public void Add_CheckpointsAroundArrival_EndUpAfterIt_InOrder()
+    {
+        DayRecord record = DayRecord.Empty.Add(Checkpoint(12, 30, "A")).Add(Arrival(12, 30)).Add(Checkpoint(12, 30, "B"));
+
+        Assert.Equal([Arrival(12, 30), Checkpoint(12, 30, "A"), Checkpoint(12, 30, "B")], record.Entries);
+    }
+
+    // Letters for the AC-4 theory: c = checkpoint, a = arrival, l = leaving, s = break start, e = break end.
+    private static DayEntry FromLetter(char letter, int index) => letter switch
+    {
+        'c' => Checkpoint(12, 30, "C" + index.ToString(CultureInfo.InvariantCulture)),
+        'a' => Arrival(12, 30),
+        'l' => Leaving(12, 30),
+        's' => BreakStart(12, 30),
+        'e' => BreakEnd(12, 30),
+        _ => throw new ArgumentOutOfRangeException(nameof(letter)),
+    };
+
+    // AC-4 (049): given booking order -> expected order; indexes name each entry's booking position.
+    [Theory]
+    [InlineData("cla", "1,2,0")]
+    [InlineData("cs", "0,1")]
+    [InlineData("la", "0,1")]
+    [InlineData("se", "0,1")]
+    [InlineData("ac", "0,1")]
+    [InlineData("ce", "1,0")]
+    [InlineData("cac", "1,0,2")]
+    [InlineData("caclc", "1,0,2,3,4")]
+    [InlineData("ccsae", "2,3,4,0,1")]
+    public void Add_SameTime_OnlyCheckpointsBeforeTheLastOpenerMove(string booked, string expected)
+    {
+        DayEntry[] given = booked.Select(FromLetter).ToArray();
+        DayRecord record = DayRecord.Empty;
+        foreach (DayEntry entry in given)
+        {
+            record = record.Add(entry);
+        }
+
+        DayEntry[] want = expected.Split(',').Select(i => given[int.Parse(i, CultureInfo.InvariantCulture)]).ToArray();
+        Assert.Equal(want, record.Entries);
+        Assert.Equal(want, new DayRecord(given).Entries);
+    }
+
+    // AC-4 (049)
+    [Fact]
+    public void Order_CheckpointAtOtherTime_IsNeverMoved()
+    {
+        DayRecord record = DayRecord.Empty.Add(Checkpoint(12, 29, "Before")).Add(BreakEnd(12, 30)).Add(Checkpoint(12, 31, "After"));
+
+        Assert.Equal([Checkpoint(12, 29, "Before"), BreakEnd(12, 30), Checkpoint(12, 31, "After")], record.Entries);
+    }
+
+    // AC-5 (049)
+    [Fact]
+    public void ChangeTime_CheckpointOntoOpenerTime_GoesAfterIt()
+    {
+        DayRecord record = new DayRecord([Arrival(8, 0), Checkpoint(9, 0, "X"), BreakStart(12, 0), BreakEnd(12, 30)]);
+
+        Assert.Equal(
+            [Arrival(8, 0), BreakStart(12, 0), BreakEnd(12, 30), Checkpoint(12, 30, "X")],
+            record.ChangeTime(2, new TimeOnly(12, 30)).Entries);
+        Assert.Equal(
+            [Arrival(8, 0), Checkpoint(8, 0, "X"), BreakStart(12, 0), BreakEnd(12, 30)],
+            record.ChangeTime(2, new TimeOnly(8, 0)).Entries);
+    }
+
+    // AC-5 (049)
+    [Fact]
+    public void ChangeTime_OpenerOntoCheckpointTime_GoesBeforeIt()
+    {
+        DayRecord record = new DayRecord([Arrival(8, 0), BreakStart(12, 0), Checkpoint(12, 30, "X"), BreakEnd(13, 0)]);
+
+        Assert.Equal(
+            [Arrival(8, 0), BreakStart(12, 0), BreakEnd(12, 30), Checkpoint(12, 30, "X")],
+            record.ChangeTime(4, new TimeOnly(12, 30)).Entries);
+
+        DayRecord late = new DayRecord([Checkpoint(9, 0, "Y"), Arrival(10, 0)]);
+        Assert.Equal([Arrival(9, 0), Checkpoint(9, 0, "Y")], late.ChangeTime(2, new TimeOnly(9, 0)).Entries);
+    }
+
+    // AC-5 (049)
+    [Fact]
+    public void RemoveAt_KeepsRuleOrder()
+    {
+        DayRecord record = DayRecord.Empty
+            .Add(Checkpoint(12, 30, "A"))
+            .Add(Arrival(12, 30))
+            .Add(Checkpoint(12, 30, "B"))
+            .Add(BreakEnd(12, 30));
+
+        Assert.Equal([Arrival(12, 30), BreakEnd(12, 30), Checkpoint(12, 30, "A"), Checkpoint(12, 30, "B")], record.Entries);
+        Assert.Equal([Arrival(12, 30), Checkpoint(12, 30, "A"), Checkpoint(12, 30, "B")], record.RemoveAt(2).Entries);
+        Assert.Equal([BreakEnd(12, 30), Checkpoint(12, 30, "A"), Checkpoint(12, 30, "B")], record.RemoveAt(1).Entries);
+        Assert.Equal([Arrival(12, 30), BreakEnd(12, 30), Checkpoint(12, 30, "B")], record.RemoveAt(3).Entries);
+    }
+
+    // AC-6 (049)
+    [Fact]
+    public void FromJson_CheckpointBeforeBreakEnd_LoadsReordered_AndRoundTrips()
+    {
+        const string File =
+            "{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"12:30\",\"name\":\"Review\"},{\"kind\":\"breakEnd\",\"time\":\"12:30\"}]}";
+        const string Reordered =
+            "{\"entries\":[{\"kind\":\"breakEnd\",\"time\":\"12:30\"},{\"kind\":\"checkpoint\",\"time\":\"12:30\",\"name\":\"Review\"}]}";
+
+        DayRecord record = DayRecord.FromJson(File);
+
+        Assert.Equal([BreakEnd(12, 30), Checkpoint(12, 30, "Review")], record.Entries);
+        Assert.Equal(Reordered, record.ToJson());
+        Assert.Equal(record, DayRecord.FromJson(record.ToJson()));
+        Assert.Equal(Reordered, DayRecord.FromJson(Reordered).ToJson());
+    }
+
+    // AC-7 (049)
+    [Fact]
+    public void Totals_UseReorderedEntries()
+    {
+        DayRecord record = DayRecord.Empty
+            .Add(Arrival(8, 0))
+            .Add(BreakStart(12, 0))
+            .Add(Checkpoint(12, 30, "X"))
+            .Add(BreakEnd(12, 30))
+            .Add(Leaving(13, 0));
+        DayRecord without = new DayRecord([Arrival(8, 0), BreakStart(12, 0), BreakEnd(12, 30), Leaving(13, 0)]);
+
+        Assert.Equal(without.WorkTime(), record.WorkTime());
+        Assert.Equal(Hm(4, 30), record.WorkTime());
+        Assert.Equal(Hm(0, 30), record.BreakTime());
+        Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(4, 0), Hm(3, 30)], record.TimeLeft());
+    }
 }
