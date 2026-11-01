@@ -19,7 +19,7 @@ Every factory agent reads this file before working on Times. Keep it short and a
     validation errors show a short `[red]` hint on the line **just above the input box** (not at
     the top of the screen) and never crash the loop.
   - **How the box is built** (no extra packages): a Spectre `Layout` that fills the terminal,
-    with the quicklist panel (`QuicklistPanel`, a grey `Projects` panel reloaded from `projects.json` on
+    with the quicklist panel (`QuicklistPanel`, a `Projects` panel with a grey border, a bold steelblue1 header and the `#id` in grey, reloaded from `projects.json` on
     every redraw, at most 5 content lines; left out while `help` or `projects` output is shown, via
     `CommandResult.HideQuicklist`) and the day view on top, both fitted by `TopArea.Fit`, then
     the hint line, and a 3-line bordered input panel at the bottom; the

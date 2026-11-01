@@ -6,8 +6,9 @@ using Spectre.Console.Rendering;
 namespace Times;
 
 /// <summary>
-/// The permanent quicklist panel at the top of the main screen: a grey rounded <see cref="Panel"/>
-/// headed <c>Projects</c> with one line per project (number, <c>#work item</c>, title). Every line is
+/// The permanent quicklist panel at the top of the main screen: a rounded <see cref="Panel"/> with a grey
+/// border and a bold steelblue1 <c>Projects</c> header, with one line per project (steelblue1 number,
+/// grey <c>#work item</c>, title). Every line is
 /// cut to the width with a trailing <c>…</c> and never wraps. At most <see cref="MaxRows"/> lines of
 /// content are shown; a longer list ends with a grey <c>… N more</c> line. Rendering never reads or
 /// writes files: the caller loads the list.
@@ -41,7 +42,7 @@ internal sealed class QuicklistPanel
             Project project = list.Projects[i];
             lines.Add(new OneLine(new Markup(
                 $"[steelblue1]{(i + 1).ToString(CultureInfo.InvariantCulture)}[/] " +
-                $"#{project.WorkItem.ToString(CultureInfo.InvariantCulture)} {Markup.Escape(project.Title)}")));
+                $"[grey]#{project.WorkItem.ToString(CultureInfo.InvariantCulture)}[/] {Markup.Escape(project.Title)}")));
         }
 
         if (shown < count)
@@ -65,7 +66,7 @@ internal sealed class QuicklistPanel
 
     private static IRenderable Frame(List<IRenderable> lines) =>
         new NaturalHeight(new Panel(new Rows(lines))
-            .Header("[grey]Projects[/]")
+            .Header("[bold steelblue1]Projects[/]")
             .Border(BoxBorder.Rounded)
             .BorderColor(Color.Grey)
             .Expand());

@@ -51,14 +51,41 @@ public sealed class QuicklistPanelTests
         Assert.Equal(4, lines.Length);
     }
 
-    // AC-1
+    // AC-1, AC-3 (060)
     [Fact]
-    public void Panel_BorderAndHeaderAreGrey()
+    public void Panel_BorderIsGrey()
     {
         string output = RenderAnsi(QuicklistPanel.Render(Projects(1)));
 
-        // The header takes the border's grey: no other colour starts before "Projects".
-        Assert.Matches(@"\x1b\[(90|38;5;8)m╭─Projects", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)m╭─", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)m─*╮", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)m│", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)m╰─*╯", output);
+    }
+
+    // AC-2 (060)
+    [Fact]
+    public void Header_IsBoldSteelBlue()
+    {
+        string output = RenderAnsi(QuicklistPanel.Render(Projects(1)));
+
+        AssertBoldSteelBlueHeader(output);
+    }
+
+    // AC-6 (060)
+    [Fact]
+    public void Unreadable_Header_IsBoldSteelBlue()
+    {
+        string output = RenderAnsi(QuicklistPanel.RenderUnreadable("Broken.", "Fix it."));
+
+        AssertBoldSteelBlueHeader(output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)m╭─", output);
+    }
+
+    private static void AssertBoldSteelBlueHeader(string output)
+    {
+        Assert.Matches(@"╭─(\x1b\[0m)?\x1b\[(1;38;5;75|38;5;75;1)mProjects", output);
+        Assert.DoesNotMatch(@"\x1b\[(90|38;5;8)mProjects", output);
     }
 
     // AC-1
@@ -85,14 +112,43 @@ public sealed class QuicklistPanelTests
         Assert.Equal(["1 #99 Zeta", "2 #1 Alpha", "3 #1234567 Website"], lines[1..^1].Select(Inner));
     }
 
-    // AC-2
+    // AC-2, AC-1 (060)
     [Fact]
-    public void Number_IsSteelBlue()
+    public void Number_IsSteelBlue_WorkItemIsGrey()
     {
         string output = RenderAnsi(QuicklistPanel.Render(new ProjectList([new Project(42, "Zeta")])));
 
-        // SteelBlue1 is colour 75 in the 256-colour palette.
-        Assert.Matches(@"\x1b\[38;5;75m1\x1b\[0m #42 Zeta", output);
+        // SteelBlue1 is colour 75 in the 256-colour palette; the title after the grey #id has no colour.
+        Assert.Matches(@"\x1b\[38;5;75m1\x1b\[0m \x1b\[(90|38;5;8)m#42\x1b\[0m Zeta", output);
+    }
+
+    // AC-1 (060)
+    [Fact]
+    public void EveryRow_HasGreyWorkItem()
+    {
+        string output = RenderAnsi(QuicklistPanel.Render(new ProjectList([new Project(99, "Zeta"), new Project(1, "Alpha")])));
+
+        Assert.Matches(@"\x1b\[38;5;75m1\x1b\[0m \x1b\[(90|38;5;8)m#99\x1b\[0m Zeta", output);
+        Assert.Matches(@"\x1b\[38;5;75m2\x1b\[0m \x1b\[(90|38;5;8)m#1\x1b\[0m Alpha", output);
+    }
+
+    // AC-5 (060)
+    [Fact]
+    public void LongTitle_Ansi_KeepsGreyWorkItem_AndEndsInEllipsis()
+    {
+        string output = RenderAnsi(QuicklistPanel.Render(new ProjectList([new Project(1, new string('x', 200))])));
+
+        Assert.Matches(@"\x1b\[(90|38;5;8)m#1\x1b\[0m x+…", output);
+    }
+
+    // AC-7 (060)
+    [Fact]
+    public void MarkupTitle_Ansi_HasNoColourBeforeIt()
+    {
+        string output = RenderAnsi(QuicklistPanel.Render(new ProjectList([new Project(7, "[red]x[/]")])));
+
+        Assert.Matches(@"\x1b\[(90|38;5;8)m#7\x1b\[0m \[red\]x\[/\]", output);
+        Assert.DoesNotMatch(@"\x1b\[[0-9;]*m\[red\]x", output);
     }
 
     // AC-2
