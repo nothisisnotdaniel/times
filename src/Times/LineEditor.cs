@@ -19,33 +19,34 @@ internal enum ScrollStep
 /// PageUp/PageDown scroll the screen above the input box when a scroll callback is given:
 /// Shift+PageUp/PageDown and Ctrl+Up/Down do the same (macOS Terminal keeps plain PageUp/PageDown
 /// for its own scrollback). The editor calls the callback with -1 (up) or +1 (down) and
-/// <see cref="ScrollStep.Page"/>; when it reports that it redrew something, the editor draws the popup (if open) again on top and then
-/// the input line, so the cursor ends after the typed text. Scroll keys never change the line, the
-/// history position or the popup state. Without a callback they do nothing. Plain Up/Down stay
-/// history.
+/// <see cref="ScrollStep.Page"/>; when it reports that it redrew something, the editor draws the
+/// popup (if open) again on top and then the input line, so the cursor ends after the typed text.
+/// Scroll keys never change the line, the history position or the popup state. Without a callback
+/// they do nothing. Plain Up/Down stay history.
 /// </para>
 /// <para>
-/// Mouse wheel: after an Esc key (<c>Key == Escape</c> or <c>KeyChar == ''</c>), if another key
-/// is already waiting and it is <c>[</c>, the editor reads the rest of the escape sequence (blocking,
-/// at most <see cref="MouseInput.MaxKeys"/> keys) and decodes it with <see cref="MouseInput"/>. A
-/// wheel notch calls the scroll callback with -1 or +1 and <see cref="ScrollStep.Wheel"/>, exactly
-/// like a scroll key; clicks, horizontal wheel and unknown sequences are dropped silently. Neither
-/// touches the line, the history position, the popup or the Tab list. A lone Esc (nothing waiting)
-/// is a plain Esc, and an Esc followed by any other key is a plain Esc and then that key.
+/// Mouse wheel: after an Esc key (<c>Key == Escape</c> or <c>KeyChar == '\u001b'</c>), if another
+/// key is already waiting and it is <c>[</c>, the editor reads the rest of the escape sequence
+/// (blocking, at most <see cref="MouseInput.MaxKeys"/> keys) and decodes it with
+/// <see cref="MouseInput"/>. A wheel notch calls the scroll callback with -1 or +1 and
+/// <see cref="ScrollStep.Wheel"/>, exactly like a scroll key; clicks, horizontal wheel and unknown
+/// sequences are dropped silently. Neither touches the line, the history position, the popup or the
+/// Tab list. A lone Esc (nothing waiting) is a plain Esc, and an Esc followed by any other key is a
+/// plain Esc and then that key.
 /// </para>
 /// <para>
-/// Tab completes a unique command prefix; on an empty line it does nothing. When 2 or more names start with the typed prefix, Tab
-/// extends the line to their longest common prefix and enters the "Tab list" state: the popup
-/// (reopened even after Esc) lists only <see cref="CommandRegistry.StartingWith"/> for the line,
-/// with a grey footer <c>N commands start with …</c>. The next key of any kind leaves that state,
-/// and the popup goes back to <see cref="CommandRegistry.Match"/>. Without a popup area only the
-/// line is extended.
+/// Tab completes a unique command prefix; on an empty line it does nothing. When 2 or more names
+/// start with the typed prefix, Tab extends the line to their longest common prefix and enters the
+/// "Tab list" state: the popup (reopened even after Esc) lists only
+/// <see cref="CommandRegistry.StartingWith"/> for the line, with a grey footer <c>N commands start
+/// with …</c>. The next key of any kind leaves that state, and the popup goes back to
+/// <see cref="CommandRegistry.Match"/>. Without a popup area only the line is extended.
 /// </para>
 /// <para>
 /// When a <see cref="PopupArea"/> is given, the popup opens while the line is not empty and does
 /// not start with whitespace, and lists <see cref="CommandRegistry.Match"/> for it. Esc closes it
-/// and keeps it closed until the line is empty again. Rows the popup stops covering are handed back to
-/// <see cref="PopupArea.RestoreRow"/>, and the cursor always ends at the end of the input line.
+/// and keeps it closed until the line is empty again. Rows the popup stops covering are handed back
+/// to <see cref="PopupArea.RestoreRow"/>, and the cursor always ends at the end of the input line.
 /// </para>
 /// <para>
 /// When a placeholder is given, it is shown in grey whenever the line is empty and blanked as soon
@@ -76,9 +77,9 @@ internal sealed class LineEditor
     /// Reads one line. <paramref name="column"/> and <paramref name="line"/> are the 1-based screen
     /// position where the text starts, and <paramref name="width"/> is the room available for it.
     /// <paramref name="popup"/> says where the command popup may draw, or <c>null</c> for no popup.
-    /// <paramref name="placeholder"/> is grey text shown while the line is empty, or <c>null</c> for
-    /// none. The editor assumes the caller has already drawn it at <paramref name="column"/> and
-    /// redraws it (cropped to the room) whenever the line becomes empty again.
+    /// <paramref name="placeholder"/> is grey text shown while the line is empty, or <c>null</c>
+    /// for none. The editor assumes the caller has already drawn it at <paramref name="column"/>
+    /// and redraws it (cropped to the room) whenever the line becomes empty again.
     /// <paramref name="scroll"/> is called with -1 or +1 and the kind of step for a scroll key or a
     /// wheel notch and returns <c>true</c> if it redrew anything, or is <c>null</c> to ignore both.
     /// Returns <c>null</c> if the input has no more keys.
@@ -108,7 +109,7 @@ internal sealed class LineEditor
             int? direction = ScrollDirection(info);
             if (IsEscape(info))
             {
-                info = new ConsoleKeyInfo('', ConsoleKey.Escape, false, false, false);
+                info = new ConsoleKeyInfo('\u001b', ConsoleKey.Escape, false, false, false);
                 if (console.Input.IsKeyAvailable())
                 {
                     ConsoleKeyInfo? next = console.Input.ReadKey(intercept: true);
