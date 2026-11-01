@@ -13,7 +13,9 @@ internal interface IConsoleInputMode
 
 /// <summary>
 /// Turns terminal mouse reporting (X10 button events, 1000, in SGR encoding, 1006) on and off, so the
-/// wheel reaches the line editor instead of the terminal's scrollback. The escape sequences go
+/// wheel reaches the line editor instead of the terminal's scrollback, and bracketed paste (2004) with
+/// it, so a paste arrives between <c>ESC[200~</c> and <c>ESC[201~</c> and its line breaks never act as
+/// Enter. Bracketed paste is turned off first and on last. The escape sequences go
 /// through the injected <see cref="IAnsiConsole"/> as a <see cref="ControlCode"/>. On Windows an
 /// optional <see cref="IConsoleInputMode"/> also turns on mouse input (and quick edit off) and puts
 /// the saved mode back on <see cref="Disable"/>.
@@ -22,8 +24,8 @@ internal interface IConsoleInputMode
 /// </summary>
 internal sealed class MouseReporting
 {
-    public const string EnableSequence = "\u001b[?1000h\u001b[?1006h";
-    public const string DisableSequence = "\u001b[?1006l\u001b[?1000l";
+    public const string EnableSequence = "\u001b[?1000h\u001b[?1006h\u001b[?2004h";
+    public const string DisableSequence = "\u001b[?2004l\u001b[?1006l\u001b[?1000l";
 
     public const uint EnableMouseInput = 0x10;
     public const uint EnableQuickEditMode = 0x40;

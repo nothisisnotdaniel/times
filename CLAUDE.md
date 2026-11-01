@@ -45,7 +45,11 @@ Every factory agent reads this file before working on Times. Keep it short and a
     and off in a `finally` on every exit (Program.cs also turns it off on Ctrl+C and process exit).
     The line editor reads the `ESC [ …` sequence after an Esc that has a `[` waiting and decodes it
     with `MouseInput`; a lone Esc stays Esc. On Windows, `WindowsConsole.cs` sets the console input
-    mode and turns wheel records into the same SGR keys.
+    mode and turns wheel records into the same SGR keys. A sequence longer than `MouseInput.MaxKeys`
+    (32) is read to its final `@`–`~` character and dropped whole, never typed.
+    `MouseReporting` also turns bracketed paste on and off (`ESC[?2004h` / `ESC[?2004l`): the editor
+    appends the text between `ESC[200~` and `ESC[201~` to the line in one step (line breaks and Tab
+    become one space each, other control characters and `ESC [` sequences are dropped), never submitting it.
   - **Command popup:** while the line is non-empty and does not start with whitespace (after Esc:
     closed until the line is empty again; a lone `/` lists every command), a popup just above the input box lists the
     registered commands with their descriptions, filtered by what was typed and ranked by

@@ -1520,7 +1520,7 @@ public class LineEditorTests
     [InlineData("[A")]         // unknown sequences
     [InlineData("[1;5D")]
     [InlineData("[<64;3;4~")]
-    [InlineData("[<111111111111111111111111111111")] // 32-key limit
+    [InlineData("[<111111111111111111111111111111~")] // over the 32-key limit (066: read to its end)
     public void OtherSequences_AreIgnoredSilently(string sequence)
     {
         string Run(bool withSequence)
@@ -1807,5 +1807,339 @@ public class LineEditorTests
 
         Assert.Equal("/", run.Read());
         Assert.Equal("5 commands start with /", run.ScreenAfterKey(2)[HintRow]);
+    }
+
+    // Long escape sequences and bracketed paste (job 066) ------------------------------------
+
+    private static readonly string FortyDigits = new string('7', 40);
+
+    /// <summary>Pushes a bracketed paste: Esc <c>[200~</c>, the keys, Esc <c>[201~</c>.</summary>
+    private static void PushPaste(TestConsole console, params ConsoleKeyInfo[] keys)
+    {
+        PushSequence(console, "[200~");
+        foreach (ConsoleKeyInfo key in keys)
+        {
+            console.Input.PushKey(key);
+        }
+
+        PushSequence(console, "[201~");
+    }
+
+    private static ConsoleKeyInfo[] Keys(string text) =>
+        text.Select(c => new ConsoleKeyInfo(c, default, false, false, false)).ToArray();
+
+    private static readonly ConsoleKeyInfo EnterKeyLf = new('\n', ConsoleKey.Enter, false, false, false);
+    private static readonly ConsoleKeyInfo CharCr = new('\r', default, false, false, false);
+    private static readonly ConsoleKeyInfo CharLf = new('\n', default, false, false, false);
+
+    // AC-1
+    [Fact]
+    public void OverLongSequence_LeavesNothingInTheLine()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        PushSequence(console, "[" + FortyDigits + "~");
+        console.Input.PushTextWithEnter("quit");
+
+        Assert.Equal("quit", Read(editor));
+        Assert.Equal(["quit"], editor.History);
+        Assert.DoesNotContain("7", console.Output);
+        Assert.DoesNotContain("~", console.Output);
+        Assert.DoesNotContain("[", console.Output);
+    }
+
+    // AC-1
+    [Fact]
+    public void OverLongSequence_IsNotTypedIntoTheInputLine()
+    {
+        PopupRun run = new PopupRun();
+        PushSequence(run.Console, "[" + FortyDigits + "~");
+        run.Console.Input.PushTextWithEnter("quit");
+
+        Assert.Equal("quit", run.Read());
+        Assert.DoesNotContain(AnsiWrites.Parse(run.Console.Output), w => w.Text.Contains('7') || w.Text.Contains('~'));
+    }
+
+    // AC-2
+    [Fact]
+    public void KeysAfterAnOverLongSequence_AreTypedNormally()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        PushSequence(console, "[" + new string('1', 40) + "~");
+        console.Input.PushTextWithEnter("ab");
+
+        Assert.Equal("ab", Read(editor));
+    }
+
+    // AC-2: a letter ends an unterminated sequence, so no more than that is swallowed.
+    [Fact]
+    public void OverLongSequence_EndsAtTheFirstFinalCharacter()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        PushSequence(console, "[" + FortyDigits + "xab");
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal("ab", Read(editor));
+    }
+
+    // AC-3
+    [Fact]
+    public void OverLongWheelSequence_DoesNotScroll()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        List<int> calls = [];
+        PushSequence(console, "[<64;" + FortyDigits + "M");
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal(string.Empty, editor.ReadLine(5, 23, 70, scroll: (d, _) => { calls.Add(d); return true; }));
+        Assert.Empty(calls);
+    }
+
+    // AC-4
+    [Fact]
+    public void InputEnding_InsideAnOverLongSequence_ReturnsNull()
+    {
+        PausingInput input = new PausingInput();
+        input.Push("ab");
+        input.Push(Esc);
+        input.Push("[" + FortyDigits);
+        LineEditor editor = new LineEditor(new InputOverrideConsole(new TestConsole().Interactive(), input), CommandRegistry.CreateDefault());
+
+        Assert.Null(editor.ReadLine(5, 23, 70, scroll: (_, _) => true));
+        Assert.Empty(editor.History);
+    }
+
+    // AC-6
+    [Fact]
+    public void Paste_PutsTheTextInTheLine_AndEnterReturnsIt()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        PushPaste(console, Keys("arrive 8:15"));
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal("arrive 8:15", Read(editor));
+        Assert.Equal(["arrive 8:15"], editor.History);
+        Assert.Contains("arrive 8:15", console.Output);
+    }
+
+    // AC-6
+    [Fact]
+    public void Paste_IsNotSubmitted_WithoutEnter()
+    {
+        PausingInput input = new PausingInput();
+        input.Push(Esc);
+        input.Push("[200~arrive 8:15");
+        input.Push(Enter);
+        input.Push(Esc);
+        input.Push("[201~");
+        LineEditor editor = new LineEditor(new InputOverrideConsole(new TestConsole().Interactive(), input), CommandRegistry.CreateDefault());
+
+        Assert.Null(editor.ReadLine(5, 23, 70));
+        Assert.Empty(editor.History);
+    }
+
+    // AC-7
+    [Fact]
+    public void Paste_LineBreaks_BecomeOneSpaceEach()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        PushPaste(console, [.. Keys("a"), Enter, CharLf, .. Keys("b"), EnterKeyLf, .. Keys("c")]);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal("a b c", Read(editor));
+        Assert.Equal(["a b c"], editor.History);
+    }
+
+    // AC-7
+    [Fact]
+    public void Paste_LineBreaksAsKeyChars_CrLfCrAndLf_BecomeOneSpaceEach()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        PushPaste(console, [.. Keys("a"), CharCr, CharLf, .. Keys("b"), CharCr, .. Keys("c"), CharLf, .. Keys("d"), CharLf, CharCr, .. Keys("e")]);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal("a b c d  e", Read(editor));
+    }
+
+    // AC-7
+    [Fact]
+    public void Paste_Tab_BecomesASpace_AndOtherControlCharactersAreDropped()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        PushPaste(console, [
+            .. Keys("a"),
+            new ConsoleKeyInfo('\t', ConsoleKey.Tab, false, false, false),
+            .. Keys("b\tc\u0007d\u0000e"),
+            new ConsoleKeyInfo('\b', ConsoleKey.Backspace, false, false, false),
+            .. Keys("f"),
+        ]);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal("a b cdef", Read(editor));
+    }
+
+    // AC-8
+    [Fact]
+    public void Paste_AppendsToWhatWasTyped()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        console.Input.PushText("arr");
+        PushPaste(console, Keys("ive 8:15"));
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal("arrive 8:15", Read(editor));
+    }
+
+    /// <summary>
+    /// Plays the writes of <paramref name="output"/> onto a screen whose rows 1 to 22 start out as
+    /// <c>row N</c> (what <see cref="BackgroundArea"/> restores): the text at each row.
+    /// </summary>
+    private static Dictionary<int, string> FinalScreen(string output)
+    {
+        Dictionary<int, char[]> rows = [];
+        for (int row = 1; row <= 23; row++)
+        {
+            rows[row] = (row < 23 ? $"row {row}" : string.Empty).PadRight(200).ToCharArray();
+        }
+
+        foreach (AnsiWrite write in AnsiWrites.Parse(output))
+        {
+            for (int i = 0; i < write.Text.Length; i++)
+            {
+                rows[write.Row][write.Column - 1 + i] = write.Text[i];
+            }
+        }
+
+        return rows.ToDictionary(r => r.Key, r => new string(r.Value).TrimEnd());
+    }
+
+    /// <summary>A popup area whose restored rows read <c>row N</c>, padded to its width, like the screen <see cref="FinalScreen"/> starts with.</summary>
+    private static PopupArea BackgroundArea(TestConsole console) => new PopupArea(HintRow, 80, row =>
+    {
+        console.Cursor.SetPosition(1, row);
+        console.Write(new Text($"row {row}".PadRight(80)));
+    });
+
+    private static string LastCursor(string output) =>
+        System.Text.RegularExpressions.Regex.Matches(output, @"\u001b\[\d+;\d+H")[^1].Value;
+
+    // AC-8
+    [Theory]
+    [InlineData("", "t", 70)]                                   // placeholder blanked, popup opens
+    [InlineData("", "today", 70)]
+    [InlineData("to", "day", 70)]
+    [InlineData("", " x", 70)]                                  // leading space: no popup
+    [InlineData("arr", "ive 8:15 and a much longer tail", 20)]  // … tail cue
+    [InlineData("", "help me with a long line", 12)]
+    public void Paste_DrawsTheLine_LikeTheSameTextTyped(string before, string pasted, int width)
+    {
+        TestConsole typed = new TestConsole().Interactive().EmitAnsiSequences();
+        typed.Input.PushText(before + pasted);
+        typed.Input.PushKey(ConsoleKey.Enter);
+        TestConsole paste = new TestConsole().Interactive().EmitAnsiSequences();
+        paste.Input.PushText(before);
+        PushPaste(paste, Keys(pasted));
+        paste.Input.PushKey(ConsoleKey.Enter);
+
+        string? typedLine = new LineEditor(typed, CommandRegistry.CreateDefault()).ReadLine(5, 23, width, BackgroundArea(typed), Placeholder);
+        string? pastedLine = new LineEditor(paste, CommandRegistry.CreateDefault()).ReadLine(5, 23, width, BackgroundArea(paste), Placeholder);
+
+        Assert.Equal(before + pasted, pastedLine);
+        Assert.Equal(typedLine, pastedLine);
+        Assert.Equal(FinalScreen(typed.Output), FinalScreen(paste.Output));
+        Assert.Equal(LastCursor(typed.Output), LastCursor(paste.Output));
+    }
+
+    /// <summary>
+    /// Reads until <paramref name="input"/> runs out, with the default commands and a popup, and
+    /// returns the output up to the last input-line redraw (before the end of input closes the popup).
+    /// </summary>
+    private static string ReadUntilTheEnd(PausingInput input)
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        LineEditor editor = new LineEditor(new InputOverrideConsole(console, input), CommandRegistry.CreateDefault());
+        Assert.Null(editor.ReadLine(5, 23, 70, BackgroundArea(console), Placeholder));
+        string output = console.Output;
+        int lastLine = output.LastIndexOf("\u001b[23;5H", StringComparison.Ordinal);
+        System.Text.RegularExpressions.Match close = System.Text.RegularExpressions.Regex.Match(output[lastLine..], @"\u001b\[\d+;1H");
+        return close.Success ? output[..(lastLine + close.Index)] : output;
+    }
+
+    // AC-8: before Enter, the open popup is the same too.
+    [Fact]
+    public void Paste_OpensThePopup_LikeTyping()
+    {
+        PausingInput typed = new PausingInput();
+        typed.Push("he");
+        PausingInput pasted = new PausingInput();
+        pasted.Push(Esc);
+        pasted.Push("[200~he");
+        pasted.Push(Esc);
+        pasted.Push("[201~");
+
+        Dictionary<int, string> typedScreen = FinalScreen(ReadUntilTheEnd(typed));
+        Dictionary<int, string> pastedScreen = FinalScreen(ReadUntilTheEnd(pasted));
+
+        Assert.Equal(typedScreen, pastedScreen);
+        Assert.StartsWith("help", pastedScreen[HintRow]);
+    }
+
+    // AC-9
+    [Fact]
+    public void Paste_OtherSequencesInside_AreDropped()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        List<int> calls = [];
+        PushSequence(console, "[200~");
+        console.Input.PushText("a");
+        PushSequence(console, "[<65;3;4M");
+        console.Input.PushText("b");
+        PushSequence(console, "[A");
+        PushSequence(console, "[200~");
+        PushSequence(console, "[" + FortyDigits + "~");
+        console.Input.PushText("c");
+        PushSequence(console, "[201~");
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal("abc", editor.ReadLine(5, 23, 70, scroll: (d, _) => { calls.Add(d); return true; }));
+        Assert.Empty(calls);
+    }
+
+    // AC-9
+    [Fact]
+    public void Paste_StrayEsc_IsDropped()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        PushPaste(console, [.. Keys("a"), Esc, .. Keys("b"), Esc, Esc, .. Keys("c")]);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal("abc", Read(editor));
+    }
+
+    // AC-9
+    [Theory]
+    [InlineData("[200~abc")]
+    [InlineData("[200~abc\u001b")]
+    [InlineData("[200~abc\u001b[20")]
+    public void InputEnding_InsideAPaste_ReturnsNull(string rest)
+    {
+        PausingInput input = new PausingInput();
+        input.Push("x");
+        input.Push(Esc);
+        input.Push(rest);
+        LineEditor editor = new LineEditor(new InputOverrideConsole(new TestConsole().Interactive(), input), CommandRegistry.CreateDefault());
+
+        Assert.Null(editor.ReadLine(5, 23, 70));
+        Assert.Empty(editor.History);
+    }
+
+    // AC-6: an end marker outside a paste is just an unknown sequence.
+    [Fact]
+    public void PasteEnd_OutsideAPaste_IsDropped()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        PushSequence(console, "[201~");
+        console.Input.PushTextWithEnter("ab");
+
+        Assert.Equal("ab", Read(editor));
     }
 }

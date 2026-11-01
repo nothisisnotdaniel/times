@@ -32,7 +32,27 @@ public sealed class MouseReportingTests
         mouse.Enable();
         mouse.Disable();
 
-        Assert.Equal("\u001b[?1000h\u001b[?1006h\u001b[?1006l\u001b[?1000l", console.Output);
+        Assert.Equal("\u001b[?1000h\u001b[?1006h\u001b[?2004h\u001b[?2004l\u001b[?1006l\u001b[?1000l", console.Output);
+    }
+
+    // AC-10 (066)
+    [Fact]
+    public void Enable_TurnsBracketedPasteOn_AndDisable_TurnsItOff()
+    {
+        TestConsole console = Console();
+        MouseReporting mouse = new MouseReporting(console);
+
+        mouse.Enable();
+        string enabled = console.Output;
+        mouse.Disable();
+        string disabled = console.Output[enabled.Length..];
+
+        Assert.Contains("\u001b[?2004h", enabled);
+        Assert.DoesNotContain("\u001b[?2004l", enabled);
+        Assert.Contains("\u001b[?2004l", disabled);
+        Assert.DoesNotContain("\u001b[?2004h", disabled);
+        Assert.Contains("\u001b[?2004h", MouseReporting.EnableSequence);
+        Assert.Contains("\u001b[?2004l", MouseReporting.DisableSequence);
     }
 
     // AC-4

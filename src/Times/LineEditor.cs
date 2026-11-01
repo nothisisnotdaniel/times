@@ -27,12 +27,21 @@ internal enum ScrollStep
 /// <para>
 /// Mouse wheel: after an Esc key (<c>Key == Escape</c> or <c>KeyChar == '\u001b'</c>), if another
 /// key is already waiting and it is <c>[</c>, the editor reads the rest of the escape sequence
-/// (blocking, at most <see cref="MouseInput.MaxKeys"/> keys) and decodes it with
-/// <see cref="MouseInput"/>. A wheel notch calls the scroll callback with -1 or +1 and
-/// <see cref="ScrollStep.Wheel"/>, exactly like a scroll key; clicks, horizontal wheel and unknown
+/// (blocking, up to its final character <c>@</c>–<c>~</c>) and decodes it with
+/// <see cref="MouseInput"/>. A sequence longer than <see cref="MouseInput.MaxKeys"/> keys is still
+/// read to its end, keeping at most that many keys, and then dropped whole: none of it is typed. A
+/// wheel notch calls the scroll callback with -1 or +1 and <see cref="ScrollStep.Wheel"/>, exactly
+/// like a scroll key; clicks, horizontal wheel and unknown
 /// sequences are dropped silently. Neither touches the line, the history position, the popup or the
 /// Tab list. A lone Esc (nothing waiting) is a plain Esc, and an Esc followed by any other key is a
 /// plain Esc and then that key.
+/// </para>
+/// <para>
+/// Bracketed paste: everything between <c>ESC[200~</c> and <c>ESC[201~</c> is appended to the
+/// line as text in one step, never submitted. Each line break (<c>\r</c>, <c>\n</c> or
+/// <c>\r\n</c>, as an Enter key or as a <c>KeyChar</c>) and each Tab becomes one space; other
+/// control characters, and any other <c>ESC [</c> sequence inside the paste, are dropped. The
+/// popup and the line are then drawn as for the same text typed key by key.
 /// </para>
 /// <para>
 /// Tab completes a unique command prefix; on an empty line it does nothing. When 2 or more names
@@ -82,7 +91,8 @@ internal sealed class LineEditor
     /// and redraws it (cropped to the room) whenever the line becomes empty again.
     /// <paramref name="scroll"/> is called with -1 or +1 and the kind of step for a scroll key or a
     /// wheel notch and returns <c>true</c> if it redrew anything, or is <c>null</c> to ignore both.
-    /// Returns <c>null</c> if the input has no more keys.
+    /// Returns <c>null</c> if the input has no more keys, also in the middle of an escape sequence
+    /// or a paste.
     /// </summary>
     public string? ReadLine(int column, int line, int width, PopupArea? popup = null, string? placeholder = null, Func<int, ScrollStep, bool>? scroll = null)
     {
@@ -107,6 +117,7 @@ internal sealed class LineEditor
             ConsoleKeyInfo info = key.Value;
             ScrollStep step = ScrollStep.Page;
             int? direction = ScrollDirection(info);
+            string? pasted = null;
             if (IsEscape(info))
             {
                 info = new ConsoleKeyInfo('\u001b', ConsoleKey.Escape, false, false, false);
@@ -115,14 +126,27 @@ internal sealed class LineEditor
                     ConsoleKeyInfo? next = console.Input.ReadKey(intercept: true);
                     if (next is { KeyChar: '[' })
                     {
-                        MouseInputKind kind = ReadSequence();
-                        if (kind is not MouseInputKind.WheelUp and not MouseInputKind.WheelDown)
+                        MouseInputKind? kind = ReadSequence();
+                        if (kind == MouseInputKind.PasteStart)
+                        {
+                            pasted = ReadPaste();
+                        }
+
+                        if (kind is null || (kind == MouseInputKind.PasteStart && pasted is null))
+                        {
+                            ClosePopup(popup, popupRows);
+                            return null;
+                        }
+
+                        if (kind is MouseInputKind.WheelUp or MouseInputKind.WheelDown)
+                        {
+                            direction = kind == MouseInputKind.WheelUp ? -1 : 1;
+                            step = ScrollStep.Wheel;
+                        }
+                        else if (pasted is null)
                         {
                             continue;
                         }
-
-                        direction = kind == MouseInputKind.WheelUp ? -1 : 1;
-                        step = ScrollStep.Wheel;
                     }
                     else
                     {
@@ -155,87 +179,94 @@ internal sealed class LineEditor
 
             tabList = false;
 
-            switch (info.Key)
+            if (pasted is not null)
             {
-                case ConsoleKey.Enter:
-                    if (buffer.Trim().Length > 0 && (history.Count == 0 || history[^1] != buffer))
-                    {
-                        history.Add(buffer);
-                    }
+                buffer += pasted;
+            }
+            else
+            {
+                switch (info.Key)
+                {
+                    case ConsoleKey.Enter:
+                        if (buffer.Trim().Length > 0 && (history.Count == 0 || history[^1] != buffer))
+                        {
+                            history.Add(buffer);
+                        }
 
-                    if (popupRows > 0)
-                    {
-                        ClosePopup(popup, popupRows);
-                        console.Cursor.SetPosition(column + drawn, line);
-                    }
+                        if (popupRows > 0)
+                        {
+                            ClosePopup(popup, popupRows);
+                            console.Cursor.SetPosition(column + drawn, line);
+                        }
 
-                    return buffer;
+                        return buffer;
 
-                case ConsoleKey.Backspace:
-                    if (buffer.Length > 0)
-                    {
-                        buffer = buffer[..^1];
-                    }
+                    case ConsoleKey.Backspace:
+                        if (buffer.Length > 0)
+                        {
+                            buffer = buffer[..^1];
+                        }
 
-                    break;
-
-                case ConsoleKey.Escape:
-                    if (popupRows > 0)
-                    {
-                        popupDismissed = true;
-                    }
-                    else
-                    {
-                        buffer = string.Empty;
-                        historyIndex = history.Count;
-                    }
-
-                    break;
-
-                case ConsoleKey.Tab:
-                    if (buffer.Any(char.IsWhiteSpace))
-                    {
                         break;
-                    }
 
-                    if (registry.StartingWith(buffer).Count >= 2)
-                    {
-                        buffer = registry.CommonPrefix(buffer);
-                        popupDismissed = false;
-                        tabList = true;
-                    }
-                    else if (registry.Complete(buffer) is { } completed)
-                    {
-                        buffer = completed;
-                    }
+                    case ConsoleKey.Escape:
+                        if (popupRows > 0)
+                        {
+                            popupDismissed = true;
+                        }
+                        else
+                        {
+                            buffer = string.Empty;
+                            historyIndex = history.Count;
+                        }
 
-                    break;
+                        break;
 
-                case ConsoleKey.UpArrow:
-                    if (history.Count > 0)
-                    {
-                        historyIndex = Math.Max(0, historyIndex - 1);
-                        buffer = history[historyIndex];
-                    }
+                    case ConsoleKey.Tab:
+                        if (buffer.Any(char.IsWhiteSpace))
+                        {
+                            break;
+                        }
 
-                    break;
+                        if (registry.StartingWith(buffer).Count >= 2)
+                        {
+                            buffer = registry.CommonPrefix(buffer);
+                            popupDismissed = false;
+                            tabList = true;
+                        }
+                        else if (registry.Complete(buffer) is { } completed)
+                        {
+                            buffer = completed;
+                        }
 
-                case ConsoleKey.DownArrow:
-                    if (historyIndex < history.Count)
-                    {
-                        historyIndex++;
-                        buffer = historyIndex == history.Count ? string.Empty : history[historyIndex];
-                    }
+                        break;
 
-                    break;
+                    case ConsoleKey.UpArrow:
+                        if (history.Count > 0)
+                        {
+                            historyIndex = Math.Max(0, historyIndex - 1);
+                            buffer = history[historyIndex];
+                        }
 
-                default:
-                    if (info.KeyChar != '\0' && !char.IsControl(info.KeyChar))
-                    {
-                        buffer += info.KeyChar;
-                    }
+                        break;
 
-                    break;
+                    case ConsoleKey.DownArrow:
+                        if (historyIndex < history.Count)
+                        {
+                            historyIndex++;
+                            buffer = historyIndex == history.Count ? string.Empty : history[historyIndex];
+                        }
+
+                        break;
+
+                    default:
+                        if (info.KeyChar != '\0' && !char.IsControl(info.KeyChar))
+                        {
+                            buffer += info.KeyChar;
+                        }
+
+                        break;
+                }
             }
 
             if (buffer.Length == 0)
@@ -254,26 +285,114 @@ internal sealed class LineEditor
 
     private static bool IsEscape(ConsoleKeyInfo info) => info.Key == ConsoleKey.Escape || info.KeyChar == '\u001b';
 
-    // Reads the rest of an escape sequence whose ESC and '[' were already read, up to its end or
-    // MouseInput.MaxKeys keys, and decodes it. Waits for the keys that are still on their way (a
-    // slow connection may split a sequence). Running out of input ends the sequence; the next
-    // ReadKey then reports the end as usual.
-    private MouseInputKind ReadSequence()
+    // Reads the rest of an escape sequence whose ESC and '[' were already read, up to its final
+    // character, and decodes it. Waits for the keys that are still on their way (a slow connection
+    // may split a sequence). Keeps at most MouseInput.MaxKeys keys; a longer sequence is read to its
+    // end and then discarded, so none of its tail is typed. Returns null if the input runs out.
+    private MouseInputKind? ReadSequence()
     {
         string keys = "[";
+        bool tooLong = false;
         while (!MouseInput.IsComplete(keys))
         {
             ConsoleKeyInfo? next = console.Input.ReadKey(intercept: true);
             if (next is null)
             {
-                return MouseInputKind.Discard;
+                return null;
             }
 
-            keys += next.Value.KeyChar;
+            char c = next.Value.KeyChar;
+            if (keys.Length < MouseInput.MaxKeys)
+            {
+                keys += c;
+            }
+            else if (MouseInput.IsFinal(c))
+            {
+                return MouseInputKind.Discard;
+            }
+            else
+            {
+                tooLong = true;
+            }
         }
 
-        return MouseInput.Decode(keys);
+        return tooLong ? MouseInputKind.Discard : MouseInput.Decode(keys);
     }
+
+    // Reads a bracketed paste whose ESC[200~ was already read, up to ESC[201~, and returns its text:
+    // line breaks (\r, \n, \r\n) and Tabs as one space each, other control characters and other
+    // ESC [ sequences dropped. Returns null if the input runs out first.
+    private string? ReadPaste()
+    {
+        System.Text.StringBuilder text = new System.Text.StringBuilder();
+        bool afterCarriageReturn = false;
+        ConsoleKeyInfo? pending = null;
+        while (true)
+        {
+            ConsoleKeyInfo? key = pending ?? console.Input.ReadKey(intercept: true);
+            pending = null;
+            if (key is null)
+            {
+                return null;
+            }
+
+            if (IsEscape(key.Value))
+            {
+                ConsoleKeyInfo? next = console.Input.ReadKey(intercept: true);
+                if (next is { KeyChar: '[' })
+                {
+                    MouseInputKind? kind = ReadSequence();
+                    if (kind is null)
+                    {
+                        return null;
+                    }
+
+                    if (kind == MouseInputKind.PasteEnd)
+                    {
+                        return text.ToString();
+                    }
+                }
+                else
+                {
+                    // A stray Esc is a control character: dropped. The key after it is pasted as usual.
+                    pending = next;
+                    if (next is null)
+                    {
+                        return null;
+                    }
+                }
+
+                afterCarriageReturn = false;
+                continue;
+            }
+
+            char c = PastedChar(key.Value);
+            if (c == '\n' && afterCarriageReturn)
+            {
+                afterCarriageReturn = false;
+                continue;
+            }
+
+            afterCarriageReturn = c == '\r';
+            if (c is '\r' or '\n' or '\t')
+            {
+                text.Append(' ');
+            }
+            else if (c != '\0' && !char.IsControl(c))
+            {
+                text.Append(c);
+            }
+        }
+    }
+
+    // The character a pasted key stands for: Enter is a line break (\n if its KeyChar says so,
+    // otherwise \r) and Tab a tab, whatever their KeyChar; every other key is its KeyChar.
+    private static char PastedChar(ConsoleKeyInfo info) => info.Key switch
+    {
+        ConsoleKey.Enter => info.KeyChar == '\n' ? '\n' : '\r',
+        ConsoleKey.Tab => '\t',
+        _ => info.KeyChar,
+    };
 
     // -1 for PageUp, Shift+PageUp and Ctrl+Up; +1 for PageDown, Shift+PageDown and Ctrl+Down;
     // null for every other key, including plain Up/Down (history).
