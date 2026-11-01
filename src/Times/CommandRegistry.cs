@@ -76,9 +76,6 @@ internal sealed class CommandRegistry
 
     public IEnumerable<Command> Commands => commands.Values.OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Shown below the <c>help</c> table, or <c>null</c> for nothing.</summary>
-    public IRenderable? HelpFooter { get; set; }
-
     /// <summary>Creates a registry with the built-in <c>help</c> and <c>quit</c> commands.</summary>
     public static CommandRegistry CreateDefault()
     {
@@ -282,7 +279,8 @@ internal sealed class CommandRegistry
         return previous[b.Length];
     }
 
-    public IRenderable RenderHelp()
+    /// <summary>Renders the <c>help</c> table, with an optional <paramref name="footer"/> below it.</summary>
+    public IRenderable RenderHelp(IRenderable? footer = null)
     {
         Table table = new Table()
             .Border(TableBorder.Rounded)
@@ -299,6 +297,6 @@ internal sealed class CommandRegistry
                 new Text(command.Description));
         }
 
-        return HelpFooter is null ? table : new Rows(table, HelpFooter);
+        return footer is null ? table : new Rows(table, footer);
     }
 }

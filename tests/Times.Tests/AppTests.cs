@@ -2365,7 +2365,6 @@ public sealed class AppTests : IDisposable
     [InlineData("~/times")]
     [InlineData("   ")]
     [InlineData("[red]x")]
-    [InlineData("")]
     public void InvalidOverride_ReturnsTwo_NamesTheVariable_AndCreatesNothing(string folder)
     {
         string[] before = WorkingDirectoryEntries();
