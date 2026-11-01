@@ -35,7 +35,7 @@ public class TopAreaTests
         Assert.Equal("line 1", lines[0].TrimEnd());
         Assert.Equal("line 2", lines[1].TrimEnd());
         Assert.Equal("line 3", lines[2].TrimEnd());
-        Assert.Equal("↓ 7 more lines below · PgDn", lines[3].TrimEnd());
+        Assert.Equal("↓ 7 more lines below · PgDn / Ctrl+↓", lines[3].TrimEnd());
     }
 
     // AC-1
@@ -45,7 +45,7 @@ public class TopAreaTests
         string output = RenderAnsi(Numbered(10), 4);
 
         // Grey is colour 8 (ESC[90m in the standard palette or ESC[38;5;8m in 256 colours).
-        Assert.Matches(@"\x1b\[(90|38;5;8)m↓ 7 more lines below · PgDn", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)m↓ 7 more lines below · PgDn / Ctrl\+↓", output);
     }
 
     // AC-2
@@ -82,7 +82,7 @@ public class TopAreaTests
         string[] lines = Render(Numbered(5), 1);
 
         Assert.Single(lines);
-        Assert.Equal("↓ 5 more lines below · PgDn", lines[0].TrimEnd());
+        Assert.Equal("↓ 5 more lines below · PgDn / Ctrl+↓", lines[0].TrimEnd());
     }
 
     // AC-3
@@ -115,7 +115,7 @@ public class TopAreaTests
     public void OffsetZero_ShowsFirstLines_ThenBelowCue()
     {
         Assert.Equal(
-            ["line 1", "line 2", "line 3", "line 4", "↓ 6 more lines below · PgDn"],
+            ["line 1", "line 2", "line 3", "line 4", "↓ 6 more lines below · PgDn / Ctrl+↓"],
             Trimmed(Render(Numbered(10), 5, 0)));
     }
 
@@ -124,7 +124,7 @@ public class TopAreaTests
     public void MiddleOffset_ShowsAboveCue_Lines_AndBelowCue()
     {
         Assert.Equal(
-            ["↑ 3 more lines above · PgUp", "line 4", "line 5", "line 6", "↓ 4 more lines below · PgDn"],
+            ["↑ 3 more lines above · PgUp / Ctrl+↑", "line 4", "line 5", "line 6", "↓ 4 more lines below · PgDn / Ctrl+↓"],
             Trimmed(Render(Numbered(10), 5, 3)));
     }
 
@@ -134,8 +134,8 @@ public class TopAreaTests
     {
         string output = RenderAnsi(Numbered(10), 5, 3);
 
-        Assert.Matches(@"\x1b\[(90|38;5;8)m↑ 3 more lines above · PgUp", output);
-        Assert.Matches(@"\x1b\[(90|38;5;8)m↓ 4 more lines below · PgDn", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)m↑ 3 more lines above · PgUp / Ctrl\+↑", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)m↓ 4 more lines below · PgDn / Ctrl\+↓", output);
     }
 
     // AC-4 (037)
@@ -144,7 +144,7 @@ public class TopAreaTests
     {
         Assert.Equal(6, TopArea.MaxOffset(10, 5));
         Assert.Equal(
-            ["↑ 6 more lines above · PgUp", "line 7", "line 8", "line 9", "line 10"],
+            ["↑ 6 more lines above · PgUp / Ctrl+↑", "line 7", "line 8", "line 9", "line 10"],
             Trimmed(Render(Numbered(10), 5, 6)));
     }
 
@@ -188,7 +188,7 @@ public class TopAreaTests
     [Fact]
     public void HeightTwo_ShowsFirstLine_AndBelowCue_WhateverTheOffset()
     {
-        string[] expected = ["line 1", "↓ 9 more lines below · PgDn"];
+        string[] expected = ["line 1", "↓ 9 more lines below · PgDn / Ctrl+↓"];
         Assert.Equal(expected, Trimmed(Render(Numbered(10), 2, 0)));
         Assert.Equal(expected, Trimmed(Render(Numbered(10), 2, 4)));
     }
@@ -197,7 +197,7 @@ public class TopAreaTests
     [Fact]
     public void HeightOne_IgnoresTheOffset()
     {
-        Assert.Equal(["↓ 5 more lines below · PgDn"], Trimmed(Render(Numbered(5), 1, 3)));
+        Assert.Equal(["↓ 5 more lines below · PgDn / Ctrl+↓"], Trimmed(Render(Numbered(5), 1, 3)));
     }
 
     // AC-4 (037)
@@ -205,7 +205,7 @@ public class TopAreaTests
     public void HeightThree_MiddleOffset_ShowsOneLineBetweenTheCues()
     {
         Assert.Equal(
-            ["↑ 1 more lines above · PgUp", "line 2", "↓ 3 more lines below · PgDn"],
+            ["↑ 1 more line above · PgUp / Ctrl+↑", "line 2", "↓ 3 more lines below · PgDn / Ctrl+↓"],
             Trimmed(Render(Numbered(5), 3, 1)));
     }
 
@@ -224,5 +224,49 @@ public class TopAreaTests
     public void HeightZero_WithOffset_RendersNothing()
     {
         Assert.Empty(Render(Numbered(5), 0, 2));
+    }
+
+    // Scroll cue wording (job 062) ---------------------------------------------------------
+
+    // AC-2, AC-3 (062)
+    [Theory]
+    [InlineData(1, true, "↑ 1 more line above · PgUp / Ctrl+↑")]
+    [InlineData(1, false, "↓ 1 more line below · PgDn / Ctrl+↓")]
+    [InlineData(2, true, "↑ 2 more lines above · PgUp / Ctrl+↑")]
+    [InlineData(2, false, "↓ 2 more lines below · PgDn / Ctrl+↓")]
+    [InlineData(12, true, "↑ 12 more lines above · PgUp / Ctrl+↑")]
+    [InlineData(12, false, "↓ 12 more lines below · PgDn / Ctrl+↓")]
+    public void CueText_ReadsSingularForOne_AndNamesCtrlArrow(int count, bool above, string expected)
+    {
+        Assert.Equal(expected, TopArea.CueText(count, above));
+    }
+
+    // AC-1, AC-3 (062)
+    [Fact]
+    public void Render_TakesBothCuesFromCueText()
+    {
+        Assert.Equal(
+            [TopArea.CueText(1, above: true), "line 2", TopArea.CueText(3, above: false)],
+            Trimmed(Render(Numbered(5), 3, 1)));
+        Assert.Equal(
+            [TopArea.CueText(3, above: true), "line 4", "line 5", "line 6", TopArea.CueText(4, above: false)],
+            Trimmed(Render(Numbered(10), 5, 3)));
+    }
+
+    // AC-4 (062)
+    [Fact]
+    public void NewCues_AreCroppedToAWidthNarrowerThanTheirText()
+    {
+        const int Width = 30;
+        string above = TopArea.CueText(3, above: true);
+        string below = TopArea.CueText(4, above: false);
+        Assert.True(above.Length > Width);
+        Assert.True(below.Length > Width);
+
+        string[] lines = Render(Numbered(10), 5, 3, width: Width);
+
+        Assert.Equal(above[..Width], lines[0]);
+        Assert.Equal(below[..Width], lines[^1]);
+        Assert.All(lines, l => Assert.True(l.Length <= Width, $"row wider than {Width}: '{l}'"));
     }
 }
