@@ -53,9 +53,15 @@ internal sealed class QuicklistPanel
         return Frame(lines);
     }
 
-    /// <summary>The panel with one red line, for a <c>projects.json</c> that cannot be read. <paramref name="escapedMarkup"/> must already be escaped.</summary>
-    public static IRenderable RenderUnreadable(string escapedMarkup) =>
-        Frame([new OneLine(new Markup($"[red]{escapedMarkup}[/]"))]);
+    /// <summary>
+    /// The panel for a <c>projects.json</c> that cannot be read: a red line with the reason, then a grey line
+    /// with what to do about it. Both arguments must already be escaped.
+    /// </summary>
+    public static IRenderable RenderUnreadable(string escapedReason, string escapedNextStep) =>
+        Frame([
+            new OneLine(new Markup($"[red]{escapedReason}[/]")),
+            new OneLine(new Markup($"[grey]{escapedNextStep}[/]")),
+        ]);
 
     private static IRenderable Frame(List<IRenderable> lines) =>
         new NaturalHeight(new Panel(new Rows(lines))

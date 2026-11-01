@@ -232,29 +232,35 @@ public sealed class QuicklistPanelTests
         Assert.Matches(@"\x1b\[(90|38;5;8)m… 2 more\. Type projects to see all\.", output);
     }
 
-    // AC-8
+    // AC-8, AC-1 (059)
     [Fact]
-    public void Unreadable_ShowsOneRedLine()
+    public void Unreadable_ShowsRedReason_ThenGreyNextStep()
     {
-        IRenderable panel = QuicklistPanel.RenderUnreadable(Markup.Escape("projects.json is not [valid]."));
+        IRenderable panel = QuicklistPanel.RenderUnreadable(Markup.Escape("projects.json is not [valid]."), Markup.Escape("Fix or delete [it]."));
 
         string[] lines = Render(panel);
 
-        Assert.Equal(3, lines.Length);
+        Assert.Equal(4, lines.Length);
         Assert.StartsWith("╭─Projects─", lines[0]);
         Assert.Equal("projects.json is not [valid].", Inner(lines[1]));
-        Assert.Matches(@"\x1b\[(91|38;5;9)mprojects\.json is not \[valid\]\.", RenderAnsi(panel));
+        Assert.Equal("Fix or delete [it].", Inner(lines[2]));
+        Assert.StartsWith("╰", lines[3]);
+        string output = RenderAnsi(panel);
+        Assert.Matches(@"\x1b\[(91|38;5;9)mprojects\.json is not \[valid\]\.", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)mFix or delete \[it\]\.", output);
     }
 
-    // AC-8
+    // AC-8, AC-1 (059)
     [Fact]
-    public void Unreadable_LongReason_StaysOneLine()
+    public void Unreadable_LongLines_EachStayOneLine()
     {
-        IRenderable panel = QuicklistPanel.RenderUnreadable(Markup.Escape(string.Concat(Enumerable.Repeat("reason ", 40))));
+        string longText = string.Concat(Enumerable.Repeat("reason ", 40));
+        IRenderable panel = QuicklistPanel.RenderUnreadable(Markup.Escape(longText), Markup.Escape(longText));
 
         string[] lines = Render(panel);
 
-        Assert.Equal(3, lines.Length);
+        Assert.Equal(4, lines.Length);
         Assert.EndsWith("… │", lines[1]);
+        Assert.EndsWith("… │", lines[2]);
     }
 }
