@@ -83,3 +83,11 @@ Write one feature per line, in plain language.
 - [ ] CSV export: export the project report for a date range as a CSV file (work item, title, hours) into a folder the user names, so it can go into a spreadsheet or timesheet. Builds on the project report.
 - [ ] Azure DevOps sync: write the booked checkpoint hours into each work item's Completed Work in Azure DevOps and mark those checkpoints as booked. Needs a personal access token stored safely and network access, so it takes the full path with high risk. Builds on booked checkpoints and the project report.
 - [ ] Manage the quicklist: commands with aliases to rename, remove and reorder projects in `projects.json`, by their number in the quicklist. Removing a project never changes day files that already use it.
+- [ ] Rest period check: in the day view, show a yellow hint when there are less than 11 hours between the previous day's last leaving and this day's first arrival.
+- [ ] Maximum hours warning: in the day view, show a yellow hint once the day's working time (without breaks) passes 10 hours.
+- [ ] Relative times: accept `now`, `-<n>m` and `+<n>m` (minutes from now, read through the injected clock) wherever a time is typed, for example `arrive -10m`. Plain clock times work as before.
+- [ ] Rounding for reports: a setting to round checkpoint durations to 5, 10 or 15 minutes in the project report and the CSV export. Day files keep the exact times. Builds on the project report.
+- [ ] Import work items from Azure DevOps: fetch the work items assigned to the user and add them to the quicklist (work item number and title, checked like typed titles). Uses the same safely stored personal access token and network access as the Azure DevOps sync, so it takes the full path with high risk.
+- [ ] Search: a `find <text>` command with an alias lists every day where a checkpoint name or project title contains the text (ignoring case), with the date and duration.
+- [ ] Statistics: a command with an alias shows the average arrival and leaving times and the average working hours per weekday over a date range.
+- [ ] Backup: a command with an alias zips the data folder (day files and `projects.json`) into a dated file in a folder the user names, never inside the data folder itself.
