@@ -1297,6 +1297,64 @@ public class LineEditorTests
         Assert.Equal(before, console.Output.Length);
     }
 
+    // AC-3, AC-4 (064)
+    [Fact]
+    public void Scroll_ThatChangesNothing_WithTabListOpen_WritesNothing_AndKeepsTheTabList()
+    {
+        PopupRun run = PrefixRun();
+        run.Console.Input.PushText("pr");
+        run.Console.Input.PushKey(ConsoleKey.Tab);
+        run.Console.Input.PushKey(ConsoleKey.PageDown);
+        run.Console.Input.PushKey(ConsoleKey.PageDown);
+        run.Console.Input.PushKey(ConsoleKey.Enter);
+
+        int calls = 0;
+        int afterFirst = -1;
+        int beforeSecond = -1;
+        string? line = run.Editor.ReadLine(5, 23, 70, run.Area, scroll: (_, _) =>
+        {
+            calls++;
+            if (calls == 1)
+            {
+                afterFirst = run.Console.Output.Length;
+                return false;
+            }
+
+            beforeSecond = run.Console.Output.Length;
+            return true;
+        });
+
+        Assert.Equal("pr", line);
+        Assert.Equal(2, calls);
+        Assert.Equal("3 commands start with pr", run.ScreenAfterKey(3)[HintRow]);
+
+        // AC-3: the no-op scroll wrote no bytes and nothing cleared the screen.
+        Assert.Equal(afterFirst, beforeSecond);
+        Assert.DoesNotContain("\u001b[2J", run.Console.Output);
+
+        // AC-4: the scroll that changed something redraws the popup as the Tab list, before the
+        // input line (after it, Enter closes the popup and restores its rows).
+        Dictionary<int, string> screen = [];
+        foreach (AnsiWrite write in AnsiWrites.Parse(run.Console.Output[beforeSecond..]))
+        {
+            if (write.Row == 23 && write.Column == 5)
+            {
+                break;
+            }
+
+            if (write.Column == 1)
+            {
+                screen[write.Row] = write.Text.TrimEnd();
+            }
+        }
+
+        Assert.Equal("3 commands start with pr", screen[HintRow]);
+        Assert.StartsWith("prev", screen[18]);
+        Assert.StartsWith("print", screen[19]);
+        Assert.StartsWith("project", screen[20]);
+        Assert.DoesNotContain(screen.Values, t => t.StartsWith("ps ", StringComparison.Ordinal));
+    }
+
     // AC-8 (037)
     [Fact]
     public void Scroll_WithPopupOpen_DrawsThePopupAgain_AfterTheScroll()
