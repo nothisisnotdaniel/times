@@ -2557,7 +2557,8 @@ public sealed class AppTests : IDisposable
         int line = Array.FindIndex(bottom, l => l.Contains("Data folder:", StringComparison.Ordinal));
         Assert.True(line > 0);
         Assert.Equal($"Data folder: {data.Path}", bottom[line]);
-        Assert.StartsWith("╰", bottom[line - 1]);
+        Assert.Equal($"Version: {AppVersion.Current}", bottom[line - 1]);
+        Assert.StartsWith("╰", bottom[line - 2]);
         string shown = string.Join('\n', screens.SelectMany(screen => screen));
         foreach (Command command in CommandRegistry.CreateDefault().Commands.Concat([new Command("arrive", "a", "", _ => CommandResult.None)]))
         {
@@ -2565,6 +2566,26 @@ public sealed class AppTests : IDisposable
         }
 
         Assert.DoesNotContain("(from TIMES_DATA_DIR)", output);
+    }
+
+    // AC-7 (070)
+    [Fact]
+    public void Help_ShowsGreyVersion_DirectlyAboveDataFolder_WhichStaysLast()
+    {
+        string ansi = RunHelp(data.Path, folderFromEnvironment: false, ansi: true);
+
+        string[] bottom = TopScreens(ansi, 1)[^1];
+        int last = Array.FindLastIndex(bottom, l => l.Length > 0);
+        Assert.True(last > 0);
+        Assert.Equal($"Data folder: {data.Path}", bottom[last]);
+        Assert.Equal($"Version: {AppVersion.Current}", bottom[last - 1]);
+        Assert.Matches(@"\x1b\[(90|38;5;8)mVersion:\x1b\[0m " + Regex.Escape(AppVersion.Current), ansi);
+
+        string plain = RunHelp(data.Path, folderFromEnvironment: false);
+        int version = plain.IndexOf($"Version: {AppVersion.Current}", StringComparison.Ordinal);
+        int folder = plain.IndexOf("Data folder:", StringComparison.Ordinal);
+        Assert.True(version >= 0, "help shows no Version line");
+        Assert.True(version < folder, "Version must come before Data folder");
     }
 
     // AC-5

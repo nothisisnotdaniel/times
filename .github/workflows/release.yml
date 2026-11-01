@@ -1,0 +1,61 @@
+# Builds, tests and packs Times as a .NET tool when a version tag vX.Y.Z is pushed,
+# then attaches the .nupkg to a GitHub release for that tag.
+# The tag is the only source of the release version. It reaches the shell only through
+# the GITHUB_REF_NAME environment variable, never through ${{ }} inside a run: script.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      # The tests run on the normal build (no version override): some tests pin the csproj version.
+      - name: Test
+        run: dotnet test -c Release
+
+      # ValidateVersion in Times.csproj fails the pack unless $VERSION is SemVer.
+      - name: Pack
+        run: dotnet pack src/Times -c Release -p:Version="$VERSION"
+
+      - name: Smoke check the packed tool
+        run: |
+          REPO="$GITHUB_WORKSPACE"
+          # Outside the repo, so its nuget.config does not apply; the local folder is added explicitly.
+          cd "$RUNNER_TEMP"
+          export PATH="$HOME/.dotnet/tools:$PATH"
+          dotnet tool install --global --add-source "$REPO/nupkg" --version "$VERSION" Times
+          ACTUAL="$(tm --version)"
+          if [ "$ACTUAL" != "Times $VERSION" ]; then
+            echo "tm --version printed '$ACTUAL', expected 'Times $VERSION'" >&2
+            exit 1
+          fi
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PRERELEASE=""
+          case "$VERSION" in
+            *-*) PRERELEASE="--prerelease" ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" "nupkg/Times.$VERSION.nupkg" --title "Times $VERSION" --generate-notes $PRERELEASE

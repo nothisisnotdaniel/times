@@ -622,7 +622,7 @@ internal sealed class App
             // The data-folder footer belongs to the app, not to the shared registry, so it is passed in here.
             if (string.Equals(command.Name, "help", StringComparison.OrdinalIgnoreCase))
             {
-                return new CommandResult(registry.RenderHelp(RenderDataFolder()), hideQuicklist: true);
+                return new CommandResult(registry.RenderHelp(RenderHelpFooter()), hideQuicklist: true);
             }
 
             return command.Handler(argument);
@@ -634,6 +634,10 @@ internal sealed class App
     }
 
     private static CommandResult Hint(string markup) => CommandResult.Error(markup);
+
+    // The lines under the help table: the running version, then the data folder (always last).
+    private IRenderable RenderHelpFooter() =>
+        new Rows(new Markup($"[grey]Version:[/] {Markup.Escape(AppVersion.Current)}"), RenderDataFolder());
 
     // The line under the help table, so the user can always tell where the day files are.
     private Markup RenderDataFolder()
