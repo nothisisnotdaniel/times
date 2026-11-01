@@ -45,8 +45,8 @@ internal enum ScrollStep
 /// </para>
 /// <para>
 /// Tab completes a unique command prefix; on an empty line it does nothing. When 2 or more names
-/// start with the typed prefix, Tab extends the line to their longest common prefix and enters the
-/// "Tab list" state: the popup (reopened even after Esc) lists only
+/// start with the typed prefix, Tab extends the line to their longest common prefix and
+/// enters the "Tab list" state: the popup (reopened even after Esc) lists only
 /// <see cref="CommandRegistry.StartingWith"/> for the line, with a grey footer <c>N commands start
 /// with …</c>. The next key of any kind leaves that state, and the popup goes back to
 /// <see cref="CommandRegistry.Match"/>. Without a popup area only the line is extended.
