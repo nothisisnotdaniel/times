@@ -281,6 +281,11 @@ public class DayStoreTests
     [InlineData("{\"entries\":[],\"arrival\":\"08:15\"}")]
     [InlineData("{\"leaving\":\"17:30\",\"entries\":[]}")]
     [InlineData("{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:15\"}]} []")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"abc\u202Edef\"}]}")] // AC-8 (056)
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"abc\u200Bdef\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"abc\\u202edef\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"abc\\ud800def\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"abc\\udc00def\"}]}")]
     public void Load_InvalidFile_ThrowsInvalidData(string contents)
     {
         using TempFolder temp = new TempFolder();

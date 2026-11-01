@@ -54,6 +54,11 @@ public class ProjectStoreTests
     [InlineData("{not json")]
     [InlineData("[]")]
     [InlineData("{\"projects\":[{\"workItem\":0,\"title\":\"A\"}]}")]
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"abc\u202Edef\"}]}")] // AC-7 (056)
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"abc\u200Bdef\"}]}")]
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"abc\\u202edef\"}]}")]
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"abc\\ud800def\"}]}")]
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"abc\\udc00def\"}]}")]
     public void Load_InvalidFile_ThrowsInvalidData_AndLeavesFileUnchanged(string contents)
     {
         using TempFolder temp = new TempFolder();

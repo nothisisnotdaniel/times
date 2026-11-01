@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace Times.Tests;
 
@@ -136,5 +137,114 @@ public class ProjectListTests
         string json = "{\"projects\":[{\"workItem\":1,\"title\":\"" + new string('x', 201) + "\"}]}";
 
         Assert.ThrowsAny<JsonException>(() => ProjectList.FromJson(json));
+    }
+
+    // Safer titles and names (job 056) ---------------------------------------------------------
+
+    // Cases are written with \u escapes and unescaped in the test, so lone surrogates never go
+    // through xUnit's test case serialization.
+    private static string Unescape(string escaped) => Regex.Unescape(escaped);
+
+    // AC-1 (056)
+    [Theory]
+    [InlineData("\\u202E")]
+    [InlineData("\\u200B")]
+    [InlineData("\\u200C")]
+    [InlineData("\\u200D")]
+    [InlineData("\\u2060")]
+    [InlineData("\\uFEFF")]
+    [InlineData("\\u00AD")]
+    [InlineData("\\u2066")]
+    [InlineData("\\uDB40\\uDC41")]
+    [InlineData("\\uD800")]
+    [InlineData("\\uDC00")]
+    [InlineData("\\uDC00\\uD800")]
+    [InlineData("ok\\uD800")]
+    [InlineData("\\uD800ok")]
+    public void HasFormatOrBrokenCharacters_True(string escaped)
+    {
+        Assert.True(ProjectList.HasFormatOrBrokenCharacters(Unescape(escaped)));
+    }
+
+    // AC-1 (056)
+    [Theory]
+    [InlineData("Website relaunch")]
+    [InlineData("Caf\\u00E9 \\u00DCn\\u00EFcode")]
+    [InlineData("\\u65E5\\u672C\\u8A9E")]
+    [InlineData("Launch \\uD83D\\uDE80")]
+    [InlineData("")]
+    public void HasFormatOrBrokenCharacters_False(string escaped)
+    {
+        Assert.False(ProjectList.HasFormatOrBrokenCharacters(Unescape(escaped)));
+    }
+
+    // AC-1 (056): the U+E0041 tag character is checked as one code point, not as two surrogates.
+    [Fact]
+    public void HasFormatOrBrokenCharacters_TagCharacter_IsCheckedPerCodePoint()
+    {
+        string tag = char.ConvertFromUtf32(0xE0041);
+
+        Assert.Equal("\uDB40\uDC41", tag);
+        Assert.True(ProjectList.HasFormatOrBrokenCharacters("a" + tag + "b"));
+    }
+
+    // AC-2 (056)
+    [Theory]
+    [InlineData("abc\\u202Edef")]
+    [InlineData("abc\\u200Bdef")]
+    [InlineData("abc\\u200Cdef")]
+    [InlineData("abc\\u200Ddef")]
+    [InlineData("abc\\u2060def")]
+    [InlineData("abc\\uFEFFdef")]
+    [InlineData("abc\\u00ADdef")]
+    [InlineData("abc\\u2066def")]
+    [InlineData("abc\\uDB40\\uDC41def")]
+    [InlineData("abc\\uD800def")]
+    [InlineData("abc\\uDC00def")]
+    [InlineData("abc\\uDC00\\uD800def")]
+    [InlineData("\\u200B")]
+    public void IsValidTitle_FormatOrBroken_IsFalse_AndAddThrows(string escaped)
+    {
+        string title = Unescape(escaped);
+
+        Assert.False(ProjectList.IsValidTitle(title));
+        Assert.Throws<ArgumentException>(() => ProjectList.Empty.Add(new Project(1, title)));
+    }
+
+    // AC-2 (056)
+    [Theory]
+    [InlineData("Website relaunch")]
+    [InlineData("Caf\\u00E9 \\u00DCn\\u00EFcode")]
+    [InlineData("\\u65E5\\u672C\\u8A9E")]
+    [InlineData("Launch \\uD83D\\uDE80")]
+    public void IsValidTitle_OrdinaryUnicode_IsTrue_AndAddKeepsIt(string escaped)
+    {
+        string title = Unescape(escaped);
+
+        Assert.True(ProjectList.IsValidTitle(title));
+        Assert.Equal(title, ProjectList.Empty.Add(new Project(1, title)).Projects[0].Title);
+    }
+
+    // AC-6 (056)
+    [Theory]
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"abc\u202Edef\"}]}")]
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"abc\u200Bdef\"}]}")]
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"abc\\u202edef\"}]}")]
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"abc\\ud800def\"}]}")]
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"abc\\udc00def\"}]}")]
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"\\ud800\"}]}")]
+    public void FromJson_FormatOrBrokenTitle_ThrowsJsonException(string json)
+    {
+        JsonException ex = Assert.Throws<JsonException>(() => ProjectList.FromJson(json));
+        Assert.Contains("control, formatting or broken characters", ex.Message);
+    }
+
+    // AC-6 (056): a valid escaped pair still loads.
+    [Fact]
+    public void FromJson_EscapedEmojiPair_Loads()
+    {
+        ProjectList list = ProjectList.FromJson("{\"projects\":[{\"workItem\":1,\"title\":\"Launch \\ud83d\\ude80\"}]}");
+
+        Assert.Equal("Launch \uD83D\uDE80", list.Projects[0].Title);
     }
 }

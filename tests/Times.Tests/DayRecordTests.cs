@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace Times.Tests;
 
@@ -905,5 +906,57 @@ public class DayRecordTests
         Assert.Equal(Hm(4, 30), record.WorkTime());
         Assert.Equal(Hm(0, 30), record.BreakTime());
         Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(4, 0), Hm(3, 30)], record.TimeLeft());
+    }
+
+    // Safer titles and names (job 056) ---------------------------------------------------------
+
+    // AC-2 (056): escaped cases are unescaped in the test, so lone surrogates never go through
+    // xUnit's test case serialization.
+    [Theory]
+    [InlineData("abc\\u202Edef")]
+    [InlineData("abc\\u200Bdef")]
+    [InlineData("abc\\u200Cdef")]
+    [InlineData("abc\\u200Ddef")]
+    [InlineData("abc\\u2060def")]
+    [InlineData("abc\\uFEFFdef")]
+    [InlineData("abc\\u00ADdef")]
+    [InlineData("abc\\u2066def")]
+    [InlineData("abc\\uDB40\\uDC41def")]
+    [InlineData("abc\\uD800def")]
+    [InlineData("abc\\uDC00def")]
+    [InlineData("abc\\uDC00\\uD800def")]
+    [InlineData("\\u200B")]
+    public void Checkpoint_FormatOrBrokenName_Throws(string escaped)
+    {
+        string name = Regex.Unescape(escaped);
+
+        Assert.Throws<ArgumentException>(() => new DayEntry(EntryKind.Checkpoint, new TimeOnly(9, 0), name, null));
+    }
+
+    // AC-2 (056)
+    [Theory]
+    [InlineData("Website relaunch")]
+    [InlineData("Caf\\u00E9 \\u00DCn\\u00EFcode")]
+    [InlineData("\\u65E5\\u672C\\u8A9E")]
+    [InlineData("Launch \\uD83D\\uDE80")]
+    public void Checkpoint_OrdinaryUnicodeName_IsKept(string escaped)
+    {
+        string name = Regex.Unescape(escaped);
+
+        Assert.Equal(name, Checkpoint(9, 0, name).Name);
+    }
+
+    // AC-6 (056)
+    [Theory]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"abc\u202Edef\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"abc\u200Bdef\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"abc\\u202edef\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"abc\\ud800def\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"abc\\udc00def\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"\\ud800\"}]}")]
+    public void FromJson_FormatOrBrokenName_ThrowsJsonException(string json)
+    {
+        JsonException ex = Assert.Throws<JsonException>(() => DayRecord.FromJson(json));
+        Assert.Contains("control, formatting or broken characters", ex.Message);
     }
 }
