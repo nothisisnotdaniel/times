@@ -71,3 +71,4 @@ Write one feature per line, in plain language.
 - [?] review-security 2 — `DayStore.Load` hardening is new behaviour and needs its own job (follow-up). (from 058-bounded-projects-read)
 - [?] review-code 1 — the reviewer accepts `UnreadableProjectsNextStep` as it is. The longer name says what the step is for, and renaming it would only shuffle the tests. (from 059-read-error-next-step)
 - [?] review-ux 1 — the spec accepts cropping hint rows on narrow terminals, and the panel line still shows the next step. Wrapping the hint row would change the layout and needs its own job. (from 059-read-error-next-step)
+- [?] review-ux 1 — the reviewer says no change is needed; plain-text tests already check that the cut row is exactly the panel width. (from 060-panel-polish)
