@@ -59,4 +59,5 @@ Write one feature per line, in plain language.
 - [ ] Break line polish: give the yellow `Breaks too short` warning a leading `!` so it stands out on monochrome terminals, and indent the break lines so they line up with the entry rows.
 - [ ] Lunch gap counts: count the gap between a leaving and the next arrival on the same day as break time in the break check, so a lunch booked as leave and return satisfies the required break. Time left stays as it is.
 - [ ] Walk tidy-up: walk the day only once per render and drop the extra arrays in `DayRecord.Walk()`. No behaviour changes.
+- [ ] Split Order loop: break the long `Order` loop in `DayRecord.cs` into smaller named steps (find same-time groups, move checkpoints after the last opener). No behaviour changes.
 - [ ] Terminal check: verify in a real terminal (macOS Terminal, Windows Terminal) that the full-height layout doesn't scroll by one row and the cursor sits in the input box; fix it if it does.
