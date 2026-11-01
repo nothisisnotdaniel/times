@@ -126,7 +126,8 @@ internal sealed class App
             .BorderColor(Color.Grey)
             .AddColumn("[grey]Work item[/]")
             .AddColumn("[grey]Name[/]")
-            .AddColumn("[grey]Time[/]");
+            .AddColumn("[grey]Time[/]")
+            .Caption(Markup.Escape(DayView.Heading(day)), new Style(Color.Grey));
 
         foreach (CheckpointGroup group in groups)
         {

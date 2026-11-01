@@ -5093,4 +5093,79 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, exitCode);
         Assert.Equal(["a quit rec b"], calls);
     }
+
+
+    // Job 069 ------------------------------------------------------------------------------
+
+    /// <summary>The first non-empty line below the summary table's bottom border (the one with column joins), trimmed.</summary>
+    private static string SummaryCaption(string[] frame)
+    {
+        int bottom = Array.FindIndex(frame, l => l.TrimStart().StartsWith('╰') && l.Contains('┴', StringComparison.Ordinal));
+        Assert.True(bottom > 0, "no summary table bottom border in the frame");
+        string? caption = frame.Skip(bottom + 1).FirstOrDefault(l => l.Trim().Length > 0);
+        Assert.NotNull(caption);
+        return caption.Trim();
+    }
+
+    // AC-1, AC-3, AC-6
+    [Fact]
+    public void SummaryCaption_OnToday_IsTheDayHeadingBelowTheTable()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), SummaryDay);
+
+        (int exitCode, string output) = RunCommands("summary", "quit");
+
+        Assert.Equal(0, exitCode);
+        string[] frame = LastLayout(output);
+        AssertLayout(frame);
+        Assert.Equal(string.Empty, frame[^4].Trim());
+        Assert.Equal("Tuesday, 2026-10-27", SummaryCaption(frame));
+        Assert.Equal(DayView.Heading(new DateOnly(2026, 10, 27)), SummaryCaption(frame));
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ #1234 +│ Review, Fix +│ 9:00 +│"));
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ +│ \[x\] +│ 0:30 +│"));
+    }
+
+    // AC-2, AC-3
+    [Theory]
+    [InlineData("prev", "2026-10-26", "Monday, 2026-10-26")]
+    [InlineData("next", "2026-10-28", "Wednesday, 2026-10-28")]
+    public void SummaryCaption_FollowsTheViewedDay(string move, string file, string expected)
+    {
+        File.WriteAllText(DayFile(file), SummaryDay);
+
+        (int exitCode, string output) = RunCommands(move, "summary", "quit");
+
+        Assert.Equal(0, exitCode);
+        string[] frame = LastLayout(output);
+        AssertLayout(frame);
+        Assert.Equal(expected, SummaryCaption(frame));
+        Assert.Equal(DayView.Heading(DateOnly.Parse(file, System.Globalization.CultureInfo.InvariantCulture)), SummaryCaption(frame));
+    }
+
+    // AC-4
+    [Fact]
+    public void SummaryCaption_IsGrey()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), SummaryDay);
+        File.WriteAllText(DayFile("2026-10-26"), SummaryDay);
+
+        Assert.Matches(@"\x1b\[(90|38;5;8)mTuesday, 2026-10-27\x1b\[0m", RunAnsi("summary"));
+        Assert.Matches(@"\x1b\[(90|38;5;8)mMonday, 2026-10-26\x1b\[0m", RunAnsiCommands("prev", "summary"));
+    }
+
+    // AC-5
+    [Fact]
+    public void SummaryCaption_DayWithoutCheckpoints_ShowsNoCaptionAndNoTable()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}");
+
+        (_, string output) = RunCommands("summary", "quit");
+
+        string[] frame = LastLayout(output);
+        Assert.Contains(frame, l => l.Contains("No checkpoints on this day.", StringComparison.Ordinal));
+        Assert.DoesNotContain(frame, l => l.Contains('┴', StringComparison.Ordinal));
+        Assert.DoesNotContain(frame, l => l.Contains("Work item", StringComparison.Ordinal));
+        // The date shows once: in the day view heading only.
+        Assert.Single(frame, l => l.Contains("2026-10-27", StringComparison.Ordinal));
+    }
 }
