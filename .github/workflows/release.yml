@@ -1,11 +1,16 @@
-# Builds, tests and packs Times as a .NET tool when a version tag vX.Y.Z is pushed,
-# then attaches the .nupkg to a GitHub release for that tag.
-# The tag is the only source of the release version. It reaches the shell only through
-# the GITHUB_REF_NAME environment variable, never through ${{ }} inside a run: script.
+# Builds, tests and packs Times as a .NET tool, then attaches the .nupkg to a GitHub release.
+# - A push to develop makes a prerelease X.Y.(Z+1)-develop.<run number>, one patch above the
+#   highest release tag (.github/scripts/develop-version.sh).
+# - A pushed version tag vX.Y.Z makes the release for that tag. The tag's commit must be on main,
+#   and -develop tags are refused (those are only made by develop builds).
+# Refs and the run number reach the shell only through environment variables (GITHUB_REF_NAME,
+# GITHUB_REF_TYPE, GITHUB_RUN_NUMBER, GITHUB_SHA), never through ${{ }} inside a run: script.
 name: Release
 
 on:
   push:
+    branches:
+      - "develop"
     tags:
       - "v*"
 
@@ -21,21 +26,43 @@ jobs:
         with:
           # No later step needs git credentials (gh uses GH_TOKEN), so the write token is not left in .git/config.
           persist-credentials: false
+          # All history and tags: develop builds read the release tags, and release tags are
+          # checked against origin/main (without it the check fails rather than passes).
+          fetch-depth: 0
 
       - name: Set up .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.0.x"
 
-      - name: Version from tag
+      - name: Version
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          # Check the tag where it enters, before it reaches msbuild (-p: would split on ';').
+          if [ "$GITHUB_REF_TYPE" = "branch" ]; then
+            # Push to develop: one patch above the highest release tag, as a prerelease.
+            VERSION="$(git tag --list 'v*' | sh .github/scripts/develop-version.sh "$GITHUB_RUN_NUMBER")"
+            TAG="v$VERSION"
+          else
+            # Pushed tag: refuse develop tags and tags whose commit is not on main.
+            case "$GITHUB_REF_NAME" in
+              *-develop*)
+                echo "Tag '$GITHUB_REF_NAME' is a develop tag; only develop builds make those" >&2
+                exit 1
+                ;;
+            esac
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+              echo "Tag '$GITHUB_REF_NAME' is not on main; release tags must be made on main" >&2
+              exit 1
+            fi
+            VERSION="${GITHUB_REF_NAME#v}"
+            TAG="$GITHUB_REF_NAME"
+          fi
+          # Check the version where it enters, before it reaches msbuild (-p: would split on ';').
           if ! printf '%s' "$VERSION" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'; then
-            echo "Tag '$GITHUB_REF_NAME' is not v plus a SemVer version" >&2
+            echo "Version '$VERSION' (ref '$GITHUB_REF_NAME') is not SemVer" >&2
             exit 1
           fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
 
       # The tests run on the normal build (no version override): some tests pin the csproj version.
       - name: Test
@@ -77,4 +104,4 @@ jobs:
           case "$VERSION" in
             *-*) PRERELEASE="--prerelease" ;;
           esac
-          gh release create "$GITHUB_REF_NAME" "nupkg/Times.$VERSION.nupkg" --title "Times $VERSION" --generate-notes $PRERELEASE
+          gh release create "$TAG" "nupkg/Times.$VERSION.nupkg" --title "Times $VERSION" --generate-notes --target "$GITHUB_SHA" $PRERELEASE

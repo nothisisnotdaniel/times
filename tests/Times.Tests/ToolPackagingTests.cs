@@ -8,6 +8,7 @@ public sealed class ToolPackagingTests
 {
     private const string NugetOrg = "https://api.nuget.org/v3/index.json";
     private const string LocalFolder = "./nupkg";
+    private const string SemVerGrep = "grep -Eq '^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$'";
 
     private static readonly string RepoRoot = FindRepoRoot();
 
@@ -100,18 +101,27 @@ public sealed class ToolPackagingTests
         Assert.Contains(".github/workflows/release.yml", section, StringComparison.Ordinal);
     }
 
-    // AC-1 (070)
+    // AC-1 (071, replaces 070 "ReleaseWorkflow_TriggersOnlyOnVersionTagPush")
     [Fact]
-    public void ReleaseWorkflow_TriggersOnlyOnVersionTagPush()
+    public void ReleaseWorkflow_TriggersOnDevelopPushAndVersionTagPush()
     {
         string workflow = ReadWorkflow();
 
         string on = TopLevelBlock(workflow, "on");
         List<string> keys = ChildLines(on).Select(line => line.Trim()).ToList();
-        Assert.Equal(["push:", "tags:", "- \"v*\""], keys);
-        Assert.DoesNotContain("branches", on, StringComparison.Ordinal);
+        Assert.Equal(["push:", "branches:", "- \"develop\"", "tags:", "- \"v*\""], keys);
         Assert.DoesNotContain("pull_request", workflow, StringComparison.Ordinal);
         Assert.DoesNotContain("workflow_dispatch", workflow, StringComparison.Ordinal);
+    }
+
+    // AC-1 (071): full history, so the tags and origin/main are there.
+    [Fact]
+    public void ReleaseWorkflow_CheckoutFetchesFullHistory()
+    {
+        string[] step = CheckoutStep();
+
+        Assert.Contains(step, line => line.Trim() == "fetch-depth: 0");
+        Assert.Contains(step, line => line.Trim() == "persist-credentials: false");
     }
 
     // AC-1 (070)
@@ -189,7 +199,7 @@ public sealed class ToolPackagingTests
         int release = all.IndexOf("gh release create", StringComparison.Ordinal);
         Assert.True(pack < check, "the smoke check must run after dotnet pack");
         Assert.True(check < release, "gh release create must run after the smoke check");
-        Assert.Contains("gh release create \"$GITHUB_REF_NAME\" \"nupkg/Times.$VERSION.nupkg\" --title \"Times $VERSION\" --generate-notes", all, StringComparison.Ordinal);
+        Assert.Contains("gh release create \"$TAG\" \"nupkg/Times.$VERSION.nupkg\" --title \"Times $VERSION\" --generate-notes --target \"$GITHUB_SHA\" $PRERELEASE", all, StringComparison.Ordinal);
         Assert.Contains("--prerelease", all, StringComparison.Ordinal);
         Assert.Contains("GH_TOKEN: ${{ github.token }}", ReadWorkflow(), StringComparison.Ordinal);
     }
@@ -219,12 +229,8 @@ public sealed class ToolPackagingTests
     [Fact]
     public void ReleaseWorkflow_CheckoutDoesNotPersistCredentials()
     {
-        string[] lines = ReadWorkflow().Split('\n');
+        string[] step = CheckoutStep();
 
-        int checkout = Array.FindIndex(lines, line => line.Trim() == "uses: actions/checkout@v4");
-        Assert.True(checkout >= 0, "workflow has no actions/checkout step");
-        int next = Array.FindIndex(lines, checkout + 1, line => line.TrimStart().StartsWith("- ", StringComparison.Ordinal));
-        string[] step = lines[(checkout + 1)..(next < 0 ? lines.Length : next)];
         Assert.Contains(step, line => line.Trim() == "persist-credentials: false");
     }
 
@@ -234,11 +240,15 @@ public sealed class ToolPackagingTests
     {
         string script = Assert.Single(RunScripts(ReadWorkflow()), s => s.Contains("GITHUB_REF_NAME#v", StringComparison.Ordinal));
 
-        int check = script.IndexOf("grep -Eq '^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$'", StringComparison.Ordinal);
+        int check = script.IndexOf(SemVerGrep, StringComparison.Ordinal);
         int export = script.IndexOf(">> \"$GITHUB_ENV\"", StringComparison.Ordinal);
         Assert.True(check >= 0, "no SemVer check on the tag");
         Assert.True(check < export, "the tag must be checked before VERSION is exported");
         Assert.Contains("exit 1", script[check..export], StringComparison.Ordinal);
+        Assert.Single(Regex.Matches(script, Regex.Escape(SemVerGrep)));
+        Assert.Equal(script.LastIndexOf(SemVerGrep, StringComparison.Ordinal), check);
+        Assert.Contains("echo \"VERSION=$VERSION\" >> \"$GITHUB_ENV\"", script[check..], StringComparison.Ordinal);
+        Assert.Contains("echo \"TAG=$TAG\" >> \"$GITHUB_ENV\"", script[check..], StringComparison.Ordinal);
     }
 
     // AC-4 (070)
@@ -497,6 +507,183 @@ public sealed class ToolPackagingTests
         Assert.DoesNotContain("int.Parse(", source, StringComparison.Ordinal);
         Assert.DoesNotContain("X10", source, StringComparison.Ordinal);
         Assert.DoesNotContain("keys[1] == 'M'", source, StringComparison.Ordinal);
+    }
+
+    // AC-2 (071)
+    [Theory]
+    [InlineData("v0.1.0-beta\n", "12", "0.1.1-develop.12", true)]
+    [InlineData("v0.1.0\n", "12", "0.1.1-develop.12", true)]
+    [InlineData("v0.1.0-beta\nv0.1.0\nv0.1.1-develop.5\n", "12", "0.1.1-develop.12", true)]
+    [InlineData("v0.2.0\nv0.10.0\nv0.9.3\n", "12", "0.10.1-develop.12", true)]
+    [InlineData("v1.2\nvx\n", "12", "0.0.1-develop.12", true)]
+    [InlineData("", "12", "0.0.1-develop.12", true)]
+    [InlineData("v0.1.0\n", "0", "", false)]
+    [InlineData("v0.1.0\n", "abc", "", false)]
+    [InlineData("v0.1.0\n", "12;x", "", false)]
+    [InlineData("v0.1.0\n", "", "", false)]
+    public async Task DevelopVersionScript_PrintsNextPatchDevelopVersion(string tags, string build, string expected, bool succeeds)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        ProcessStartInfo startInfo = new ProcessStartInfo("bash")
+        {
+            WorkingDirectory = RepoRoot,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        startInfo.ArgumentList.Add(Path.Combine(".github", "scripts", "develop-version.sh"));
+        startInfo.ArgumentList.Add(build);
+
+        using Process process = Process.Start(startInfo)!;
+        await process.StandardInput.WriteAsync(tags);
+        process.StandardInput.Close();
+        Task<string> error = process.StandardError.ReadToEndAsync();
+        string output = await process.StandardOutput.ReadToEndAsync();
+        await error;
+        await process.WaitForExitAsync();
+
+        Assert.Equal(expected, output.Trim());
+        if (succeeds)
+        {
+            Assert.True(process.ExitCode == 0, "develop-version.sh exit " + process.ExitCode + ": " + await error);
+        }
+        else
+        {
+            Assert.NotEqual(0, process.ExitCode);
+        }
+    }
+
+    // AC-3 (071)
+    [Fact]
+    public void ReleaseWorkflow_DevelopPushComputesVersionFromTags()
+    {
+        string script = VersionScript();
+
+        int branch = script.IndexOf("if [ \"$GITHUB_REF_TYPE\" = \"branch\" ]; then", StringComparison.Ordinal);
+        int compute = script.IndexOf("VERSION=\"$(git tag --list 'v*' | sh .github/scripts/develop-version.sh \"$GITHUB_RUN_NUMBER\")\"", StringComparison.Ordinal);
+        int tag = script.IndexOf("TAG=\"v$VERSION\"", StringComparison.Ordinal);
+        int otherwise = script.IndexOf("else", branch, StringComparison.Ordinal);
+        int fromRef = script.IndexOf("VERSION=\"${GITHUB_REF_NAME#v}\"", StringComparison.Ordinal);
+        int refTag = script.IndexOf("TAG=\"$GITHUB_REF_NAME\"", StringComparison.Ordinal);
+        int check = script.IndexOf(SemVerGrep, StringComparison.Ordinal);
+        Assert.True(branch >= 0, "no GITHUB_REF_TYPE branch test");
+        Assert.True(branch < compute && compute < tag && tag < otherwise, "develop branch must compute VERSION and TAG");
+        Assert.True(otherwise < fromRef && fromRef < refTag, "tag push must take VERSION and TAG from the ref");
+        Assert.True(refTag < check, "the SemVer check must come after both branches");
+        Assert.True(File.Exists(Path.Combine(RepoRoot, ".github", "scripts", "develop-version.sh")));
+    }
+
+    // AC-4 (071)
+    [Fact]
+    public void ReleaseWorkflow_TagPushRefusesDevelopTagsAndTagsNotOnMain()
+    {
+        List<string> scripts = RunScripts(ReadWorkflow());
+        string all = string.Join("\n", scripts);
+        string script = VersionScript();
+
+        int otherwise = script.IndexOf("else", StringComparison.Ordinal);
+        int develop = script.IndexOf("*-develop*)", StringComparison.Ordinal);
+        int main = script.IndexOf("if ! git merge-base --is-ancestor \"$GITHUB_SHA\" origin/main; then", StringComparison.Ordinal);
+        int fromRef = script.IndexOf("VERSION=\"${GITHUB_REF_NAME#v}\"", StringComparison.Ordinal);
+        Assert.True(develop > otherwise, "no -develop refusal in the tag branch");
+        Assert.True(main > develop, "no main-ancestor check after the -develop refusal");
+        Assert.True(fromRef > main, "both checks must run before VERSION is taken from the tag");
+        Assert.Contains(">&2", script[develop..main], StringComparison.Ordinal);
+        Assert.Contains("exit 1", script[develop..main], StringComparison.Ordinal);
+        Assert.Contains(">&2", script[main..fromRef], StringComparison.Ordinal);
+        Assert.Contains("exit 1", script[main..fromRef], StringComparison.Ordinal);
+
+        int test = all.IndexOf("dotnet test", StringComparison.Ordinal);
+        Assert.True(all.IndexOf("--is-ancestor", StringComparison.Ordinal) < test, "the main check must run before dotnet test");
+        Assert.True(all.IndexOf("*-develop*)", StringComparison.Ordinal) < test, "the -develop check must run before dotnet test");
+    }
+
+    // AC-6 (071)
+    [Fact]
+    public void ReleaseWorkflow_MarksVersionsWithHyphenAsPrerelease()
+    {
+        string release = Assert.Single(RunScripts(ReadWorkflow()), script => script.Contains("gh release create", StringComparison.Ordinal));
+
+        Assert.Contains("case \"$VERSION\" in", release, StringComparison.Ordinal);
+        Assert.Contains("*-*) PRERELEASE=\"--prerelease\" ;;", release, StringComparison.Ordinal);
+        Assert.Contains("--target \"$GITHUB_SHA\" $PRERELEASE", release, StringComparison.Ordinal);
+    }
+
+    // AC-7 (071)
+    [Fact]
+    public void Readme_ReleasingDescribesDevelopBuildsThenReleaseFromMain()
+    {
+        string section = ReadmeSection("## Releasing");
+
+        int develop = section.IndexOf("-develop.<run>", StringComparison.Ordinal);
+        Assert.True(develop >= 0, "README '## Releasing' does not describe develop builds");
+        string[] commands =
+        [
+            "git checkout main",
+            "git merge --no-ff develop",
+            "git tag v1.2.3",
+            "git push origin main",
+            "git push origin v1.2.3",
+        ];
+        int at = section.IndexOf("```sh", StringComparison.Ordinal);
+        Assert.True(at > develop, "the release commands must come after the develop builds");
+        foreach (string command in commands)
+        {
+            int next = section.IndexOf("\n" + command + "\n", at, StringComparison.Ordinal);
+            Assert.True(next > at, "'" + command + "' missing or out of order");
+            at = next;
+        }
+
+        string flat = Regex.Replace(section, @"\s+", " ");
+        Assert.Contains("Every push to `develop`", flat, StringComparison.Ordinal);
+        Assert.Contains("prerelease", flat, StringComparison.Ordinal);
+        Assert.Contains("A release tag whose commit is not on `main` fails", flat, StringComparison.Ordinal);
+        Assert.Contains("hand-pushed `-develop` tag", flat, StringComparison.Ordinal);
+    }
+
+    // AC-7 (071)
+    [Fact]
+    public void ClaudeMd_ReleaseWorkflowNoteMentionsDevelopBuildsAndMainOnly()
+    {
+        string claude = File.ReadAllText(Path.Combine(RepoRoot, "CLAUDE.md")).ReplaceLineEndings("\n");
+        int start = claude.IndexOf("`.github/workflows/release.yml`:", StringComparison.Ordinal);
+        Assert.True(start >= 0, "CLAUDE.md has no release.yml layout note");
+        int end = claude.IndexOf("\n  - ", start, StringComparison.Ordinal);
+        string note = end < 0 ? claude[start..] : claude[start..end];
+
+        Assert.Contains("`develop`", note, StringComparison.Ordinal);
+        Assert.Contains("-develop.<run number>", note, StringComparison.Ordinal);
+        Assert.Contains("`main`", note, StringComparison.Ordinal);
+    }
+
+    private static string ReadmeSection(string heading)
+    {
+        string readme = "\n" + File.ReadAllText(Path.Combine(RepoRoot, "README.md")).ReplaceLineEndings("\n");
+        int start = readme.IndexOf("\n" + heading + "\n", StringComparison.Ordinal);
+        Assert.True(start >= 0, "README has no '" + heading + "' section");
+
+        int end = readme.IndexOf("\n## ", start + 1, StringComparison.Ordinal);
+        return end < 0 ? readme[start..] : readme[start..end];
+    }
+
+    private static string VersionScript()
+    {
+        return Assert.Single(RunScripts(ReadWorkflow()), script => script.Contains("GITHUB_REF_TYPE", StringComparison.Ordinal));
+    }
+
+    private static string[] CheckoutStep()
+    {
+        string[] lines = ReadWorkflow().Split('\n');
+
+        int checkout = Array.FindIndex(lines, line => line.Trim() == "uses: actions/checkout@v4");
+        Assert.True(checkout >= 0, "workflow has no actions/checkout step");
+        int next = Array.FindIndex(lines, checkout + 1, line => line.TrimStart().StartsWith("- ", StringComparison.Ordinal));
+        return lines[(checkout + 1)..(next < 0 ? lines.Length : next)];
     }
 
     private static string ReadmeKeysSection()
