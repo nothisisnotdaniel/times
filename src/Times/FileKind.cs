@@ -42,7 +42,7 @@ internal static class FileKind
             return OfWindows(path);
         }
 
-        int? modeOffset = ModeOffset(RuntimeInformation.OSArchitecture);
+        int? modeOffset = CurrentModeOffset;
         if (modeOffset is null)
         {
             return FileKindResult.Other;
@@ -52,7 +52,15 @@ internal static class FileKind
     }
 
     /// <summary>
-    /// The byte offset of <c>st_mode</c> in <c>struct stat</c> on this OS and
+    /// The <c>st_mode</c> offset for this process. The layout libc fills depends on the
+    /// <b>process</b> ABI, not the OS: an x64 process under Rosetta 2 on Apple Silicon (OS arm64)
+    /// gets the legacy x64 <c>struct stat</c>, and an x86 process on x64 Linux the i386 one. So this
+    /// uses <see cref="RuntimeInformation.ProcessArchitecture"/>, never the OS architecture.
+    /// </summary>
+    internal static int? CurrentModeOffset => ModeOffset(RuntimeInformation.ProcessArchitecture);
+
+    /// <summary>
+    /// The byte offset of <c>st_mode</c> in <c>struct stat</c> on this OS for a process built for
     /// <paramref name="architecture"/>, or null where the layout is not known. On macOS it is a
     /// uint16, on Linux a uint32; the type bits fit in the low 16 bits either way.
     /// </summary>

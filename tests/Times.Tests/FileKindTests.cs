@@ -135,4 +135,30 @@ public sealed class FileKindTests
         Assert.Null(FileKind.ModeOffset(Architecture.Arm));
         Assert.Null(FileKind.ModeOffset(Architecture.RiscV64));
     }
+
+    // Review round 1 (security 1): the struct layout follows the process ABI, not the OS.
+    [Fact]
+    public void CurrentModeOffset_FollowsTheProcessArchitecture()
+    {
+        Assert.Equal(FileKind.ModeOffset(RuntimeInformation.ProcessArchitecture), FileKind.CurrentModeOffset);
+        bool supported = (OperatingSystem.IsMacOS() && RuntimeInformation.ProcessArchitecture == Architecture.Arm64)
+            || (OperatingSystem.IsLinux() && RuntimeInformation.ProcessArchitecture is Architecture.X64 or Architecture.Arm64);
+        if (supported)
+        {
+            Assert.NotNull(FileKind.CurrentModeOffset);
+        }
+    }
+
+    // Review round 1 (security 1): an x64 process on Apple Silicon or a 32-bit process fails closed.
+    [Fact]
+    public void ModeOffset_ForAnUnprobedProcessAbi_IsNull()
+    {
+        if (OperatingSystem.IsMacOS())
+        {
+            Assert.Null(FileKind.ModeOffset(Architecture.X64));
+        }
+
+        Assert.Null(FileKind.ModeOffset(Architecture.X86));
+        Assert.Null(FileKind.ModeOffset(Architecture.Arm));
+    }
 }
