@@ -3422,6 +3422,22 @@ public sealed class AppTests : IDisposable
         Assert.Matches(@"5 +Leaving +17:00 +left -0:30", frame);
     }
 
+    // AC-8 (049)
+    [Fact]
+    public void Checkpoint_BookedBeforeBreakEndAtSameTime_ShowsAfterIt_AndIsSavedAfterIt()
+    {
+        (int exitCode, string output) = RunCommands("arrive 8:00", "break 12:00", "cp 12:30 Review", "be 12:30", "quit");
+
+        Assert.Equal(0, exitCode);
+        string frame = LastFrame(output);
+        Assert.Matches(@"3 +Break end +12:30", frame);
+        Assert.Matches(@"4 +Checkpoint +12:30 +Review", frame);
+        Assert.Equal(
+            "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"},{\"kind\":\"breakStart\",\"time\":\"12:00\"},"
+            + "{\"kind\":\"breakEnd\",\"time\":\"12:30\"},{\"kind\":\"checkpoint\",\"time\":\"12:30\",\"name\":\"Review\"}]}",
+            ReadDay("2026-10-27"));
+    }
+
     // AC-10 (036)
     [Fact]
     public void Remove_RemovesBreakAndCheckpointEntries()

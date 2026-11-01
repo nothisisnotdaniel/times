@@ -70,7 +70,11 @@ internal sealed record DayEntry
 }
 
 /// <summary>
-/// One day's bookings: every entry, in ascending time order (ties keep their booking order). Saved
+/// One day's bookings: every entry, in ascending time order. Entries with the same time keep their
+/// booking order, except that an arrival or break end always comes before a checkpoint at the same
+/// time: every checkpoint booked before the last such opener of its time sits directly after that
+/// opener, in booking order. The rule holds for every record, so also after <see cref="Add"/>,
+/// <see cref="ChangeTime"/>, <see cref="RemoveAt"/> and <see cref="FromJson"/>. Saved
 /// as <c>{"entries":[{"kind":"arrival","time":"08:15"},…]}</c>, with times as invariant <c>HH:mm</c>.
 /// A checkpoint also has a <c>"name"</c> and, if it belongs to a project, a <c>"workItem"</c>. The legacy single-value format <c>{"arrival":"08:15","leaving":"17:30"}</c>
 /// still loads; it is converted to entries and written in the new format on the next save.
@@ -98,9 +102,58 @@ internal sealed record DayRecord
 
     public DayRecord(IEnumerable<DayEntry> entries)
     {
-        // OrderBy is stable, so entries with the same time keep the order they were given in.
-        this.entries = entries.OrderBy(e => e.Time).ToArray();
+        this.entries = Order(entries);
     }
+
+    // Sorts by time, stable. Then, within each group with the same time, every checkpoint before the
+    // group's last opener (arrival or break end) moves to directly after it, keeping its relative
+    // order; nothing else moves.
+    private static DayEntry[] Order(IEnumerable<DayEntry> entries)
+    {
+        DayEntry[] sorted = entries.OrderBy(e => e.Time).ToArray();
+        List<DayEntry> result = new List<DayEntry>(sorted.Length);
+        int start = 0;
+        while (start < sorted.Length)
+        {
+            int end = start;
+            while (end < sorted.Length && sorted[end].Time == sorted[start].Time)
+            {
+                end++;
+            }
+
+            int lastOpener = -1;
+            for (int i = start; i < end; i++)
+            {
+                if (IsOpener(sorted[i].Kind))
+                {
+                    lastOpener = i;
+                }
+            }
+
+            List<DayEntry> moved = [];
+            for (int i = start; i < end; i++)
+            {
+                DayEntry entry = sorted[i];
+                if (i < lastOpener && entry.Kind == EntryKind.Checkpoint)
+                {
+                    moved.Add(entry);
+                    continue;
+                }
+
+                result.Add(entry);
+                if (i == lastOpener)
+                {
+                    result.AddRange(moved);
+                }
+            }
+
+            start = end;
+        }
+
+        return result.ToArray();
+    }
+
+    private static bool IsOpener(EntryKind kind) => kind is EntryKind.Arrival or EntryKind.BreakEnd;
 
     public static DayRecord Empty { get; } = new();
 
@@ -236,7 +289,8 @@ internal sealed record DayRecord
 
     /// <summary>
     /// Returns a new record with <paramref name="entry"/> added in time order, after any entries
-    /// with the same time.
+    /// with the same time, except that an added arrival or break end goes before any checkpoints
+    /// already at that time (see <see cref="DayRecord"/>).
     /// </summary>
     public DayRecord Add(DayEntry entry) => new(entries.Append(entry));
 
@@ -254,7 +308,8 @@ internal sealed record DayRecord
     /// <summary>
     /// Returns a new record where entry <paramref name="number"/> (1-based, the numbering of
     /// <see cref="Entries"/>) has <paramref name="time"/> and keeps its kind, name and work item. The result is in time
-    /// order, with the changed entry after any other entries with the same time. Throws
+    /// order, with the changed entry after any other entries with the same time, except that a changed
+    /// arrival or break end goes before any checkpoints at that time (see <see cref="DayRecord"/>). Throws
     /// <see cref="ArgumentOutOfRangeException"/> if there is no such entry.
     /// </summary>
     public DayRecord ChangeTime(int number, TimeOnly time)

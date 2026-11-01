@@ -220,4 +220,23 @@ public sealed class CheckpointSummaryTests
         Assert.False(groups[0].Open);
         Assert.True(groups[1].Open);
     }
+
+    // AC-7 (049)
+    [Fact]
+    public void CheckpointBookedBeforeBreakEnd_AtSameTime_CountsFromTheBreakEnd()
+    {
+        IReadOnlyList<CheckpointGroup> groups = CheckpointSummary.Calculate(
+            DayRecord.Empty
+                .Add(At(EntryKind.Arrival, 8, 0))
+                .Add(At(EntryKind.BreakStart, 12, 0))
+                .Add(Checkpoint(12, 30, "X"))
+                .Add(At(EntryKind.BreakEnd, 12, 30))
+                .Add(At(EntryKind.Leaving, 13, 0)),
+            isToday: false,
+            Evening);
+
+        CheckpointGroup group = Assert.Single(groups);
+        Assert.Equal(["X"], group.Names);
+        Assert.Equal(TimeSpan.FromMinutes(30), group.Total);
+    }
 }
