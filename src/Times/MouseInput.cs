@@ -24,8 +24,7 @@ internal enum MouseInputKind
 /// <summary>
 /// Decodes the keys that follow an Esc into a mouse event. Pure: it only looks at the characters it
 /// is given (the <c>KeyChar</c> of each key), never reads or writes anything. Supports SGR
-/// (<c>ESC [ &lt; b ; x ; y M|m</c>, mode 1006) and legacy X10 (<c>ESC [ M</c> plus 3 characters).
-/// The pointer position is never used.
+/// (<c>ESC [ &lt; b ; x ; y M|m</c>, mode 1006) only. The pointer position is never used.
 /// </summary>
 internal static class MouseInput
 {
@@ -38,9 +37,9 @@ internal static class MouseInput
     private const int WheelDownCode = 65;
 
     /// <summary>
-    /// True once <paramref name="keys"/> (everything after the Esc) is a whole sequence: X10 after
-    /// <c>[M</c> and 3 more characters, any other <c>[…</c> at its final character (<c>@</c>–<c>~</c>),
-    /// or at <see cref="MaxKeys"/> keys. Also true for keys that do not start with <c>[</c>.
+    /// True once <paramref name="keys"/> (everything after the Esc) is a whole sequence: a <c>[…</c>
+    /// at its final character (<c>@</c>–<c>~</c>), or at <see cref="MaxKeys"/> keys. Also true for
+    /// keys that do not start with <c>[</c>.
     /// </summary>
     public static bool IsComplete(string keys)
     {
@@ -54,11 +53,6 @@ internal static class MouseInput
             return true;
         }
 
-        if (keys.Length >= 2 && keys[1] == 'M')
-        {
-            return keys.Length >= 5;
-        }
-
         return keys.Length >= 2 && IsFinal(keys[^1]);
     }
 
@@ -68,11 +62,6 @@ internal static class MouseInput
         if (keys.Length == 0 || keys[0] != '[')
         {
             return MouseInputKind.NotASequence;
-        }
-
-        if (keys.Length >= 2 && keys[1] == 'M')
-        {
-            return keys.Length == 5 ? Button(keys[2] - 32, release: false) : MouseInputKind.Discard;
         }
 
         if (keys.Length < 3 || keys[1] != '<' || keys.Length > MaxKeys || (keys[^1] != 'M' && keys[^1] != 'm'))
@@ -86,15 +75,13 @@ internal static class MouseInput
             return MouseInputKind.Discard;
         }
 
-        foreach (string parameter in parameters)
+        if (!int.TryParse(parameters[0], NumberStyles.None, CultureInfo.InvariantCulture, out int button)
+            || !int.TryParse(parameters[1], NumberStyles.None, CultureInfo.InvariantCulture, out _)
+            || !int.TryParse(parameters[2], NumberStyles.None, CultureInfo.InvariantCulture, out _))
         {
-            if (!int.TryParse(parameter, NumberStyles.None, CultureInfo.InvariantCulture, out _))
-            {
-                return MouseInputKind.Discard;
-            }
+            return MouseInputKind.Discard;
         }
 
-        int button = int.Parse(parameters[0], NumberStyles.None, CultureInfo.InvariantCulture);
         return Button(button, release: keys[^1] == 'm');
     }
 

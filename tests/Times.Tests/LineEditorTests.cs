@@ -1415,9 +1415,7 @@ public class LineEditorTests
     [Theory]
     [InlineData("[<80;1;1M", -1)]
     [InlineData("[<81;1;1M", 1)]
-    [InlineData("[M`!!", -1)]
-    [InlineData("[Ma!!", 1)]
-    public void Wheel_WithModifiersOrX10_ScrollsToo(string sequence, int direction)
+    public void Wheel_WithModifiers_ScrollsToo(string sequence, int direction)
     {
         (TestConsole console, LineEditor editor) = Create();
         List<(int, ScrollStep)> calls = [];

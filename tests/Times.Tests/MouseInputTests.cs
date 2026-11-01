@@ -24,13 +24,6 @@ public sealed class MouseInputTests
         { "[<96;11;5M", nameof(MouseInputKind.OtherMouse) },
         { "[<64;10;5m", nameof(MouseInputKind.OtherMouse) },
 
-        // X10: button byte minus 32.
-        { "[M`!!", nameof(MouseInputKind.WheelUp) },
-        { "[Ma!!", nameof(MouseInputKind.WheelDown) },
-        { "[Mp!!", nameof(MouseInputKind.WheelUp) },
-        { "[M !!", nameof(MouseInputKind.OtherMouse) },
-        { "[Mb!!", nameof(MouseInputKind.OtherMouse) },
-
         // Other sequences: discarded.
         { "[A", nameof(MouseInputKind.Discard) },
         { "[5~", nameof(MouseInputKind.Discard) },
@@ -41,7 +34,7 @@ public sealed class MouseInputTests
         { "[<-1;10;5M", nameof(MouseInputKind.Discard) },
         { "[<99999999999;1;1M", nameof(MouseInputKind.Discard) },
         { "[<64;10;5~", nameof(MouseInputKind.Discard) },
-        { "[M`!", nameof(MouseInputKind.Discard) },
+        { "[M", nameof(MouseInputKind.Discard) }, // AC-3 (065): ESC [ M is just an unknown CSI.
         { "[", nameof(MouseInputKind.Discard) },
 
         // Not a sequence at all.
@@ -75,9 +68,7 @@ public sealed class MouseInputTests
     [InlineData("[<64;10;5", false)]
     [InlineData("[<64;10;5M", true)]
     [InlineData("[<0;10;5m", true)]
-    [InlineData("[M", false)]
-    [InlineData("[M`!", false)]
-    [InlineData("[M`!!", true)]
+    [InlineData("[M", true)] // AC-3 (065)
     [InlineData("[A", true)]
     [InlineData("[5", false)]
     [InlineData("[5~", true)]

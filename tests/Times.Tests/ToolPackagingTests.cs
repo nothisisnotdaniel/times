@@ -226,6 +226,57 @@ public sealed class ToolPackagingTests
         return string.Equals(pattern, "Times", StringComparison.OrdinalIgnoreCase);
     }
 
+    // AC-6 (065)
+    [Fact]
+    public void Readme_HasInstallBeforeUsageSections()
+    {
+        string readme = "\n" + File.ReadAllText(Path.Combine(RepoRoot, "README.md")).ReplaceLineEndings("\n");
+        List<string> headings = [];
+        bool inFence = false;
+        foreach (string line in readme.Split('\n'))
+        {
+            if (line.StartsWith("```", StringComparison.Ordinal))
+            {
+                inFence = !inFence;
+            }
+            else if (!inFence && line.StartsWith("## ", StringComparison.Ordinal))
+            {
+                headings.Add(line);
+            }
+        }
+
+        int install = headings.IndexOf("## Install as a .NET tool");
+        int shortcuts = headings.IndexOf("## Shortcuts");
+        Assert.True(install >= 0, "README has no '## Install as a .NET tool' section");
+        Assert.True(install < shortcuts, "'## Install as a .NET tool' must come before '## Shortcuts'");
+        Assert.Equal(["## Shortcuts", "## Keys", "## Mouse"], headings.GetRange(shortcuts, 3));
+
+        int sdk = readme.IndexOf("It needs the [.NET 10 SDK]", StringComparison.Ordinal);
+        Assert.True(sdk >= 0, "README has no '.NET 10 SDK' paragraph");
+        Assert.True(sdk < readme.IndexOf("\n## Shortcuts\n", StringComparison.Ordinal));
+    }
+
+    // AC-1 (065)
+    [Fact]
+    public void LineEditorSource_HasNoEscapeByte_AndNoLongDocLines()
+    {
+        string[] lines = File.ReadAllLines(Path.Combine(RepoRoot, "src", "Times", "LineEditor.cs"));
+
+        Assert.DoesNotContain(lines, line => line.Contains('\u001b'));
+        Assert.DoesNotContain(lines, line => line.TrimStart().StartsWith("///", StringComparison.Ordinal) && line.Length > 100);
+    }
+
+    // AC-2, AC-3 (065)
+    [Fact]
+    public void MouseInputSource_ParsesOnce_AndHasNoX10()
+    {
+        string source = File.ReadAllText(Path.Combine(RepoRoot, "src", "Times", "MouseInput.cs"));
+
+        Assert.DoesNotContain("int.Parse(", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("X10", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("keys[1] == 'M'", source, StringComparison.Ordinal);
+    }
+
     private static string ReadmeKeysSection()
     {
         string readme = File.ReadAllText(Path.Combine(RepoRoot, "README.md")).ReplaceLineEndings("\n");

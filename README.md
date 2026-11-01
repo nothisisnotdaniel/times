@@ -6,52 +6,12 @@ as an interactive session: the current day sits above an input box where you typ
 (type `help` to list them, `quit` to leave). A leading `/` is still accepted, so typing one in
 front of a command does the same as the command on its own.
 
-## Shortcuts
-
-Every command has a short alias that does exactly the same, with the same arguments: `a 8:15`
-books the same arrival as `arrive 8:15`. `help` lists them in its `Alias` column, and the
-command popup shows them next to each name (typing an alias also finds its command there).
-
-| Command | Alias | | Command | Alias |
-|---------|-------|-|---------|-------|
-| `arrive` | `a` | | `prev` | `p` |
-| `leave` | `l` | | `next` | `n` |
-| `break` | `b` | | `today` | `t` |
-| `breakend` | `be` | | `addproject` | `ap` |
-| `checkpoint` | `cp` | | `projects` | `pr` |
-| `remove` | `r` | | `help` | `h` |
-| `change` | `c` | | `quit` | `q` |
-
-Tab still completes full command names only.
-
 It needs the [.NET 10 SDK](https://dotnet.microsoft.com/download). To run it straight from the
 source tree:
 
 ```sh
 dotnet run --project src/Times
 ```
-
-## Keys
-
-| Keys | What they do |
-|------|--------------|
-| `PgUp` / `PgDn` | Scroll the area above the input box up / down by a page |
-| `Shift+PgUp` / `Shift+PgDn` | The same |
-| `Ctrl+↑` / `Ctrl+↓` | The same |
-| `↑` / `↓` | Previous / next command from the history (they do not scroll) |
-
-macOS Terminal keeps plain PgUp/PgDn for its own scrollback, so there use Shift+PgUp/PgDn or
-Ctrl+↑/↓ instead.
-
-## Mouse
-
-The mouse wheel scrolls the area above the input box, 3 lines per notch, wherever the pointer is
-(the keys under [Keys](#keys) scroll by a page).
-
-To make that work, Times turns on the terminal's mouse reporting while it runs. Because of that,
-dragging with the mouse no longer selects text: while Times runs, select text with **Shift-drag**
-(**Option-drag** in macOS Terminal). The terminal's normal mouse behaviour comes back when Times
-exits, also after Ctrl+C.
 
 ## Install as a .NET tool
 
@@ -122,3 +82,43 @@ dotnet tool uninstall -g Times
 ```
 
 Uninstalling removes only the tool. Your data stays in the data folder that `help` shows.
+
+## Shortcuts
+
+Every command has a short alias that does exactly the same, with the same arguments: `a 8:15`
+books the same arrival as `arrive 8:15`. `help` lists them in its `Alias` column, and the
+command popup shows them next to each name (typing an alias also finds its command there).
+
+| Command | Alias | | Command | Alias |
+|---------|-------|-|---------|-------|
+| `arrive` | `a` | | `prev` | `p` |
+| `leave` | `l` | | `next` | `n` |
+| `break` | `b` | | `today` | `t` |
+| `breakend` | `be` | | `addproject` | `ap` |
+| `checkpoint` | `cp` | | `projects` | `pr` |
+| `remove` | `r` | | `help` | `h` |
+| `change` | `c` | | `quit` | `q` |
+
+Tab still completes full command names only.
+
+## Keys
+
+| Keys | What they do |
+|------|--------------|
+| `PgUp` / `PgDn` | Scroll the area above the input box up / down by a page |
+| `Shift+PgUp` / `Shift+PgDn` | The same |
+| `Ctrl+↑` / `Ctrl+↓` | The same |
+| `↑` / `↓` | Previous / next command from the history (they do not scroll) |
+
+macOS Terminal keeps plain PgUp/PgDn for its own scrollback, so there use Shift+PgUp/PgDn or
+Ctrl+↑/↓ instead.
+
+## Mouse
+
+The mouse wheel scrolls the area above the input box, 3 lines per notch, wherever the pointer is
+(the keys under [Keys](#keys) scroll by a page).
+
+To make that work, Times turns on the terminal's mouse reporting while it runs. Because of that,
+dragging with the mouse no longer selects text: while Times runs, select text with **Shift-drag**
+(**Option-drag** in macOS Terminal). The terminal's normal mouse behaviour comes back when Times
+exits, also after Ctrl+C.
