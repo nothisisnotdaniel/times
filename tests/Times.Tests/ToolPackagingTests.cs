@@ -177,7 +177,7 @@ public sealed class ToolPackagingTests
 
         string smoke = Assert.Single(scripts, script => script.Contains("tm --version", StringComparison.Ordinal));
         int temp = smoke.IndexOf("cd \"$RUNNER_TEMP\"", StringComparison.Ordinal);
-        int install = smoke.IndexOf("dotnet tool install --global --add-source \"$REPO/nupkg\" --version \"$VERSION\" Times", StringComparison.Ordinal);
+        int install = smoke.IndexOf("dotnet tool install --global --configfile \"$RUNNER_TEMP/smoke-nuget.config\" --add-source \"$REPO/nupkg\" --version \"$VERSION\" Times", StringComparison.Ordinal);
         Assert.True(temp >= 0, "the smoke check must cd to $RUNNER_TEMP");
         Assert.True(install > temp, "the tool must be installed from outside the repo");
         Assert.True(smoke.IndexOf("tm --version", StringComparison.Ordinal) > install);
@@ -192,6 +192,53 @@ public sealed class ToolPackagingTests
         Assert.Contains("gh release create \"$GITHUB_REF_NAME\" \"nupkg/Times.$VERSION.nupkg\" --title \"Times $VERSION\" --generate-notes", all, StringComparison.Ordinal);
         Assert.Contains("--prerelease", all, StringComparison.Ordinal);
         Assert.Contains("GH_TOKEN: ${{ github.token }}", ReadWorkflow(), StringComparison.Ordinal);
+    }
+
+    // AC-3 (070), security review round 1: the smoke install sees only the local folder, never nuget.org.
+    [Fact]
+    public void ReleaseWorkflow_SmokeInstallUsesIsolatedNugetConfig()
+    {
+        string smoke = Assert.Single(RunScripts(ReadWorkflow()), script => script.Contains("tm --version", StringComparison.Ordinal));
+        string[] lines = smoke.Split('\n').Select(line => line.Trim()).ToArray();
+
+        int cd = Array.IndexOf(lines, "cd \"$RUNNER_TEMP\"");
+        int write = Array.IndexOf(lines, "cat > smoke-nuget.config <<XML");
+        int end = Array.IndexOf(lines, "XML");
+        int install = Array.FindIndex(lines, line => line.StartsWith("dotnet tool install", StringComparison.Ordinal));
+        Assert.True(cd >= 0 && cd < write, "the config must be written in $RUNNER_TEMP");
+        Assert.True(write < end && end < install, "the config must be written before the install");
+
+        string[] config = lines[(write + 1)..end];
+        Assert.Contains("<clear />", config);
+        Assert.Equal(["<add key=\"local\" value=\"$REPO/nupkg\" />"], config.Where(line => line.StartsWith("<add", StringComparison.Ordinal)).ToArray());
+        Assert.True(Array.IndexOf(config, "<clear />") < Array.FindIndex(config, line => line.StartsWith("<add", StringComparison.Ordinal)));
+        Assert.Contains("--configfile \"$RUNNER_TEMP/smoke-nuget.config\"", lines[install], StringComparison.Ordinal);
+    }
+
+    // Security review round 1: the checkout does not leave the write token in .git/config.
+    [Fact]
+    public void ReleaseWorkflow_CheckoutDoesNotPersistCredentials()
+    {
+        string[] lines = ReadWorkflow().Split('\n');
+
+        int checkout = Array.FindIndex(lines, line => line.Trim() == "uses: actions/checkout@v4");
+        Assert.True(checkout >= 0, "workflow has no actions/checkout step");
+        int next = Array.FindIndex(lines, checkout + 1, line => line.TrimStart().StartsWith("- ", StringComparison.Ordinal));
+        string[] step = lines[(checkout + 1)..(next < 0 ? lines.Length : next)];
+        Assert.Contains(step, line => line.Trim() == "persist-credentials: false");
+    }
+
+    // Security review round 1: the tag is checked against SemVer where it enters, before msbuild.
+    [Fact]
+    public void ReleaseWorkflow_ChecksTagIsSemVerBeforeExportingIt()
+    {
+        string script = Assert.Single(RunScripts(ReadWorkflow()), s => s.Contains("GITHUB_REF_NAME#v", StringComparison.Ordinal));
+
+        int check = script.IndexOf("grep -Eq '^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$'", StringComparison.Ordinal);
+        int export = script.IndexOf(">> \"$GITHUB_ENV\"", StringComparison.Ordinal);
+        Assert.True(check >= 0, "no SemVer check on the tag");
+        Assert.True(check < export, "the tag must be checked before VERSION is exported");
+        Assert.Contains("exit 1", script[check..export], StringComparison.Ordinal);
     }
 
     // AC-4 (070)
