@@ -770,6 +770,7 @@ public sealed class ToolPackagingTests
         Assert.DoesNotContain("eval", code, StringComparison.Ordinal);
         Assert.DoesNotContain("sh -c", code, StringComparison.Ordinal);
         Assert.Contains("title=\"${1-}\"", code, StringComparison.Ordinal);
+        Assert.Contains("LC_ALL=C\nexport LC_ALL\n", code, StringComparison.Ordinal);
         Assert.DoesNotMatch(@"[^""{]\$title", code);
         Assert.DoesNotMatch(@"[^""]\$version", code.Replace("v$version", "", StringComparison.Ordinal));
     }

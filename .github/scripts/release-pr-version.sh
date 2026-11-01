@@ -5,6 +5,9 @@
 # metadata is not), with no -develop anywhere and no line break. The tag v<version> must not exist
 # yet: tag names come one per line on stdin. The title is only ever compared, never evaluated.
 set -eu
+# ASCII-only bracket ranges in the SemVer grep, whatever the runner locale.
+LC_ALL=C
+export LC_ALL
 
 title="${1-}"
 nl='
