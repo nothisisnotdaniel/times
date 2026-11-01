@@ -83,6 +83,7 @@ internal sealed class CommandRegistry
     public static CommandRegistry CreateDefault()
     {
         CommandRegistry registry = new CommandRegistry();
+        // App.Dispatch renders help itself so it can add the data-folder footer; keep both in step.
         registry.Register("help", "h", "List all commands", _ => new CommandResult(registry.RenderHelp(), hideQuicklist: true));
         registry.Register("quit", "q", "Exit Times", _ => new CommandResult(quit: true));
         return registry;
