@@ -92,7 +92,7 @@ internal sealed class App
             Book("break", argument, EntryKind.BreakStart));
         registry.Register("breakend", "be", $"Book the end of a break: now, or at an optional {TimeInput.Format}", argument =>
             Book("breakend", argument, EntryKind.BreakEnd));
-        registry.Register("checkpoint", "cp", $"Book a checkpoint: [{TimeInput.Format}] [#quicklist number] <name>", Checkpoint);
+        registry.Register("checkpoint", "cp", $"Book a checkpoint: [{TimeInput.Format}] [#project] <name>", Checkpoint);
         registry.Register("remove", "r", "Remove an entry from this day by its number", Remove);
         registry.Register("change", "c", $"Change the time of an entry on this day: <number> <{TimeInput.Format}>", Change);
         registry.Register("summary", "s", "Show the time taken per work item from this day's checkpoints", NoArguments("summary", Summary));
@@ -396,12 +396,10 @@ internal sealed class App
             return NotATime(Name, first);
         }
 
-        string? projectToken = null;
         int? projectNumber = null;
         (string token, string afterToken) = SplitToken(rest);
         if (token.StartsWith('#'))
         {
-            projectToken = token;
             rest = afterToken;
             string digits = token[1..];
             if (digits.Length == 0 || !digits.All(char.IsAsciiDigit))
@@ -435,7 +433,7 @@ internal sealed class App
         }
 
         int? workItem = null;
-        if (projectNumber is { } number && projectToken is not null)
+        if (projectNumber is { } number)
         {
             ProjectList projects;
             try
@@ -449,7 +447,7 @@ internal sealed class App
 
             if (number < 1 || number > projects.Projects.Count)
             {
-                return Hint($"{Name}: there is no project [bold]{Markup.Escape(projectToken)}[/] on the quicklist.");
+                return Hint($"{Name}: there is no project [bold]{Markup.Escape(token)}[/] on the quicklist.");
             }
 
             workItem = projects.Projects[number - 1].WorkItem;

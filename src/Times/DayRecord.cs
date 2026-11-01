@@ -76,8 +76,9 @@ internal sealed record DayEntry
 /// opener, in booking order. The rule holds for every record, so also after <see cref="Add"/>,
 /// <see cref="ChangeTime"/>, <see cref="RemoveAt"/> and <see cref="FromJson"/>. Saved
 /// as <c>{"entries":[{"kind":"arrival","time":"08:15"},…]}</c>, with times as invariant <c>HH:mm</c>.
-/// A checkpoint also has a <c>"name"</c> and, if it belongs to a project, a <c>"workItem"</c>. The legacy single-value format <c>{"arrival":"08:15","leaving":"17:30"}</c>
-/// still loads; it is converted to entries and written in the new format on the next save.
+/// A checkpoint also has a <c>"name"</c> and, if it belongs to a project, a <c>"workItem"</c>. The
+/// legacy single-value format <c>{"arrival":"08:15","leaving":"17:30"}</c> still loads; it is
+/// converted to entries and written in the new format on the next save.
 /// </summary>
 internal sealed record DayRecord
 {
@@ -157,7 +158,9 @@ internal sealed record DayRecord
 
     public static DayRecord Empty { get; } = new();
 
-    /// <summary>The entries in ascending time order. Entry number <c>n</c> is <c>Entries[n - 1]</c>.</summary>
+    /// <summary>
+    /// The entries in ascending time order. Entry number <c>n</c> is <c>Entries[n - 1]</c>.
+    /// </summary>
     public IReadOnlyList<DayEntry> Entries => entries;
 
     public bool IsEmpty => entries.Length == 0;
@@ -208,7 +211,8 @@ internal sealed record DayRecord
 
     /// <summary>
     /// Returns the break time required for <paramref name="worked"/>: <c>0:00</c> up to and including
-    /// 6 hours, <c>0:30</c> for more than 6 up to and including 9 hours, and <c>0:45</c> for more than 9 hours.
+    /// 6 hours, <c>0:30</c> for more than 6 up to and including 9 hours, and <c>0:45</c> for more
+    /// than 9 hours.
     /// </summary>
     public static TimeSpan RequiredBreak(TimeSpan worked)
     {
@@ -296,7 +300,8 @@ internal sealed record DayRecord
 
     /// <summary>
     /// Returns a new record without entry <paramref name="number"/> (1-based, the numbering of
-    /// <see cref="Entries"/>). Throws <see cref="ArgumentOutOfRangeException"/> if there is no such entry.
+    /// <see cref="Entries"/>). Throws <see cref="ArgumentOutOfRangeException"/> if there is no such
+    /// entry.
     /// </summary>
     public DayRecord RemoveAt(int number)
     {
@@ -307,10 +312,11 @@ internal sealed record DayRecord
 
     /// <summary>
     /// Returns a new record where entry <paramref name="number"/> (1-based, the numbering of
-    /// <see cref="Entries"/>) has <paramref name="time"/> and keeps its kind, name and work item. The result is in time
-    /// order, with the changed entry after any other entries with the same time, except that a changed
-    /// arrival or break end goes before any checkpoints at that time (see <see cref="DayRecord"/>). Throws
-    /// <see cref="ArgumentOutOfRangeException"/> if there is no such entry.
+    /// <see cref="Entries"/>) has <paramref name="time"/> and keeps its kind, name and work item. The
+    /// result is in time order, with the changed entry after any other entries with the same time,
+    /// except that a changed arrival or break end goes before any checkpoints at that time (see
+    /// <see cref="DayRecord"/>). Throws <see cref="ArgumentOutOfRangeException"/> if there is no such
+    /// entry.
     /// </summary>
     public DayRecord ChangeTime(int number, TimeOnly time)
     {
