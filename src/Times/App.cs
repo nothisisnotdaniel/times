@@ -52,7 +52,6 @@ internal sealed class App
         projectStore = new ProjectStore(store.Folder);
         dayView = new DayView(time);
         this.registry = registry ?? CommandRegistry.CreateDefault();
-        this.registry.HelpFooter = RenderDataFolder();
         RegisterNavigation();
         RegisterBookings();
         RegisterProjects();
@@ -607,6 +606,12 @@ internal sealed class App
 
         try
         {
+            // The data-folder footer belongs to the app, not to the shared registry, so it is passed in here.
+            if (string.Equals(command.Name, "help", StringComparison.OrdinalIgnoreCase))
+            {
+                return new CommandResult(registry.RenderHelp(RenderDataFolder()), hideQuicklist: true);
+            }
+
             return command.Handler(argument);
         }
         catch (Exception ex)
