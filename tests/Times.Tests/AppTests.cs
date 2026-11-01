@@ -3745,14 +3745,14 @@ public sealed class AppTests : IDisposable
 
         Assert.Matches(@"break +│ b +│ Book the start of a break: now, or at an optional H:mm", output);
         Assert.Matches(@"breakend +│ be +│ Book the end of a break: now, or at an optional H:mm", output);
-        Assert.Matches(@"checkpoint +│ cp +│ Book a checkpoint: \[H:mm\] \[#quicklist number\] <name> +│", output);
+        Assert.Matches(@"checkpoint +│ cp +│ Book a checkpoint: \[H:mm\] \[#project\] <name> +│", output);
     }
 
     // AC-11 (036)
     [Theory]
     [InlineData("brea", "break ", "Book the start of a break")]
     [InlineData("breake", "breakend ", "Book the end of a break")]
-    [InlineData("checkp", "checkpoint ", "Book a checkpoint: [H:mm] [#quicklist number] <name>")]
+    [InlineData("checkp", "checkpoint ", "Book a checkpoint: [H:mm] [#project] <name>")]
     public void Popup_ShowsBreakAndCheckpoint(string typed, string name, string description)
     {
         string output = RunAnsi(c =>
