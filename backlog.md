@@ -79,3 +79,5 @@ Write one feature per line, in plain language.
 - [?] review-ux 1 — same as review-security 1 (no length cap on pasted text). Out of scope per the spec. (from 066-long-escape-sequences)
 - [?] review-code 1 — the reviewer marks the surrogate handling in `Quote` as correct and says no change is needed. Shortening it would mean rewriting security-relevant code, and that change would need another review. (from 068-escape-register-name)
 - [?] review-security 1 — this is an observation, not a requested change: only name and alias are quoted, as the spec says. Nothing to fix. (from 068-escape-register-name)
+- [?] review-ui 1 (no narrow-width caption test): the reviewer marks it fine because the spec shows the narrowest table is wider than the longest heading at 80 columns, and the existing tests already run at 80 columns. A narrow-terminal test would cover new behaviour (wrapping), so it belongs in its own job if wanted. (from 069-summary-caption)
+- [?] review-ux 1: this note confirms the AC-5 test and asks for no change. (from 069-summary-caption)
