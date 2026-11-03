@@ -5241,7 +5241,7 @@ public sealed class AppTests : IDisposable
 
     /// <summary>
     /// The rows of the first table under the <c>## Commands</c> line, up to the next <c># </c> or <c>## </c>
-    /// heading: each row's cells, trimmed, with the header and separator rows left out. <c>null</c> if the
+    /// heading outside fenced code: each row's cells, trimmed, with the header and separator rows left out. <c>null</c> if the
     /// text has no <c>## Commands</c> line.
     /// </summary>
     private static List<string[]>? CommandsTableRows(string readme)
@@ -5255,9 +5255,22 @@ public sealed class AppTests : IDisposable
 
         List<string[]> rows = [];
         bool header = true;
+        bool inFence = false;
         for (int i = start + 1; i < lines.Length; i++)
         {
             string line = lines[i];
+            if (line.StartsWith("```", StringComparison.Ordinal))
+            {
+                inFence = !inFence;
+                continue;
+            }
+
+            if (inFence)
+            {
+                // Fenced code is never a heading or a table row.
+                continue;
+            }
+
             if (line.StartsWith("# ", StringComparison.Ordinal) || line.StartsWith("## ", StringComparison.Ordinal))
             {
                 break;
@@ -5410,6 +5423,17 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal("README '## Commands' is missing: summary (s)", CommandsTableProblem(readme, commands));
         Assert.DoesNotContain(CommandsTableRows(readme)!, row => row[0] == "`summary`" || row[0] == "Keys");
+    }
+
+    // AC-5 (077, nit): a "# " line inside fenced code does not end the section.
+    [Fact]
+    public void CommandsTable_FencedHeadingLine_DoesNotEndSection()
+    {
+        List<Command> commands = RegisteredCommands();
+        string readme = "## Commands\n\n```sh\n# a shell comment\n```\n\n" + CommandsTableHeader
+            + string.Concat(commands.Select(CommandsTableRow));
+
+        Assert.Null(CommandsTableProblem(readme, commands));
     }
 
     // AC-5 (d) (077)
