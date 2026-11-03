@@ -66,7 +66,7 @@ public sealed class ToolPackagingTests
         Assert.All(addSource, line => Assert.Contains("--version", line, StringComparison.Ordinal));
     }
 
-    // AC-6
+    // AC-6, AC-2 (077, replaces "## Shortcuts" with "## Commands")
     [Fact]
     public void Readme_HasInstallFromReleaseSection_InsideInstallSection()
     {
@@ -74,12 +74,12 @@ public sealed class ToolPackagingTests
 
         int install = readme.IndexOf("\n## Install as a .NET tool\n", StringComparison.Ordinal);
         int release = readme.IndexOf("\n### Install from a GitHub release\n", StringComparison.Ordinal);
-        int shortcuts = readme.IndexOf("\n## Shortcuts\n", StringComparison.Ordinal);
+        int commands = readme.IndexOf("\n## Commands\n", StringComparison.Ordinal);
         Assert.True(install >= 0, "README has no '## Install as a .NET tool' section");
         Assert.True(install < release, "'### Install from a GitHub release' must come after '## Install as a .NET tool'");
-        Assert.True(release < shortcuts, "'### Install from a GitHub release' must come before '## Shortcuts'");
+        Assert.True(release < commands, "'### Install from a GitHub release' must come before '## Commands'");
 
-        string section = readme[release..shortcuts];
+        string section = readme[release..commands];
         Assert.Contains("dotnet tool install --global --add-source <folder> --version <version> Times", section, StringComparison.Ordinal);
     }
 
@@ -521,7 +521,7 @@ public sealed class ToolPackagingTests
         return string.Equals(pattern, "Times", StringComparison.OrdinalIgnoreCase);
     }
 
-    // AC-6 (065)
+    // AC-6 (065), AC-2 (077, replaces "## Shortcuts" with "## Commands")
     [Fact]
     public void Readme_HasInstallBeforeUsageSections()
     {
@@ -541,14 +541,57 @@ public sealed class ToolPackagingTests
         }
 
         int install = headings.IndexOf("## Install as a .NET tool");
-        int shortcuts = headings.IndexOf("## Shortcuts");
+        int commands = headings.IndexOf("## Commands");
         Assert.True(install >= 0, "README has no '## Install as a .NET tool' section");
-        Assert.True(install < shortcuts, "'## Install as a .NET tool' must come before '## Shortcuts'");
-        Assert.Equal(["## Shortcuts", "## Keys", "## Mouse"], headings.GetRange(shortcuts, 3));
+        Assert.True(install < commands, "'## Install as a .NET tool' must come before '## Commands'");
+        Assert.Equal(["## Commands", "## Keys", "## Mouse"], headings.GetRange(commands, 3));
 
         int sdk = readme.IndexOf("It needs the [.NET 10 SDK]", StringComparison.Ordinal);
         Assert.True(sdk >= 0, "README has no '.NET 10 SDK' paragraph");
-        Assert.True(sdk < readme.IndexOf("\n## Shortcuts\n", StringComparison.Ordinal));
+        Assert.True(sdk < readme.IndexOf("\n## Commands\n", StringComparison.Ordinal));
+    }
+
+    // AC-1 (077)
+    [Fact]
+    public void Readme_HasUserPartThenDeveloperPart()
+    {
+        string readme = File.ReadAllText(Path.Combine(RepoRoot, "README.md")).ReplaceLineEndings("\n");
+        List<string> headings = [];
+        bool inFence = false;
+        foreach (string line in readme.Split('\n'))
+        {
+            if (line.StartsWith("```", StringComparison.Ordinal))
+            {
+                inFence = !inFence;
+            }
+            else if (!inFence && (line.StartsWith("# ", StringComparison.Ordinal) || line.StartsWith("## ", StringComparison.Ordinal)))
+            {
+                headings.Add(line);
+            }
+        }
+
+        Assert.Equal(["# Times", "# Using Times", "# Building Times"], headings.Where(h => h.StartsWith("# ", StringComparison.Ordinal)).ToList());
+        int user = headings.IndexOf("# Using Times");
+        int developer = headings.IndexOf("# Building Times");
+        Assert.Equal(
+            ["## Install as a .NET tool", "## Commands", "## Keys", "## Mouse", "## The day view", "## Your data"],
+            headings.GetRange(user + 1, developer - user - 1));
+        Assert.Equal(
+            ["## Prerequisites", "## Build and test", "## Run from source", "## Project layout", "## Releasing"],
+            headings.GetRange(developer + 1, headings.Count - developer - 1));
+    }
+
+    // AC-8 (077)
+    [Theory]
+    [InlineData("## Your data", "TIMES_DATA_DIR")]
+    [InlineData("## Your data", "projects.json")]
+    [InlineData("## Your data", "~/.config/Times/")]
+    [InlineData("## Run from source", "dotnet run --project src/Times")]
+    [InlineData("## Build and test", "dotnet build")]
+    [InlineData("## Build and test", "dotnet test")]
+    public void Readme_SectionMentions(string heading, string expected)
+    {
+        Assert.Contains(expected, ReadmeSection(heading), StringComparison.Ordinal);
     }
 
     // AC-1 (065)
@@ -957,14 +1000,28 @@ public sealed class ToolPackagingTests
         Assert.True(pr > backlog, "backlog.md must be mentioned before the gh pr create command");
     }
 
+    // (077, replaces the end at the next "\n## " only): a section also ends at a "\n# " heading.
     private static string ReadmeSection(string heading)
     {
         string readme = "\n" + File.ReadAllText(Path.Combine(RepoRoot, "README.md")).ReplaceLineEndings("\n");
         int start = readme.IndexOf("\n" + heading + "\n", StringComparison.Ordinal);
         Assert.True(start >= 0, "README has no '" + heading + "' section");
 
-        int end = readme.IndexOf("\n## ", start + 1, StringComparison.Ordinal);
+        int end = NextHeading(readme, start + 1);
         return end < 0 ? readme[start..] : readme[start..end];
+    }
+
+    /// <summary>The index of the next <c>\n## </c> or <c>\n# </c> at or after <paramref name="from"/>, or -1.</summary>
+    private static int NextHeading(string readme, int from)
+    {
+        int section = readme.IndexOf("\n## ", from, StringComparison.Ordinal);
+        int part = readme.IndexOf("\n# ", from, StringComparison.Ordinal);
+        if (section < 0 || part < 0)
+        {
+            return Math.Max(section, part);
+        }
+
+        return Math.Min(section, part);
     }
 
     /// <summary>The index of the first line at or after <paramref name="start"/> whose trimmed text is <paramref name="text"/>, or -1.</summary>
@@ -989,13 +1046,14 @@ public sealed class ToolPackagingTests
         return lines[(checkout + 1)..(next < 0 ? lines.Length : next)];
     }
 
+    // (077, replaces the end at the next "\n## " only): the section also ends at a "\n# " heading.
     private static string ReadmeKeysSection()
     {
         string readme = File.ReadAllText(Path.Combine(RepoRoot, "README.md")).ReplaceLineEndings("\n");
         int start = readme.IndexOf("## Keys\n", StringComparison.Ordinal);
         Assert.True(start >= 0, "README has no '## Keys' section");
 
-        int end = readme.IndexOf("\n## ", start, StringComparison.Ordinal);
+        int end = NextHeading(readme, start);
         return end < 0 ? readme[start..] : readme[start..end];
     }
 

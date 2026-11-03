@@ -6,16 +6,16 @@ as an interactive session: the current day sits above an input box where you typ
 (type `help` to list them, `quit` to leave). A leading `/` is still accepted, so typing one in
 front of a command does the same as the command on its own.
 
-It needs the [.NET 10 SDK](https://dotnet.microsoft.com/download). To run it straight from the
-source tree:
+The first part, [Using Times](#using-times), is for everyone who installs and uses the `tm`
+command. The second part, [Building Times](#building-times), is for people who work on Times
+itself.
 
-```sh
-dotnet run --project src/Times
-```
+# Using Times
 
 ## Install as a .NET tool
 
 You can install Times once as a .NET global tool and then start it from any terminal.
+It needs the [.NET 10 SDK](https://dotnet.microsoft.com/download).
 
 The command is **`tm`**, not `times`: `times` is a built-in command of bash and zsh, so the shell
 would run its own `times` and never reach the app.
@@ -104,23 +104,34 @@ dotnet tool uninstall -g Times
 
 Uninstalling removes only the tool. Your data stays in the data folder that `help` shows.
 
-## Shortcuts
+## Commands
 
 Every command has a short alias that does exactly the same, with the same arguments: `a 8:15`
-books the same arrival as `arrive 8:15`. `help` lists them in its `Alias` column, and the
-command popup shows them next to each name (typing an alias also finds its command there).
+books the same arrival as `arrive 8:15`. `help` lists every command with its alias, and the
+command popup shows the alias next to each name (typing an alias also finds its command there).
+Tab completes full command names only.
 
-| Command | Alias | | Command | Alias |
-|---------|-------|-|---------|-------|
-| `arrive` | `a` | | `prev` | `p` |
-| `leave` | `l` | | `next` | `n` |
-| `break` | `b` | | `today` | `t` |
-| `breakend` | `be` | | `addproject` | `ap` |
-| `checkpoint` | `cp` | | `projects` | `pr` |
-| `remove` | `r` | | `help` | `h` |
-| `change` | `c` | | `quit` | `q` |
+Times are written as `H:mm` (`8:15`, `13:05`). An argument in `[…]` is optional; one in `<…>` is
+required. A booking without a time uses the current time. `remove` and `change` work on the day
+you are looking at, and take the entry's number from the day view.
 
-Tab still completes full command names only.
+| Command | Alias | Arguments | What it does |
+|---------|-------|-----------|--------------|
+| `arrive` | `a` | `[H:mm]` | Book your arrival: now, or at the given time |
+| `leave` | `l` | `[H:mm]` | Book your leaving: now, or at the given time |
+| `break` | `b` | `[H:mm]` | Book the start of a break: now, or at the given time |
+| `breakend` | `be` | `[H:mm]` | Book the end of a break: now, or at the given time |
+| `checkpoint` | `cp` | `[H:mm] [#project] <name>` | Book a named checkpoint; `#project` is the project's number on the quicklist |
+| `remove` | `r` | `<number>` | Remove an entry from this day by its number |
+| `change` | `c` | `<number> <H:mm>` | Change the time of an entry on this day |
+| `summary` | `s` | none | Show the time taken per work item from this day's checkpoints |
+| `prev` | `p` | none | Go to the previous day |
+| `next` | `n` | none | Go to the next day |
+| `today` | `t` | none | Go back to today |
+| `addproject` | `ap` | `<work item> <title>` | Add a project to the quicklist |
+| `projects` | `pr` | none | List the projects on the quicklist |
+| `help` | `h` | none | List all commands, the running version and the data folder |
+| `quit` | `q` | none | Exit Times |
 
 ## Keys
 
@@ -147,6 +158,75 @@ exits, also after Ctrl+C.
 Times also turns on bracketed paste: pasted text lands in the input line for you to check and edit,
 with each line break and Tab turned into a space, and only runs when you press Enter. An unusually
 long or garbled `ESC [` sequence from the terminal is dropped whole, never typed into the line.
+
+## The day view
+
+The screen shows one day at a time, starting at today. Under a heading with the weekday and date
+(`Tuesday, 2026-10-27`), each entry of that day has its own row, in time order:
+
+- its number (1, 2, 3, …), which `remove` and `change` use;
+- a two-letter code: `AR` arrival, `LE` leaving, `BS` break start, `BE` break end, `CP` checkpoint;
+- its time, and for a checkpoint its name and work item (`#5678`), if it has one;
+- the work time left at that entry, counted down from 8 hours (it goes negative once you work
+  longer).
+
+Below the entries, a `Breaks` line shows the break you have taken and the break required for the
+time you worked (none up to 6 hours, 0:30 up to 9 hours, 0:45 above). If you took too little, the
+line ends with a yellow `! Breaks too short` and the minutes missing. A day with nothing booked
+shows `No entries yet.`
+
+Above the day, the `Projects` panel shows your quicklist: each project's number, its work item and
+its title, at most 5 lines (a longer list ends with `… N more`; `projects` lists them all). It is
+left out while the output of `help` or `projects` is shown.
+
+`prev` and `next` move one day back or forward, and `today` goes back to today. Looking at a day
+never creates a file: a day's file is written only when you book the first entry on it.
+
+## Your data
+
+Times keeps one JSON file per day (`yyyy-MM-dd.json`) in its data folder:
+
+- `~/.config/Times/` on macOS and Linux;
+- `%APPDATA%\Times\` on Windows.
+
+The project quicklist lives in the same folder, in `projects.json`. `help` shows which folder is
+in use.
+
+To use another folder, set the `TIMES_DATA_DIR` environment variable to it. The path must be
+absolute and is used exactly as given (no `~` expansion); if it is not absolute, or starts or ends
+with whitespace, Times does not start and exits with code 2. Unset or empty means the default
+folder.
+
+# Building Times
+
+## Prerequisites
+
+The [.NET 10 SDK](https://dotnet.microsoft.com/download).
+
+## Build and test
+
+From the repo root:
+
+```sh
+dotnet build
+dotnet test
+```
+
+`dotnet build` must stay at 0 warnings; it also enforces the code style in `.editorconfig`, so a
+style break shows up as a warning. `dotnet test` runs the xUnit tests.
+
+## Run from source
+
+```sh
+dotnet run --project src/Times
+```
+
+## Project layout
+
+- `Times.slnx`: the solution.
+- `src/Times/`: the app. `Program.cs` only wires things up; the logic starts in `App.cs`.
+- `tests/Times.Tests/`: the tests, one test class per production class.
+- `.github/`: the release workflow (`workflows/release.yml`) and its scripts.
 
 ## Releasing
 

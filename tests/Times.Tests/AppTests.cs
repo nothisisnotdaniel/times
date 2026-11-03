@@ -5218,4 +5218,208 @@ public sealed class AppTests : IDisposable
         // The date shows once: in the day view heading only.
         Assert.Single(frame, l => l.Contains("2026-10-27", StringComparison.Ordinal));
     }
+
+    /// <summary>The commands <see cref="App"/> registers, read from a registry it was built with; the loop is never run.</summary>
+    private List<Command> RegisteredCommands()
+    {
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+        _ = new App(new TestConsole(), FixedTimeProvider.At20261027(), new DayStore(data.Path), registry);
+        return registry.Commands.ToList();
+    }
+
+    private static string ReadRepoReadme()
+    {
+        DirectoryInfo? directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "Times.slnx")))
+        {
+            directory = directory.Parent;
+        }
+
+        Assert.True(directory is not null, "Times.slnx not found above " + AppContext.BaseDirectory);
+        return File.ReadAllText(Path.Combine(directory.FullName, "README.md"));
+    }
+
+    /// <summary>
+    /// The rows of the first table under the <c>## Commands</c> line, up to the next <c># </c> or <c>## </c>
+    /// heading: each row's cells, trimmed, with the header and separator rows left out. <c>null</c> if the
+    /// text has no <c>## Commands</c> line.
+    /// </summary>
+    private static List<string[]>? CommandsTableRows(string readme)
+    {
+        string[] lines = readme.ReplaceLineEndings("\n").Split('\n');
+        int start = Array.IndexOf(lines, "## Commands");
+        if (start < 0)
+        {
+            return null;
+        }
+
+        List<string[]> rows = [];
+        bool header = true;
+        for (int i = start + 1; i < lines.Length; i++)
+        {
+            string line = lines[i];
+            if (line.StartsWith("# ", StringComparison.Ordinal) || line.StartsWith("## ", StringComparison.Ordinal))
+            {
+                break;
+            }
+
+            if (!line.StartsWith('|'))
+            {
+                if (!header)
+                {
+                    // The first table has ended.
+                    break;
+                }
+
+                continue;
+            }
+
+            string[] cells = line.Trim().Trim('|').Split('|').Select(cell => cell.Trim()).ToArray();
+            if (header)
+            {
+                header = false;
+                continue;
+            }
+
+            if (cells.All(cell => cell.Length > 0 && cell.All(c => c == '-' || c == ':')))
+            {
+                continue;
+            }
+
+            rows.Add(cells);
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// What is wrong with the <c>## Commands</c> table of <paramref name="readme"/> for <paramref name="commands"/>,
+    /// or <c>null</c> if every command has a row whose Command cell is its name and whose Alias cell is its
+    /// alias, both in backticks and compared ordinal.
+    /// </summary>
+    private static string? CommandsTableProblem(string readme, IEnumerable<Command> commands)
+    {
+        List<string[]>? rows = CommandsTableRows(readme);
+        if (rows is null)
+        {
+            return "README has no '## Commands' section.";
+        }
+
+        List<string> missing = commands
+            .Where(command => !rows.Any(row => row.Length >= 2
+                && string.Equals(row[0], "`" + command.Name + "`", StringComparison.Ordinal)
+                && string.Equals(row[1], "`" + command.Alias + "`", StringComparison.Ordinal)))
+            .Select(command => command.Name + " (" + command.Alias + ")")
+            .ToList();
+        return missing.Count == 0 ? null : "README '## Commands' is missing: " + string.Join(", ", missing);
+    }
+
+    private const string CommandsTableHeader =
+        "| Command | Alias | Arguments | What it does |\n|---------|-------|-----------|--------------|\n";
+
+    private static string CommandsTableRow(Command command) =>
+        "| `" + command.Name + "` | `" + command.Alias + "` | none | " + command.Description + " |\n";
+
+    // AC-3, AC-6, AC-7 (077)
+    [Fact]
+    public void Readme_CommandsTableListsEveryRegisteredCommand()
+    {
+        List<Command> commands = RegisteredCommands();
+        string readme = ReadRepoReadme();
+
+        Assert.Contains(commands, command => command.Name == "help");
+        Assert.Contains(commands, command => command.Name == "quit");
+        Assert.Contains(commands, command => command.Name == "summary" && command.Alias == "s");
+        string? problem = CommandsTableProblem(readme, commands);
+        Assert.True(problem is null, problem);
+
+        List<string[]>? rows = CommandsTableRows(readme);
+        Assert.NotNull(rows);
+        Assert.NotEmpty(rows);
+        Assert.All(rows, row =>
+        {
+            Assert.Equal(4, row.Length);
+            Assert.False(string.IsNullOrWhiteSpace(row[2]), "empty Arguments cell in row " + row[0]);
+            Assert.False(string.IsNullOrWhiteSpace(row[3]), "empty 'What it does' cell in row " + row[0]);
+        });
+    }
+
+    // AC-5 (a) (077)
+    [Fact]
+    public void CommandsTable_FullTable_GivesEveryRow()
+    {
+        List<Command> commands = RegisteredCommands();
+        string readme = "# Times\n\n## Commands\n\nAliases.\n\n" + CommandsTableHeader
+            + string.Concat(commands.Select(CommandsTableRow)) + "\n## Keys\n";
+
+        List<string[]>? rows = CommandsTableRows(readme);
+
+        Assert.NotNull(rows);
+        Assert.Equal(commands.Select(c => "`" + c.Name + "`"), rows.Select(row => row[0]));
+        Assert.Null(CommandsTableProblem(readme, commands));
+    }
+
+    // AC-4, AC-5 (b) (077)
+    [Fact]
+    public void CommandsTable_WithoutSummaryRow_ReportsSummary()
+    {
+        List<Command> commands = RegisteredCommands();
+        string readme = "## Commands\n\n" + CommandsTableHeader
+            + string.Concat(commands.Where(c => c.Name != "summary").Select(CommandsTableRow));
+
+        Assert.Equal("README '## Commands' is missing: summary (s)", CommandsTableProblem(readme, commands));
+    }
+
+    // AC-4 (077)
+    [Fact]
+    public void CommandsTable_ListsEveryMissingCommandAsNameAndAlias()
+    {
+        List<Command> commands = RegisteredCommands();
+        string readme = "## Commands\n\n" + CommandsTableHeader
+            + string.Concat(commands.Where(c => c.Name is not ("summary" or "arrive" or "quit")).Select(CommandsTableRow));
+
+        string? problem = CommandsTableProblem(readme, commands);
+
+        Assert.NotNull(problem);
+        Assert.Contains("arrive (a)", problem, StringComparison.Ordinal);
+        Assert.Contains("summary (s)", problem, StringComparison.Ordinal);
+        Assert.Contains("quit (q)", problem, StringComparison.Ordinal);
+    }
+
+    // AC-3 (077): an alias on the wrong row, or in the wrong case, does not count.
+    [Fact]
+    public void CommandsTable_WrongOrSwappedAlias_IsMissing()
+    {
+        List<Command> commands = RegisteredCommands();
+        string rows = string.Concat(commands.Where(c => c.Name is not ("summary" or "today" or "help")).Select(CommandsTableRow));
+        string readme = "## Commands\n\n" + CommandsTableHeader + rows
+            + "| `summary` | `t` | none | Summary |\n| `today` | `s` | none | Today |\n| `Help` | `H` | none | Help |\n";
+
+        Assert.Equal("README '## Commands' is missing: help (h), summary (s), today (t)", CommandsTableProblem(readme, commands));
+    }
+
+    // AC-5 (c) (077)
+    [Fact]
+    public void CommandsTable_PairInAnotherSection_IsNotCounted()
+    {
+        List<Command> commands = RegisteredCommands();
+        string readme = "## Commands\n\n" + CommandsTableHeader
+            + string.Concat(commands.Where(c => c.Name != "summary").Select(CommandsTableRow))
+            + "\n## Keys\n\n| Keys | What they do |\n|------|--------------|\n| `summary` | `s` |\n"
+            + "\n# Building Times\n\n| `summary` | `s` | none | Summary |\n";
+
+        Assert.Equal("README '## Commands' is missing: summary (s)", CommandsTableProblem(readme, commands));
+        Assert.DoesNotContain(CommandsTableRows(readme)!, row => row[0] == "`summary`" || row[0] == "Keys");
+    }
+
+    // AC-5 (d) (077)
+    [Fact]
+    public void CommandsTable_WithoutCommandsSection_Fails()
+    {
+        List<Command> commands = RegisteredCommands();
+        string readme = "# Times\n\n## Shortcuts\n\n" + CommandsTableHeader + string.Concat(commands.Select(CommandsTableRow));
+
+        Assert.Null(CommandsTableRows(readme));
+        Assert.Equal("README has no '## Commands' section.", CommandsTableProblem(readme, commands));
+    }
 }
