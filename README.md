@@ -112,8 +112,8 @@ command popup shows the alias next to each name (typing an alias also finds its 
 Tab completes full command names only.
 
 Times are written as `H:mm` (`8:15`, `13:05`). An argument in `[…]` is optional; one in `<…>` is
-required. A booking without a time uses the current time. `remove` and `change` work on the day
-you are looking at, and take the entry's number from the day view.
+required. A booking without a time uses the current time. `remove`, `change`, `booked` and
+`unbooked` work on the day you are looking at, and take the entry's number from the day view.
 
 | Command | Alias | Arguments | What it does |
 |---------|-------|-----------|--------------|
@@ -124,6 +124,8 @@ you are looking at, and take the entry's number from the day view.
 | `checkpoint` | `cp` | `[H:mm] [#project] <name>` | Book a named checkpoint; `#project` is the project's number on the quicklist |
 | `remove` | `r` | `<number>` | Remove an entry from this day by its number |
 | `change` | `c` | `<number> <H:mm>` | Change the time of an entry on this day |
+| `booked` | `bk` | `<number>` | Mark a checkpoint on this day as booked in Azure DevOps |
+| `unbooked` | `ub` | `<number>` | Mark a checkpoint on this day as not yet booked |
 | `summary` | `s` | none | Show the time taken per work item from this day's checkpoints |
 | `prev` | `p` | none | Go to the previous day |
 | `next` | `n` | none | Go to the next day |
@@ -164,9 +166,10 @@ long or garbled `ESC [` sequence from the terminal is dropped whole, never typed
 The screen shows one day at a time, starting at today. Under a heading with the weekday and date
 (`Tuesday, 2026-10-27`), each entry of that day has its own row, in time order:
 
-- its number (1, 2, 3, …), which `remove` and `change` use;
+- its number (1, 2, 3, …), which `remove`, `change`, `booked` and `unbooked` use;
 - a two-letter code: `AR` arrival, `LE` leaving, `BS` break start, `BE` break end, `CP` checkpoint;
-- its time, and for a checkpoint its name and work item (`#5678`), if it has one;
+- its time, and for a checkpoint its name and work item (`#5678`), if it has one; a checkpoint
+  marked with `booked` is shown in grey and ends with a `✓`;
 - the work time left at that entry, counted down from 8 hours (it goes negative once you work
   longer).
 

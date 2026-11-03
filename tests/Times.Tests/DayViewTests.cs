@@ -716,4 +716,68 @@ public class DayViewTests
 
         return count;
     }
+
+    // Booked checkpoints (job 078) --------------------------------------------------------
+
+    private static DayRecord BookedDay() => new DayRecord(
+    [
+        new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)),
+        new DayEntry(EntryKind.Checkpoint, new TimeOnly(9, 15), "Done [x]", 5678, true),
+        new DayEntry(EntryKind.Checkpoint, new TimeOnly(10, 45), "Open", 1234),
+        new DayEntry(EntryKind.Leaving, new TimeOnly(12, 0)),
+    ]);
+
+    private static string RenderAnsi(DayRecord record)
+    {
+        TestConsole console = new TestConsole().EmitAnsiSequences();
+        console.Profile.Width = 120;
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record));
+        return console.Output;
+    }
+
+    // AC-9 (078)
+    [Fact]
+    public void Render_BookedCheckpoint_GreyTimeAndName_GreyWorkItem_GreyCheckMark()
+    {
+        string output = RenderAnsi(BookedDay());
+
+        // grey = 256-colour 8, SteelBlue1 = 256-colour 75.
+        Assert.Contains("\u001b[38;5;8m09:15\u001b[0m", output);
+        Assert.DoesNotContain("\u001b[38;5;75m09:15", output);
+        Assert.Contains("\u001b[38;5;8mDone [x]\u001b[0m \u001b[38;5;8m#5678\u001b[0m \u001b[38;5;8m✓\u001b[0m", output);
+        Assert.Equal(1, CountOf(output, "✓"));
+    }
+
+    // AC-9 (078)
+    [Fact]
+    public void Render_UnbookedCheckpointAndOtherKinds_LookAsBefore()
+    {
+        string output = RenderAnsi(BookedDay());
+        string unbooked = RenderAnsi(new DayRecord(
+        [
+            new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)),
+            new DayEntry(EntryKind.Checkpoint, new TimeOnly(9, 15), "Done [x]", 5678),
+            new DayEntry(EntryKind.Checkpoint, new TimeOnly(10, 45), "Open", 1234),
+            new DayEntry(EntryKind.Leaving, new TimeOnly(12, 0)),
+        ]));
+
+        Assert.Contains("\u001b[38;5;75m10:45\u001b[0m", output);
+        Assert.Contains("Open \u001b[38;5;8m#1234\u001b[0m", output);
+        Assert.Contains("\u001b[38;5;75m09:15\u001b[0m", unbooked);
+        Assert.DoesNotContain("✓", unbooked);
+        Assert.DoesNotContain("\u001b[38;5;8mOpen", output);
+        Assert.Contains("\u001b[38;5;34m08:00", output);
+    }
+
+    // AC-9 (078)
+    [Fact]
+    public void Render_BookedCheckpoint_PlainText_EndsWithCheckMark()
+    {
+        TestConsole console = new TestConsole();
+        console.Profile.Width = 120;
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(BookedDay()));
+
+        Assert.Matches(@"2 +CP +09:15 +Done \[x\] #5678 ✓ +left 6:45", console.Output);
+        Assert.Matches(@"3 +CP +10:45 +Open #1234 +left 5:15", console.Output);
+    }
 }

@@ -959,4 +959,170 @@ public class DayRecordTests
         JsonException ex = Assert.Throws<JsonException>(() => DayRecord.FromJson(json));
         Assert.Contains("control, formatting or broken characters", ex.Message);
     }
+
+    // Booked checkpoints (job 078) --------------------------------------------------------
+
+    private static DayEntry Cp(int hour, int minute, string name, bool booked = false) =>
+        new(EntryKind.Checkpoint, new TimeOnly(hour, minute), name, null, booked);
+
+    // AC-1, AC-2 (078)
+    [Fact]
+    public void ToJson_WritesBookedOnlyOnBookedCheckpoints_AndRoundTrips()
+    {
+        DayRecord record = new DayRecord([Arrival(8, 0), Cp(9, 0, "A", booked: true), Cp(10, 0, "B")]);
+
+        string json = record.ToJson();
+
+        Assert.Equal(
+            "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"},"
+            + "{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"A\",\"booked\":true},"
+            + "{\"kind\":\"checkpoint\",\"time\":\"10:00\",\"name\":\"B\"}]}",
+            json);
+        Assert.Equal(record, DayRecord.FromJson(json));
+        Assert.True(DayRecord.FromJson(json).Entries[1].Booked);
+    }
+
+    // AC-6 (078)
+    [Theory]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"A\",\"workItem\":12}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"A\",\"booked\":false}]}")]
+    public void FromJson_WithoutBookedOrFalse_LoadsUnbooked(string json)
+    {
+        DayRecord record = DayRecord.FromJson(json);
+
+        Assert.False(Assert.Single(record.Entries).Booked);
+        Assert.DoesNotContain("booked", record.ToJson());
+    }
+
+    // AC-6 (078)
+    [Fact]
+    public void FromJson_Legacy_LoadsUnbooked()
+    {
+        DayRecord record = DayRecord.FromJson("{\"arrival\":\"08:15\",\"leaving\":\"12:00\"}");
+
+        Assert.All(record.Entries, e => Assert.False(e.Booked));
+    }
+
+    // AC-7 (078)
+    [Theory]
+    [InlineData("\"true\"")]
+    [InlineData("1")]
+    [InlineData("null")]
+    [InlineData("{}")]
+    [InlineData("[]")]
+    [InlineData("true,\"booked\":true")]
+    [InlineData("true,\"booked\":false")]
+    public void FromJson_BadBookedOnCheckpoint_ThrowsJsonException(string value)
+    {
+        string json = "{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"A\",\"booked\":" + value + "}]}";
+
+        Assert.ThrowsAny<JsonException>(() => DayRecord.FromJson(json));
+    }
+
+    // AC-7 (078)
+    [Theory]
+    [InlineData("true")]
+    [InlineData("\"yes\"")]
+    [InlineData("null")]
+    public void FromJson_BookedOnOtherKinds_IsIgnored(string value)
+    {
+        string json = "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\",\"booked\":" + value + "}]}";
+
+        DayEntry entry = Assert.Single(DayRecord.FromJson(json).Entries);
+
+        Assert.Equal(new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)), entry);
+        Assert.False(entry.Booked);
+    }
+
+    // AC-8 (078)
+    [Theory]
+    [InlineData((int)EntryKind.Arrival)]
+    [InlineData((int)EntryKind.Leaving)]
+    [InlineData((int)EntryKind.BreakStart)]
+    [InlineData((int)EntryKind.BreakEnd)]
+    public void DayEntry_BookedOnOtherKind_Throws(int kindValue)
+    {
+        EntryKind kind = (EntryKind)kindValue;
+        Assert.Throws<ArgumentException>(() => new DayEntry(kind, new TimeOnly(8, 0), null, null, true));
+        Assert.False(new DayEntry(kind, new TimeOnly(8, 0), null, null, false).Booked);
+    }
+
+    // AC-8 (078)
+    [Fact]
+    public void SetBooked_SetsAndClearsTheFlag_KeepingOrder()
+    {
+        DayRecord record = new DayRecord([Arrival(8, 0), Cp(9, 0, "A"), Cp(9, 0, "B"), Leaving(12, 0)]);
+
+        DayRecord booked = record.SetBooked(3, true);
+
+        Assert.Equal([Arrival(8, 0), Cp(9, 0, "A"), Cp(9, 0, "B", booked: true), Leaving(12, 0)], booked.Entries);
+        Assert.Equal(record, booked.SetBooked(3, false));
+        Assert.Equal(booked, booked.SetBooked(3, true));
+    }
+
+    // AC-8 (078)
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(5)]
+    public void SetBooked_UnknownNumber_ThrowsArgumentOutOfRange(int number)
+    {
+        DayRecord record = new DayRecord([Arrival(8, 0), Cp(9, 0, "A"), Cp(10, 0, "B"), Leaving(12, 0)]);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => record.SetBooked(number, true));
+    }
+
+    // AC-8 (078)
+    [Theory]
+    [InlineData(1)]
+    [InlineData(4)]
+    public void SetBooked_NotACheckpoint_ThrowsArgumentException(int number)
+    {
+        DayRecord record = new DayRecord([Arrival(8, 0), Cp(9, 0, "A"), Cp(10, 0, "B"), Leaving(12, 0)]);
+
+        ArgumentException ex = Assert.Throws<ArgumentException>(() => record.SetBooked(number, true));
+        Assert.IsNotType<ArgumentOutOfRangeException>(ex);
+    }
+
+    // AC-8 (078)
+    [Fact]
+    public void ChangeTime_OnBookedCheckpoint_KeepsItBooked()
+    {
+        DayRecord record = new DayRecord([Arrival(8, 0), Cp(9, 0, "A", booked: true), Leaving(12, 0)]);
+
+        DayRecord changed = record.ChangeTime(2, new TimeOnly(11, 0));
+
+        Assert.Equal([Arrival(8, 0), Cp(11, 0, "A", booked: true), Leaving(12, 0)], changed.Entries);
+        Assert.True(Cp(9, 0, "A", booked: true).At(new TimeOnly(10, 0)).Booked);
+    }
+
+    // AC-8 (078)
+    [Fact]
+    public void Equality_DistinguishesBookedFromUnbooked()
+    {
+        DayEntry booked = Cp(9, 0, "A", booked: true);
+        DayEntry unbooked = Cp(9, 0, "A");
+
+        Assert.NotEqual(booked, unbooked);
+        Assert.NotEqual(booked.GetHashCode(), unbooked.GetHashCode());
+        Assert.Equal(booked, Cp(9, 0, "A", booked: true));
+        Assert.NotEqual(new DayRecord([booked]), new DayRecord([unbooked]));
+        Assert.Equal(unbooked, new DayEntry(EntryKind.Checkpoint, new TimeOnly(9, 0), "A", null));
+    }
+
+    // AC-10 (078)
+    [Fact]
+    public void TimeLeftAndBreaks_AreTheSameForBookedAndUnbooked()
+    {
+        DayRecord unbooked = new DayRecord(
+        [
+            Arrival(8, 0), Cp(9, 0, "A"), new DayEntry(EntryKind.BreakStart, new TimeOnly(12, 0)),
+            new DayEntry(EntryKind.BreakEnd, new TimeOnly(12, 30)), Cp(13, 0, "B"), Leaving(17, 0),
+        ]);
+        DayRecord booked = unbooked.SetBooked(2, true).SetBooked(5, true);
+
+        Assert.Equal(unbooked.TimeLeft(), booked.TimeLeft());
+        Assert.Equal(unbooked.WorkTime(), booked.WorkTime());
+        Assert.Equal(unbooked.BreakTime(), booked.BreakTime());
+    }
 }

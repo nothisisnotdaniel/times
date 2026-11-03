@@ -61,7 +61,8 @@ internal sealed class DayView
     /// checkpoint, a details column follows the time: the checkpoint's escaped name and, if it has
     /// one, its grey work item (<c>#5678</c>). Every row, of every kind, ends with the work time left
     /// at that entry's time (grey <c>left</c> plus the right-aligned value, see
-    /// <see cref="DayRecord.TimeLeft"/>).
+    /// <see cref="DayRecord.TimeLeft"/>). A booked checkpoint is muted: its time and name are grey,
+    /// and its details cell ends with a grey <c>✓</c>.
     /// After one blank line below the last entry row, a break line, starting in the code column,
     /// shows the break taken and the break required for the day's work time
     /// (<c>Breaks 0:20 taken · 0:30 required</c>, grey words, <c>SteelBlue1</c> values, see
@@ -98,7 +99,7 @@ internal sealed class DayView
             [
                 new Markup($"[grey]{number}[/]"),
                 new Markup($"[grey]{Code(entry.Kind)}[/]"),
-                new Markup($"[{TimeColour(entry.Kind)}]{clock}[/]"),
+                new Markup($"[{(entry.Booked ? "grey" : TimeColour(entry.Kind))}]{clock}[/]"),
             ];
             if (details)
             {
@@ -153,7 +154,8 @@ internal sealed class DayView
         _ => throw new ArgumentOutOfRangeException(nameof(kind)),
     };
 
-    // The checkpoint's name (user text, so escaped) and its grey work item; empty for other kinds.
+    // The checkpoint's name (user text, so escaped) and its grey work item; empty for other kinds. A
+    // booked checkpoint is muted: its name is grey too, and the cell ends with a grey check mark.
     private static IRenderable Details(DayEntry entry)
     {
         if (entry.Name is not { } name)
@@ -162,6 +164,11 @@ internal sealed class DayView
         }
 
         string workItem = entry.WorkItem is { } w ? $" [grey]#{w.ToString(CultureInfo.InvariantCulture)}[/]" : string.Empty;
+        if (entry.Booked)
+        {
+            return new Markup($"[grey]{Markup.Escape(name)}[/]{workItem} [grey]✓[/]");
+        }
+
         return new Markup(Markup.Escape(name) + workItem);
     }
 

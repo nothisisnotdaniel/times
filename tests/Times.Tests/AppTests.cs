@@ -826,12 +826,12 @@ public sealed class AppTests : IDisposable
         Assert.Contains("\u001b[21;1H", output);
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal([14, 15, 16, 17, 18, 19, 20, 21], popup.Select(w => w.Row));
-        // Fifteen commands: the first seven by name, then a row counting the other eight.
+        // Seventeen commands: the first seven by name, then a row counting the other ten.
         Assert.Equal(
-            ["addproject", "arrive", "break", "breakend", "change", "checkpoint", "help", "…"],
+            ["addproject", "arrive", "booked", "break", "breakend", "change", "checkpoint", "…"],
             popup.Select(w => w.Text.Split(' ')[0]));
-        Assert.StartsWith("… 8 more", popup[^1].Text);
-        Assert.Contains("List all commands", popup[6].Text);
+        Assert.StartsWith("… 10 more", popup[^1].Text);
+        Assert.Contains("Book a checkpoint", popup[6].Text);
         Assert.Equal(80, popup[0].Text.Length);
     }
 
@@ -903,9 +903,9 @@ public sealed class AppTests : IDisposable
         List<string> hintRow = TypingWrites(output, 1).Where(w => w.Row == 21).Select(w => w.Text).ToList();
 
         // popup, restored (Backspace), popup, restored (Esc), popup (quit typing), ...
-        Assert.StartsWith("… 8 more", hintRow[0]);
+        Assert.StartsWith("… 10 more", hintRow[0]);
         Assert.Contains("Unknown command nope", hintRow[1]);
-        Assert.StartsWith("… 8 more", hintRow[2]);
+        Assert.StartsWith("… 10 more", hintRow[2]);
         Assert.Contains("Unknown command nope", hintRow[3]);
         Assert.Contains("Unknown command nope", hintRow[^1]);
         Assert.Contains("\u001b[38;5;9mUnknown command", output[output.LastIndexOf("\u001b[21;1H", StringComparison.Ordinal)..]);
@@ -938,8 +938,8 @@ public sealed class AppTests : IDisposable
 
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
-        // 27 commands: 7 shown, the eighth row counts the other 20.
-        Assert.StartsWith("… 20 more", popup[^1].Text);
+        // 29 commands: 7 shown, the eighth row counts the other 22.
+        Assert.StartsWith("… 22 more", popup[^1].Text);
         // Nothing is drawn on row 1 while typing (the final clear on quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
@@ -2590,7 +2590,7 @@ public sealed class AppTests : IDisposable
     }
 
     private const string DayViewCodesLine =
-        "Day view codes: AR arrival · LE leaving · BS break start · BE break end · CP checkpoint";
+        "Day view codes: AR arrival · LE leaving · BS break start · BE break end · CP checkpoint · ✓ booked";
 
     // AC-7 (076)
     [Fact]
@@ -4452,7 +4452,7 @@ public sealed class AppTests : IDisposable
     {
         string output = StripAnsi(RunHelp(data.Path, folderFromEnvironment: false));
 
-        string[] names = ["addproject", "arrive", "break", "breakend", "change", "checkpoint", "help", "leave", "next", "prev", "projects", "quit", "remove", "today"];
+        string[] names = ["addproject", "arrive", "booked", "break", "breakend", "change", "checkpoint", "help", "leave", "next", "prev", "projects", "quit", "remove", "today", "unbooked"];
         foreach (string name in names)
         {
             Assert.Matches(@"│ " + name + @" +│", output);
@@ -4650,6 +4650,7 @@ public sealed class AppTests : IDisposable
         {
             ["addproject"] = "ap",
             ["arrive"] = "a",
+            ["booked"] = "bk",
             ["break"] = "b",
             ["breakend"] = "be",
             ["change"] = "c",
@@ -4663,6 +4664,7 @@ public sealed class AppTests : IDisposable
             ["remove"] = "r",
             ["summary"] = "s",
             ["today"] = "t",
+            ["unbooked"] = "ub",
         };
 
         Assert.Equal(expected, registry.Commands.ToDictionary(c => c.Name, c => c.Alias));
@@ -5445,5 +5447,289 @@ public sealed class AppTests : IDisposable
 
         Assert.Null(CommandsTableRows(readme));
         Assert.Equal("README has no '## Commands' section.", CommandsTableProblem(readme, commands));
+    }
+
+    // Booked checkpoints (job 078) --------------------------------------------------------
+
+    private const string BookDayUnbooked =
+        "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"},"
+        + "{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"Review\",\"workItem\":1234},"
+        + "{\"kind\":\"checkpoint\",\"time\":\"10:00\",\"name\":\"Fix\"},"
+        + "{\"kind\":\"leaving\",\"time\":\"12:00\"}]}";
+
+    private const string BookDayBooked =
+        "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"},"
+        + "{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"Review\",\"workItem\":1234,\"booked\":true},"
+        + "{\"kind\":\"checkpoint\",\"time\":\"10:00\",\"name\":\"Fix\"},"
+        + "{\"kind\":\"leaving\",\"time\":\"12:00\"}]}";
+
+    // AC-1 (078)
+    [Theory]
+    [InlineData("booked 2")]
+    [InlineData("bk 2")]
+    [InlineData("/booked 2")]
+    [InlineData("BK 2")]
+    public void Booked_Checkpoint_SavesBookedTrue_OtherEntriesUnchanged(string typed)
+    {
+        File.WriteAllText(DayFile("2026-10-27"), BookDayUnbooked);
+
+        (int exitCode, string output) = RunCommands(typed, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(BookDayBooked, ReadDay("2026-10-27"));
+        Assert.DoesNotContain("Unknown command", output);
+        Assert.Matches(@"2 +CP +09:00 +Review #1234 ✓", LastFrame(output));
+        Assert.DoesNotMatch(@"Fix ✓", LastFrame(output));
+    }
+
+    // AC-1 (078)
+    [Fact]
+    public void Booked_AfterBookingInTheSameSession_UsesTheShownNumbers()
+    {
+        (int exitCode, _) = RunCommands("arrive 8:00", "cp 9:00 Review", "booked 2", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(
+            [new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)), new DayEntry(EntryKind.Checkpoint, new TimeOnly(9, 0), "Review", null, true)],
+            LoadDay().Entries);
+    }
+
+    // AC-2 (078)
+    [Theory]
+    [InlineData("unbooked 2")]
+    [InlineData("ub 2")]
+    [InlineData("/unbooked 2")]
+    public void Unbooked_BookedCheckpoint_RemovesTheProperty(string typed)
+    {
+        File.WriteAllText(DayFile("2026-10-27"), BookDayBooked);
+
+        (int exitCode, string output) = RunCommands(typed, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(BookDayUnbooked, ReadDay("2026-10-27"));
+        Assert.DoesNotContain("\"booked\"", ReadDay("2026-10-27"));
+        Assert.DoesNotContain("✓", LastFrame(output));
+    }
+
+    // AC-2 (078)
+    [Fact]
+    public void BookedThenUnbooked_FileEqualsWhatItWasBefore()
+    {
+        RunCommands("arrive 8:00", "cp 9:00 Review", "leave 12:00", "quit");
+        byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
+
+        RunCommands("bk 2", "quit");
+        Assert.NotEqual(before, File.ReadAllBytes(DayFile("2026-10-27")));
+
+        RunCommands("ub 2", "quit");
+        Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
+    }
+
+    // AC-3 (078)
+    [Theory]
+    [InlineData(BookDayBooked, "booked 2")]
+    [InlineData(BookDayBooked, "bk 2")]
+    [InlineData(BookDayUnbooked, "unbooked 2")]
+    [InlineData(BookDayUnbooked, "ub 3")]
+    public void Repeat_LeavesFileBytesAndWriteTimeUnchanged_AndShowsNoHint(string contents, string typed)
+    {
+        string path = DayFile("2026-10-27");
+        File.WriteAllText(path, contents);
+        DateTime stamp = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(path, stamp);
+        byte[] before = File.ReadAllBytes(path);
+
+        (int exitCode, string output) = RunCommands(typed, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(before, File.ReadAllBytes(path));
+        Assert.Equal(stamp, File.GetLastWriteTimeUtc(path));
+        Assert.Equal(string.Empty, LastLayout(output)[^4].Trim());
+    }
+
+    // AC-4 (078)
+    [Theory]
+    [InlineData("booked", "booked: say which checkpoint to mark.", "Use booked <number>.")]
+    [InlineData("bk x", "booked: x is not an entry number.", "Use booked <number>.")]
+    [InlineData("booked -1", "booked: -1 is not an entry number.", "Use booked <number>.")]
+    [InlineData("booked +2", "booked: +2 is not an entry number.", "Use booked <number>.")]
+    [InlineData("booked 2 3", "booked: 2 3 is not an entry number.", "Use booked <number>.")]
+    [InlineData("booked [red]x[/]", "booked: [red]x[/] is not an entry number.", "Use booked <number>.")]
+    [InlineData("booked 0", "booked: there is no entry 0.", "")]
+    [InlineData("booked 5", "booked: there is no entry 5.", "")]
+    [InlineData("booked 1", "booked: entry 1 is not a checkpoint.", "")]
+    [InlineData("booked 4", "booked: entry 4 is not a checkpoint.", "")]
+    [InlineData("unbooked", "unbooked: say which checkpoint to mark.", "Use unbooked <number>.")]
+    [InlineData("ub x", "unbooked: x is not an entry number.", "Use unbooked <number>.")]
+    [InlineData("unbooked +2", "unbooked: +2 is not an entry number.", "Use unbooked <number>.")]
+    [InlineData("unbooked 5", "unbooked: there is no entry 5.", "")]
+    [InlineData("ub 1", "unbooked: entry 1 is not a checkpoint.", "")]
+    public void BadArgument_ShowsHintAboveInputBox_AndWritesNothing(string typed, string expected, string usage)
+    {
+        string path = DayFile("2026-10-27");
+        File.WriteAllText(path, BookDayBooked);
+        DateTime stamp = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(path, stamp);
+        byte[] before = File.ReadAllBytes(path);
+
+        (int exitCode, string output) = RunCommands("help", typed, "quit");
+
+        Assert.Equal(0, exitCode);
+        string[] frame = LastLayout(output);
+        AssertOnHintRow(frame, expected);
+        if (usage.Length > 0)
+        {
+            AssertOnHintRow(frame, usage);
+        }
+
+        Assert.Equal(before, File.ReadAllBytes(path));
+        Assert.Equal(stamp, File.GetLastWriteTimeUtc(path));
+        Assert.DoesNotContain("failed:", output);
+    }
+
+    // AC-4 (078)
+    [Theory]
+    [InlineData("booked 2")]
+    [InlineData("bk x")]
+    [InlineData("unbooked")]
+    [InlineData("ub 1")]
+    public void BookedHints_AreRed(string typed)
+    {
+        File.WriteAllText(DayFile("2026-10-27"), BookDayUnbooked);
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Input.PushTextWithEnter("booked 9");
+        console.Input.PushTextWithEnter(typed);
+        console.Input.PushTextWithEnter("quit");
+
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)m(un)?booked: ", console.Output);
+    }
+
+    // AC-4 (078)
+    [Theory]
+    [InlineData("booked 1", "booked: there is no entry 1.")]
+    [InlineData("unbooked 1", "unbooked: there is no entry 1.")]
+    public void Booked_OnDayWithoutFile_ShowsHint_AndCreatesNothing(string typed, string expected)
+    {
+        using TempFolder missing = new TempFolder(create: false);
+
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Input.PushTextWithEnter(typed);
+            c.Input.PushTextWithEnter("quit");
+        }, dataFolder: missing.Path);
+
+        Assert.Equal(0, exitCode);
+        AssertOnHintRow(LastLayout(output), expected);
+        Assert.False(Directory.Exists(missing.Path));
+
+        (exitCode, output) = RunCommands(typed, "quit");
+
+        Assert.Equal(0, exitCode);
+        AssertOnHintRow(LastLayout(output), expected);
+        Assert.False(File.Exists(DayFile("2026-10-27")));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
+    }
+
+    // AC-5 (078)
+    [Theory]
+    [InlineData("booked 1", "booked")]
+    [InlineData("ub 1", "unbooked")]
+    public void Booked_UnreadableFile_ShowsHint_AndLeavesFileUnchanged(string typed, string name)
+    {
+        File.WriteAllText(DayFile("2026-10-27"), "{not json");
+        byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
+
+        (int exitCode, string output) = RunCommands(typed, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
+        AssertOnHintRow(LastLayout(output), $"{name}: The file for 2026-10-27 is not a valid day file. Nothing was changed.");
+        Assert.DoesNotContain("   at ", output);
+        Assert.DoesNotContain("failed:", output);
+    }
+
+    // AC-5 (078)
+    [Theory]
+    [InlineData("booked 2", "booked")]
+    [InlineData("unbooked 2", "unbooked")]
+    public void Booked_SaveFailure_ShowsRedHint_NotStackTrace(string typed, string name)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        File.WriteAllText(DayFile("2026-10-27"), typed.StartsWith("un", StringComparison.Ordinal) ? BookDayBooked : BookDayUnbooked);
+        byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
+        UnixFileMode mode = File.GetUnixFileMode(data.Path);
+        File.SetUnixFileMode(data.Path, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        try
+        {
+            TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+            console.Profile.Width = 200;
+            console.Input.PushTextWithEnter(typed);
+            console.Input.PushTextWithEnter("quit");
+
+            Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+            Assert.Matches(@"\x1b\[(31|91|38;5;9)m" + name + @": could not save the day\.", console.Output);
+            Assert.DoesNotContain("   at ", console.Output);
+            Assert.DoesNotContain("failed:", console.Output);
+        }
+        finally
+        {
+            File.SetUnixFileMode(data.Path, mode);
+        }
+
+        Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
+    }
+
+    // AC-10 (078)
+    [Fact]
+    public void Help_ListsBookedAndUnbooked_WithAliasesAndDescriptions()
+    {
+        string plain = RunHelp(data.Path, folderFromEnvironment: false);
+
+        Assert.Matches(@"booked +│ bk +│ Mark a checkpoint on this day as booked", plain);
+        Assert.Matches(@"unbooked +│ ub +│ Mark a checkpoint on this day as not yet booked", plain);
+        Assert.Contains("CP checkpoint · ✓ booked", plain);
+    }
+
+    // AC-10 (078)
+    [Theory]
+    [InlineData("bk", "booked ", "Mark a checkpoint on this day as booked")]
+    [InlineData("ub", "unbooked ", "Mark a checkpoint on this day as not yet booked")]
+    public void Popup_MatchesBookedAliases(string typed, string name, string description)
+    {
+        string output = RunAnsi(c =>
+        {
+            c.Input.PushText(typed);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Contains(TypingWrites(output, 0), w => w.Text.StartsWith(name, StringComparison.Ordinal) && w.Text.Contains(description, StringComparison.Ordinal));
+    }
+
+    // AC-10 (078)
+    [Fact]
+    public void Booked_LeavesTimeLeftBreaksAndSummaryUnchanged()
+    {
+        const string Day =
+            "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"},"
+            + "{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"Review\",\"workItem\":1234},"
+            + "{\"kind\":\"breakStart\",\"time\":\"12:00\"},{\"kind\":\"breakEnd\",\"time\":\"12:10\"},"
+            + "{\"kind\":\"leaving\",\"time\":\"17:00\"}]}";
+        File.WriteAllText(DayFile("2026-10-27"), Day);
+
+        (_, string before) = RunWide(120, "summary", "quit");
+        (_, string after) = RunWide(120, "bk 2", "summary", "quit");
+
+        // The check mark widens the details column, so compare with runs of spaces collapsed.
+        static string Strip(string frame) => Regex.Replace(frame.Replace(" ✓", string.Empty, StringComparison.Ordinal), " +", " ");
+        Assert.Contains("✓", string.Join('\n', LastLayout(after)));
+        Assert.Equal(Strip(string.Join('\n', LastLayout(before))), Strip(string.Join('\n', LastLayout(after))));
+        Assert.Contains(LastLayout(after), l => l.Contains("#1234", StringComparison.Ordinal) && l.Contains("Review", StringComparison.Ordinal) && l.Contains('│'));
     }
 }
