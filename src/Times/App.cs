@@ -28,6 +28,12 @@ internal sealed class App
     private readonly bool folderFromEnvironment;
     private readonly ProjectStore projectStore;
     private readonly MouseReporting? mouse;
+    private readonly SettingsRegistry settings;
+    private readonly SettingsStore settingsStore;
+
+    // Set by the settings command; the loop then runs the settings panel until Esc.
+    private bool openSettings;
+    private string framePlaceholder = Placeholder;
 
     // The last drawn frame, one entry per screen row, so rows the command popup covered can be restored.
     // A scroll replaces it, so the popup restores the scrolled rows.
@@ -44,9 +50,12 @@ internal sealed class App
 
     /// <param name="folderFromEnvironment">True if the store's folder came from <see cref="DataFolder.VariableName"/>.</param>
     /// <param name="mouse">Turned on while the loop runs and off on every way out of it, or <c>null</c> for none.</param>
+    /// <param name="settings">The settings the <c>settings</c> panel lists, or <c>null</c> for <see cref="SettingsRegistry.CreateDefault"/>.</param>
     public App(IAnsiConsole console, TimeProvider time, DayStore store, CommandRegistry? registry = null,
-        bool folderFromEnvironment = false, MouseReporting? mouse = null)
+        bool folderFromEnvironment = false, MouseReporting? mouse = null, SettingsRegistry? settings = null)
     {
+        this.settings = settings ?? SettingsRegistry.CreateDefault();
+        settingsStore = new SettingsStore(store.Folder);
         this.mouse = mouse;
         this.console = console;
         this.time = time;
@@ -58,6 +67,11 @@ internal sealed class App
         RegisterNavigation();
         RegisterBookings();
         RegisterProjects();
+        this.registry.Register("settings", "se", "Change your settings", NoArguments("settings", () =>
+        {
+            openSettings = true;
+            return CommandResult.None;
+        }));
     }
 
     /// <summary>Where the day files live. Booking features read and write through it.</summary>
@@ -652,6 +666,15 @@ internal sealed class App
                 return 0;
             }
 
+            if (openSettings)
+            {
+                openSettings = false;
+                if (!RunSettings(editor))
+                {
+                    return 0;
+                }
+            }
+
             message = result.Message;
             hint = result.Hint;
             hideQuicklist = result.HideQuicklist && result.Message is not null;
@@ -732,11 +755,18 @@ internal sealed class App
             parts.Add(message);
         }
 
-        IRenderable top = new Rows(parts);
-        topLines = Segment.SplitLines(top.Render(RenderOptions.Create(console, console.Profile.Capabilities), console.Profile.Width));
+        SetTop(new Rows(parts));
         frameHint = hint ?? Text.Empty;
         offset = 0;
+        DrawFull();
+    }
 
+    private void SetTop(IRenderable top) =>
+        topLines = Segment.SplitLines(top.Render(RenderOptions.Create(console, console.Profile.Capabilities), console.Profile.Width));
+
+    // Clears the screen and writes the whole layout for the current top lines, offset and hint.
+    private void DrawFull()
+    {
         frame = RenderFrame();
         console.Clear(home: true);
         console.Write(new SegmentsRenderable(frame.SelectMany(l => l.Append(Segment.LineBreak)).SkipLast(1)));
@@ -747,7 +777,7 @@ internal sealed class App
     // Lays out the whole screen for the current top lines, offset and hint, one entry per row.
     private List<SegmentLine> RenderFrame()
     {
-        Panel input = new Panel(new Markup($"[steelblue1]{Markup.Escape(Prompt)}[/][grey]{Markup.Escape(Placeholder)}[/]"))
+        Panel input = new Panel(new Markup($"[steelblue1]{Markup.Escape(Prompt)}[/][grey]{Markup.Escape(framePlaceholder)}[/]"))
             .Border(BoxBorder.Rounded)
             .BorderColor(Color.SteelBlue1)
             .Expand();
@@ -783,6 +813,223 @@ internal sealed class App
 
         return true;
     }
+
+    // The settings panel, modal in place of the quicklist and day view, until Esc (true) or the end of
+    // the input (false). Opening and closing it reads settings.json but never writes it. Every change
+    // reloads the file first and saves at once; a file that cannot be read is never overwritten.
+    private bool RunSettings(LineEditor editor)
+    {
+        int selected = 0;
+        string? unreadable = LoadSettings(out SettingValues values);
+        offset = 0;
+        ShowSettings(values, selected, unreadable, null, full: true);
+        while (true)
+        {
+            ConsoleKeyInfo? read = editor.ReadKey();
+            if (read is null)
+            {
+                return false;
+            }
+
+            ConsoleKeyInfo key = read.Value;
+            if (key.Key == ConsoleKey.Escape)
+            {
+                return true;
+            }
+
+            int count = settings.Settings.Count;
+            if (count == 0)
+            {
+                continue;
+            }
+
+            bool control = (key.Modifiers & ConsoleModifiers.Control) != 0;
+            int moved = key.Key switch
+            {
+                ConsoleKey.UpArrow when !control => Math.Max(0, selected - 1),
+                ConsoleKey.DownArrow when !control => Math.Min(count - 1, selected + 1),
+                _ => selected,
+            };
+
+            if (moved != selected)
+            {
+                selected = moved;
+                ShowSettings(values, selected, unreadable, null, full: false);
+                continue;
+            }
+
+            if (key.Key is not (ConsoleKey.Enter or ConsoleKey.Spacebar) && key.KeyChar != ' ')
+            {
+                continue;
+            }
+
+            Setting setting = settings.Settings[selected];
+            IRenderable? hint;
+            if (setting.Kind == SettingKind.Number)
+            {
+                unreadable = LoadSettings(out values);
+                if (unreadable is not null)
+                {
+                    hint = NotSaved();
+                }
+                else
+                {
+                    string? text = EditNumber(editor, setting, values, selected, out bool cancelled);
+                    if (text is null)
+                    {
+                        return false;
+                    }
+
+                    if (cancelled)
+                    {
+                        hint = null;
+                    }
+                    else if (TryParseWhole(text, out int number) && setting.Accepts(number))
+                    {
+                        hint = ChangeSetting(setting, _ => number, ref values, ref unreadable);
+                    }
+                    else
+                    {
+                        hint = Hint($"settings: [bold]{Markup.Escape(setting.Name)}[/] takes a whole number from " +
+                            $"{setting.Min.ToString(CultureInfo.InvariantCulture)} to {setting.Max.ToString(CultureInfo.InvariantCulture)}.").Hint;
+                    }
+                }
+            }
+            else
+            {
+                hint = ChangeSetting(setting, current => NextValue(setting, current.Get(setting.Name)), ref values, ref unreadable);
+            }
+
+            ShowSettings(values, selected, unreadable, hint, full: false);
+        }
+    }
+
+    // Reloads settings.json, sets the setting to next(fresh values) and saves at once. Returns the
+    // hint to show (null on success). A file that cannot be read or a failed save leaves values
+    // as the file has them and writes nothing.
+    private IRenderable? ChangeSetting(Setting setting, Func<SettingValues, object> next, ref SettingValues values, ref string? unreadable)
+    {
+        unreadable = LoadSettings(out values);
+        if (unreadable is not null)
+        {
+            return NotSaved();
+        }
+
+        SettingValues updated = values.With(setting.Name, next(values));
+        try
+        {
+            settingsStore.Save(updated);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            return Hint($"settings: could not save the settings. {Markup.Escape(ex.Message)}").Hint;
+        }
+
+        values = updated;
+        return null;
+    }
+
+    // The panel already shows why the file cannot be read, so the hint stays short enough to fit.
+    private static IRenderable? NotSaved() =>
+        Hint("settings: the settings cannot be read (see above). Nothing was saved.").Hint;
+
+    // On/off flips; a choice moves to the next option, wrapping.
+    private static object NextValue(Setting setting, object current) => setting.Kind switch
+    {
+        SettingKind.OnOff => !(bool)current,
+        SettingKind.Choice => setting.Options[(IndexOf(setting.Options, (string)current) + 1) % setting.Options.Count],
+        _ => current,
+    };
+
+    private static int IndexOf(IReadOnlyList<string> options, string option)
+    {
+        for (int i = 0; i < options.Count; i++)
+        {
+            if (string.Equals(options[i], option, StringComparison.Ordinal))
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    // Reads a number for setting in the input box, with a grey placeholder naming the range. Returns
+    // null if the input ended; cancelled is set when Esc ended the edit.
+    private string? EditNumber(LineEditor editor, Setting setting, SettingValues values, int selected, out bool cancelled)
+    {
+        framePlaceholder = $"{setting.Name}: a whole number from {setting.Min.ToString(CultureInfo.InvariantCulture)} " +
+            $"to {setting.Max.ToString(CultureInfo.InvariantCulture)} · Esc cancels";
+        try
+        {
+            ShowSettings(values, selected, null, null, full: false);
+            int width = console.Profile.Width;
+            return editor.ReadValue(InputColumn, InputLine, width - InputColumn - 2, framePlaceholder, out cancelled);
+        }
+        finally
+        {
+            framePlaceholder = Placeholder;
+        }
+    }
+
+    // A whole number: optional leading '-', invariant ASCII digits, surrounding whitespace trimmed.
+    internal static bool TryParseWhole(string text, out int number)
+    {
+        number = 0;
+        string trimmed = text.Trim();
+        int start = trimmed.StartsWith('-') ? 1 : 0;
+        if (trimmed.Length == start || !trimmed[start..].All(char.IsAsciiDigit))
+        {
+            return false;
+        }
+
+        return int.TryParse(trimmed, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out number);
+    }
+
+    // Loads the settings. Returns null, or the reason the file cannot be read (values are then the defaults).
+    private string? LoadSettings(out SettingValues values)
+    {
+        try
+        {
+            values = settingsStore.Load(settings);
+            return null;
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            values = SettingValues.Defaults(settings);
+            return ex.Message;
+        }
+    }
+
+    // Draws the settings panel in the top area, scrolled so the selected row is in view, and the hint.
+    // full clears the screen first; otherwise every row is rewritten in place. The cursor ends in the input box.
+    private void ShowSettings(SettingValues values, int selected, string? unreadable, IRenderable? hint, bool full)
+    {
+        SetTop(SettingsPanel.Render(settings, values, selected, unreadable));
+        offset = settings.Settings.Count == 0
+            ? 0
+            : TopArea.OffsetShowing(SettingsPanel.LineOf(selected, unreadable is not null), topLines.Count, TopHeight, offset);
+        frameHint = hint ?? Text.Empty;
+        if (full)
+        {
+            DrawFull();
+        }
+        else
+        {
+            frame = RenderFrame();
+            for (int row = 1; row <= frame.Count; row++)
+            {
+                RestoreRow(row);
+            }
+        }
+
+        console.Cursor.SetPosition(InputColumn, InputLine);
+    }
+
+    // Inside the input panel: border + 1 padding on the left, then the prompt.
+    private static int InputColumn => 3 + Prompt.Length;
+
+    private int InputLine => console.Profile.Height - 1;
 
     // Reloads projects.json on every redraw, so a project added a moment ago shows up. Never writes.
     private IRenderable RenderQuicklist()

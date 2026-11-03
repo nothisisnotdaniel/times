@@ -132,8 +132,21 @@ required. A booking without a time uses the current time. `remove`, `change`, `b
 | `today` | `t` | none | Go back to today |
 | `addproject` | `ap` | `<work item> <title>` | Add a project to the quicklist |
 | `projects` | `pr` | none | List the projects on the quicklist |
+| `settings` | `se` | none | Open the settings panel (see [Settings](#settings)) |
 | `help` | `h` | none | List all commands, the running version and the data folder |
 | `quit` | `q` | none | Exit Times |
+
+### Settings
+
+`settings` (or `se`) opens a panel in place of the quicklist and the day view with every setting
+Times knows, its value and what it does. Move with `↑` / `↓`, change the selected setting with
+`Enter` or `Space`, and close the panel with `Esc`. An on/off setting flips, a setting with
+options moves to the next one, and a number setting asks for the new value in the input box
+(`Esc` there cancels). Every change is saved at once to `settings.json` in the data folder that
+`help` shows; nothing is written until you change something. If `settings.json` cannot be read, the
+panel says why, shows the defaults and saves nothing until the file is fixed or deleted.
+
+There are no settings yet: they arrive with the features that need them.
 
 ## Keys
 
@@ -192,8 +205,8 @@ Times keeps one JSON file per day (`yyyy-MM-dd.json`) in its data folder:
 - `~/.config/Times/` on macOS and Linux;
 - `%APPDATA%\Times\` on Windows.
 
-The project quicklist lives in the same folder, in `projects.json`. `help` shows which folder is
-in use.
+The project quicklist lives in the same folder, in `projects.json`, and your settings in
+`settings.json`. `help` shows which folder is in use.
 
 To use another folder, set the `TIMES_DATA_DIR` environment variable to it. The path must be
 absolute and is used exactly as given (no `~` expansion); if it is not absolute, or starts or ends

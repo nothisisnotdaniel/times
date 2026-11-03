@@ -826,11 +826,11 @@ public sealed class AppTests : IDisposable
         Assert.Contains("\u001b[21;1H", output);
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal([14, 15, 16, 17, 18, 19, 20, 21], popup.Select(w => w.Row));
-        // Seventeen commands: the first seven by name, then a row counting the other ten.
+        // Eighteen commands: the first seven by name, then a row counting the other eleven.
         Assert.Equal(
             ["addproject", "arrive", "booked", "break", "breakend", "change", "checkpoint", "…"],
             popup.Select(w => w.Text.Split(' ')[0]));
-        Assert.StartsWith("… 10 more", popup[^1].Text);
+        Assert.StartsWith("… 11 more", popup[^1].Text);
         Assert.Contains("Book a checkpoint", popup[6].Text);
         Assert.Equal(80, popup[0].Text.Length);
     }
@@ -903,9 +903,9 @@ public sealed class AppTests : IDisposable
         List<string> hintRow = TypingWrites(output, 1).Where(w => w.Row == 21).Select(w => w.Text).ToList();
 
         // popup, restored (Backspace), popup, restored (Esc), popup (quit typing), ...
-        Assert.StartsWith("… 10 more", hintRow[0]);
+        Assert.StartsWith("… 11 more", hintRow[0]);
         Assert.Contains("Unknown command nope", hintRow[1]);
-        Assert.StartsWith("… 10 more", hintRow[2]);
+        Assert.StartsWith("… 11 more", hintRow[2]);
         Assert.Contains("Unknown command nope", hintRow[3]);
         Assert.Contains("Unknown command nope", hintRow[^1]);
         Assert.Contains("\u001b[38;5;9mUnknown command", output[output.LastIndexOf("\u001b[21;1H", StringComparison.Ordinal)..]);
@@ -938,8 +938,8 @@ public sealed class AppTests : IDisposable
 
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
-        // 29 commands: 7 shown, the eighth row counts the other 22.
-        Assert.StartsWith("… 22 more", popup[^1].Text);
+        // 30 commands: 7 shown, the eighth row counts the other 23.
+        Assert.StartsWith("… 23 more", popup[^1].Text);
         // Nothing is drawn on row 1 while typing (the final clear on quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
@@ -4419,10 +4419,15 @@ public sealed class AppTests : IDisposable
         Assert.DoesNotContain(names, n => n.StartsWith('/'));
         foreach (string name in names)
         {
-            console.Input.PushTextWithEnter(name);
-            console.Input.PushTextWithEnter("/" + name);
-            console.Input.PushTextWithEnter(name.ToUpperInvariant());
-            console.Input.PushTextWithEnter("/" + char.ToUpperInvariant(name[0]) + name[1..]);
+            foreach (string typed in (string[])[name, "/" + name, name.ToUpperInvariant(), "/" + char.ToUpperInvariant(name[0]) + name[1..]])
+            {
+                console.Input.PushTextWithEnter(typed);
+                if (name == "settings")
+                {
+                    // The settings panel is modal: Esc closes it.
+                    console.Input.PushKey(ConsoleKey.Escape);
+                }
+            }
         }
 
         console.Input.PushTextWithEnter("quit");
@@ -4662,6 +4667,7 @@ public sealed class AppTests : IDisposable
             ["projects"] = "pr",
             ["quit"] = "q",
             ["remove"] = "r",
+            ["settings"] = "se",
             ["summary"] = "s",
             ["today"] = "t",
             ["unbooked"] = "ub",
@@ -5734,5 +5740,667 @@ public sealed class AppTests : IDisposable
         Assert.Contains("✓", string.Join('\n', LastLayout(after)));
         Assert.Equal(Strip(string.Join('\n', LastLayout(before))), Strip(string.Join('\n', LastLayout(after))));
         Assert.Contains(LastLayout(after), l => l.Contains("#1234", StringComparison.Ordinal) && l.Contains("Review", StringComparison.Ordinal) && l.Contains('│'));
+    }
+
+    // Settings panel (job 079) -------------------------------------------------------------
+
+    private string SettingsPath => Path.Combine(data.Path, "settings.json");
+
+    /// <summary>One setting of each kind, plus <paramref name="extra"/> on/off settings to overflow a small screen.</summary>
+    private static SettingsRegistry TestSettings(int extra = 0)
+    {
+        SettingsRegistry registry = SettingsStoreTests.Registry();
+        for (int i = 1; i <= extra; i++)
+        {
+            registry.RegisterOnOff($"extra-{i}", $"Extra setting {i}", false);
+        }
+
+        return registry;
+    }
+
+    private (int ExitCode, string Output) RunSettings(Action<TestConsole> input, SettingsRegistry? settings = null, int height = 24, string? folder = null)
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Height = height;
+        input(console);
+        App app = new App(console, FixedTimeProvider.At20261027(), new DayStore(folder ?? data.Path), settings: settings ?? TestSettings());
+        int exitCode = app.Run([]);
+        return (exitCode, console.Output);
+    }
+
+    /// <summary>
+    /// Every whole screen written, in order: a full frame (one write at 1;1 holding every row) or an
+    /// in-place redraw (a run of writes at column 1 on rows 1..height, one per row).
+    /// </summary>
+    private static List<string[]> Screens(string output, int height = 24)
+    {
+        List<AnsiWrite> writes = AnsiWrites.Parse(output);
+        List<string[]> screens = [];
+        for (int i = 0; i < writes.Count; i++)
+        {
+            AnsiWrite write = writes[i];
+            if (write.Row != 1 || write.Column != 1)
+            {
+                continue;
+            }
+
+            if (write.Text.Contains('\n'))
+            {
+                string[] rows = write.Text.Split('\n');
+                if (rows.Length >= height)
+                {
+                    screens.Add(rows[..height]);
+                }
+
+                continue;
+            }
+
+            if (i + height - 1 < writes.Count
+                && Enumerable.Range(1, height - 1).All(k => writes[i + k].Row == k + 1 && writes[i + k].Column == 1))
+            {
+                screens.Add(Enumerable.Range(0, height).Select(k => writes[i + k].Text).ToArray());
+                i += height - 1;
+            }
+        }
+
+        return screens;
+    }
+
+    /// <summary>The screens that show the settings panel (its header, or a scroll cue above it).</summary>
+    private static List<string[]> PanelScreens(string output, int height = 24) =>
+        Screens(output, height).Where(s => s.Any(r => r.Contains("Settings─", StringComparison.Ordinal) || r.Contains("↑/↓ move", StringComparison.Ordinal) || r.Contains("─Settings", StringComparison.Ordinal) || r.Contains("Extra setting", StringComparison.Ordinal))).ToList();
+
+    /// <summary>The name on the row marked with ›, or null.</summary>
+    private static string? Selected(string[] screen)
+    {
+        string? row = screen.FirstOrDefault(r => r.StartsWith("│ › ", StringComparison.Ordinal));
+        return row?[4..].Split(' ')[0];
+    }
+
+    /// <summary>The value shown for setting <paramref name="name"/> on <paramref name="screen"/>.</summary>
+    private static string ValueOf(string[] screen, string name)
+    {
+        string row = screen.First(r => Regex.IsMatch(r, $@"^│ [› ] {Regex.Escape(name)} "));
+        return row[4..].Split(' ', StringSplitOptions.RemoveEmptyEntries)[1];
+    }
+
+    // AC-2
+    [Theory]
+    [InlineData("settings")]
+    [InlineData("se")]
+    [InlineData("/settings")]
+    [InlineData("SE")]
+    public void Settings_AliasAndSlash_OpenThePanel(string typed)
+    {
+        (int exitCode, string output) = RunSettings(c =>
+        {
+            c.Input.PushTextWithEnter(typed);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Equal(0, exitCode);
+        Assert.Single(PanelScreens(output));
+        Assert.DoesNotContain("Unknown command", output);
+    }
+
+    // AC-2
+    [Fact]
+    public void Settings_WithArgument_ShowsTheTakesNoArgumentsHint_AndNoPanel()
+    {
+        (_, string output) = RunSettings(c =>
+        {
+            c.Input.PushTextWithEnter("settings x");
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Empty(PanelScreens(output));
+        string[] frame = AnsiFrames(output)[1];
+        Assert.Contains("settings takes no arguments.", frame[^4]);
+        Assert.Contains("\u001b[38;5;9m", output);
+    }
+
+    // AC-2
+    [Fact]
+    public void HelpAndPopup_ListSettings_WithItsAlias()
+    {
+        (_, string help) = RunSettings(c =>
+        {
+            c.Input.PushTextWithEnter("help");
+            c.Input.PushTextWithEnter("quit");
+        }, height: 60);
+        string popup = RunAnsi(c =>
+        {
+            c.Input.PushText("sett");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Matches(@"│ settings +│ se +│ Change your settings", Regex.Replace(help, @"\x1b\[[0-9;?]*[A-Za-z]", string.Empty));
+        Assert.Contains(TypingWrites(popup, 0), w => Regex.IsMatch(w.Text, @"^settings +se +Change your settings"));
+    }
+
+    // AC-3
+    [Fact]
+    public void Panel_ReplacesQuicklistAndDayView_WithRowsAndKeyLine()
+    {
+        (_, string output) = RunSettings(c =>
+        {
+            c.Input.PushTextWithEnter("settings");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        string[] screen = Assert.Single(PanelScreens(output));
+        Assert.StartsWith("╭─Settings─", screen[0]);
+        Assert.Matches(@"^│ › round +off +Round times", screen[1]);
+        Assert.Matches(@"^│   target +480 +Daily target", screen[2]);
+        Assert.Matches(@"^│   theme +dark +Theme", screen[3]);
+        Assert.Contains("↑/↓ move · Enter/Space change · Esc close", screen[4]);
+        Assert.StartsWith("╰", screen[5]);
+        Assert.DoesNotContain(screen, r => r.Contains("Projects", StringComparison.Ordinal) || r.Contains(Heading, StringComparison.Ordinal));
+        Assert.StartsWith("│ > ", screen[^2]);
+    }
+
+    // AC-4, AC-9
+    [Fact]
+    public void ShippedApp_HasNoSettings_OnlyEscDoesAnything_AndNothingIsWritten()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Input.PushTextWithEnter("settings");
+        console.Input.PushKey(ConsoleKey.DownArrow);
+        console.Input.PushKey(ConsoleKey.UpArrow);
+        console.Input.PushKey(ConsoleKey.Enter);
+        console.Input.PushKey(ConsoleKey.Spacebar);
+        console.Input.PushText("x");
+        console.Input.PushKey(ConsoleKey.Escape);
+        console.Input.PushTextWithEnter("quit");
+
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+
+        string[] screen = Assert.Single(PanelScreens(console.Output));
+        Assert.Contains(screen, r => r.Contains("No settings exist yet.", StringComparison.Ordinal));
+        Assert.Contains(screen, r => r.Contains("Esc close", StringComparison.Ordinal));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
+        Assert.DoesNotContain("Unknown command", console.Output);
+    }
+
+    // AC-5
+    [Fact]
+    public void Arrows_MoveTheSelectionByOne_AndStopAtTheEnds()
+    {
+        (_, string output) = RunSettings(c =>
+        {
+            c.Input.PushTextWithEnter("settings");
+            c.Input.PushKey(ConsoleKey.UpArrow);
+            for (int i = 0; i < 3; i++)
+            {
+                c.Input.PushKey(ConsoleKey.DownArrow);
+            }
+
+            for (int i = 0; i < 3; i++)
+            {
+                c.Input.PushKey(ConsoleKey.UpArrow);
+            }
+
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        // Keys at an end change nothing and redraw nothing.
+        Assert.Equal(["round", "target", "theme", "target", "round"], PanelScreens(output).Select(Selected));
+        Assert.False(File.Exists(SettingsPath));
+    }
+
+    // AC-5
+    [Fact]
+    public void OtherKeys_ScrollKeysAndMouseSequences_ChangeNothing_AndDoNotClose()
+    {
+        (int exitCode, string output) = RunSettings(c =>
+        {
+            c.Input.PushTextWithEnter("settings");
+            c.Input.PushKey(ConsoleKey.PageDown);
+            c.Input.PushKey(ConsoleKey.PageUp);
+            c.Input.PushKey(new ConsoleKeyInfo('\0', ConsoleKey.DownArrow, false, false, true));
+            c.Input.PushKey(ConsoleKey.Tab);
+            c.Input.PushKey(ConsoleKey.Backspace);
+            c.Input.PushText("xq");
+            Wheel(c, 1, 2);
+            Wheel(c, -1);
+            // A click, and a paste whose space and line break must not change the setting.
+            c.Input.PushKey(new ConsoleKeyInfo('\u001b', ConsoleKey.Escape, false, false, false));
+            c.Input.PushText("[<0;10;5M");
+            c.Input.PushKey(new ConsoleKeyInfo('\u001b', ConsoleKey.Escape, false, false, false));
+            c.Input.PushText("[200~ a ");
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushKey(new ConsoleKeyInfo('\u001b', ConsoleKey.Escape, false, false, false));
+            c.Input.PushText("[201~");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Equal(0, exitCode);
+        Assert.Single(PanelScreens(output));
+        Assert.False(File.Exists(SettingsPath));
+        Assert.DoesNotContain("Unknown command", output);
+    }
+
+    // AC-5
+    [Fact]
+    public void Selection_StaysInsideTheVisibleTopArea_OnASmallScreen()
+    {
+        const int Height = 12;
+        (_, string output) = RunSettings(c =>
+        {
+            c.Input.PushTextWithEnter("settings");
+            for (int i = 0; i < 25; i++)
+            {
+                c.Input.PushKey(ConsoleKey.DownArrow);
+            }
+
+            for (int i = 0; i < 25; i++)
+            {
+                c.Input.PushKey(ConsoleKey.UpArrow);
+            }
+
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        }, TestSettings(extra: 20), height: Height);
+
+        List<string[]> screens = PanelScreens(output, Height);
+        // 23 settings: 1 open + 22 down + 22 up.
+        Assert.Equal(45, screens.Count);
+        List<string?> selected = screens.Select(s => Selected(s[..(Height - 4)])).ToList();
+        Assert.All(selected, Assert.NotNull);
+        Assert.Equal("extra-20", selected[22]);
+        Assert.Equal("round", selected[^1]);
+        Assert.Contains("more lines above", screens[22][0]);
+        // The first setting is the panel's second line: only the header hides behind the cue.
+        Assert.StartsWith("↑ 1 more line above", screens[^1][0]);
+    }
+
+    // AC-6
+    [Fact]
+    public void EnterOrSpace_FlipsOnOff_SavesAtOnce_AndShowsIt()
+    {
+        (_, string output) = RunSettings(c =>
+        {
+            c.Input.PushTextWithEnter("settings");
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("settings");
+            c.Input.PushKey(ConsoleKey.Spacebar);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        List<string[]> screens = PanelScreens(output);
+        Assert.Equal(["off", "on", "on", "off"], screens.Select(s => ValueOf(s, "round")));
+        Assert.Equal("{\"settings\":{\"round\":false}}", File.ReadAllText(SettingsPath));
+    }
+
+    // AC-6
+    [Fact]
+    public void EnterOnChoice_MovesToTheNextOption_Wrapping_AndSavesEachStep()
+    {
+        (_, string output) = RunSettings(c =>
+        {
+            c.Input.PushTextWithEnter("settings");
+            c.Input.PushKey(ConsoleKey.DownArrow);
+            c.Input.PushKey(ConsoleKey.DownArrow);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushKey(ConsoleKey.Spacebar);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("settings");
+            c.Input.PushKey(ConsoleKey.DownArrow);
+            c.Input.PushKey(ConsoleKey.DownArrow);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Equal(
+            ["dark", "dark", "dark", "light", "[red]x[/]", "[red]x[/]", "[red]x[/]", "[red]x[/]", "dark"],
+            PanelScreens(output).Select(s => ValueOf(s, "theme")));
+        Assert.Equal("{\"settings\":{\"theme\":\"dark\"}}", File.ReadAllText(SettingsPath));
+    }
+
+    // AC-7
+    [Theory]
+    [InlineData("600", 600)]
+    [InlineData("  42 ", 42)]
+    [InlineData("-10", -10)]
+    [InlineData("0", 0)]
+    [InlineData("720", 720)]
+    public void EnterOnNumber_ReadsAValueInTheInputBox_AndSavesIt(string typed, int expected)
+    {
+        (_, string output) = RunSettings(c =>
+        {
+            c.Input.PushTextWithEnter("settings");
+            c.Input.PushKey(ConsoleKey.DownArrow);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter(typed);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        List<string[]> screens = PanelScreens(output);
+        Assert.Equal(expected.ToString(System.Globalization.CultureInfo.InvariantCulture), ValueOf(screens[^1], "target"));
+        Assert.Contains("target: a whole number from -10 to 720 · Esc cancels", screens[2][^2]);
+        Assert.Equal($"{{\"settings\":{{\"target\":{expected.ToString(System.Globalization.CultureInfo.InvariantCulture)}}}}}", File.ReadAllText(SettingsPath));
+        Assert.DoesNotContain(screens[^1], r => r.Contains("whole number", StringComparison.Ordinal));
+    }
+
+    // AC-7
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("abc")]
+    [InlineData("1.5")]
+    [InlineData("+3")]
+    [InlineData("1,000")]
+    [InlineData("- 3")]
+    [InlineData("721")]
+    [InlineData("-11")]
+    [InlineData("99999999999")]
+    public void EnterOnNumber_InvalidValue_ShowsRedHint_SavesNothing_AndKeepsThePanelOpen(string typed)
+    {
+        (_, string output) = RunSettings(c =>
+        {
+            c.Input.PushTextWithEnter("settings");
+            c.Input.PushKey(ConsoleKey.DownArrow);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter(typed);
+            c.Input.PushKey(ConsoleKey.DownArrow);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        List<string[]> screens = PanelScreens(output);
+        string[] afterEdit = screens[^2];
+        Assert.Contains("settings: target takes a whole number from -10 to 720.", afterEdit[^4]);
+        Assert.Equal("480", ValueOf(afterEdit, "target"));
+        Assert.Equal("theme", Selected(screens[^1]));
+        Assert.False(File.Exists(SettingsPath));
+        Assert.Contains("\u001b[38;5;9msettings: ", output);
+        // No command popup while the value is typed (abc would list addproject and arrive).
+        Assert.DoesNotContain(AnsiWrites.Parse(output), w => w.Text.StartsWith("addproject", StringComparison.Ordinal));
+    }
+
+    // AC-7
+    [Fact]
+    public void NumberEdit_EscCancels_WithoutAHint_AndIsNotAddedToTheHistory()
+    {
+        (_, string output) = RunSettings(c =>
+        {
+            c.Input.PushTextWithEnter("settings");
+            c.Input.PushKey(ConsoleKey.DownArrow);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushText("12");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("600");
+            c.Input.PushKey(ConsoleKey.Escape);
+            // History: Up gives "settings" (not "600"), which opens the panel again.
+            c.Input.PushKey(ConsoleKey.UpArrow);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        List<string[]> screens = PanelScreens(output);
+        string[] cancelled = screens[3];
+        Assert.Equal("480", ValueOf(cancelled, "target"));
+        Assert.DoesNotContain("whole number", cancelled[^4]);
+        Assert.Equal("{\"settings\":{\"target\":600}}", File.ReadAllText(SettingsPath));
+        Assert.Equal("round", Selected(screens[^1]));
+        Assert.Equal("600", ValueOf(screens[^1], "target"));
+        Assert.DoesNotContain("Unknown command", output);
+    }
+
+    // AC-8
+    [Fact]
+    public void Esc_ClosesThePanel_WithAFullRedraw_Unscrolled_AndTheHintCleared()
+    {
+        const int Height = 12;
+        (_, string output) = RunSettings(c =>
+        {
+            c.Input.PushTextWithEnter("settings");
+            for (int i = 0; i < 22; i++)
+            {
+                c.Input.PushKey(ConsoleKey.DownArrow);
+            }
+
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        }, TestSettings(extra: 20), height: Height);
+
+        List<string[]> screens = Screens(output, Height);
+        string[] last = screens[^1];
+        Assert.StartsWith("╭─Projects─", last[0]);
+        Assert.Contains(Heading, last[EmptyPanelRows]);
+        Assert.Equal(string.Empty, last[^4].Trim());
+        Assert.Contains("Type help for commands", last[^2]);
+        // A full frame (one write of every row at 1;1), not an in-place redraw.
+        AnsiWrite lastFull = AnsiWrites.Parse(output).Last(w => w.Row == 1 && w.Column == 1 && w.Text.Contains('\n'));
+        Assert.StartsWith("╭─Projects─", lastFull.Text);
+    }
+
+    // AC-8
+    [Fact]
+    public void Esc_ClearsAHintShownInThePanel()
+    {
+        (_, string output) = RunSettings(c =>
+        {
+            c.Input.PushTextWithEnter("settings");
+            c.Input.PushKey(ConsoleKey.DownArrow);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("abc");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        string[] last = Screens(output)[^1];
+        Assert.Contains(Heading, last[EmptyPanelRows]);
+        Assert.DoesNotContain("whole number", last[^4]);
+    }
+
+    // AC-8
+    [Theory]
+    [InlineData("settings\r")]
+    [InlineData("settings\r\r12")]
+    [InlineData("settings\r\u001b[<65;1")]
+    [InlineData("settings\r\u001b[200~ a")]
+    public void InputEnding_InThePanel_OrInANumberEdit_ReturnsZero(string keys)
+    {
+        SettingsRegistry registry = new SettingsRegistry();
+        registry.RegisterNumber("target", "Daily target", 480, 0, 720);
+        TestConsole test = new TestConsole().Interactive().EmitAnsiSequences();
+        IAnsiConsole console = new InputOverrideConsole(test, new EndingInput(keys));
+
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), settings: registry).Run([]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Settings", test.Output);
+        Assert.False(File.Exists(SettingsPath));
+    }
+
+    // AC-9
+    [Fact]
+    public void OpeningAndClosing_WithoutAChange_WritesNothing_NotEvenTheFolder()
+    {
+        string missing = Path.Combine(data.Path, "missing");
+        RunSettings(c =>
+        {
+            c.Input.PushTextWithEnter("settings");
+            c.Input.PushKey(ConsoleKey.DownArrow);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        }, folder: missing);
+
+        Assert.False(Directory.Exists(missing));
+
+        File.WriteAllText(SettingsPath, "{ \"settings\" : { \"round\" : true } }");
+        DateTime written = File.GetLastWriteTimeUtc(SettingsPath);
+        (_, string output) = RunSettings(c =>
+        {
+            c.Input.PushTextWithEnter("settings");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Equal("on", ValueOf(Assert.Single(PanelScreens(output)), "round"));
+        Assert.Equal("{ \"settings\" : { \"round\" : true } }", File.ReadAllText(SettingsPath));
+        Assert.Equal(written, File.GetLastWriteTimeUtc(SettingsPath));
+        Assert.Equal([SettingsPath], Directory.EnumerateFileSystemEntries(data.Path));
+    }
+
+    // AC-10
+    [Theory]
+    [InlineData("{not json", "settings.json is not valid JSON.")]
+    [InlineData("{\"settings\":{\"round\":1}}", "settings.json has a wrong value for \"round\".")]
+    [InlineData("{\"settings\":{\"target\":721}}", "settings.json has a wrong value for \"target\".")]
+    [InlineData("{\"settings\":{\"theme\":\"blue\"}}", "settings.json has a wrong value for \"theme\".")]
+    [InlineData("{\"settings\":{\"a\":1,\"a\":1}}", "settings.json has a property more than once.")]
+    public void UnreadableFile_ShowsWhy_ListsDefaults_AndEveryChangeSavesNothing(string contents, string reason)
+    {
+        File.WriteAllText(SettingsPath, contents);
+        byte[] before = File.ReadAllBytes(SettingsPath);
+
+        (_, string output) = RunSettings(c =>
+        {
+            c.Input.PushTextWithEnter("settings");
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushKey(ConsoleKey.DownArrow);
+            c.Input.PushKey(ConsoleKey.Spacebar);
+            c.Input.PushKey(ConsoleKey.DownArrow);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        List<string[]> screens = PanelScreens(output);
+        string[] first = screens[0];
+        Assert.Contains($"The settings cannot be read: {reason}", first[1]);
+        Assert.Contains("Fix or delete settings.json in the data folder (help shows where).", first[2]);
+        Assert.Equal("off", ValueOf(first, "round"));
+        Assert.Equal("480", ValueOf(first, "target"));
+        Assert.Equal("dark", ValueOf(first, "theme"));
+        Assert.Contains("\u001b[38;5;9mThe settings cannot be read:", output);
+        // Enter on round, Space on target (no edit opens), Enter on theme: each shows the hint.
+        foreach (string[] changed in new[] { screens[1], screens[3], screens[5] })
+        {
+            Assert.Contains("settings: the settings cannot be read (see above). Nothing was saved.", changed[^4]);
+            Assert.Equal("off", ValueOf(changed, "round"));
+            Assert.Equal("dark", ValueOf(changed, "theme"));
+        }
+
+        Assert.DoesNotContain("whole number", output);
+        Assert.Equal(before, File.ReadAllBytes(SettingsPath));
+    }
+
+    // AC-10
+    [Fact]
+    public void FifoSettingsFile_IsRefused_WithoutBlocking()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        SpecialFiles.MakeFifo(SettingsPath);
+        string output = string.Empty;
+        Exception? thrown = SpecialFiles.RunWithin(TimeSpan.FromSeconds(10), () => (_, output) = RunSettings(c =>
+        {
+            c.Input.PushTextWithEnter("settings");
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        }));
+
+        Assert.Null(thrown);
+        Assert.Contains("The settings cannot be read: settings.json is not a regular file.", output);
+        Assert.Contains("Nothing was saved.", output);
+        Assert.True(SpecialFiles.IsFifo(SettingsPath));
+    }
+
+    // AC-11
+    [Fact]
+    public void UnknownNamesInTheFile_AreKeptOnSave()
+    {
+        File.WriteAllText(SettingsPath, "{\"settings\":{\"later\":{\"x\":[1,2]},\"round\":false}}");
+
+        RunSettings(c =>
+        {
+            c.Input.PushTextWithEnter("settings");
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Equal("{\"settings\":{\"later\":{\"x\":[1,2]},\"round\":true}}", File.ReadAllText(SettingsPath));
+    }
+
+    // AC-11
+    [Fact]
+    public void SaveFailure_ShowsTheHint_AndThePreviousValue()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        File.WriteAllText(SettingsPath, "{\"settings\":{\"round\":false}}");
+        byte[] before = File.ReadAllBytes(SettingsPath);
+        File.SetUnixFileMode(data.Path, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        string output;
+        try
+        {
+            (_, output) = RunSettings(c =>
+            {
+                c.Input.PushTextWithEnter("settings");
+                c.Input.PushKey(ConsoleKey.Enter);
+                c.Input.PushKey(ConsoleKey.Escape);
+                c.Input.PushTextWithEnter("quit");
+            });
+        }
+        finally
+        {
+            File.SetUnixFileMode(data.Path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
+        string[] changed = PanelScreens(output)[1];
+        Assert.Contains("settings: could not save the settings.", changed[^4]);
+        Assert.Equal("off", ValueOf(changed, "round"));
+        Assert.Equal(before, File.ReadAllBytes(SettingsPath));
+    }
+
+    // AC-7
+    [Theory]
+    [InlineData("0", 0)]
+    [InlineData(" -12\t", -12)]
+    [InlineData("2147483647", int.MaxValue)]
+    [InlineData("-2147483648", int.MinValue)]
+    public void TryParseWhole_AcceptsInvariantWholeNumbers(string text, int expected)
+    {
+        Assert.True(App.TryParseWhole(text, out int number));
+        Assert.Equal(expected, number);
+    }
+
+    // AC-7
+    [Theory]
+    [InlineData("")]
+    [InlineData("-")]
+    [InlineData("+1")]
+    [InlineData("1e3")]
+    [InlineData("1 000")]
+    [InlineData("\u0663")]
+    [InlineData("\uff11")]
+    [InlineData("2147483648")]
+    [InlineData("--1")]
+    public void TryParseWhole_RejectsEverythingElse(string text)
+    {
+        Assert.False(App.TryParseWhole(text, out _));
     }
 }

@@ -2142,4 +2142,80 @@ public class LineEditorTests
 
         Assert.Equal("ab", Read(editor));
     }
+
+    // Job 079, AC-7 --------------------------------------------------------------------------
+
+    private static string? ReadValue(LineEditor editor, out bool cancelled) =>
+        editor.ReadValue(5, 23, 70, "a whole number", out cancelled);
+
+    [Fact]
+    public void ReadValue_ReturnsTheTypedValue_WithoutPopupOrHistory()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        console.Input.PushTextWithEnter("he");
+        console.Input.PushKey(ConsoleKey.UpArrow);
+        console.Input.PushKey(ConsoleKey.Tab);
+        console.Input.PushKey(ConsoleKey.Enter);
+        console.Input.PushKey(ConsoleKey.UpArrow);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal("he", ReadValue(editor, out bool cancelled));
+        Assert.False(cancelled);
+        Assert.DoesNotContain("help", console.Output);
+        // The value was not added to the history: Up on the next command line finds nothing.
+        Assert.Equal(string.Empty, Read(editor));
+    }
+
+    [Fact]
+    public void ReadValue_Esc_Cancels()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        console.Input.PushText("12");
+        console.Input.PushKey(ConsoleKey.Escape);
+
+        Assert.Equal(string.Empty, ReadValue(editor, out bool cancelled));
+        Assert.True(cancelled);
+    }
+
+    // Job 079, AC-5 --------------------------------------------------------------------------
+
+    [Fact]
+    public void ReadKey_ReturnsKeys_DropsMouseAndPasteSequences_AndNormalizesEsc()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        console.Input.PushKey(ConsoleKey.DownArrow);
+        console.Input.PushKey(new ConsoleKeyInfo('\u001b', ConsoleKey.Escape, false, false, false));
+        console.Input.PushText("[<65;10;5M");
+        console.Input.PushKey(new ConsoleKeyInfo('\u001b', ConsoleKey.Escape, false, false, false));
+        console.Input.PushText("[200~ x");
+        console.Input.PushKey(new ConsoleKeyInfo('\u001b', ConsoleKey.Escape, false, false, false));
+        console.Input.PushText("[201~");
+        console.Input.PushKey(new ConsoleKeyInfo('\u001b', default, false, false, false));
+        console.Input.PushText("q");
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal(ConsoleKey.DownArrow, editor.ReadKey()?.Key);
+        Assert.Equal(ConsoleKey.Escape, editor.ReadKey()?.Key);
+        Assert.Equal('q', editor.ReadKey()?.KeyChar);
+        Assert.Equal(ConsoleKey.Enter, editor.ReadKey()?.Key);
+    }
+
+    [Fact]
+    public void ReadKey_ReturnsNull_WhenTheInputEnds()
+    {
+        PausingFreeInput input = new PausingFreeInput();
+        LineEditor editor = new LineEditor(new InputOverrideConsole(new TestConsole().Interactive(), input), CommandRegistry.CreateDefault());
+
+        Assert.Null(editor.ReadKey());
+    }
+
+    private sealed class PausingFreeInput : IAnsiConsoleInput
+    {
+        public bool IsKeyAvailable() => false;
+
+        public ConsoleKeyInfo? ReadKey(bool intercept) => null;
+
+        public Task<ConsoleKeyInfo?> ReadKeyAsync(bool intercept, CancellationToken cancellationToken) =>
+            Task.FromResult<ConsoleKeyInfo?>(null);
+    }
 }

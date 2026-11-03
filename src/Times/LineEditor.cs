@@ -74,6 +74,9 @@ internal sealed class LineEditor
     private readonly CommandRegistry registry;
     private readonly List<string> history = [];
 
+    // A key read after a plain Esc in ReadKey, handed to the next read so it is not lost.
+    private ConsoleKeyInfo? carried;
+
     public LineEditor(IAnsiConsole console, CommandRegistry registry)
     {
         this.console = console;
@@ -94,15 +97,80 @@ internal sealed class LineEditor
     /// Returns <c>null</c> if the input has no more keys, also in the middle of an escape sequence
     /// or a paste.
     /// </summary>
-    public string? ReadLine(int column, int line, int width, PopupArea? popup = null, string? placeholder = null, Func<int, ScrollStep, bool>? scroll = null)
+    public string? ReadLine(int column, int line, int width, PopupArea? popup = null, string? placeholder = null, Func<int, ScrollStep, bool>? scroll = null) =>
+        Read(column, line, width, popup, placeholder, scroll, value: false, out _);
+
+    /// <summary>
+    /// Reads a value (not a command) at the same place as <see cref="ReadLine"/>: no popup, no
+    /// scrolling, no Tab completion and no history (↑/↓ do nothing and the value is not added).
+    /// Esc cancels: <paramref name="cancelled"/> is set and an empty string is returned. Mouse and
+    /// paste sequences behave as in <see cref="ReadLine"/>. Returns <c>null</c> if the input has no
+    /// more keys.
+    /// </summary>
+    public string? ReadValue(int column, int line, int width, string? placeholder, out bool cancelled) =>
+        Read(column, line, width, null, placeholder, null, value: true, out cancelled);
+
+    /// <summary>
+    /// Reads one key for a dialog such as the settings panel. A mouse sequence (an Esc with a
+    /// <c>[</c> waiting) is read to its end and dropped, and a bracketed paste is read to its end
+    /// and dropped, so neither reaches the dialog as keys. Any Esc comes back as
+    /// <see cref="ConsoleKey.Escape"/>; a key that followed a plain Esc is kept for the next read.
+    /// Returns <c>null</c> if the input has no more keys.
+    /// </summary>
+    public ConsoleKeyInfo? ReadKey()
     {
+        while (true)
+        {
+            ConsoleKeyInfo? key = carried ?? console.Input.ReadKey(intercept: true);
+            carried = null;
+            if (key is null)
+            {
+                return null;
+            }
+
+            if (!IsEscape(key.Value))
+            {
+                return key;
+            }
+
+            ConsoleKeyInfo escape = new ConsoleKeyInfo('\u001b', ConsoleKey.Escape, false, false, false);
+            if (!console.Input.IsKeyAvailable())
+            {
+                return escape;
+            }
+
+            ConsoleKeyInfo? next = console.Input.ReadKey(intercept: true);
+            if (next is null)
+            {
+                return null;
+            }
+
+            if (next.Value.KeyChar != '[')
+            {
+                carried = next;
+                return escape;
+            }
+
+            MouseInputKind? kind = ReadSequence();
+            if (kind is null || (kind == MouseInputKind.PasteStart && ReadPaste() is null))
+            {
+                return null;
+            }
+        }
+    }
+
+    private string? Read(int column, int line, int width, PopupArea? popup, string? placeholder,
+        Func<int, ScrollStep, bool>? scroll, bool value, out bool cancelled)
+    {
+        cancelled = false;
         string buffer = string.Empty;
         int historyIndex = history.Count;
         int drawn = placeholder is null ? 0 : Crop(placeholder, Room(width)).Length;
         int popupRows = 0;
         bool popupDismissed = false;
         bool tabList = false;
-        ConsoleKeyInfo? pending = null;
+        ConsoleKeyInfo? pending = carried;
+        carried = null;
 
         while (true)
         {
@@ -188,7 +256,7 @@ internal sealed class LineEditor
                 switch (info.Key)
                 {
                     case ConsoleKey.Enter:
-                        if (buffer.Trim().Length > 0 && (history.Count == 0 || history[^1] != buffer))
+                        if (!value && buffer.Trim().Length > 0 && (history.Count == 0 || history[^1] != buffer))
                         {
                             history.Add(buffer);
                         }
@@ -210,6 +278,14 @@ internal sealed class LineEditor
                         break;
 
                     case ConsoleKey.Escape:
+                        if (value)
+                        {
+                            // A key that came right after the Esc belongs to whoever reads next.
+                            carried = pending;
+                            cancelled = true;
+                            return string.Empty;
+                        }
+
                         if (popupRows > 0)
                         {
                             popupDismissed = true;
@@ -223,7 +299,7 @@ internal sealed class LineEditor
                         break;
 
                     case ConsoleKey.Tab:
-                        if (buffer.Any(char.IsWhiteSpace))
+                        if (value || buffer.Any(char.IsWhiteSpace))
                         {
                             break;
                         }
@@ -242,7 +318,7 @@ internal sealed class LineEditor
                         break;
 
                     case ConsoleKey.UpArrow:
-                        if (history.Count > 0)
+                        if (!value && history.Count > 0)
                         {
                             historyIndex = Math.Max(0, historyIndex - 1);
                             buffer = history[historyIndex];
@@ -251,7 +327,7 @@ internal sealed class LineEditor
                         break;
 
                     case ConsoleKey.DownArrow:
-                        if (historyIndex < history.Count)
+                        if (!value && historyIndex < history.Count)
                         {
                             historyIndex++;
                             buffer = historyIndex == history.Count ? string.Empty : history[historyIndex];
