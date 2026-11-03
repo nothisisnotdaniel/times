@@ -635,9 +635,17 @@ internal sealed class App
 
     private static CommandResult Hint(string markup) => CommandResult.Error(markup);
 
-    // The lines under the help table: the running version, then the data folder (always last).
+    // The lines under the help table: the day view codes, the running version, then the data folder
+    // (always last).
     private IRenderable RenderHelpFooter() =>
-        new Rows(new Markup($"[grey]Version:[/] {Markup.Escape(AppVersion.Current)}"), RenderDataFolder());
+        new Rows(
+            new Markup(DayViewCodes),
+            new Markup($"[grey]Version:[/] {Markup.Escape(AppVersion.Current)}"),
+            RenderDataFolder());
+
+    private const string DayViewCodes =
+        "[grey]Day view codes:[/] [steelblue1]AR[/] arrival · [steelblue1]LE[/] leaving · [steelblue1]BS[/] break start · "
+        + "[steelblue1]BE[/] break end · [steelblue1]CP[/] checkpoint";
 
     // The line under the help table, so the user can always tell where the day files are.
     private Markup RenderDataFolder()
