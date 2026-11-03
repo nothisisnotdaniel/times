@@ -159,6 +159,8 @@ public sealed class SettingsStoreTests
     [InlineData("{\"settings\":{\"theme\":\"blue\"}}", "settings.json has a wrong value for \"theme\".")]
     [InlineData("{\"settings\":{\"theme\":1}}", "settings.json has a wrong value for \"theme\".")]
     [InlineData("{\"settings\":{\"theme\":\"\\ud800\"}}", "settings.json has a wrong value for \"theme\".")]
+    [InlineData("{\"settings\":{\"\\ud800\":1}}", "settings.json has a property name that cannot be read.")]
+    [InlineData("{\"settings\":{\"x\":[{\"\\udc00a\":1}]}}", "settings.json has a property name that cannot be read.")]
     public void Load_InvalidFile_ThrowsInvalidData_AndLeavesFileUnchanged(string contents, string message)
     {
         using TempFolder temp = new TempFolder();

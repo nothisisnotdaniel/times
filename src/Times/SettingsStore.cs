@@ -122,13 +122,26 @@ internal sealed class SettingValues
     /// <summary>
     /// Reads the contents of <c>settings.json</c>. Throws <see cref="JsonException"/> if they are not
     /// JSON, and <see cref="InvalidDataException"/> if they are not exactly <c>{"settings":{…}}</c>,
-    /// hold a property more than once (at any depth), or hold a value a registered setting cannot
-    /// take (wrong type, out of range, unknown option). Never returns partial values.
+    /// hold a property more than once (at any depth) or a property name that is not valid text, or
+    /// hold a value a registered setting cannot take (wrong type, out of range, unknown option).
+    /// Never returns partial values.
     /// </summary>
     public static SettingValues FromJson(SettingsRegistry registry, string json)
     {
         using JsonDocument document = JsonDocument.Parse(json);
-        JsonElement root = document.RootElement;
+        try
+        {
+            return FromDocument(registry, document.RootElement);
+        }
+        catch (InvalidOperationException)
+        {
+            // A property name holding an escaped lone surrogate (such as \ud800) cannot be read as a string.
+            throw new InvalidDataException($"{SettingsStore.FileName} has a property name that cannot be read.");
+        }
+    }
+
+    private static SettingValues FromDocument(SettingsRegistry registry, JsonElement root)
+    {
         if (HasDuplicateProperty(root))
         {
             throw new InvalidDataException($"{SettingsStore.FileName} has a property more than once.");
