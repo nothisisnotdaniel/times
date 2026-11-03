@@ -101,19 +101,55 @@ public sealed class ToolPackagingTests
         Assert.Contains(".github/workflows/release.yml", section, StringComparison.Ordinal);
     }
 
-    // AC-1 (072, replaces 071 "ReleaseWorkflow_TriggersOnDevelopPushAndVersionTagPush")
+    // AC-1 (075, replaces 072 "ReleaseWorkflow_TriggersOnDevelopPushVersionTagPushAndClosedPrIntoMain"), AC-3 (075)
     [Fact]
-    public void ReleaseWorkflow_TriggersOnDevelopPushVersionTagPushAndClosedPrIntoMain()
+    public void ReleaseWorkflow_TriggersOnDevelopPushVersionTagPushAndClosedPrIntoMain_IgnoringBacklogOnlyPushes()
     {
         string workflow = ReadWorkflow();
 
         string on = TopLevelBlock(workflow, "on");
         List<string> keys = ChildLines(on).Select(line => line.Trim()).ToList();
         Assert.Equal(
-            ["push:", "branches:", "- \"develop\"", "tags:", "- \"v*\"", "pull_request:", "types:", "- \"closed\"", "branches:", "- \"main\""],
+            ["push:", "branches:", "- \"develop\"", "tags:", "- \"v*\"", "paths-ignore:", "- \"backlog.md\"", "pull_request:", "types:", "- \"closed\"", "branches:", "- \"main\""],
             keys);
         Assert.DoesNotContain("pull_request_target", workflow, StringComparison.Ordinal);
         Assert.DoesNotContain("workflow_dispatch", workflow, StringComparison.Ordinal);
+        Assert.DoesNotContain(workflow.Split('\n'), line => line.Trim().StartsWith("paths:", StringComparison.Ordinal));
+    }
+
+    // AC-2 (075): only push ignores paths, and only the root backlog.md; a merged release PR always runs.
+    [Fact]
+    public void ReleaseWorkflow_PathsIgnoreOnlyUnderPushAndOnlyRootBacklog()
+    {
+        string workflow = ReadWorkflow();
+        List<string> on = ChildLines(TopLevelBlock(workflow, "on")).Select(line => line.Trim()).ToList();
+        int pr = on.IndexOf("pull_request:");
+        Assert.True(pr > 0, "the on block has no pull_request:");
+        List<string> push = on[..pr];
+        List<string> pullRequest = on[pr..];
+
+        Assert.Contains("paths-ignore:", push);
+        Assert.DoesNotContain("paths-ignore:", pullRequest);
+        Assert.Equal(["pull_request:", "types:", "- \"closed\"", "branches:", "- \"main\""], pullRequest);
+
+        Assert.Single(workflow.Split('\n'), line => line.Trim().StartsWith("paths-ignore:", StringComparison.Ordinal));
+        int ignore = push.IndexOf("paths-ignore:");
+        List<string> entries = push[(ignore + 1)..].TakeWhile(line => line.StartsWith("- ", StringComparison.Ordinal)).ToList();
+        string entry = Assert.Single(entries);
+        Assert.Equal("- \"backlog.md\"", entry);
+        string path = entry[2..].Trim('"');
+        Assert.DoesNotContain(path, c => c == '*' || c == '?' || c == '[' || c == '!' || c == '/' || c == '\\');
+    }
+
+    // AC-4 (075)
+    [Fact]
+    public void ReleaseWorkflow_HeaderCommentMentionsBacklogOnlyPushes()
+    {
+        string workflow = ReadWorkflow();
+        int name = workflow.IndexOf("\nname: Release\n", StringComparison.Ordinal);
+        Assert.True(name >= 0, "workflow has no 'name: Release' line");
+
+        Assert.Contains("backlog.md", workflow[..name], StringComparison.Ordinal);
     }
 
     // AC-1 (072): the job runs for every push, and for a pull_request only when merged from develop in this repo.
@@ -891,6 +927,34 @@ public sealed class ToolPackagingTests
 
         Assert.Contains("a merged `develop` -> `main` pull request titled `release vX.Y.Z`", note, StringComparison.Ordinal);
         Assert.Contains("made on the merge commit", note, StringComparison.Ordinal);
+    }
+
+    // AC-5 (075)
+    [Fact]
+    public void ClaudeMd_ReleaseWorkflowNoteMentionsBacklogOnlyPushes()
+    {
+        string claude = File.ReadAllText(Path.Combine(RepoRoot, "CLAUDE.md")).ReplaceLineEndings("\n");
+        int start = claude.IndexOf("`.github/workflows/release.yml`:", StringComparison.Ordinal);
+        Assert.True(start >= 0, "CLAUDE.md has no release.yml layout note");
+        int end = claude.IndexOf("\n  - ", start, StringComparison.Ordinal);
+        string note = Regex.Replace(end < 0 ? claude[start..] : claude[start..end], @"\s+", " ");
+
+        Assert.Contains("backlog.md", note, StringComparison.Ordinal);
+        Assert.Contains("paths-ignore", note, StringComparison.Ordinal);
+    }
+
+    // AC-6 (075)
+    [Fact]
+    public void Readme_ReleasingSaysBacklogOnlyPushesMakeNoPrerelease()
+    {
+        string flat = Regex.Replace(ReadmeSection("## Releasing"), @"\s+", " ");
+
+        int develop = flat.IndexOf("Every push to `develop`", StringComparison.Ordinal);
+        int backlog = flat.IndexOf("backlog.md", Math.Max(develop, 0), StringComparison.Ordinal);
+        int pr = flat.IndexOf("gh pr create", StringComparison.Ordinal);
+        Assert.True(develop >= 0, "README '## Releasing' does not say 'Every push to `develop`'");
+        Assert.True(backlog > develop, "README '## Releasing' does not mention backlog.md after the develop builds");
+        Assert.True(pr > backlog, "backlog.md must be mentioned before the gh pr create command");
     }
 
     private static string ReadmeSection(string heading)

@@ -1,6 +1,7 @@
 # Builds, tests and packs Times as a .NET tool, then attaches the .nupkg to a GitHub release.
 # - A push to develop makes a prerelease X.Y.(Z+1)-develop.<run number>, one patch above the
-#   highest release tag (.github/scripts/develop-version.sh).
+#   highest release tag (.github/scripts/develop-version.sh). A push that changes only the root
+#   backlog.md is skipped (paths-ignore), so it makes no prerelease.
 # - A merged pull request from develop into main titled "release vX.Y.Z" makes the release vX.Y.Z
 #   (and its tag) on the merge commit (.github/scripts/release-pr-version.sh). Closed-unmerged PRs,
 #   PRs from other branches and fork PRs are skipped by the job's if:.
@@ -17,6 +18,8 @@ on:
       - "develop"
     tags:
       - "v*"
+    paths-ignore:
+      - "backlog.md"
   pull_request:
     types:
       - "closed"
