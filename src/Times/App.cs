@@ -705,7 +705,7 @@ internal sealed class App
 
     private const string DayViewCodes =
         "[grey]Day view codes:[/] [steelblue1]AR[/] arrival · [steelblue1]LE[/] leaving · [steelblue1]BS[/] break start · "
-        + "[steelblue1]BE[/] break end · [steelblue1]CP[/] checkpoint · [steelblue1]✓[/] booked";
+        + "[steelblue1]BE[/] break end · [steelblue1]CP[/] checkpoint · [grey]✓[/] booked";
 
     // The line under the help table, so the user can always tell where the day files are.
     private Markup RenderDataFolder()

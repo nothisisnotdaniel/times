@@ -5693,6 +5693,9 @@ public sealed class AppTests : IDisposable
         Assert.Matches(@"booked +│ bk +│ Mark a checkpoint on this day as booked", plain);
         Assert.Matches(@"unbooked +│ ub +│ Mark a checkpoint on this day as not yet booked", plain);
         Assert.Contains("CP checkpoint · ✓ booked", plain);
+
+        // The legend's check mark is grey, as in the day view.
+        Assert.Contains("\u001b[38;5;8m✓\u001b[0m booked", RunHelp(data.Path, folderFromEnvironment: false, ansi: true));
     }
 
     // AC-10 (078)
