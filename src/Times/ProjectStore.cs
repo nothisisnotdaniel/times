@@ -35,34 +35,10 @@ internal sealed class ProjectStore
     public ProjectList Load()
     {
         EnsureValidFolder();
-        string path = FilePath;
-        FileKindResult kind = FileKind.Of(path);
-        if (kind == FileKindResult.Missing)
+        byte[]? bytes = CappedFile.Read(FilePath, FileName, MaxFileBytes);
+        if (bytes is null)
         {
             return ProjectList.Empty;
-        }
-
-        if (kind != FileKindResult.Regular)
-        {
-            throw new InvalidDataException($"{FileName} is not a regular file.");
-        }
-
-        FileInfo file = new FileInfo(path);
-        FileSystemInfo target = file.LinkTarget is null ? file : file.ResolveLinkTarget(returnFinalTarget: true) ?? file;
-        if (target is FileInfo targetFile && targetFile.Length > MaxFileBytes)
-        {
-            throw new InvalidDataException($"{FileName} is too large.");
-        }
-
-        byte[] bytes;
-        using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
-        {
-            bytes = ReadAtMost(stream, MaxFileBytes + 1);
-        }
-
-        if (bytes.Length > MaxFileBytes)
-        {
-            throw new InvalidDataException($"{FileName} is too large.");
         }
 
         try
@@ -80,24 +56,7 @@ internal sealed class ProjectStore
     /// Reads from <paramref name="stream"/> until it ends or <paramref name="limit"/> bytes have
     /// arrived, whichever comes first. Never asks the stream for more than <paramref name="limit"/> bytes.
     /// </summary>
-    internal static byte[] ReadAtMost(Stream stream, long limit)
-    {
-        using MemoryStream result = new MemoryStream();
-        byte[] buffer = new byte[8192];
-        while (result.Length < limit)
-        {
-            int wanted = (int)Math.Min(buffer.Length, limit - result.Length);
-            int read = stream.Read(buffer, 0, wanted);
-            if (read == 0)
-            {
-                break;
-            }
-
-            result.Write(buffer, 0, read);
-        }
-
-        return result.ToArray();
-    }
+    internal static byte[] ReadAtMost(Stream stream, long limit) => CappedFile.ReadAtMost(stream, limit);
 
     /// <summary>
     /// Saves <paramref name="list"/>. Creates the folder if it is missing, writes a temp file next to

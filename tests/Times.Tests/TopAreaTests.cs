@@ -269,4 +269,19 @@ public class TopAreaTests
         Assert.Equal(below[..Width], lines[^1]);
         Assert.All(lines, l => Assert.True(l.Length <= Width, $"row wider than {Width}: '{l}'"));
     }
+
+    // Job 079, AC-5: the settings panel keeps its selected row in view.
+    [Theory]
+    [InlineData(3, 10, 20, 0, 0)] // no scrolling: always 0
+    [InlineData(6, 20, 8, 0, 0)] // already visible (lines 0-6, then the below cue)
+    [InlineData(7, 20, 8, 0, 2)] // just below: offset 1 adds the above cue, so it takes 2
+    [InlineData(19, 20, 8, 0, 13)] // the last line: the largest offset
+    [InlineData(5, 20, 8, 13, 5)] // above the first shown line (behind the above cue)
+    [InlineData(1, 20, 8, 13, 1)] // the second line: shown right after the above cue
+    [InlineData(0, 20, 8, 5, 0)] // the first line: back to the top
+    [InlineData(10, 20, 8, 99, 10)] // an offset past the end is clamped first
+    public void OffsetShowing_MovesTheOffsetJustFarEnough(int line, int lineCount, int height, int offset, int expected)
+    {
+        Assert.Equal(expected, TopArea.OffsetShowing(line, lineCount, height, offset));
+    }
 }

@@ -75,6 +75,13 @@ Every factory agent reads this file before working on Times. Keep it short and a
   characters, and hold no control characters, no Unicode Format (Cf) code points (bidi overrides,
   zero-width characters, soft hyphens, tag characters) and no unpaired surrogates; this is checked
   when typed (red hint) and when `projects.json` or a day file is loaded (file is unreadable).
+- **Settings:** features register their user preferences in the one `SettingsRegistry` (kinds
+  `OnOff`, `Number` with min/max, `Choice` with options; registration order is display order;
+  `CreateDefault()` has none yet), the way commands use `CommandRegistry`, and never add their own
+  command for them. `settings` (`se`) opens the modal `SettingsPanel` in place of the top area. Values
+  live in `settings.json` next to the day files (`SettingsStore`, `{"settings":{"<name>":true|1|"opt"}}`),
+  read like `projects.json` through `CappedFile` (regular file, 64 KiB cap); a broken file is shown as
+  unreadable and never overwritten, unknown names are kept on save, and every change is saved at once.
 - **Days:** the app always shows one "current" day, starting at today. The user can move to
   the previous or next day or jump to a date. Navigating to a day with no file shows it as an
   empty day **without creating a file**. The day's file is created only when the first

@@ -41,6 +41,41 @@ internal sealed class TopArea : IRenderable
     public static int MaxOffset(int lineCount, int height) =>
         lineCount > height && height >= 3 ? lineCount - (height - 1) : 0;
 
+    /// <summary>
+    /// The offset closest to <paramref name="offset"/> at which content line <paramref name="line"/>
+    /// (0-based) is shown, not hidden behind a cue, among <paramref name="lineCount"/> lines in
+    /// <paramref name="height"/> rows. Without scrolling (see <see cref="MaxOffset"/>) it is 0.
+    /// </summary>
+    public static int OffsetShowing(int line, int lineCount, int height, int offset)
+    {
+        int max = MaxOffset(lineCount, height);
+        int start = Math.Clamp(offset, 0, max);
+        if (max == 0)
+        {
+            return 0;
+        }
+
+        while (true)
+        {
+            bool aboveCue = start > 0;
+            bool belowCue = start < max;
+            int first = start;
+            int last = start + height - (aboveCue ? 1 : 0) - (belowCue ? 1 : 0) - 1;
+            if (line < first && start > 0)
+            {
+                start--;
+            }
+            else if (line > last && start < max)
+            {
+                start++;
+            }
+            else
+            {
+                return start;
+            }
+        }
+    }
+
     /// <summary>How many lines one scroll step moves: the rows between the two cues, at least 1.</summary>
     public static int PageSize(int height) => Math.Max(1, height - 2);
 
