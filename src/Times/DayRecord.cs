@@ -31,7 +31,22 @@ internal sealed record DayEntry
     /// not positive, or another kind has a name or a work item.
     /// </summary>
     public DayEntry(EntryKind kind, TimeOnly time, string? name, int? workItem)
+        : this(kind, time, name, workItem, false)
     {
+    }
+
+    /// <summary>
+    /// Like <see cref="DayEntry(EntryKind, TimeOnly, string?, int?)"/>, and also throws
+    /// <see cref="ArgumentException"/> if <paramref name="booked"/> is true on another kind than a
+    /// checkpoint.
+    /// </summary>
+    public DayEntry(EntryKind kind, TimeOnly time, string? name, int? workItem, bool booked)
+    {
+        if (booked && kind != EntryKind.Checkpoint)
+        {
+            throw new ArgumentException("Only a checkpoint can be booked.", nameof(booked));
+        }
+
         if (kind == EntryKind.Checkpoint)
         {
             if (name is null || !ProjectList.IsValidTitle(name))
@@ -53,6 +68,7 @@ internal sealed record DayEntry
         Time = time;
         Name = name;
         WorkItem = workItem;
+        Booked = booked;
     }
 
     public EntryKind Kind { get; }
@@ -65,8 +81,16 @@ internal sealed record DayEntry
     /// <summary>The Azure DevOps work item a checkpoint belongs to, or <c>null</c> if none.</summary>
     public int? WorkItem { get; }
 
-    /// <summary>The same entry, kind, name and work item at <paramref name="time"/>.</summary>
-    public DayEntry At(TimeOnly time) => new(Kind, time, Name, WorkItem);
+    /// <summary>
+    /// Whether a checkpoint is already entered in Azure DevOps; always <c>false</c> for every other kind.
+    /// </summary>
+    public bool Booked { get; }
+
+    /// <summary>The same entry, kind, name, work item and booked flag at <paramref name="time"/>.</summary>
+    public DayEntry At(TimeOnly time) => new(Kind, time, Name, WorkItem, Booked);
+
+    /// <summary>The same entry with <paramref name="booked"/> as its booked flag.</summary>
+    public DayEntry WithBooked(bool booked) => new(Kind, Time, Name, WorkItem, booked);
 }
 
 /// <summary>
@@ -76,7 +100,8 @@ internal sealed record DayEntry
 /// opener, in booking order. The rule holds for every record, so also after <see cref="Add"/>,
 /// <see cref="ChangeTime"/>, <see cref="RemoveAt"/> and <see cref="FromJson"/>. Saved
 /// as <c>{"entries":[{"kind":"arrival","time":"08:15"},…]}</c>, with times as invariant <c>HH:mm</c>.
-/// A checkpoint also has a <c>"name"</c> and, if it belongs to a project, a <c>"workItem"</c>. The
+/// A checkpoint also has a <c>"name"</c>, if it belongs to a project a <c>"workItem"</c>, and, once it
+/// is booked, <c>"booked":true</c> (left out while unbooked, so older files load as unbooked). The
 /// legacy single-value format <c>{"arrival":"08:15","leaving":"17:30"}</c> still loads; it is
 /// converted to entries and written in the new format on the next save.
 /// </summary>
@@ -93,6 +118,7 @@ internal sealed record DayRecord
     private const string CheckpointName = "checkpoint";
     private const string NameProperty = "name";
     private const string WorkItemProperty = "workItem";
+    private const string BookedProperty = "booked";
 
     private readonly DayEntry[] entries;
 
@@ -341,6 +367,27 @@ internal sealed record DayRecord
         return RemoveAt(number).Add(entries[number - 1].At(time));
     }
 
+    /// <summary>
+    /// Returns a new record where entry <paramref name="number"/> (1-based, the numbering of
+    /// <see cref="Entries"/>) has <paramref name="booked"/> as its booked flag; every entry keeps its
+    /// place. Throws <see cref="ArgumentOutOfRangeException"/> if there is no such entry and
+    /// <see cref="ArgumentException"/> if it is not a checkpoint.
+    /// </summary>
+    public DayRecord SetBooked(int number, bool booked)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(number, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(number, entries.Length);
+        DayEntry entry = entries[number - 1];
+        if (entry.Kind != EntryKind.Checkpoint)
+        {
+            throw new ArgumentException("Only a checkpoint can be booked.", nameof(number));
+        }
+
+        DayEntry[] changed = (DayEntry[])entries.Clone();
+        changed[number - 1] = entry.WithBooked(booked);
+        return new DayRecord(changed);
+    }
+
     public bool Equals(DayRecord? other) =>
         other is not null && entries.SequenceEqual(other.entries);
 
@@ -375,6 +422,11 @@ internal sealed record DayRecord
                 if (entry.WorkItem is { } workItem)
                 {
                     writer.WriteNumber(WorkItemProperty, workItem);
+                }
+
+                if (entry.Booked)
+                {
+                    writer.WriteBoolean(BookedProperty, true);
                 }
 
                 writer.WriteEndObject();
@@ -492,6 +544,7 @@ internal sealed record DayRecord
         TimeOnly? time = null;
         JsonElement? nameElement = null;
         JsonElement? workItemElement = null;
+        JsonElement? bookedElement = null;
         foreach (JsonProperty property in item.EnumerateObject())
         {
             switch (property.Name)
@@ -528,6 +581,14 @@ internal sealed record DayRecord
 
                     workItemElement = property.Value;
                     break;
+                case BookedProperty:
+                    if (bookedElement is not null)
+                    {
+                        throw new JsonException("An entry in the day file has more than one booked flag.");
+                    }
+
+                    bookedElement = property.Value;
+                    break;
                 default:
                     break;
             }
@@ -540,7 +601,7 @@ internal sealed record DayRecord
 
         if (k != EntryKind.Checkpoint)
         {
-            // Only checkpoints have a name and a work item; like other unknown properties, they are
+            // Only checkpoints have a name, a work item and a booked flag; like other unknown properties, they are
             // ignored on every other kind.
             return new DayEntry(k, t);
         }
@@ -551,8 +612,16 @@ internal sealed record DayRecord
         }
 
         int? workItem = workItemElement is { } w ? ReadWorkItem(w) : null;
-        return new DayEntry(k, t, ReadName(n), workItem);
+        bool booked = bookedElement is { } b && ReadBooked(b);
+        return new DayEntry(k, t, ReadName(n), workItem, booked);
     }
+
+    private static bool ReadBooked(JsonElement value) => value.ValueKind switch
+    {
+        JsonValueKind.True => true,
+        JsonValueKind.False => false,
+        _ => throw new JsonException("A booked flag in the day file is not true or false."),
+    };
 
     private static string ReadName(JsonElement value)
     {

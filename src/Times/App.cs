@@ -95,6 +95,10 @@ internal sealed class App
         registry.Register("checkpoint", "cp", $"Book a checkpoint: [{TimeInput.Format}] [#project] <name>", Checkpoint);
         registry.Register("remove", "r", "Remove an entry from this day by its number", Remove);
         registry.Register("change", "c", $"Change the time of an entry on this day: <number> <{TimeInput.Format}>", Change);
+        registry.Register("booked", "bk", "Mark a checkpoint on this day as booked in Azure DevOps by its number", argument =>
+            SetBooked("booked", argument, true));
+        registry.Register("unbooked", "ub", "Mark a checkpoint on this day as not yet booked by its number", argument =>
+            SetBooked("unbooked", argument, false));
         registry.Register("summary", "s", "Show the time taken per work item from this day's checkpoints", NoArguments("summary", Summary));
     }
 
@@ -300,6 +304,62 @@ internal sealed class App
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             return Hint($"{Name}: could not save the day. {Markup.Escape(ex.Message)}");
+        }
+
+        return CommandResult.None;
+    }
+
+    // Marks checkpoint <number> on the day being viewed as booked or unbooked. Nothing is written if
+    // the number is not a plain number, there is no such entry, it is not a checkpoint, the day's
+    // file cannot be read, or the checkpoint already has that state (so a repeat is a no-op).
+    private CommandResult SetBooked(string name, string argument, bool booked)
+    {
+        string usage = $"Use [bold]{name} <number>[/].";
+        if (argument.Length == 0)
+        {
+            return Hint($"{name}: say which checkpoint to mark. {usage}");
+        }
+
+        if (!int.TryParse(argument, NumberStyles.None, CultureInfo.InvariantCulture, out int number))
+        {
+            return Hint($"{name}: [bold]{Markup.Escape(argument)}[/] is not an entry number. {usage}");
+        }
+
+        DateOnly day = dayView.Current;
+        DayRecord current;
+        try
+        {
+            current = Store.Load(day);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{name}: {Markup.Escape(ex.Message)} Nothing was changed.");
+        }
+
+        string numberText = number.ToString(CultureInfo.InvariantCulture);
+        if (number < 1 || number > current.Entries.Count)
+        {
+            return Hint($"{name}: there is no entry [bold]{numberText}[/].");
+        }
+
+        DayEntry entry = current.Entries[number - 1];
+        if (entry.Kind != EntryKind.Checkpoint)
+        {
+            return Hint($"{name}: entry [bold]{numberText}[/] is not a checkpoint.");
+        }
+
+        if (entry.Booked == booked)
+        {
+            return CommandResult.None;
+        }
+
+        try
+        {
+            Store.Save(day, current.SetBooked(number, booked));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{name}: could not save the day. {Markup.Escape(ex.Message)}");
         }
 
         return CommandResult.None;
@@ -645,7 +705,7 @@ internal sealed class App
 
     private const string DayViewCodes =
         "[grey]Day view codes:[/] [steelblue1]AR[/] arrival · [steelblue1]LE[/] leaving · [steelblue1]BS[/] break start · "
-        + "[steelblue1]BE[/] break end · [steelblue1]CP[/] checkpoint";
+        + "[steelblue1]BE[/] break end · [steelblue1]CP[/] checkpoint · [grey]✓[/] booked";
 
     // The line under the help table, so the user can always tell where the day files are.
     private Markup RenderDataFolder()
