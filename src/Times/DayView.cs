@@ -53,17 +53,21 @@ internal sealed class DayView
     public IRenderable Render() => Render(DayRecord.Empty);
 
     /// <summary>
-    /// Renders the current day: the heading, then one row per entry in time order (grey number
-    /// starting at 1, grey label such as <c>Arrival</c> or <c>Checkpoint</c>, <c>SteelBlue1</c> time),
-    /// or <c>No entries yet.</c> if nothing is booked. If the day has a checkpoint, a details column
-    /// follows the time: the checkpoint's escaped name and, if it has one, its grey work item
-    /// (<c>#5678</c>). Every row, of every kind, ends with the work time left at that entry's time
-    /// (grey <c>left</c> plus the right-aligned value, see <see cref="DayRecord.TimeLeft"/>).
-    /// Below the last entry row, a break line shows the break taken and the break required for the
-    /// day's work time (<c>Breaks 0:20 taken · 0:30 required</c>, grey words, <c>SteelBlue1</c>
-    /// values, see <see cref="DayRecord.BreakTime"/> and <see cref="DayRecord.RequiredBreak"/>). When
-    /// the break taken is shorter than required, a yellow line follows:
-    /// <c>Breaks too short: 0:10 missing</c>. The empty day shows neither line.
+    /// Renders the current day: the heading, a blank line, then one row per entry in time order
+    /// (grey number starting at 1, grey two-letter kind code (<c>AR</c> arrival, <c>LE</c> leaving,
+    /// <c>BS</c> break start, <c>BE</c> break end, <c>CP</c> checkpoint), and the time coloured by
+    /// kind: <c>green3</c> arrival, <c>darkcyan</c> break start and end, <c>mediumorchid</c> leaving,
+    /// <c>SteelBlue1</c> checkpoint), or <c>No entries yet.</c> if nothing is booked. If the day has a
+    /// checkpoint, a details column follows the time: the checkpoint's escaped name and, if it has
+    /// one, its grey work item (<c>#5678</c>). Every row, of every kind, ends with the work time left
+    /// at that entry's time (grey <c>left</c> plus the right-aligned value, see
+    /// <see cref="DayRecord.TimeLeft"/>).
+    /// After one blank line below the last entry row, a break line, starting in the code column,
+    /// shows the break taken and the break required for the day's work time
+    /// (<c>Breaks 0:20 taken · 0:30 required</c>, grey words, <c>SteelBlue1</c> values, see
+    /// <see cref="DayRecord.BreakTime"/> and <see cref="DayRecord.RequiredBreak"/>). When the break
+    /// taken is shorter than required, the same line ends with a yellow
+    /// <c>! Breaks too short: 0:10 missing</c> after two spaces. The empty day shows neither line.
     /// </summary>
     public IRenderable Render(DayRecord day)
     {
@@ -93,8 +97,8 @@ internal sealed class DayView
             List<IRenderable> cells =
             [
                 new Markup($"[grey]{number}[/]"),
-                new Markup($"[grey]{Label(entry.Kind)}[/]"),
-                new Markup($"[steelblue1]{clock}[/]"),
+                new Markup($"[grey]{Code(entry.Kind)}[/]"),
+                new Markup($"[{TimeColour(entry.Kind)}]{clock}[/]"),
             ];
             if (details)
             {
@@ -105,26 +109,47 @@ internal sealed class DayView
             grid.AddRow(cells.ToArray());
         }
 
-        List<IRenderable> rows = [HeadingRule(), grid];
         TimeSpan taken = day.BreakTime();
         TimeSpan required = DayRecord.RequiredBreak(day.WorkTime());
-        rows.Add(new Markup(
-            $"[grey]Breaks[/] [steelblue1]{FormatTimeLeft(taken)}[/] [grey]taken · [/][steelblue1]{FormatTimeLeft(required)}[/] [grey]required[/]"));
+        string summary =
+            $"[grey]Breaks[/] [steelblue1]{FormatTimeLeft(taken)}[/] [grey]taken · [/][steelblue1]{FormatTimeLeft(required)}[/] [grey]required[/]";
         if (taken < required)
         {
-            rows.Add(new Markup($"[yellow]Breaks too short: {FormatTimeLeft(required - taken)} missing[/]"));
+            summary += $"  [yellow]! Breaks too short: {FormatTimeLeft(required - taken)} missing[/]";
         }
 
+        // Indent the summary to the code column: the widest number plus the grid's column gap.
+        int indent = day.Entries.Count.ToString(CultureInfo.InvariantCulture).Length + GridColumnGap;
+        List<IRenderable> rows =
+        [
+            HeadingRule(),
+            Text.Empty,
+            grid,
+            Text.Empty,
+            new Padder(new Markup(summary), new Padding(indent, 0, 0, 0)),
+        ];
         return new Rows(rows);
     }
 
-    private static string Label(EntryKind kind) => kind switch
+    // Spectre's Grid puts this many spaces between columns.
+    private const int GridColumnGap = 2;
+
+    private static string Code(EntryKind kind) => kind switch
     {
-        EntryKind.Arrival => "Arrival",
-        EntryKind.Leaving => "Leaving",
-        EntryKind.BreakStart => "Break start",
-        EntryKind.BreakEnd => "Break end",
-        EntryKind.Checkpoint => "Checkpoint",
+        EntryKind.Arrival => "AR",
+        EntryKind.Leaving => "LE",
+        EntryKind.BreakStart => "BS",
+        EntryKind.BreakEnd => "BE",
+        EntryKind.Checkpoint => "CP",
+        _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+    };
+
+    private static string TimeColour(EntryKind kind) => kind switch
+    {
+        EntryKind.Arrival => "green3",
+        EntryKind.Leaving => "mediumorchid",
+        EntryKind.BreakStart or EntryKind.BreakEnd => "darkcyan",
+        EntryKind.Checkpoint => "steelblue1",
         _ => throw new ArgumentOutOfRangeException(nameof(kind)),
     };
 

@@ -997,8 +997,8 @@ public sealed class AppTests : IDisposable
         Assert.Equal(["2026-10-27.json"], Directory.EnumerateFiles(data.Path).Select(Path.GetFileName));
         Assert.Equal(Entries("arrival 08:15"), ReadDay("2026-10-27"));
         string frame = LastFrame(output);
-        Assert.Matches(@"1 +Arrival +08:15", frame);
-        Assert.DoesNotContain("Leaving", frame);
+        Assert.Matches(@"1 +AR +08:15", frame);
+        Assert.DoesNotContain(" LE ", frame);
         Assert.DoesNotContain("No entries yet.", frame);
     }
 
@@ -1010,7 +1010,7 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(0, exitCode);
         Assert.Equal(Entries("leaving 17:30"), ReadDay("2026-10-27"));
-        Assert.Matches(@"1 +Leaving +17:30", LastFrame(output));
+        Assert.Matches(@"1 +LE +17:30", LastFrame(output));
     }
 
     // AC-2
@@ -1052,7 +1052,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(["2026-10-26.json"], Directory.EnumerateFiles(data.Path).Select(Path.GetFileName));
         Assert.Equal(Entries("arrival 09:00"), ReadDay("2026-10-26"));
         Assert.StartsWith("Monday, 2026-10-26", LastFrame(output));
-        Assert.Matches(@"1 +Arrival +09:00", LastFrame(output));
+        Assert.Matches(@"1 +AR +09:00", LastFrame(output));
     }
 
     // AC-2 (017)
@@ -1066,7 +1066,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, exitCode);
         Assert.Equal(Entries(kind + " 08:15", kind + " 13:00"), ReadDay("2026-10-27"));
         string frame = LastFrame(output);
-        string label = kind == "arrival" ? "Arrival" : "Leaving";
+        string label = kind == "arrival" ? "AR" : "LE";
         Assert.Matches($@"1 +{label} +08:15", frame);
         Assert.Matches($@"2 +{label} +13:00", frame);
     }
@@ -1083,10 +1083,10 @@ public sealed class AppTests : IDisposable
 
         (int exitCode, string output) = RunCommands("quit");
         Assert.Equal(0, exitCode);
-        Assert.Matches(@"1 +Arrival +08:15", output);
-        Assert.Matches(@"2 +Leaving +12:00", output);
-        Assert.Matches(@"3 +Arrival +13:00", output);
-        Assert.Matches(@"4 +Leaving +17:30", output);
+        Assert.Matches(@"1 +AR +08:15", output);
+        Assert.Matches(@"2 +LE +12:00", output);
+        Assert.Matches(@"3 +AR +13:00", output);
+        Assert.Matches(@"4 +LE +17:30", output);
     }
 
     // AC-6 (019)
@@ -1099,8 +1099,8 @@ public sealed class AppTests : IDisposable
         string frame = LastFrame(output);
         Assert.Contains("left 8:00", frame);
         Assert.Contains("left -1:00", frame);
-        Assert.Matches(@"1 +Arrival +08:00 +left 8:00", frame);
-        Assert.Matches(@"2 +Leaving +17:00 +left -1:00", frame);
+        Assert.Matches(@"1 +AR +08:00 +left 8:00", frame);
+        Assert.Matches(@"2 +LE +17:00 +left -1:00", frame);
     }
 
     // AC-3 (017)
@@ -1111,8 +1111,8 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(Entries("arrival 08:00", "leaving 17:00"), ReadDay("2026-10-27"));
         string frame = LastFrame(output);
-        Assert.Matches(@"1 +Arrival +08:00", frame);
-        Assert.Matches(@"2 +Leaving +17:00", frame);
+        Assert.Matches(@"1 +AR +08:00", frame);
+        Assert.Matches(@"2 +LE +17:00", frame);
     }
 
     // AC-3 (017)
@@ -1206,13 +1206,13 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(0, exitCode);
         string first = string.Join('\n', Frames(output)[0]);
-        Assert.Matches(@"1 +Arrival +08:15", first);
-        Assert.Matches(@"2 +Leaving +17:30", first);
+        Assert.Matches(@"1 +AR +08:15", first);
+        Assert.Matches(@"2 +LE +17:30", first);
         Assert.Equal(Entries("arrival 08:15", "arrival 13:00", "leaving 17:30"), ReadDay("2026-10-27"));
         string frame = LastFrame(output);
-        Assert.Matches(@"1 +Arrival +08:15", frame);
-        Assert.Matches(@"2 +Arrival +13:00", frame);
-        Assert.Matches(@"3 +Leaving +17:30", frame);
+        Assert.Matches(@"1 +AR +08:15", frame);
+        Assert.Matches(@"2 +AR +13:00", frame);
+        Assert.Matches(@"3 +LE +17:30", frame);
     }
 
     // AC-6 (017)
@@ -1223,8 +1223,8 @@ public sealed class AppTests : IDisposable
 
         (_, string output) = RunCommands("quit");
 
-        Assert.Matches(@"1 +Leaving +08:00", output);
-        Assert.Matches(@"2 +Arrival +09:00", output);
+        Assert.Matches(@"1 +LE +08:00", output);
+        Assert.Matches(@"2 +AR +09:00", output);
     }
 
     // AC-7 (017)
@@ -1240,7 +1240,7 @@ public sealed class AppTests : IDisposable
         (int exitCode, string output) = RunCommands("prev", "next", "prev", "quit");
 
         Assert.Equal(0, exitCode);
-        Assert.Matches(@"1 +Arrival +08:15", LastFrame(output));
+        Assert.Matches(@"1 +AR +08:15", LastFrame(output));
         Assert.Equal(before, File.ReadAllBytes(path));
         Assert.Equal(stamp, File.GetLastWriteTimeUtc(path));
         Assert.Equal(["2026-10-26.json"], Directory.EnumerateFiles(data.Path).Select(Path.GetFileName));
@@ -1642,16 +1642,16 @@ public sealed class AppTests : IDisposable
 
         // Before: the leaving at 12:00 closed 4 hours, so the 13:00 arrival had 4:00 left.
         string first = string.Join('\n', Frames(output)[0]);
-        Assert.Matches(@"3 +Arrival +13:00 +left 4:00", first);
+        Assert.Matches(@"3 +AR +13:00 +left 4:00", first);
 
         string[] frame = LastLayout(output);
         string top = string.Join('\n', frame[..^4]);
-        Assert.Matches(@"1 +Arrival +08:00 +left 8:00", top);
+        Assert.Matches(@"1 +AR +08:00 +left 8:00", top);
 
         // After (045): the 08:00 span is still open, so the 13:00 arrival shows the 5 hours worked so far.
-        Assert.Matches(@"2 +Arrival +13:00 +left 3:00", top);
+        Assert.Matches(@"2 +AR +13:00 +left 3:00", top);
         Assert.DoesNotContain("12:00", top);
-        Assert.DoesNotMatch(@"\b3 +(Arrival|Leaving)", top);
+        Assert.DoesNotMatch(@"\b3 +(AR|LE)", top);
         AssertLayout(frame);
         Assert.Equal(string.Empty, frame[^4].Trim());
     }
@@ -1664,7 +1664,7 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(0, exitCode);
         Assert.Equal(Entries("arrival 08:00", "arrival 13:00"), ReadDay("2026-10-27"));
-        Assert.Matches(@"2 +Arrival +13:00", LastFrame(output));
+        Assert.Matches(@"2 +AR +13:00", LastFrame(output));
     }
 
     // AC-2 (021)
@@ -1681,7 +1681,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(Entries("leaving 17:00"), ReadDay("2026-10-26"));
         Assert.Equal(today, File.ReadAllBytes(DayFile("2026-10-27")));
         Assert.StartsWith("Monday, 2026-10-26", LastFrame(output));
-        Assert.Matches(@"1 +Leaving +17:00", LastFrame(output));
+        Assert.Matches(@"1 +LE +17:00", LastFrame(output));
     }
 
     // AC-3 (021)
@@ -1700,7 +1700,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, exitCode);
         AssertOnHintRow(LastLayout(output), expected);
         Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
-        Assert.Matches(@"3 +Arrival +13:00", LastFrame(output));
+        Assert.Matches(@"3 +AR +13:00", LastFrame(output));
     }
 
     // AC-4 (021)
@@ -1946,13 +1946,13 @@ public sealed class AppTests : IDisposable
 
         // Before: the 12:00 leaving closed 4 hours. After: 4:30, so 3:30 is left.
         string first = string.Join('\n', Frames(output)[0]);
-        Assert.Matches(@"2 +Leaving +12:00 +left 4:00", first);
+        Assert.Matches(@"2 +LE +12:00 +left 4:00", first);
 
         string[] frame = LastLayout(output);
         string top = string.Join('\n', frame[..^4]);
-        Assert.Matches(@"1 +Arrival +08:00 +left 8:00", top);
-        Assert.Matches(@"2 +Leaving +12:30 +left 3:30", top);
-        Assert.Matches(@"3 +Arrival +13:00 +left 3:30", top);
+        Assert.Matches(@"1 +AR +08:00 +left 8:00", top);
+        Assert.Matches(@"2 +LE +12:30 +left 3:30", top);
+        Assert.Matches(@"3 +AR +13:00 +left 3:30", top);
         Assert.DoesNotContain("12:00", top);
         AssertLayout(frame);
         Assert.Equal(string.Empty, frame[^4].Trim());
@@ -1970,11 +1970,11 @@ public sealed class AppTests : IDisposable
         Assert.Equal(Entries("leaving 12:00", "arrival 13:00", "arrival 14:00"), ReadDay("2026-10-27"));
         string[] frame = LastLayout(output);
         string top = string.Join('\n', frame[..^4]);
-        Assert.Matches(@"1 +Leaving +12:00 +left 8:00", top);
-        Assert.Matches(@"2 +Arrival +13:00 +left 8:00", top);
+        Assert.Matches(@"1 +LE +12:00 +left 8:00", top);
+        Assert.Matches(@"2 +AR +13:00 +left 8:00", top);
 
         // The 13:00 arrival opens a span (045), so the second arrival at 14:00 shows an hour worked.
-        Assert.Matches(@"3 +Arrival +14:00 +left 7:00", top);
+        Assert.Matches(@"3 +AR +14:00 +left 7:00", top);
         Assert.DoesNotContain("08:00", top);
         Assert.Equal(string.Empty, frame[^4].Trim());
     }
@@ -1987,7 +1987,7 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(0, exitCode);
         Assert.Equal(Entries("arrival 08:00", "leaving 12:00", "arrival 12:45"), ReadDay("2026-10-27"));
-        Assert.Matches(@"3 +Arrival +12:45", LastFrame(output));
+        Assert.Matches(@"3 +AR +12:45", LastFrame(output));
     }
 
     // AC-3 (023)
@@ -2022,7 +2022,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(Entries("arrival 09:00", "leaving 17:00"), ReadDay("2026-10-26"));
         Assert.Equal(today, File.ReadAllBytes(DayFile("2026-10-27")));
         Assert.StartsWith("Monday, 2026-10-26", LastFrame(output));
-        Assert.Matches(@"1 +Arrival +09:00", LastFrame(output));
+        Assert.Matches(@"1 +AR +09:00", LastFrame(output));
     }
 
     // AC-5 (023)
@@ -2041,7 +2041,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, exitCode);
         AssertOnHintRow(LastLayout(output), expected);
         Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
-        Assert.Matches(@"3 +Arrival +13:00", LastFrame(output));
+        Assert.Matches(@"3 +AR +13:00", LastFrame(output));
     }
 
     // AC-6 (023)
@@ -2558,7 +2558,8 @@ public sealed class AppTests : IDisposable
         Assert.True(line > 0);
         Assert.Equal($"Data folder: {data.Path}", bottom[line]);
         Assert.Equal($"Version: {AppVersion.Current}", bottom[line - 1]);
-        Assert.StartsWith("╰", bottom[line - 2]);
+        Assert.Equal(DayViewCodesLine, bottom[line - 2]);
+        Assert.StartsWith("╰", bottom[line - 3]);
         string shown = string.Join('\n', screens.SelectMany(screen => screen));
         foreach (Command command in CommandRegistry.CreateDefault().Commands.Concat([new Command("arrive", "a", "", _ => CommandResult.None)]))
         {
@@ -2586,6 +2587,36 @@ public sealed class AppTests : IDisposable
         int folder = plain.IndexOf("Data folder:", StringComparison.Ordinal);
         Assert.True(version >= 0, "help shows no Version line");
         Assert.True(version < folder, "Version must come before Data folder");
+    }
+
+    private const string DayViewCodesLine =
+        "Day view codes: AR arrival · LE leaving · BS break start · BE break end · CP checkpoint";
+
+    // AC-7 (076)
+    [Fact]
+    public void Help_ShowsDayViewCodes_BetweenTableAndVersion_DataFolderStaysLast()
+    {
+        string ansi = RunHelp(data.Path, folderFromEnvironment: false, ansi: true);
+
+        string[] bottom = TopScreens(ansi, 1)[^1];
+        int last = Array.FindLastIndex(bottom, l => l.Length > 0);
+        Assert.True(last > 2);
+        Assert.Equal($"Data folder: {data.Path}", bottom[last]);
+        Assert.Equal($"Version: {AppVersion.Current}", bottom[last - 1]);
+        Assert.Equal(DayViewCodesLine, bottom[last - 2]);
+        Assert.StartsWith("╰", bottom[last - 3]);
+
+        Assert.Matches(@"\x1b\[(90|38;5;8)mDay view codes:\x1b\[0m ", ansi);
+        foreach (string code in new[] { "AR", "LE", "BS", "BE", "CP" })
+        {
+            Assert.Contains($"\u001b[38;5;75m{code}\u001b[0m", ansi);
+        }
+
+        string plain = RunHelp(data.Path, folderFromEnvironment: false);
+        int codes = plain.IndexOf(DayViewCodesLine, StringComparison.Ordinal);
+        int version = plain.IndexOf($"Version: {AppVersion.Current}", StringComparison.Ordinal);
+        Assert.True(codes >= 0, "help shows no day view codes line");
+        Assert.True(codes < version, "the codes line must come before Version");
     }
 
     // AC-5
@@ -3181,7 +3212,7 @@ public sealed class AppTests : IDisposable
         }
 
         Assert.Equal("{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}", ReadDay("2026-10-27"));
-        Assert.Matches(@"1 +Arrival +08:00", string.Join('\n', frames[^1]));
+        Assert.Matches(@"1 +AR +08:00", string.Join('\n', frames[^1]));
         Assert.Equal(contents, File.ReadAllText(ProjectsFile));
         Assert.DoesNotContain("   at ", output);
     }
@@ -3459,8 +3490,8 @@ public sealed class AppTests : IDisposable
 
     // AC-1 (036)
     [Theory]
-    [InlineData("break", "breakStart", "Break start")]
-    [InlineData("breakend", "breakEnd", "Break end")]
+    [InlineData("break", "breakStart", "BS")]
+    [InlineData("breakend", "breakEnd", "BE")]
     public void Break_WithoutTime_BooksCurrentMinute(string command, string kind, string label)
     {
         (int exitCode, string output) = RunCommands(At183059(), command, "quit");
@@ -3516,7 +3547,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, exitCode);
         Assert.Equal([Checkpoint(18, 30, "Standup")], LoadDay().Entries);
         Assert.Equal("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"18:30\",\"name\":\"Standup\"}]}", ReadDay("2026-10-27"));
-        Assert.Matches(@"1 +Checkpoint +18:30 +Standup", LastFrame(output));
+        Assert.Matches(@"1 +CP +18:30 +Standup", LastFrame(output));
     }
 
     // AC-2 (036)
@@ -3547,7 +3578,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal([Checkpoint(hour, minute, "Standup", 5678)], LoadDay().Entries);
         Assert.Contains("\"workItem\":5678", ReadDay("2026-10-27"));
         Assert.DoesNotContain("\"workItem\":2", ReadDay("2026-10-27"));
-        Assert.Matches(@"1 +Checkpoint +\d\d:\d\d +Standup #5678", LastFrame(output));
+        Assert.Matches(@"1 +CP +\d\d:\d\d +Standup #5678", LastFrame(output));
     }
 
     // AC-3 (036)
@@ -3685,7 +3716,7 @@ public sealed class AppTests : IDisposable
         (_, string output) = RunCommands("checkpoint 9:00 [red]Fix[/]", "quit");
 
         Assert.Equal([Checkpoint(9, 0, "[red]Fix[/]")], LoadDay().Entries);
-        Assert.Matches(@"1 +Checkpoint +09:00 +\[red\]Fix\[/\]", LastFrame(output));
+        Assert.Matches(@"1 +CP +09:00 +\[red\]Fix\[/\]", LastFrame(output));
     }
 
     // AC-8, AC-9 (036); AC-6, AC-7 (045)
@@ -3698,11 +3729,11 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(0, exitCode);
         string frame = LastFrame(output);
-        Assert.Matches(@"1 +Arrival +08:00 +left 8:00", frame);
-        Assert.Matches(@"2 +Checkpoint +09:30 +Kickoff #1234 +left 6:30", frame);
-        Assert.Matches(@"3 +Break start +12:00 +left 4:00", frame);
-        Assert.Matches(@"4 +Break end +12:30 +left 4:00", frame);
-        Assert.Matches(@"5 +Leaving +17:00 +left -0:30", frame);
+        Assert.Matches(@"1 +AR +08:00 +left 8:00", frame);
+        Assert.Matches(@"2 +CP +09:30 +Kickoff #1234 +left 6:30", frame);
+        Assert.Matches(@"3 +BS +12:00 +left 4:00", frame);
+        Assert.Matches(@"4 +BE +12:30 +left 4:00", frame);
+        Assert.Matches(@"5 +LE +17:00 +left -0:30", frame);
     }
 
     // AC-8 (049)
@@ -3713,8 +3744,8 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(0, exitCode);
         string frame = LastFrame(output);
-        Assert.Matches(@"3 +Break end +12:30", frame);
-        Assert.Matches(@"4 +Checkpoint +12:30 +Review", frame);
+        Assert.Matches(@"3 +BE +12:30", frame);
+        Assert.Matches(@"4 +CP +12:30 +Review", frame);
         Assert.Equal(
             "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"},{\"kind\":\"breakStart\",\"time\":\"12:00\"},"
             + "{\"kind\":\"breakEnd\",\"time\":\"12:30\"},{\"kind\":\"checkpoint\",\"time\":\"12:30\",\"name\":\"Review\"}]}",
@@ -3750,7 +3781,7 @@ public sealed class AppTests : IDisposable
                 Checkpoint(14, 0, "Daily  sync", 5678),
             ],
             LoadDay().Entries);
-        Assert.Matches(@"3 +Checkpoint +14:00 +Daily  sync #5678", LastFrame(output));
+        Assert.Matches(@"3 +CP +14:00 +Daily  sync #5678", LastFrame(output));
     }
 
     // AC-11 (036)
@@ -4372,7 +4403,7 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(0, exitCode);
         Assert.Equal(Entries("arrival 08:15"), ReadDay("2026-10-27"));
-        Assert.Matches(@"1 +Arrival +08:15", LastFrame(output));
+        Assert.Matches(@"1 +AR +08:15", LastFrame(output));
         Assert.DoesNotContain("Unknown command", output);
     }
 
@@ -4559,7 +4590,7 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(0, exitCode);
         Assert.Equal(Entries("leaving 17:45"), ReadDay("2026-10-27"));
-        Assert.Matches(@"1 +Leaving +17:45", LastFrame(output));
+        Assert.Matches(@"1 +LE +17:45", LastFrame(output));
     }
 
     // AC-4
@@ -4947,7 +4978,7 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(0, exitCode);
         string frame = LastFrame(output);
-        Assert.Matches(@"3 +Break end +12:30", frame);
+        Assert.Matches(@"3 +BE +12:30", frame);
         Assert.Contains("Breaks 0:30 taken · 0:30 required", frame);
         Assert.DoesNotContain("too short", frame);
     }
