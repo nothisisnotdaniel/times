@@ -157,7 +157,7 @@ for a release.
 `X.Y.(Z+1)-develop.<run>`: one patch above the highest release tag, plus the workflow run number.
 After `v0.1.0` (or `v0.1.0-beta`), run 12 gives `0.1.1-develop.12`, tagged `v0.1.1-develop.12`,
 with `Times.0.1.1-develop.12.nupkg` attached. These sort above the latest release and below the
-next one, so nobody tags them by hand.
+next one, so nobody tags them by hand. A push that changes only `backlog.md` makes no prerelease.
 
 **Releases.** Open a pull request from `develop` into `main` titled `release v1.2.3` and merge it:
 
