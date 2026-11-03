@@ -79,7 +79,7 @@ internal sealed class DayView
         // Only days with a checkpoint get the details column, so other days look exactly as before.
         bool details = day.Entries.Any(e => e.Kind == EntryKind.Checkpoint);
         Grid grid = new Grid()
-            .AddColumn(new GridColumn().RightAligned())
+            .AddColumn(new GridColumn().RightAligned().Padding(new Padding(0, 0, NumberColumnGap, 0)))
             .AddColumn()
             .AddColumn();
         if (details)
@@ -118,8 +118,8 @@ internal sealed class DayView
             summary += $"  [yellow]! Breaks too short: {FormatTimeLeft(required - taken)} missing[/]";
         }
 
-        // Indent the summary to the code column: the widest number plus the grid's column gap.
-        int indent = day.Entries.Count.ToString(CultureInfo.InvariantCulture).Length + GridColumnGap;
+        // Indent the summary to the code column: the widest number plus the number column's gap.
+        int indent = day.Entries.Count.ToString(CultureInfo.InvariantCulture).Length + NumberColumnGap;
         List<IRenderable> rows =
         [
             HeadingRule(),
@@ -131,8 +131,8 @@ internal sealed class DayView
         return new Rows(rows);
     }
 
-    // Spectre's Grid puts this many spaces between columns.
-    private const int GridColumnGap = 2;
+    // The spaces after the number column, set on the column itself so the summary indent follows it.
+    private const int NumberColumnGap = 2;
 
     private static string Code(EntryKind kind) => kind switch
     {
