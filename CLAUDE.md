@@ -86,11 +86,19 @@ Every factory agent reads this file before working on Times. Keep it short and a
   them) and when `projects.json` or a day file is loaded (file is unreadable).
 - **Settings:** features register their user preferences in the one `SettingsRegistry` (kinds
   `OnOff`, `Number` with min/max, `Choice` with options; registration order is display order;
-  `CreateDefault()` has none yet), the way commands use `CommandRegistry`, and never add their own
+  `CreateDefault()` registers `daily-target`, a `Number` 0..1440 with default 480, the daily work target
+  in minutes), the way commands use `CommandRegistry`, and never add their own
   command for them. `settings` (`se`) opens the modal `SettingsPanel` in place of the top area. Values
   live in `settings.json` next to the day files (`SettingsStore`, `{"settings":{"<name>":true|1|"opt"}}`),
   read like `projects.json` through `CappedFile` (regular file, 64 KiB cap); a broken file is shown as
   unreadable and never overwritten, unknown names are kept on save, and every change is saved at once.
+- **Target and balance:** `DayRecord.TimeLeft(target)` counts down from the target `App.RenderDay`
+  reads from `daily-target` in `settings.json` on every redraw (missing, broken or out of range: 480;
+  never written). Below the `Breaks` line, `DayView` shows `Target 8:00 · day -0:30 · balance +1:15`
+  (signed values via `DayView.FormatSigned`; an empty day shows it without `day`, only when a day
+  counts). `FlexitimeBalance.Compute` sums `WorkTime() - target` over every day file (`DayStore.Days()`:
+  names exactly `yyyy-MM-dd.json`, folder listing only) on or before the shown day that holds an
+  arrival; unreadable files are skipped and counted (yellow `! N day file(s) skipped`, no names).
 - **Days:** the app always shows one "current" day, starting at today. The user can move to
   the previous or next day or jump to a date. Navigating to a day with no file shows it as an
   empty day **without creating a file**. The day's file is created only when the first

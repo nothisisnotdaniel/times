@@ -210,22 +210,19 @@ internal sealed record DayRecord
 
     public bool IsEmpty => entries.Length == 0;
 
-    /// <summary>The work time a day starts with, before any span is subtracted.</summary>
-    public static TimeSpan DailyTarget { get; } = TimeSpan.FromHours(8);
-
     /// <summary>
     /// Returns the work time left at each entry's time, parallel to <see cref="Entries"/>. Walking the
     /// entries in time order, the day is <em>off</em>, <em>working</em> or <em>on break</em>; work
     /// time accrues between one entry and the next only while working. An arrival starts working when
     /// off, a break start pauses work while working, a break end resumes it while on break, and a
     /// leaving stops working or an open break; every other case, and every checkpoint, changes
-    /// nothing. The value for an entry is <see cref="DailyTarget"/> minus the work accrued up to its
+    /// nothing. The value for an entry is <paramref name="target"/> (the daily work target) minus the work accrued up to its
     /// time. Nothing accrues after the last entry. Goes negative past the target.
     /// </summary>
-    public IReadOnlyList<TimeSpan> TimeLeft()
+    public IReadOnlyList<TimeSpan> TimeLeft(TimeSpan target)
     {
         TimeSpan[] result = new TimeSpan[entries.Length];
-        TimeSpan left = DailyTarget;
+        TimeSpan left = target;
         int i = 0;
         foreach (Gap gap in Walk())
         {
@@ -242,7 +239,7 @@ internal sealed record DayRecord
 
     /// <summary>
     /// Returns the total work time: the time accrued while working in the walk of
-    /// <see cref="TimeLeft"/>, so <see cref="DailyTarget"/> minus the last time-left value.
+    /// <see cref="TimeLeft"/>, so the target minus the last time-left value.
     /// <see cref="TimeSpan.Zero"/> for an empty day. Nothing accrues after the last entry.
     /// </summary>
     public TimeSpan WorkTime() => Total(WorkState.Working);

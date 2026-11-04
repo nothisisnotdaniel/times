@@ -5,6 +5,8 @@ namespace Times.Tests;
 
 public class DayViewTests
 {
+    private static readonly TimeSpan EightHours = TimeSpan.FromHours(8);
+
     [Fact]
     public void Current_StartsAtToday()
     {
@@ -30,7 +32,7 @@ public class DayViewTests
     {
         TestConsole console = new TestConsole();
 
-        console.Write(new DayView(FixedTimeProvider.At20261027()).Render());
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(DayRecord.Empty, EightHours, FlexitimeBalance.None));
 
         Assert.Contains("Tuesday, 2026-10-27", console.Output);
         Assert.Contains("No entries yet.", console.Output);
@@ -126,7 +128,7 @@ public class DayViewTests
         DayView view = new DayView(FixedTimeProvider.At20261027());
         view.Next();
 
-        console.Write(view.Render());
+        console.Write(view.Render(DayRecord.Empty, EightHours, FlexitimeBalance.None));
 
         Assert.Contains("Wednesday, 2026-10-28", console.Output);
         Assert.Contains("No entries yet.", console.Output);
@@ -139,7 +141,7 @@ public class DayViewTests
         TestConsole console = new TestConsole();
         DayView view = new DayView(FixedTimeProvider.At20261027());
 
-        console.Write(view.Render(DayRecord.Empty.Add(new DayEntry(EntryKind.Arrival, new TimeOnly(8, 15)))));
+        console.Write(view.Render(DayRecord.Empty.Add(new DayEntry(EntryKind.Arrival, new TimeOnly(8, 15))), EightHours, FlexitimeBalance.None));
 
         Assert.Contains("Tuesday, 2026-10-27", console.Output);
         Assert.Matches(@"1 +AR +08:15", console.Output);
@@ -159,14 +161,15 @@ public class DayViewTests
             .Add(new DayEntry(EntryKind.Arrival, new TimeOnly(13, 0)))
             .Add(new DayEntry(EntryKind.Arrival, new TimeOnly(8, 15)));
 
-        console.Write(view.Render(record));
+        console.Write(view.Render(record, EightHours, FlexitimeBalance.None));
 
         string[] lines = console.Lines.Select(l => l.Trim()).Where(l => l.Length > 0).ToArray();
-        Assert.Equal(5, lines.Length);
+        Assert.Equal(6, lines.Length);
         Assert.Matches(@"^1 +AR +08:15 +left +8:00$", lines[1]);
         Assert.Matches(@"^2 +LE +12:00 +left +4:15$", lines[2]);
         Assert.Matches(@"^3 +AR +13:00 +left +4:15$", lines[3]);
         Assert.Equal("Breaks 1:00 taken · 0:00 required", lines[4]);
+        Assert.Equal("Target 8:00 · day -4:15 · balance 0:00", lines[5]);
         Assert.DoesNotContain("—", console.Output);
     }
 
@@ -180,7 +183,7 @@ public class DayViewTests
         DayRecord record = new DayRecord(
             [new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)), new DayEntry(EntryKind.Leaving, new TimeOnly(12, 0))]);
 
-        console.Write(view.Render(record));
+        console.Write(view.Render(record, EightHours, FlexitimeBalance.None));
 
         Assert.Equal(new DateOnly(2026, 10, 27), view.Current);
         Assert.Contains("Breaks 0:00 taken · 0:00 required", console.Output);
@@ -195,7 +198,7 @@ public class DayViewTests
 
         console.Write(view.Render(DayRecord.Empty
             .Add(new DayEntry(EntryKind.Arrival, new TimeOnly(8, 15)))
-            .Add(new DayEntry(EntryKind.Leaving, new TimeOnly(17, 30)))));
+            .Add(new DayEntry(EntryKind.Leaving, new TimeOnly(17, 30))), EightHours, FlexitimeBalance.None));
 
         // grey = 256-colour 8, SteelBlue1 = 256-colour 75.
         Assert.Contains("\u001b[38;5;8m1", console.Output);
@@ -213,7 +216,7 @@ public class DayViewTests
     {
         TestConsole console = new TestConsole();
 
-        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(DayRecord.Empty));
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(DayRecord.Empty, EightHours, FlexitimeBalance.None));
 
         Assert.Contains("No entries yet.", console.Output);
         Assert.DoesNotContain("Arrival", console.Output);
@@ -271,10 +274,10 @@ public class DayViewTests
             .Add(new DayEntry(EntryKind.Arrival, new TimeOnly(12, 30)))
             .Add(new DayEntry(EntryKind.Leaving, new TimeOnly(17, 0)));
 
-        console.Write(view.Render(record));
+        console.Write(view.Render(record, EightHours, FlexitimeBalance.None));
 
         string[] lines = console.Lines.Select(l => l.TrimEnd()).Where(l => l.Trim().Length > 0).ToArray();
-        Assert.Equal(6, lines.Length);
+        Assert.Equal(7, lines.Length);
         Assert.Matches(@"^1 +AR +08:00 +left +8:00$", lines[1]);
         Assert.Matches(@"^2 +LE +12:00 +left +4:00$", lines[2]);
         Assert.Matches(@"^3 +AR +12:30 +left +4:00$", lines[3]);
@@ -296,7 +299,7 @@ public class DayViewTests
 
         console.Write(view.Render(DayRecord.Empty
             .Add(new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)))
-            .Add(new DayEntry(EntryKind.Leaving, new TimeOnly(17, 0)))));
+            .Add(new DayEntry(EntryKind.Leaving, new TimeOnly(17, 0))), EightHours, FlexitimeBalance.None));
 
         // grey = 256-colour 8; red is 4-bit 31/91 or 256-colour 9.
         Assert.Contains("\u001b[38;5;8mleft", console.Output);
@@ -320,7 +323,7 @@ public class DayViewTests
     {
         TestConsole console = new TestConsole();
 
-        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(DayRecord.Empty));
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(DayRecord.Empty, EightHours, FlexitimeBalance.None));
 
         Assert.Contains("No entries yet.", console.Output);
         Assert.DoesNotContain("left", console.Output);
@@ -345,10 +348,10 @@ public class DayViewTests
         TestConsole console = new TestConsole();
         console.Profile.Width = 120;
 
-        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(AllKinds()));
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(AllKinds(), EightHours, FlexitimeBalance.None));
 
         string[] lines = console.Lines.Select(l => l.TrimEnd()).Where(l => l.Trim().Length > 0).ToArray();
-        Assert.Equal(8, lines.Length);
+        Assert.Equal(9, lines.Length);
         Assert.Matches(@"^1 +AR +08:00 +left +8:00$", lines[1]);
         Assert.Matches(@"^2 +CP +09:30 +Standup #5678 +left +6:30$", lines[2]);
         Assert.Matches(@"^3 +BS +12:00 +left +4:00$", lines[3]);
@@ -369,7 +372,7 @@ public class DayViewTests
         TestConsole console = new TestConsole();
         console.Profile.Width = 120;
 
-        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(AllKinds()));
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(AllKinds(), EightHours, FlexitimeBalance.None));
 
         string[] lines = console.Lines.Select(l => l.TrimEnd()).Where(l => l.Trim().Length > 0).ToArray();
 
@@ -388,7 +391,7 @@ public class DayViewTests
         TestConsole console = new TestConsole().EmitAnsiSequences();
         console.Profile.Width = 120;
 
-        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(AllKinds()));
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(AllKinds(), EightHours, FlexitimeBalance.None));
 
         string output = console.Output;
         Assert.Equal(6, CountOf(output, GreyLeft()));
@@ -405,7 +408,7 @@ public class DayViewTests
         TestConsole console = new TestConsole().EmitAnsiSequences();
         console.Profile.Width = 120;
 
-        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(AllKinds()));
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(AllKinds(), EightHours, FlexitimeBalance.None));
 
         // grey = 256-colour 8, SteelBlue1 = 256-colour 75.
         string output = console.Output;
@@ -428,7 +431,7 @@ public class DayViewTests
         console.Profile.Width = 120;
         DayRecord record = DayRecord.Empty.Add(new DayEntry(EntryKind.Checkpoint, new TimeOnly(9, 0), "[red]Fix[/] [bold] #1", 42));
 
-        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record));
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record, EightHours, FlexitimeBalance.None));
 
         Assert.Matches(@"1 +CP +09:00 +\[red\]Fix\[/\] \[bold\] #1 #42", console.Output);
     }
@@ -445,7 +448,7 @@ public class DayViewTests
             new DayEntry(EntryKind.Leaving, new TimeOnly(17, 0)),
         ]);
 
-        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record));
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record, EightHours, FlexitimeBalance.None));
 
         string[] lines = console.Lines.Select(l => l.TrimEnd()).Where(l => l.Trim().Length > 0).ToArray();
         Assert.Matches(@"^1 +AR +08:00 +left +8:00$", lines[1]);
@@ -457,7 +460,7 @@ public class DayViewTests
         // Same single space between the time and "left" as a day with only arrival and leaving.
         TestConsole plain = new TestConsole();
         plain.Write(new DayView(FixedTimeProvider.At20261027()).Render(new DayRecord(
-            [new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)), new DayEntry(EntryKind.Leaving, new TimeOnly(12, 0))])));
+            [new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)), new DayEntry(EntryKind.Leaving, new TimeOnly(12, 0))]), EightHours, FlexitimeBalance.None));
         string[] plainLines = plain.Lines.Select(l => l.TrimEnd()).Where(l => l.Trim().Length > 0).ToArray();
         Assert.Equal(plainLines[1][plainLines[1].IndexOf("08:00", StringComparison.Ordinal)..], lines[1][lines[1].IndexOf("08:00", StringComparison.Ordinal)..]);
     }
@@ -466,7 +469,7 @@ public class DayViewTests
     {
         TestConsole console = new TestConsole();
         console.Profile.Width = 120;
-        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record));
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record, EightHours, FlexitimeBalance.None));
         return console.Lines.Select(l => l.TrimEnd()).Where(l => l.Trim().Length > 0).ToArray();
     }
 
@@ -474,7 +477,7 @@ public class DayViewTests
     {
         TestConsole console = new TestConsole().EmitAnsiSequences();
         console.Profile.Width = 120;
-        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record));
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record, EightHours, FlexitimeBalance.None));
         return console.Output;
     }
 
@@ -500,9 +503,10 @@ public class DayViewTests
     {
         string[] lines = BreakLines(ShortBreakDay());
 
-        Assert.Equal(6, lines.Length);
+        Assert.Equal(7, lines.Length);
         Assert.Matches(@"^4 +LE +17:00 +left", lines[4]);
         Assert.Equal("Breaks 0:20 taken · 0:30 required  ! Breaks too short: 0:10 missing", lines[5].Trim());
+        Assert.StartsWith("Target 8:00 · day ", lines[6].Trim());
     }
 
     // AC-4 (047)
@@ -530,7 +534,7 @@ public class DayViewTests
         string[] lines = BreakLines(LongBreakDay());
         string output = BreakAnsi(LongBreakDay());
 
-        Assert.Equal("Breaks 0:40 taken · 0:30 required", lines[^1].Trim());
+        Assert.Equal("Breaks 0:40 taken · 0:30 required", lines[^2].Trim());
         Assert.DoesNotContain("too short", output);
         Assert.DoesNotContain("\u001b[93m", output);
         Assert.DoesNotContain("\u001b[33m", output);
@@ -551,8 +555,8 @@ public class DayViewTests
         DayRecord none = new DayRecord(
             [new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)), new DayEntry(EntryKind.Leaving, new TimeOnly(14, 0))]);
 
-        Assert.Equal("Breaks 0:30 taken · 0:30 required", BreakLines(equal)[^1].Trim());
-        Assert.Equal("Breaks 0:00 taken · 0:00 required", BreakLines(none)[^1].Trim());
+        Assert.Equal("Breaks 0:30 taken · 0:30 required", BreakLines(equal)[^2].Trim());
+        Assert.Equal("Breaks 0:00 taken · 0:00 required", BreakLines(none)[^2].Trim());
         foreach (string output in new[] { BreakAnsi(equal), BreakAnsi(none) })
         {
             Assert.DoesNotContain("too short", output);
@@ -568,7 +572,7 @@ public class DayViewTests
     {
         TestConsole console = new TestConsole();
 
-        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(DayRecord.Empty));
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(DayRecord.Empty, EightHours, FlexitimeBalance.None));
 
         string[] lines = console.Lines.Select(l => l.Trim()).Where(l => l.Length > 0).ToArray();
         Assert.Equal(2, lines.Length);
@@ -596,7 +600,7 @@ public class DayViewTests
     {
         TestConsole console = new TestConsole();
         console.Profile.Width = 120;
-        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record));
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record, EightHours, FlexitimeBalance.None));
         return console.Output.Split('\n').Select(l => l.TrimEnd()).ToArray();
     }
 
@@ -681,8 +685,10 @@ public class DayViewTests
         string[] summary = lines.Where(l => l.Contains("Breaks too short", StringComparison.Ordinal)).ToArray();
         Assert.Single(summary);
         Assert.Equal("Breaks 0:20 taken · 0:30 required  ! Breaks too short: 0:10 missing", summary[0].Trim());
-        // No separate warning line: the summary is the last non-empty line.
-        Assert.Equal(summary[0], lines.Last(l => l.Length > 0));
+        // No separate warning line: only the target line follows the summary.
+        string[] nonEmpty = lines.Where(l => l.Length > 0).ToArray();
+        Assert.Equal(summary[0], nonEmpty[^2]);
+        Assert.StartsWith("Target ", nonEmpty[^1].Trim());
 
         string ansi = BreakAnsi(ShortBreakDay());
         Assert.Contains("\u001b[38;5;8mrequired\u001b[0m  \u001b[38;5;11m! Breaks too short: 0:10 missing\u001b[0m", ansi);
@@ -748,7 +754,7 @@ public class DayViewTests
     {
         TestConsole console = new TestConsole().EmitAnsiSequences();
         console.Profile.Width = 120;
-        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record));
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record, EightHours, FlexitimeBalance.None));
         return console.Output;
     }
 
@@ -792,7 +798,7 @@ public class DayViewTests
     {
         TestConsole console = new TestConsole();
         console.Profile.Width = 120;
-        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(BookedDay()));
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(BookedDay(), EightHours, FlexitimeBalance.None));
 
         Assert.Matches(@"2 +CP +09:15 +Done \[x\] #5678 ✓ +left 6:45", console.Output);
         Assert.Matches(@"3 +CP +10:45 +Open #1234 +left 5:15", console.Output);
@@ -818,12 +824,13 @@ public class DayViewTests
     {
         string[] lines = BreakLines(UnendedDay());
 
-        Assert.Equal(6, lines.Length);
+        Assert.Equal(7, lines.Length);
         Assert.Matches(@"^1 +AR +08:00 +left 8:00$", lines[1]);
         Assert.Matches(@"^2 +BS +12:00 +left 4:00$", lines[2]);
         Assert.Matches(@"^3 +LE +17:00 +left 4:00$", lines[3]);
         Assert.Equal("   Breaks 5:00 taken · 0:00 required", lines[4]);
-        Assert.Equal("   ! Break not ended: entry 2", lines[5]);
+        Assert.Equal("   Target 8:00 · day -4:00 · balance 0:00", lines[5]);
+        Assert.Equal("   ! Break not ended: entry 2", lines[6]);
     }
 
     // AC-7 (083)
@@ -851,7 +858,8 @@ public class DayViewTests
         string[] lines = BreakLines(record);
 
         Assert.Equal("   ! Break not ended: entries 2, 4", lines[^1]);
-        Assert.StartsWith("   Breaks ", lines[^2]);
+        Assert.StartsWith("   Target ", lines[^2]);
+        Assert.StartsWith("   Breaks ", lines[^3]);
     }
 
     // AC-8, AC-10 (083)
@@ -862,12 +870,13 @@ public class DayViewTests
         string output = BreakAnsi(EarlyBreakDay());
 
         // The break start is also never ended: the next break or leaving entry is the leaving.
-        Assert.Equal(7, lines.Length);
+        Assert.Equal(8, lines.Length);
         Assert.Matches(@"^1 +BS +07:00 +left 8:00$", lines[1]);
         Assert.Matches(@"^3 +LE +17:00 +left -1:00$", lines[3]);
         Assert.Equal("   Breaks 0:00 taken · 0:30 required  ! Breaks too short: 0:30 missing", lines[4]);
-        Assert.Equal("   ! Break not ended: entry 1", lines[5]);
-        Assert.Equal("   ! Break outside arrival and leaving: entry 1", lines[6]);
+        Assert.Equal("   Target 8:00 · day +1:00 · balance 0:00", lines[5]);
+        Assert.Equal("   ! Break not ended: entry 1", lines[6]);
+        Assert.Equal("   ! Break outside arrival and leaving: entry 1", lines[7]);
         Assert.Contains("\u001b[38;5;11m! Break outside arrival and leaving: entry 1\u001b[0m", output);
     }
 
@@ -886,7 +895,8 @@ public class DayViewTests
 
         string[] lines = BreakLines(record);
 
-        Assert.StartsWith("   Breaks ", lines[^3]);
+        Assert.StartsWith("   Breaks ", lines[^4]);
+        Assert.StartsWith("   Target ", lines[^3]);
         Assert.Equal("   ! Break not ended: entry 2", lines[^2]);
         Assert.Equal("   ! Break outside arrival and leaving: entries 4, 5", lines[^1]);
     }
@@ -909,7 +919,8 @@ public class DayViewTests
         Assert.Matches(@"^3 +BE +12:30 +left 4:00$", lines[3]);
         Assert.Matches(@"^5 +LE +17:00 +left 0:00$", lines[5]);
         Assert.Equal("   Breaks 1:00 taken · 0:30 required", lines[6]);
-        Assert.Equal("   ! Break outside arrival and leaving: entry 3", lines[7]);
+        Assert.Equal("   Target 8:00 · day 0:00 · balance 0:00", lines[7]);
+        Assert.Equal("   ! Break outside arrival and leaving: entry 3", lines[8]);
     }
 
     // AC-6, AC-10 (083)
@@ -922,15 +933,17 @@ public class DayViewTests
         string[] breakFirst = BreakLines(DayRecord.Empty.Add(arrival).Add(breakStart).Add(leaving));
         string[] leaveFirst = BreakLines(DayRecord.Empty.Add(arrival).Add(leaving).Add(breakStart));
 
-        Assert.Equal(6, breakFirst.Length);
+        Assert.Equal(7, breakFirst.Length);
         Assert.Matches(@"^3 +LE +17:00 +left -1:00$", breakFirst[3]);
         Assert.Equal("   Breaks 0:00 taken · 0:30 required  ! Breaks too short: 0:30 missing", breakFirst[4]);
-        Assert.Equal("   ! Break not ended: entry 2", breakFirst[5]);
-        Assert.Equal(7, leaveFirst.Length);
+        Assert.Equal("   Target 8:00 · day +1:00 · balance 0:00", breakFirst[5]);
+        Assert.Equal("   ! Break not ended: entry 2", breakFirst[6]);
+        Assert.Equal(8, leaveFirst.Length);
         Assert.Matches(@"^3 +BS +17:00 +left -1:00$", leaveFirst[3]);
         Assert.Equal("   Breaks 0:00 taken · 0:30 required  ! Breaks too short: 0:30 missing", leaveFirst[4]);
-        Assert.Equal("   ! Break not ended: entry 3", leaveFirst[5]);
-        Assert.Equal("   ! Break outside arrival and leaving: entry 3", leaveFirst[6]);
+        Assert.Equal("   Target 8:00 · day +1:00 · balance 0:00", leaveFirst[5]);
+        Assert.Equal("   ! Break not ended: entry 3", leaveFirst[6]);
+        Assert.Equal("   ! Break outside arrival and leaving: entry 3", leaveFirst[7]);
     }
 
     // AC-9 (083)
@@ -946,6 +959,142 @@ public class DayViewTests
             Assert.DoesNotContain("Break outside", output);
         }
 
-        Assert.Equal("Breaks 0:40 taken · 0:30 required", BreakLines(LongBreakDay())[^1].Trim());
+        Assert.Equal("Breaks 0:40 taken · 0:30 required", BreakLines(LongBreakDay())[^2].Trim());
+    }
+
+    private static string[] PlainLines(DayRecord record, TimeSpan target, FlexitimeBalance balance)
+    {
+        TestConsole console = new TestConsole();
+        console.Profile.Width = 120;
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record, target, balance));
+        return console.Lines.Select(l => l.TrimEnd()).Where(l => l.Trim().Length > 0).ToArray();
+    }
+
+    private static string AnsiOutput(DayRecord record, TimeSpan target, FlexitimeBalance balance)
+    {
+        TestConsole console = new TestConsole().EmitAnsiSequences();
+        console.Profile.Width = 120;
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record, target, balance));
+        return console.Output;
+    }
+
+    private static DayRecord MorningDay() => new DayRecord(
+        [new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)), new DayEntry(EntryKind.Leaving, new TimeOnly(12, 0))]);
+
+    // AC-2 (091)
+    [Fact]
+    public void Render_TimeLeft_FollowsTheGivenTarget()
+    {
+        string[] lines = PlainLines(MorningDay(), TimeSpan.FromMinutes(450), FlexitimeBalance.None);
+
+        Assert.Matches(@"^1 +AR +08:00 +left +7:30$", lines[1]);
+        Assert.Matches(@"^2 +LE +12:00 +left +3:30$", lines[2]);
+    }
+
+    // AC-3 (091)
+    [Fact]
+    public void Render_TargetLine_DirectlyBelowBreaks_SameIndent_BeforeHints()
+    {
+        DayRecord record = new DayRecord(
+        [
+            new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)),
+            new DayEntry(EntryKind.BreakStart, new TimeOnly(12, 0)),
+            new DayEntry(EntryKind.Leaving, new TimeOnly(15, 30)),
+        ]);
+        FlexitimeBalance balance = new FlexitimeBalance(new TimeSpan(1, 15, 0), 3, 0);
+
+        string[] lines = PlainLines(record, EightHours, balance);
+
+        Assert.Equal("   Breaks 3:30 taken · 0:00 required", lines[4]);
+        Assert.Equal("   Target 8:00 · day -4:00 · balance +1:15", lines[5]);
+        Assert.Equal("   ! Break not ended: entry 2", lines[6]);
+    }
+
+    // AC-3 (091)
+    [Fact]
+    public void Render_TargetLine_DayIsWorkTimeMinusTarget()
+    {
+        DayRecord record = new DayRecord(
+            [new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)), new DayEntry(EntryKind.Leaving, new TimeOnly(15, 30))]);
+
+        string[] lines = PlainLines(record, EightHours, new FlexitimeBalance(new TimeSpan(1, 15, 0), 2, 0));
+
+        Assert.Equal("Target 8:00 · day -0:30 · balance +1:15", lines[^1].Trim());
+    }
+
+    // AC-3 (091)
+    [Fact]
+    public void Render_TargetLine_GreyWords_SteelBlueValues()
+    {
+        string output = AnsiOutput(MorningDay(), EightHours, new FlexitimeBalance(new TimeSpan(1, 15, 0), 2, 0));
+
+        Assert.Contains(
+            "\u001b[38;5;8mTarget\u001b[0m \u001b[38;5;75m8:00\u001b[0m \u001b[38;5;8m· day\u001b[0m \u001b[38;5;75m-4:00\u001b[0m " +
+            "\u001b[38;5;8m· balance\u001b[0m \u001b[38;5;75m+1:15\u001b[0m",
+            output);
+    }
+
+    // AC-4 (091)
+    [Theory]
+    [InlineData(1800, "+0:30")]
+    [InlineData(-1800, "-0:30")]
+    [InlineData(0, "0:00")]
+    [InlineData(59, "0:00")]
+    [InlineData(-59, "0:00")]
+    [InlineData(61, "+0:01")]
+    [InlineData(-61, "-0:01")]
+    [InlineData(43500, "+12:05")]
+    [InlineData(-43500, "-12:05")]
+    [InlineData(329400, "+91:30")]
+    public void FormatSigned_SignsAndTruncatesTowardZero(int seconds, string expected)
+    {
+        Assert.Equal(expected, DayView.FormatSigned(TimeSpan.FromSeconds(seconds)));
+    }
+
+    // AC-4 (091)
+    [Fact]
+    public void TargetLine_ShowsTheTargetWithoutSign()
+    {
+        Assert.Equal(
+            "Target 0:00 · day +4:00 · balance 0:00",
+            PlainLines(MorningDay(), TimeSpan.Zero, FlexitimeBalance.None)[^1].Trim());
+        Assert.StartsWith("Target 24:00 ", PlainLines(MorningDay(), TimeSpan.FromMinutes(1440), FlexitimeBalance.None)[^1].Trim());
+    }
+
+    // AC-6 (091)
+    [Fact]
+    public void Render_EmptyDay_WithCountedDays_ShowsTargetLineWithoutDay()
+    {
+        string[] lines = PlainLines(DayRecord.Empty, EightHours, new FlexitimeBalance(TimeSpan.FromMinutes(30), 2, 0));
+
+        Assert.Equal(3, lines.Length);
+        Assert.Equal("No entries yet.", lines[1]);
+        Assert.Equal("Target 8:00 · balance +0:30", lines[2]);
+    }
+
+    // AC-6 (091)
+    [Fact]
+    public void Render_EmptyDay_WithNoCountedDay_ShowsNoTargetLine()
+    {
+        string[] lines = PlainLines(DayRecord.Empty, EightHours, FlexitimeBalance.None);
+
+        Assert.Equal(2, lines.Length);
+        Assert.Equal("No entries yet.", lines[1]);
+        Assert.DoesNotContain(lines, l => l.Contains("Target", StringComparison.Ordinal));
+    }
+
+    // AC-7 (091)
+    [Fact]
+    public void Render_SkippedFiles_EndTheTargetLineInYellow()
+    {
+        Assert.Equal(
+            "Target 8:00 · day -4:00 · balance 0:00  ! 1 day file skipped",
+            PlainLines(MorningDay(), EightHours, new FlexitimeBalance(TimeSpan.Zero, 1, 1))[^1].Trim());
+        Assert.Equal(
+            "Target 8:00 · balance -1:00  ! 2 day files skipped",
+            PlainLines(DayRecord.Empty, EightHours, new FlexitimeBalance(TimeSpan.FromHours(-1), 1, 2))[^1].Trim());
+        Assert.Contains(
+            "\u001b[38;5;11m! 1 day file skipped\u001b[0m",
+            AnsiOutput(MorningDay(), EightHours, new FlexitimeBalance(TimeSpan.Zero, 1, 1)));
     }
 }

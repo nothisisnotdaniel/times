@@ -1,0 +1,80 @@
+using System.Text.Json;
+
+namespace Times;
+
+/// <summary>
+/// The running flexitime balance up to and including a shown day: the sum of
+/// <see cref="DayRecord.WorkTime"/> minus the daily target over every day file dated on or before
+/// that day that holds at least one arrival. Day files that cannot be read are skipped and counted.
+/// Computing it only reads: it never creates or changes a file or folder.
+/// </summary>
+internal sealed class FlexitimeBalance
+{
+    public FlexitimeBalance(TimeSpan total, int countedDays, int skippedFiles)
+    {
+        Total = total;
+        CountedDays = countedDays;
+        SkippedFiles = skippedFiles;
+    }
+
+    /// <summary>No day counted and nothing skipped.</summary>
+    public static FlexitimeBalance None { get; } = new(TimeSpan.Zero, 0, 0);
+
+    /// <summary>The sum of work time minus target over the counted days.</summary>
+    public TimeSpan Total { get; }
+
+    /// <summary>The number of days that added to <see cref="Total"/>.</summary>
+    public int CountedDays { get; }
+
+    /// <summary>The number of day files on or before the shown day that could not be read.</summary>
+    public int SkippedFiles { get; }
+
+    /// <summary>
+    /// Computes the balance from <paramref name="store"/>'s day files dated on or before
+    /// <paramref name="shownDay"/>, with <paramref name="target"/> as every day's target. A missing
+    /// folder, or one that cannot be listed, gives <see cref="None"/>.
+    /// </summary>
+    public static FlexitimeBalance Compute(DayStore store, DateOnly shownDay, TimeSpan target)
+    {
+        IReadOnlyList<DateOnly> days;
+        try
+        {
+            days = store.Days();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return None;
+        }
+
+        TimeSpan total = TimeSpan.Zero;
+        int counted = 0;
+        int skipped = 0;
+        foreach (DateOnly day in days)
+        {
+            if (day > shownDay)
+            {
+                continue;
+            }
+
+            DayRecord record;
+            try
+            {
+                record = store.Load(day);
+            }
+            catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException
+                or InvalidOperationException or JsonException)
+            {
+                skipped++;
+                continue;
+            }
+
+            if (record.Entries.Any(e => e.Kind == EntryKind.Arrival))
+            {
+                total += record.WorkTime() - target;
+                counted++;
+            }
+        }
+
+        return new FlexitimeBalance(total, counted, skipped);
+    }
+}

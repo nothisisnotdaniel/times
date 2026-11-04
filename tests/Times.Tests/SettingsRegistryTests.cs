@@ -2,11 +2,18 @@ namespace Times.Tests;
 
 public sealed class SettingsRegistryTests
 {
-    // Scope
+    // AC-1 (091)
     [Fact]
-    public void CreateDefault_RegistersNothing()
+    public void CreateDefault_RegistersOnlyTheDailyTarget()
     {
-        Assert.Empty(SettingsRegistry.CreateDefault().Settings);
+        Setting setting = Assert.Single(SettingsRegistry.CreateDefault().Settings);
+
+        Assert.Equal("daily-target", setting.Name);
+        Assert.Equal("Daily work target in minutes (480 = 8:00)", setting.Description);
+        Assert.Equal(SettingKind.Number, setting.Kind);
+        Assert.Equal(480, setting.Default);
+        Assert.Equal(0, setting.Min);
+        Assert.Equal(1440, setting.Max);
     }
 
     // AC-1

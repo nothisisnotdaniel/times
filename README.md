@@ -140,7 +140,9 @@ options moves to the next one, and a number setting asks for the new value in th
 `help` shows; nothing is written until you change something. If `settings.json` cannot be read, the
 panel says why, shows the defaults and saves nothing until the file is fixed or deleted.
 
-There are no settings yet: they arrive with the features that need them.
+| Setting | Kind | Default | What it does |
+|---------|------|---------|--------------|
+| `daily-target` | number, 0 to 1440 | 480 | Your daily work target in minutes (480 = 8:00). The `left` column, the `day` value and the flexitime `balance` use it, for every day. |
 
 ## Keys
 
@@ -177,13 +179,18 @@ The screen shows one day at a time, starting at today. Under a heading with the 
 - a two-letter code: `AR` arrival, `LE` leaving, `BS` break start, `BE` break end, `CP` checkpoint;
 - its time, and for a checkpoint its name and work item (`#5678`), if it has one; a checkpoint
   marked with `booked` is shown in grey and ends with a `✓`;
-- the work time left at that entry, counted down from 8 hours (it goes negative once you work
-  longer).
+- the work time left at that entry, counted down from your daily target (8 hours unless you change
+  `daily-target` in the settings; it goes negative once you work longer).
 
 Below the entries, a `Breaks` line shows the break you have taken and the break required for the
 time you worked (none up to 6 hours, 0:30 up to 9 hours, 0:45 above). If you took too little, the
-line ends with a yellow `! Breaks too short` and the minutes missing. A day with nothing booked
-shows `No entries yet.`
+line ends with a yellow `! Breaks too short` and the minutes missing. Below it, a target line such
+as `Target 8:00 · day -0:30 · balance +1:15` shows your daily target, how far this day is over (`+`)
+or under (`-`) it, and your flexitime balance: the sum of the same difference over every booked day
+with an arrival, up to and including the shown day. Today counts with the work booked so far. Day
+files that cannot be read are left out, and the line then ends with a yellow `! 1 day file skipped`.
+A day with nothing booked shows `No entries yet.`, followed by the target line without the `day`
+part once any earlier day counts.
 
 Above the day, the `Projects` panel shows your quicklist: each project's number, its work item and
 its title, at most 5 lines (a longer list ends with `… N more`; `projects` lists them all). It is

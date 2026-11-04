@@ -473,4 +473,58 @@ public class DayStoreTests
 
         Assert.Equal("A08:15", Describe(store.Load(Day)));
     }
+
+    // AC-7, AC-8 (091)
+    [Fact]
+    public void Days_ListsOnlyExactDayFileNames_Sorted()
+    {
+        using TempFolder temp = new TempFolder();
+        foreach (string name in new[]
+        {
+            "2026-11-02.json", "2026-10-30.json", "2026-13-01.json", "2026-02-30.json", "settings.json",
+            "projects.json", "x2026-11-01.json", "2026-11-01.json.bak", "2026-11-01.JSON", "2026-1-01.json",
+            "2026-11-01.json ", ".2026-11-01.json.abc.tmp",
+        })
+        {
+            File.WriteAllText(Path.Combine(temp.Path, name), "{}");
+        }
+
+        Directory.CreateDirectory(Path.Combine(temp.Path, "2026-10-01.json"));
+
+        Assert.Equal(
+            [new DateOnly(2026, 10, 1), new DateOnly(2026, 10, 30), new DateOnly(2026, 11, 2)],
+            new DayStore(temp.Path).Days());
+    }
+
+    // AC-8 (091)
+    [Fact]
+    public void Days_MissingFolder_IsEmpty_AndCreatesNothing()
+    {
+        using TempFolder temp = new TempFolder(create: false);
+
+        Assert.Empty(new DayStore(temp.Path).Days());
+        Assert.False(Directory.Exists(temp.Path));
+    }
+
+    // AC-8 (091)
+    [Fact]
+    public void Days_InvalidFolder_IsEmpty()
+    {
+        Assert.Empty(new DayStore("relative/folder").Days());
+    }
+
+    // AC-7 (091)
+    [Theory]
+    [InlineData("2026-11-01.json", true)]
+    [InlineData("2028-02-29.json", true)]
+    [InlineData("2026-02-29.json", false)]
+    [InlineData("2026-13-01.json", false)]
+    [InlineData("x2026-11-01.json", false)]
+    [InlineData("2026-11-01.json\n", false)]
+    [InlineData("２026-11-01.json", false)]
+    [InlineData("settings.json", false)]
+    public void TryParseName_MatchesExactly(string name, bool expected)
+    {
+        Assert.Equal(expected, DayStore.TryParseName(name, out _));
+    }
 }

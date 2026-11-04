@@ -100,12 +100,24 @@ public sealed class SettingsPanelTests
         Assert.EndsWith("… │", lines[1]);
     }
 
+    // AC-1 (091)
+    [Fact]
+    public void DefaultRegistry_ListsTheDailyTarget()
+    {
+        SettingsRegistry registry = SettingsRegistry.CreateDefault();
+        string[] lines = Render(SettingsPanel.Render(registry, SettingValues.Defaults(registry), 0, null));
+
+        Assert.Contains(lines, l => l.Contains("daily-target", StringComparison.Ordinal) && l.Contains("480", StringComparison.Ordinal));
+        Assert.DoesNotContain(lines, l => l.Contains("No settings exist yet.", StringComparison.Ordinal));
+    }
+
     // AC-4
     [Fact]
     public void NoSettings_ShowsTheGreyNote_AndOnlyEsc()
     {
-        string[] lines = Render(SettingsPanel.Render(SettingsRegistry.CreateDefault(), SettingValues.Defaults(SettingsRegistry.CreateDefault()), 0, null));
-        string output = RenderAnsi(SettingsPanel.Render(SettingsRegistry.CreateDefault(), SettingValues.Defaults(SettingsRegistry.CreateDefault()), 0, null));
+        SettingsRegistry empty = new SettingsRegistry();
+        string[] lines = Render(SettingsPanel.Render(empty, SettingValues.Defaults(empty), 0, null));
+        string output = RenderAnsi(SettingsPanel.Render(empty, SettingValues.Defaults(empty), 0, null));
 
         Assert.Equal(4, lines.Length);
         Assert.Equal("No settings exist yet.", Inner(lines[1]));

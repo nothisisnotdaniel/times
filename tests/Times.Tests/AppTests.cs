@@ -6078,7 +6078,7 @@ public sealed class AppTests : IDisposable
 
     // AC-4, AC-9
     [Fact]
-    public void ShippedApp_HasNoSettings_OnlyEscDoesAnything_AndNothingIsWritten()
+    public void EmptyRegistry_HasNoSettings_OnlyEscDoesAnything_AndNothingIsWritten()
     {
         TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
         console.Input.PushTextWithEnter("settings");
@@ -6090,7 +6090,7 @@ public sealed class AppTests : IDisposable
         console.Input.PushKey(ConsoleKey.Escape);
         console.Input.PushTextWithEnter("quit");
 
-        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), settings: new SettingsRegistry()).Run([]));
 
         string[] screen = Assert.Single(PanelScreens(console.Output));
         Assert.Contains(screen, r => r.Contains("No settings exist yet.", StringComparison.Ordinal));
@@ -6983,5 +6983,202 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, exitCode);
         AssertPasteCutHintInPlace(output);
         Assert.False(File.Exists(SettingsPath));
+    }
+
+    // Runs the shipped app (the default settings registry) on a plain interactive console.
+    private (int ExitCode, string Output) RunShipped(params string[] commands)
+    {
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 120;
+        foreach (string command in commands)
+        {
+            console.Input.PushTextWithEnter(command);
+        }
+
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+        return (exitCode, console.Output);
+    }
+
+    private void WriteDayFile(string date, string arrival, string leaving) =>
+        File.WriteAllText(
+            DayFile(date),
+            $"{{\"entries\":[{{\"kind\":\"arrival\",\"time\":\"{arrival}\"}},{{\"kind\":\"leaving\",\"time\":\"{leaving}\"}}]}}");
+
+    // AC-1 (091)
+    [Fact]
+    public void ShippedApp_ListsDailyTarget_AndChangingItSavesSettingsJson()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Input.PushTextWithEnter("settings");
+        console.Input.PushKey(ConsoleKey.Enter);
+        console.Input.PushTextWithEnter("450");
+        console.Input.PushKey(ConsoleKey.Escape);
+        console.Input.PushTextWithEnter("quit");
+
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+
+        List<string[]> screens = PanelScreens(console.Output);
+        Assert.Equal("480", ValueOf(screens[0], "daily-target"));
+        Assert.Equal("450", ValueOf(screens[^1], "daily-target"));
+        Assert.Equal("{\"settings\":{\"daily-target\":450}}", File.ReadAllText(SettingsPath));
+    }
+
+    // AC-2 (091)
+    [Fact]
+    public void NoSettingsFile_TimeLeftUsesEightHours()
+    {
+        (int exitCode, string output) = RunShipped("arrive 8:00", "leave 12:00", "quit");
+
+        Assert.Equal(0, exitCode);
+        string frame = LastFrame(output);
+        Assert.Matches(@"1 +AR +08:00 +left 8:00", frame);
+        Assert.Matches(@"2 +LE +12:00 +left 4:00", frame);
+        Assert.False(File.Exists(SettingsPath));
+    }
+
+    // AC-2 (091)
+    [Fact]
+    public void DailyTarget450_LeavingRowShowsLeft330()
+    {
+        File.WriteAllText(SettingsPath, "{\"settings\":{\"daily-target\":450}}");
+
+        (_, string output) = RunShipped("arrive 8:00", "leave 12:00", "quit");
+
+        string frame = LastFrame(output);
+        Assert.Matches(@"1 +AR +08:00 +left 7:30", frame);
+        Assert.Matches(@"2 +LE +12:00 +left 3:30", frame);
+        Assert.Contains("Target 7:30 · day -3:30 · balance -3:30", frame);
+    }
+
+    // AC-3 (091)
+    [Fact]
+    public void BookedDay_ShowsTargetLineBelowBreaks()
+    {
+        WriteDayFile("2026-10-20", "08:00", "17:15");
+
+        (_, string output) = RunShipped("arrive 8:00", "leave 15:30", "quit");
+
+        string[] lines = LastFrame(output).Split('\n').Select(l => l.Trim('│', ' ')).ToArray();
+        int breaks = Array.FindIndex(lines, l => l.StartsWith("Breaks ", StringComparison.Ordinal));
+        Assert.True(breaks >= 0);
+        Assert.Equal("Target 8:00 · day -0:30 · balance +0:45", lines[breaks + 1]);
+    }
+
+    // AC-5, AC-6 (091)
+    [Fact]
+    public void Balance_SumsEarlierDays_IgnoresLaterOnes_AndCountsTheShownDayOnceBooked()
+    {
+        WriteDayFile("2026-10-20", "08:00", "17:00");
+        WriteDayFile("2026-10-21", "08:00", "15:30");
+        WriteDayFile("2026-10-30", "06:00", "20:00");
+
+        (_, string output) = RunShipped("arrive 8:00", "leave 16:30", "quit");
+
+        List<string[]> frames = Frames(output);
+        string first = string.Join("\n", frames[0]);
+        Assert.Contains("No entries yet.", first);
+        Assert.Contains("Target 8:00 · balance +0:30", first);
+        Assert.DoesNotContain("· day", first);
+        Assert.Contains("Target 8:00 · day +0:30 · balance +1:00", LastFrame(output));
+    }
+
+    // AC-6 (091)
+    [Fact]
+    public void EmptyDay_WithNoCountedDay_ShowsNoTargetLine()
+    {
+        (_, string output) = RunShipped("quit");
+
+        string frame = LastFrame(output);
+        Assert.Contains("No entries yet.", frame);
+        Assert.DoesNotContain("Target", frame);
+    }
+
+    // AC-7 (091)
+    [Fact]
+    public void UnreadableDayFile_IsSkipped_Counted_AndLeftAsItIs()
+    {
+        WriteDayFile("2026-10-20", "08:00", "17:00");
+        File.WriteAllText(DayFile("2026-10-21"), "not json");
+        File.WriteAllText(Path.Combine(data.Path, "2026-13-01.json"), "not json");
+
+        (int exitCode, string output) = RunShipped("next", "prev", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Target 8:00 · balance +1:00  ! 1 day file skipped", LastFrame(output));
+        Assert.Equal("not json", File.ReadAllText(DayFile("2026-10-21")));
+        Assert.Equal("not json", File.ReadAllText(Path.Combine(data.Path, "2026-13-01.json")));
+    }
+
+    // AC-7 (091)
+    [Fact]
+    public void TwoUnreadableDayFiles_ArePlural()
+    {
+        WriteDayFile("2026-10-20", "08:00", "17:00");
+        File.WriteAllText(DayFile("2026-10-21"), "not json");
+        Directory.CreateDirectory(DayFile("2026-10-22"));
+
+        (_, string output) = RunShipped("quit");
+
+        Assert.Contains("! 2 day files skipped", LastFrame(output));
+    }
+
+    // AC-8 (091)
+    [Fact]
+    public void MissingDataFolder_ShowsNoBalance_AndCreatesNothing()
+    {
+        string missing = Path.Combine(data.Path, "missing");
+        TestConsole console = new TestConsole().Interactive();
+        console.Input.PushTextWithEnter("quit");
+
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(missing)).Run([]));
+
+        Assert.DoesNotContain("Target", LastFrame(console.Output));
+        Assert.False(Directory.Exists(missing));
+    }
+
+    // AC-9 (091)
+    [Theory]
+    [InlineData("not json")]
+    [InlineData("{\"settings\":{\"daily-target\":1441}}")]
+    [InlineData("{\"settings\":{\"daily-target\":-1}}")]
+    [InlineData("{\"settings\":{\"daily-target\":\"450\"}}")]
+    [InlineData("{\"settings\":{\"daily-target\":450,\"daily-target\":450}}")]
+    public void BrokenSettings_DayViewUsesEightHours_AndLeavesTheFile(string contents)
+    {
+        File.WriteAllText(SettingsPath, contents);
+
+        (int exitCode, string output) = RunShipped("arrive 8:00", "leave 12:00", "quit");
+
+        Assert.Equal(0, exitCode);
+        string frame = LastFrame(output);
+        Assert.Matches(@"2 +LE +12:00 +left 4:00", frame);
+        Assert.Contains("Target 8:00 · day -4:00 · balance -4:00", frame);
+        Assert.Equal(contents, File.ReadAllText(SettingsPath));
+    }
+
+    // AC-10 (091)
+    [Fact]
+    public void ChangingDailyTarget_RedrawsTheDayViewWithTheNewTarget()
+    {
+        WriteDayFile("2026-10-20", "08:00", "16:00");
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 120;
+        console.Input.PushTextWithEnter("arrive 8:00");
+        console.Input.PushTextWithEnter("leave 12:00");
+        console.Input.PushTextWithEnter("settings");
+        console.Input.PushKey(ConsoleKey.Enter);
+        console.Input.PushTextWithEnter("450");
+        console.Input.PushKey(ConsoleKey.Escape);
+        console.Input.PushTextWithEnter("quit");
+
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+
+        string output = console.Output;
+        int closed = output.LastIndexOf("daily-target", StringComparison.Ordinal);
+        string after = output[closed..];
+        Assert.Matches(@"2 +LE +12:00 +left 3:30", after);
+        Assert.Contains("Target 7:30 · day -3:30 · balance -3:00", after);
+        string before = output[..output.IndexOf("daily-target", StringComparison.Ordinal)];
+        Assert.Contains("Target 8:00 · day -4:00 · balance -4:00", before);
     }
 }
