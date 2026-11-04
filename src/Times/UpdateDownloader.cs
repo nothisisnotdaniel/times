@@ -20,6 +20,9 @@ internal sealed record StagedUpdate
     public string Folder { get; }
 
     public string PackagePath { get; }
+
+    /// <summary>The <c>nuget.config</c> in <see cref="Folder"/> that makes it the only package source (<c>--configfile</c>).</summary>
+    public string ConfigPath => Path.Combine(Folder, UpdateDownloader.NuGetConfigName);
 }
 
 /// <summary>
@@ -31,6 +34,23 @@ internal sealed record StagedUpdate
 /// </summary>
 internal sealed class UpdateDownloader
 {
+    /// <summary>The name of the staged <c>nuget.config</c>.</summary>
+    public const string NuGetConfigName = "nuget.config";
+
+    /// <summary>
+    /// The staged <c>nuget.config</c>: it clears every configured source (nuget.org and the user's feeds)
+    /// and adds only the staging folder, so <c>dotnet tool update</c> can install nothing but the verified
+    /// package, never a <c>Times</c> package of the same version from another feed.
+    /// </summary>
+    public const string NuGetConfig =
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n" +
+        "<configuration>\n" +
+        "  <packageSources>\n" +
+        "    <clear />\n" +
+        "    <add key=\"times-update\" value=\".\" />\n" +
+        "  </packageSources>\n" +
+        "</configuration>\n";
+
     /// <summary>The package is read up to 20 MiB.</summary>
     public const long MaxPackageBytes = 20 * 1024 * 1024;
 
@@ -103,6 +123,11 @@ internal sealed class UpdateDownloader
             using (FileStream file = new FileStream(path, FileMode.CreateNew, FileAccess.Write))
             {
                 file.Write(packageBytes);
+            }
+
+            using (FileStream file = new FileStream(Path.Combine(folder.FullName, NuGetConfigName), FileMode.CreateNew, FileAccess.Write))
+            {
+                file.Write(System.Text.Encoding.UTF8.GetBytes(NuGetConfig));
             }
 
             return new StagedUpdate(candidate.Version, folder.FullName, path);

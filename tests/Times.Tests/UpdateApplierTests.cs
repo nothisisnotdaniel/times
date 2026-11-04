@@ -44,7 +44,7 @@ public sealed class UpdateApplierTests : IDisposable
         Assert.Null(call.CommandLine);
         Assert.Equal(
             ["sh", "-c", UpdateApplier.UnixScript, "sh", "4242", Path.Combine(data, "update.log"), staged.Folder,
-                "Times", "-g", "--add-source", staged.Folder, "--version", "1.2.0"],
+                "Times", "-g", "--configfile", Path.Combine(staged.Folder, "nuget.config"), "--add-source", staged.Folder, "--version", "1.2.0"],
             call.Arguments);
         Assert.DoesNotContain(temp.Path, UpdateApplier.UnixScript, StringComparison.Ordinal);
     }
@@ -60,7 +60,7 @@ public sealed class UpdateApplierTests : IDisposable
         ProcessCall call = applier.HelperCall(staged, Install(tools, global: false), temp.Path, 1);
 
         Assert.Equal(
-            ["Times", "--tool-path", tools, "--add-source", staged.Folder, "--version", "1.2.0-develop.7", "--prerelease"],
+            ["Times", "--tool-path", tools, "--configfile", staged.ConfigPath, "--add-source", staged.Folder, "--version", "1.2.0-develop.7", "--prerelease"],
             call.Arguments.Skip(7));
     }
 
@@ -138,7 +138,7 @@ public sealed class UpdateApplierTests : IDisposable
         Assert.Contains("tasklist /fi \"PID eq 77\"", script, StringComparison.Ordinal);
         Assert.Contains("(1,1,30)", script, StringComparison.Ordinal);
         Assert.Contains(
-            "dotnet tool update Times -g --add-source \"C:\\Users\\Dan L\\AppData\\Local\\Temp\\times-update-x\" --version 1.2.0-beta.1 --prerelease <nul >>\"" + Path.Combine(@"C:\Users\Dan L\AppData\Roaming\Times", "update.log") + "\" 2>&1",
+            "dotnet tool update Times -g --configfile \"" + Path.Combine(@"C:\Users\Dan L\AppData\Local\Temp\times-update-x", "nuget.config") + "\" --add-source \"C:\\Users\\Dan L\\AppData\\Local\\Temp\\times-update-x\" --version 1.2.0-beta.1 --prerelease <nul >>\"" + Path.Combine(@"C:\Users\Dan L\AppData\Roaming\Times", "update.log") + "\" 2>&1",
             script, StringComparison.Ordinal);
         Assert.EndsWith("rmdir /s /q \"C:\\Users\\Dan L\\AppData\\Local\\Temp\\times-update-x\"", script, StringComparison.Ordinal);
     }

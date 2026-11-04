@@ -7341,7 +7341,7 @@ public sealed class AppTests : IDisposable
         ProcessCall call = Assert.Single(rig.Launcher.Calls);
         Assert.Equal("nohup", call.FileName);
         Assert.Equal(
-            ["Times", "-g", "--add-source", rig.StageFolder, "--version", "1.2.0"],
+            ["Times", "-g", "--configfile", Path.Combine(rig.StageFolder, "nuget.config"), "--add-source", rig.StageFolder, "--version", "1.2.0"],
             call.Arguments.Skip(7));
         Assert.Equal(Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture), call.Arguments[4]);
         Assert.Equal(Path.Combine(data.Path, "update.log"), call.Arguments[5]);

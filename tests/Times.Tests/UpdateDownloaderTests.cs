@@ -47,10 +47,30 @@ public sealed class UpdateDownloaderTests : IDisposable
         Assert.Equal(version, staged.Version.ToString());
         Assert.Equal(Assert.Single(created), staged.Folder);
         Assert.Equal(Path.Combine(staged.Folder, $"Times.{version}.nupkg"), staged.PackagePath);
-        Assert.Equal([$"Times.{version}.nupkg"], Directory.GetFiles(staged.Folder).Select(Path.GetFileName));
+        Assert.Equal([$"Times.{version}.nupkg", "nuget.config"], Directory.GetFiles(staged.Folder).Select(Path.GetFileName).Order(StringComparer.Ordinal));
+        Assert.Equal(Path.Combine(staged.Folder, "nuget.config"), staged.ConfigPath);
         Assert.Equal(
             [(release.Assets[0].Url, UpdateDownloader.MaxPackageBytes), (release.Assets[1].Url, UpdateDownloader.MaxSignatureBytes)],
             source.Downloads);
+    }
+
+    // AC-9 (security review): the staged nuget.config clears every other source and adds only the staging
+    // folder, so dotnet tool update cannot take a same-version Times package from nuget.org or another feed.
+    [Fact]
+    public async Task DownloadAsync_StagesANuGetConfigWithOnlyTheStagingFolder()
+    {
+        FakeReleaseSource source = new FakeReleaseSource([]);
+        ReleaseInfo release = signer.SignedRelease(source, "1.2.0");
+
+        StagedUpdate staged = await Downloader(source).DownloadAsync(Candidate(release), CancellationToken.None);
+
+        System.Xml.Linq.XElement root = System.Xml.Linq.XDocument.Load(staged.ConfigPath).Root!;
+        Assert.Equal("configuration", root.Name.LocalName);
+        System.Xml.Linq.XElement sources = Assert.Single(root.Elements("packageSources"));
+        Assert.Equal(["clear", "add"], sources.Elements().Select(e => e.Name.LocalName));
+        System.Xml.Linq.XElement add = sources.Elements("add").Single();
+        Assert.Equal(".", (string?)add.Attribute("value"));
+        Assert.Equal(UpdateDownloader.NuGetConfig, File.ReadAllText(staged.ConfigPath));
     }
 
     // AC-5: a flipped byte in the package or the signature is refused, and the folder is deleted.

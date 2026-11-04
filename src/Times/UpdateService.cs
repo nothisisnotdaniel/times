@@ -26,6 +26,9 @@ internal sealed record UpdateOutcome
 /// </summary>
 internal sealed class UpdateService
 {
+    /// <summary>The reason shown for any exception other than <see cref="UpdateException"/>.</summary>
+    public const string UnexpectedReason = "something unexpected went wrong";
+
     public const string NoKeyHint = "[grey]Update skipped: this build has no signing key.[/]";
 
     public const string NotInstalledHint = "[grey]Times is not installed as a dotnet tool; update it by hand.[/]";
@@ -64,9 +67,9 @@ internal sealed class UpdateService
         {
             return background(() => CheckAsync(mode, channel, dataFolder, command: false, CancellationToken.None));
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            return Task.FromResult(new UpdateOutcome(Skipped(ex.Message)));
+            return Task.FromResult(new UpdateOutcome(Skipped(UnexpectedReason)));
         }
     }
 
@@ -109,9 +112,10 @@ internal sealed class UpdateService
 
             return await StageAsync(candidate, dataFolder, cancellation).ConfigureAwait(false);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            return new UpdateOutcome(Skipped(ex.Message));
+            // Not the exception's own text: it can be long, hold line breaks or name local paths.
+            return new UpdateOutcome(Skipped(UnexpectedReason));
         }
     }
 

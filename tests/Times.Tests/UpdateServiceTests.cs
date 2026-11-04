@@ -71,7 +71,7 @@ public sealed class UpdateServiceTests : IDisposable
         Assert.Null(outcome.Staged);
     }
 
-    // AC-6: an unexpected exception becomes a grey skip too.
+    // AC-6: an unexpected exception becomes a grey skip with a fixed reason, never its own message.
     [Fact]
     public async Task Startup_UnexpectedException_IsGreySkip()
     {
@@ -79,7 +79,7 @@ public sealed class UpdateServiceTests : IDisposable
 
         UpdateOutcome outcome = await Check(Service(source));
 
-        Assert.Equal("[grey]Update check skipped: boom [[x]].[/]", outcome.Hint);
+        Assert.Equal("[grey]Update check skipped: something unexpected went wrong.[/]", outcome.Hint);
     }
 
     // AC-6: a background runner that throws gives a grey skip, not an exception.
@@ -91,7 +91,7 @@ public sealed class UpdateServiceTests : IDisposable
 
         UpdateOutcome outcome = await service.StartBackground(SettingsRegistry.UpdateNotifyOnly, UpdateChecker.Stable, temp.Path);
 
-        Assert.Equal("[grey]Update check skipped: no threads.[/]", outcome.Hint);
+        Assert.Equal("[grey]Update check skipped: something unexpected went wrong.[/]", outcome.Hint);
     }
 
     // AC-6: nothing newer at start shows nothing.

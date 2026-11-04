@@ -134,6 +134,7 @@ public sealed class ReleaseSourceTests
         Assert.Equal(4L * 1024 * 1024, GitHubReleaseSource.MaxListBytes);
         Assert.Equal(20L * 1024 * 1024, UpdateDownloader.MaxPackageBytes);
         Assert.Equal(1024L, UpdateDownloader.MaxSignatureBytes);
+        Assert.Equal(5, GitHubReleaseSource.MaxRedirects);
     }
 
     // AC-4: a list over 4 MiB is cut off and refused, with or without a Content-Length.

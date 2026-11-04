@@ -78,6 +78,9 @@ internal sealed class GitHubReleaseSource : IReleaseSource
 
     public const string DownloadPrefix = "https://github.com/nothisisnotdaniel/times/releases/download/";
 
+    /// <summary>At most this many redirects (an asset redirects once, to GitHub's storage host).</summary>
+    public const int MaxRedirects = 5;
+
     /// <summary>The release list is read up to 4 MiB.</summary>
     public const long MaxListBytes = 4 * 1024 * 1024;
 
@@ -95,7 +98,7 @@ internal sealed class GitHubReleaseSource : IReleaseSource
     /// <param name="downloadTimeout">Defaults to <see cref="DownloadTimeout"/>; tests pass a short one.</param>
     public GitHubReleaseSource(string version, HttpMessageHandler? handler = null, TimeSpan? listTimeout = null, TimeSpan? downloadTimeout = null)
     {
-        client = new HttpClient(handler ?? new SocketsHttpHandler(), disposeHandler: handler is null)
+        client = new HttpClient(handler ?? new SocketsHttpHandler { MaxAutomaticRedirections = MaxRedirects }, disposeHandler: handler is null)
         {
             // Each request has its own timeout through a cancellation token.
             Timeout = Timeout.InfiniteTimeSpan,
