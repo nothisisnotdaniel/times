@@ -1000,6 +1000,151 @@ public sealed class ToolPackagingTests
         Assert.True(pr > backlog, "backlog.md must be mentioned before the gh pr create command");
     }
 
+    // AC-1, AC-2, AC-3 (081)
+    [Theory]
+    [InlineData("1.2.3", "v1.2.3-develop.5\nv1.2.2-develop.1\nv0.9.10-develop.3\nv1.2.4-develop.9\nv1.3.0-develop.2\nv2.0.0-develop.1\n", "v1.2.3-develop.5\nv1.2.2-develop.1\nv0.9.10-develop.3", true)]
+    [InlineData("1.2.3", "v1.2.2-develop.1", "v1.2.2-develop.1", true)]
+    [InlineData("1.2.3", "v1.2.2\nv1.2.3\nv1.0.0-beta.1\nv1.2.2-develop\nv1.2.2-develop.0\nv1.2.2-develop.01\nv1.2.2-develop.1.x\nv01.2.2-develop.1\nx v1.2.2-develop.1\nv1.2.2-develop.1;rm\n\n \n", "", true)]
+    [InlineData("0.10.0", "v0.9.3-develop.1\nv0.10.1-develop.1\n", "v0.9.3-develop.1", true)]
+    [InlineData("1.2.3", "v1.2.3-develop.5\r\n", "", true)]
+    [InlineData("1.2.3", "", "", true)]
+    [InlineData("", "v1.2.2-develop.1\n", "", false)]
+    [InlineData("1.2", "v1.2.2-develop.1\n", "", false)]
+    [InlineData("1.2.3-beta.1", "v1.2.2-develop.1\n", "", false)]
+    [InlineData("1.2.3-develop.4", "v1.2.2-develop.1\n", "", false)]
+    [InlineData("v1.2.3", "v1.2.2-develop.1\n", "", false)]
+    [InlineData("01.2.3", "v1.2.2-develop.1\n", "", false)]
+    [InlineData("1.2.3;x", "v1.2.2-develop.1\n", "", false)]
+    [InlineData("1.2.3\n", "v1.2.2-develop.1\n", "", false)]
+    public async Task OldPrereleasesScript_PrintsOnlyOlderDevelopTags(string release, string tags, string expected, bool succeeds)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        ProcessStartInfo startInfo = new ProcessStartInfo("bash")
+        {
+            WorkingDirectory = RepoRoot,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        startInfo.ArgumentList.Add(Path.Combine(".github", "scripts", "old-prereleases.sh"));
+        startInfo.ArgumentList.Add(release);
+
+        using Process process = Process.Start(startInfo)!;
+        try
+        {
+            Stream input = process.StandardInput.BaseStream;
+            await input.WriteAsync(System.Text.Encoding.UTF8.GetBytes(tags));
+            input.Close();
+        }
+        catch (IOException)
+        {
+            // The script refuses a bad argument before it reads stdin, so the pipe can already be closed.
+        }
+        Task<string> error = process.StandardError.ReadToEndAsync();
+        string output = await process.StandardOutput.ReadToEndAsync();
+        await error;
+        await process.WaitForExitAsync();
+
+        Assert.Equal(expected, output.TrimEnd('\n'));
+        if (succeeds)
+        {
+            Assert.True(process.ExitCode == 0, "old-prereleases.sh exit " + process.ExitCode + ": " + await error);
+        }
+        else
+        {
+            Assert.NotEqual(0, process.ExitCode);
+        }
+    }
+
+    // AC-4 (081): tag names are only compared, never evaluated.
+    [Fact]
+    public void OldPrereleasesScript_NeverEvaluatesTags()
+    {
+        string source = File.ReadAllText(Path.Combine(RepoRoot, ".github", "scripts", "old-prereleases.sh")).ReplaceLineEndings("\n");
+        string code = string.Join("\n", source.Split('\n').Where(line => !line.TrimStart().StartsWith('#')));
+
+        Assert.StartsWith("#!/bin/sh\n", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("eval", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("sh -c", code, StringComparison.Ordinal);
+        Assert.Contains("while IFS= read -r tag", code, StringComparison.Ordinal);
+        Assert.Contains("LC_ALL=C\nexport LC_ALL\n", code, StringComparison.Ordinal);
+        Assert.DoesNotMatch(@"[^""{]\$tag", code);
+    }
+
+    // AC-5 (081): the prune step comes after the release, may fail without failing the run, and has the token.
+    [Fact]
+    public void ReleaseWorkflow_PruneStepFollowsReleaseAndMayFail()
+    {
+        string[] lines = ReadWorkflow().Split('\n');
+        int create = Array.FindIndex(lines, line => line.Trim() == "- name: Create GitHub release");
+        int prune = Array.FindIndex(lines, line => line.Trim() == "- name: Prune old prereleases");
+        Assert.True(create >= 0, "workflow has no 'Create GitHub release' step");
+        Assert.True(prune > create, "'Prune old prereleases' must come after 'Create GitHub release'");
+
+        int next = Array.FindIndex(lines, prune + 1, line => line.TrimStart().StartsWith("- name:", StringComparison.Ordinal));
+        List<string> step = lines[(prune + 1)..(next < 0 ? lines.Length : next)].Select(line => line.Trim()).ToList();
+        Assert.Contains("continue-on-error: true", step);
+        Assert.Contains("GH_TOKEN: ${{ github.token }}", step);
+        Assert.Equal("contents: write", string.Join(" ", ChildLines(TopLevelBlock(ReadWorkflow(), "permissions")).Select(line => line.Trim())));
+    }
+
+    // AC-6 (081)
+    [Fact]
+    public void ReleaseWorkflow_PruneScriptSkipsPrereleasesAndDeletesOnlyFilteredTags()
+    {
+        string script = Assert.Single(RunScripts(ReadWorkflow()), s => s.Contains("old-prereleases.sh", StringComparison.Ordinal));
+
+        int skip = script.IndexOf("case \"$VERSION\" in", StringComparison.Ordinal);
+        int hyphen = script.IndexOf("*-*)", Math.Max(skip, 0), StringComparison.Ordinal);
+        int exit = script.IndexOf("exit 0", Math.Max(hyphen, 0), StringComparison.Ordinal);
+        int esac = LineIndex(script, "esac", Math.Max(exit, 0));
+        int firstGh = script.IndexOf("gh ", StringComparison.Ordinal);
+        int list = script.IndexOf("gh release list --limit 1000 --json tagName,isPrerelease --jq '.[] | select(.isPrerelease) | .tagName' |", StringComparison.Ordinal);
+        int filter = script.IndexOf("sh .github/scripts/old-prereleases.sh \"$VERSION\" |", StringComparison.Ordinal);
+        int loop = script.IndexOf("while IFS= read -r tag; do", StringComparison.Ordinal);
+        int delete = script.IndexOf("gh release delete \"$tag\" --cleanup-tag --yes || echo", StringComparison.Ordinal);
+        int done = LineIndex(script, "done", Math.Max(delete, 0));
+
+        Assert.True(skip >= 0 && skip < hyphen && hyphen < exit && exit < esac, "the script must exit 0 for a $VERSION containing '-'");
+        Assert.True(esac < firstGh, "the prerelease skip must come before any gh call");
+        int pipefail = script.IndexOf("set -o pipefail", StringComparison.Ordinal);
+        Assert.True(pipefail >= 0 && pipefail < list, "a failed listing must fail the step (set -o pipefail before the gh release list pipe)");
+        Assert.True(firstGh == list, "the first gh call must be the prerelease listing");
+        Assert.True(list < filter && filter < loop && loop < delete && delete < done, "list | filter | while read loop with a delete that may fail");
+        Assert.Single(Regex.Matches(script, @"gh release delete"));
+    }
+
+    // AC-8 (081)
+    [Fact]
+    public void Readme_ReleasingDescribesPruningOldPrereleases()
+    {
+        string flat = Regex.Replace(ReadmeSection("## Releasing"), @"\s+", " ");
+
+        Assert.Contains("deletes older `-develop` prereleases and their tags", flat, StringComparison.Ordinal);
+        Assert.Contains("keeps proper releases", flat, StringComparison.Ordinal);
+        Assert.Contains("higher prereleases", flat, StringComparison.Ordinal);
+        Assert.Contains("a failed deletion only shows a warning and does not fail the release", flat, StringComparison.Ordinal);
+    }
+
+    // AC-8 (081)
+    [Fact]
+    public void ClaudeMd_ReleaseWorkflowNoteMentionsPruning()
+    {
+        string claude = File.ReadAllText(Path.Combine(RepoRoot, "CLAUDE.md")).ReplaceLineEndings("\n");
+        int start = claude.IndexOf("`.github/workflows/release.yml`:", StringComparison.Ordinal);
+        Assert.True(start >= 0, "CLAUDE.md has no release.yml layout note");
+        int end = claude.IndexOf("\n  - ", start, StringComparison.Ordinal);
+        string note = Regex.Replace(end < 0 ? claude[start..] : claude[start..end], @"\s+", " ");
+
+        Assert.Contains("deletes older `-develop` prereleases with their tags", note, StringComparison.Ordinal);
+        Assert.Contains("old-prereleases.sh", note, StringComparison.Ordinal);
+    }
+
     // (077, replaces the end at the next "\n## " only): a section also ends at a "\n# " heading.
     private static string ReadmeSection(string heading)
     {

@@ -266,6 +266,10 @@ version `1.2.3` (taken from the title, without `release v`), installs the packag
 `tm --version` prints `Times 1.2.3`, and creates the GitHub release `v1.2.3` (and its tag) on the merge
 commit, with `Times.1.2.3.nupkg` attached and generated notes. A title with a pre-release part, such
 as `release v1.2.3-beta.1`, makes a pre-release.
+After a proper release `v1.2.3`, the workflow deletes older `-develop` prereleases and their tags:
+every `vX.Y.Z-develop.<n>` below `1.2.3` (including `v1.2.3-develop.<n>`). It keeps proper releases,
+other prereleases such as betas, and higher prereleases such as `v1.2.4-develop.9`. This is
+housekeeping: a failed deletion only shows a warning and does not fail the release.
 The title must be exactly `release vX.Y.Z` (lowercase `release`, one space, `v` and a SemVer version,
 nothing before or after). A title whose tag already exists, or with a `-develop` version, fails and
 no release is made. A pull request that is closed without merging, or one from another branch or a
