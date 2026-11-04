@@ -630,7 +630,7 @@ internal sealed class App
             }
             else
             {
-                reason = $"the data folder [bold]{Markup.Escape(Store.Folder)}[/] is not an absolute path";
+                reason = $"the data folder [bold]{Markup.Escape(DataFolder.ForDisplay(Store.Folder))}[/] is not an absolute path";
             }
 
             console.MarkupLine($"[red]Times cannot start: {reason}. Nothing was saved.[/]");
@@ -751,7 +751,7 @@ internal sealed class App
     private Markup RenderDataFolder()
     {
         string source = folderFromEnvironment ? $" [grey](from {DataFolder.VariableName})[/]" : string.Empty;
-        return new Markup($"[grey]Data folder:[/] {Markup.Escape(Store.Folder)}{source}");
+        return new Markup($"[grey]Data folder:[/] {Markup.Escape(DataFolder.ForDisplay(Store.Folder))}{source}");
     }
 
     // While help or projects output is shown (hideQuicklist), the quicklist panel is left out so the
