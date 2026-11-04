@@ -20,80 +20,73 @@ It needs the [.NET 10 SDK](https://dotnet.microsoft.com/download).
 The command is **`tm`**, not `times`: `times` is a built-in command of bash and zsh, so the shell
 would run its own `times` and never reach the app.
 
-The package is not published to nuget.org or any other feed. You build it yourself into the
-local `nupkg/` folder at the repo root and install it from there.
-
-The repo root holds a `nuget.config` whose `packageSourceMapping` maps the `Times` package to
-`./nupkg` only, so a `Times` package on nuget.org is never used. All other packages still come
-from nuget.org, and `<clear />` keeps your user- and machine-level feeds out. NuGet only reads
-this file when you run the commands from the repo root (where `nuget.config` lives); run the
-install and update commands from there. `./nupkg` is resolved relative to `nuget.config`, not to
-your shell's working directory.
-
-1. Build the package (from the repo root). This writes `nupkg/Times.<version>.nupkg`:
-
-   ```sh
-   dotnet pack src/Times -c Release
-   ```
-
-2. Install it from the local folder (from the repo root):
-
-   ```sh
-   dotnet tool install -g Times
-   ```
-
-   If `nupkg/` holds no `Times` package, the install fails instead of falling back to
-   nuget.org, so always build first.
-
-   NuGet may reuse a `Times` package of the same version that it cached earlier in its global
-   packages folder. If an install looks wrong, clear that cache with
-   `dotnet nuget locals global-packages --clear` and install again.
-
-3. Check the install. This prints the installed version, for example `Times 0.1.0`:
-
-   ```sh
-   tm --version
-   ```
-
-4. Start Times from any terminal:
-
-   ```sh
-   tm
-   ```
-
 If `tm` is not found after installing, make sure the .NET tools folder (`~/.dotnet/tools` on
 macOS/Linux, `%USERPROFILE%\.dotnet\tools` on Windows) is on your `PATH`.
 
 ### Install from a GitHub release
 
-Each release on GitHub has the package `Times.<version>.nupkg` attached. Download it into an
-empty folder and install it from there, pinning the version you downloaded:
+Each release on GitHub has the package `Times.<version>.nupkg` attached. You install it from a
+folder on your machine; nothing else needs to be downloaded or built.
 
-```sh
-dotnet tool install --global --add-source <folder> --version <version> Times
-```
+1. Download `Times.<version>.nupkg` from the release into an empty folder, for example
+   `~/Downloads/times`.
 
-For example, with `Times.1.2.3.nupkg` in `~/Downloads/times`:
+2. In that same folder, create a file named `nuget.config` with this content:
 
-```sh
-dotnet tool install --global --add-source ~/Downloads/times --version 1.2.3 Times
-```
+   ```xml
+   <?xml version="1.0" encoding="utf-8"?>
+   <configuration>
+     <packageSources>
+       <clear />
+       <add key="times-download" value="." />
+     </packageSources>
+   </configuration>
+   ```
 
-Run this from outside the repo, and always pass `--version` along with `--add-source`. The
-folder is added next to your usual feeds (nuget.org included) instead of replacing them, so if a
-package named `Times` ever appeared on nuget.org, a version you did not download could be picked.
-Check the result with `tm --version`. To move to a newer release, uninstall first (see [Uninstall](#uninstall)),
-then install the new file the same way.
+   `<clear />` removes every other package source, and `value="."` means the folder that holds
+   this `nuget.config`, so it does not matter which folder your terminal is in.
+
+3. Install the tool with that file, pinning the version you downloaded:
+
+   ```sh
+   dotnet tool install --global --configfile <folder>/nuget.config --version <version> Times
+   ```
+
+   For example, with `Times.1.2.3.nupkg` in `~/Downloads/times`:
+
+   ```sh
+   dotnet tool install --global --configfile ~/Downloads/times/nuget.config --version 1.2.3 Times
+   ```
+
+   On Windows, use a path like `%USERPROFILE%\Downloads\times\nuget.config`.
+
+4. Check the install. This prints the installed version, for example `Times 1.2.3`:
+
+   ```sh
+   tm --version
+   ```
+
+5. Start Times from any terminal:
+
+   ```sh
+   tm
+   ```
+
+This is safe because NuGet only looks in your download folder: with `<clear />` and that one
+source, a package with the same name `Times` on nuget.org or any other feed is never used. If the
+folder holds no matching file, the install fails instead.
+
+NuGet may reuse a `Times` package of the same version that it cached earlier in its global
+packages folder. If an install looks wrong, clear that cache with
+`dotnet nuget locals global-packages --clear` and install again.
 
 ### Update
 
-After changing the code, raise `<Version>` in `src/Times/Times.csproj` (with the same version,
-.NET may reuse the build it already cached instead of your new one), build the package again,
-then update, again from the repo root:
+Download the newer `Times.<new version>.nupkg` into the same folder (next to `nuget.config`),
+then run:
 
 ```sh
-dotnet pack src/Times -c Release
-dotnet tool update -g Times
+dotnet tool update --global --configfile <folder>/nuget.config --version <new version> Times
 ```
 
 ### Uninstall
@@ -236,6 +229,43 @@ style break shows up as a warning. `dotnet test` runs the xUnit tests.
 ```sh
 dotnet run --project src/Times
 ```
+
+## Install your own build
+
+To try your own changes as the installed `tm`, pack and install them from the repo root.
+
+The repo root holds a `nuget.config` whose `packageSourceMapping` maps the `Times` package to
+`./nupkg` only, so a `Times` package on nuget.org is never used. All other packages still come
+from nuget.org, and `<clear />` keeps your user- and machine-level feeds out. NuGet only reads
+this file when you run the commands from the repo root (where `nuget.config` lives); run the
+install and update commands from there. `./nupkg` is resolved relative to `nuget.config`, not to
+your shell's working directory.
+
+1. Build the package (from the repo root). This writes `nupkg/Times.<version>.nupkg`:
+
+   ```sh
+   dotnet pack src/Times -c Release
+   ```
+
+2. Install it from the local folder (from the repo root):
+
+   ```sh
+   dotnet tool install -g Times
+   ```
+
+   If `nupkg/` holds no `Times` package, the install fails instead of falling back to
+   nuget.org, so always build first.
+
+To update after changing the code, raise `<Version>` in `src/Times/Times.csproj` (with the same
+version, .NET may reuse the build it already cached instead of your new one), build the package
+again, then update, again from the repo root:
+
+```sh
+dotnet pack src/Times -c Release
+dotnet tool update -g Times
+```
+
+To remove the tool, see [Uninstall](#uninstall).
 
 ## Project layout
 

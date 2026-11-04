@@ -37,55 +37,150 @@ public sealed class ToolPackagingTests
         Assert.Equal(AppVersion.Current, SingleProperty(project, "Version"));
     }
 
-    // AC-5
+    // AC-5 (090: the user part keeps the tm, SDK and PATH notes; building moved to "## Install your own build")
     [Theory]
-    [InlineData("dotnet pack")]
-    [InlineData("dotnet tool install -g Times")]
-    [InlineData("dotnet tool update -g Times")]
     [InlineData("dotnet tool uninstall -g Times")]
     [InlineData("`tm`")]
     [InlineData("tm --version")]
     [InlineData("built-in")]
-    [InlineData("dotnet pack src/Times -c Release")]
-    [InlineData("raise `<Version>`")]
-    [InlineData("nuget.config")]
-    [InlineData("packageSourceMapping")]
-    [InlineData("from the repo root (where `nuget.config` lives)")]
-    [InlineData("maps the `Times` package to `./nupkg` only, so a `Times` package on nuget.org is never used")]
+    [InlineData("It needs the [.NET 10 SDK]")]
+    [InlineData("is on your `PATH`")]
     public void Readme_ExplainsToolInstall(string expected)
     {
-        string readme = Regex.Replace(File.ReadAllText(Path.Combine(RepoRoot, "README.md")), @"\s+", " ");
+        string section = Regex.Replace(ReadmeSection("## Install as a .NET tool"), @"\s+", " ");
 
-        Assert.Contains("## Install as a .NET tool", readme, StringComparison.Ordinal);
-        Assert.Contains(expected, readme, StringComparison.Ordinal);
+        Assert.Contains(expected, section, StringComparison.Ordinal);
     }
 
-    // AC-6 (replaces 055 AC-4 "Readme_HasNoAddSource")
+    // AC-6 (090, replaces 055/AC-6 "Readme_EveryAddSourceLinePinsVersion")
     [Fact]
-    public void Readme_EveryAddSourceLinePinsVersion()
+    public void Readme_HasNoAddSource_AndEveryConfigfileLinePinsVersion()
     {
         string[] lines = File.ReadAllLines(Path.Combine(RepoRoot, "README.md"));
 
-        List<string> addSource = lines.Where(line => line.Contains("--add-source", StringComparison.Ordinal)).ToList();
-        Assert.NotEmpty(addSource);
-        Assert.All(addSource, line => Assert.Contains("--version", line, StringComparison.Ordinal));
+        Assert.DoesNotContain(lines, line => line.Contains("--add-source", StringComparison.Ordinal));
+        List<string> configfile = lines.Where(line => line.Contains("--configfile", StringComparison.Ordinal)).ToList();
+        Assert.NotEmpty(configfile);
+        Assert.All(configfile, line => Assert.Contains("--version", line, StringComparison.Ordinal));
     }
 
-    // AC-6, AC-2 (077, replaces "## Shortcuts" with "## Commands")
+    // AC-1 (090, replaces 077 "Readme_HasInstallFromReleaseSection_InsideInstallSection")
     [Fact]
-    public void Readme_HasInstallFromReleaseSection_InsideInstallSection()
+    public void Readme_InstallSectionHasReleaseThenUpdateThenUninstall()
     {
-        string readme = "\n" + File.ReadAllText(Path.Combine(RepoRoot, "README.md")).ReplaceLineEndings("\n");
+        List<string> headings = ReadmeHeadings(ReadmeSection("## Install as a .NET tool"))
+            .Where(h => h.StartsWith("### ", StringComparison.Ordinal))
+            .ToList();
 
-        int install = readme.IndexOf("\n## Install as a .NET tool\n", StringComparison.Ordinal);
-        int release = readme.IndexOf("\n### Install from a GitHub release\n", StringComparison.Ordinal);
-        int commands = readme.IndexOf("\n## Commands\n", StringComparison.Ordinal);
-        Assert.True(install >= 0, "README has no '## Install as a .NET tool' section");
-        Assert.True(install < release, "'### Install from a GitHub release' must come after '## Install as a .NET tool'");
-        Assert.True(release < commands, "'### Install from a GitHub release' must come before '## Commands'");
+        Assert.Equal(["### Install from a GitHub release", "### Update", "### Uninstall"], headings);
+    }
 
-        string section = readme[release..commands];
-        Assert.Contains("dotnet tool install --global --add-source <folder> --version <version> Times", section, StringComparison.Ordinal);
+    // AC-3 (090)
+    [Fact]
+    public void Readme_ReleaseInstallHasLocalOnlyNugetConfig()
+    {
+        string section = ReadmeSubsection("### Install from a GitHub release");
+
+        List<string> xml = FencedBlocks(section, "xml");
+        string config = Assert.Single(xml);
+        Assert.Contains("<clear />", config, StringComparison.Ordinal);
+        Assert.Single(Regex.Matches(config, "<add "));
+        Assert.Contains("value=\".\"", config, StringComparison.Ordinal);
+        Assert.DoesNotContain("nuget.org", config, StringComparison.Ordinal);
+        Assert.DoesNotContain("http", config, StringComparison.Ordinal);
+    }
+
+    // AC-3 (090): the README's config really is a well-formed config with one "." source after <clear />.
+    [Fact]
+    public void Readme_ReleaseInstallNugetConfigParses()
+    {
+        string config = Assert.Single(FencedBlocks(ReadmeSubsection("### Install from a GitHub release"), "xml"));
+
+        XElement sources = Assert.Single(XElement.Parse(config.Trim()).Elements("packageSources"));
+        List<XElement> children = sources.Elements().ToList();
+        Assert.Equal(["clear", "add"], children.Select(e => e.Name.LocalName).ToList());
+        Assert.Equal(".", (string?)children[1].Attribute("value"));
+    }
+
+    // AC-4 (090)
+    [Theory]
+    [InlineData("dotnet tool install --global --configfile <folder>/nuget.config --version <version> Times")]
+    [InlineData("dotnet tool install --global --configfile ~/Downloads/times/nuget.config --version 1.2.3 Times")]
+    [InlineData("nuget.org")]
+    [InlineData("tm --version")]
+    [InlineData("dotnet nuget locals global-packages --clear")]
+    public void Readme_ReleaseInstallMentions(string expected)
+    {
+        Assert.Contains(expected, ReadmeSubsection("### Install from a GitHub release"), StringComparison.Ordinal);
+    }
+
+    // AC-5 (090)
+    [Fact]
+    public void Readme_UpdateUsesConfigfileAndPinsVersion()
+    {
+        Assert.Contains(
+            "dotnet tool update --global --configfile <folder>/nuget.config --version <new version> Times",
+            ReadmeSubsection("### Update"),
+            StringComparison.Ordinal);
+    }
+
+    // AC-7 (090)
+    [Theory]
+    [InlineData("dotnet pack")]
+    [InlineData("nupkg/")]
+    [InlineData("./nupkg")]
+    [InlineData("repo root")]
+    [InlineData("packageSourceMapping")]
+    [InlineData("Times.csproj")]
+    public void Readme_UserPartHasNoBuildMaterial(string forbidden)
+    {
+        string readme = File.ReadAllText(Path.Combine(RepoRoot, "README.md")).ReplaceLineEndings("\n");
+        int user = readme.IndexOf("\n# Using Times\n", StringComparison.Ordinal);
+        int developer = readme.IndexOf("\n# Building Times\n", StringComparison.Ordinal);
+        Assert.True(user >= 0 && developer > user, "README needs '# Using Times' before '# Building Times'");
+
+        Assert.DoesNotContain(forbidden, readme[user..developer], StringComparison.Ordinal);
+    }
+
+    // AC-8 (090)
+    [Theory]
+    [InlineData("dotnet pack src/Times -c Release")]
+    [InlineData("dotnet tool install -g Times")]
+    [InlineData("dotnet tool update -g Times")]
+    [InlineData("raise `<Version>`")]
+    [InlineData("from the repo root (where `nuget.config` lives)")]
+    [InlineData("maps the `Times` package to `./nupkg` only, so a `Times` package on nuget.org is never used")]
+    [InlineData("fails instead of falling back")]
+    [InlineData("(#uninstall)")]
+    public void Readme_InstallYourOwnBuildMentions(string expected)
+    {
+        string section = Regex.Replace(ReadmeSection("## Install your own build"), @"\s+", " ");
+
+        Assert.Contains(expected, section, StringComparison.Ordinal);
+    }
+
+    // AC-9 (090)
+    [Fact]
+    public void Readme_EveryInPageLinkMatchesAHeading()
+    {
+        string readme = File.ReadAllText(Path.Combine(RepoRoot, "README.md"));
+        HashSet<string> slugs = ReadmeHeadings(readme)
+            .Select(h => GitHubSlug(h.TrimStart('#').Trim()))
+            .ToHashSet(StringComparer.Ordinal);
+
+        List<string> anchors = Regex.Matches(readme, @"\]\(#([^)]*)\)").Select(m => m.Groups[1].Value).ToList();
+        Assert.NotEmpty(anchors);
+        Assert.All(anchors, anchor => Assert.Contains(anchor, slugs));
+    }
+
+    // AC-9 (090)
+    [Theory]
+    [InlineData("Install as a .NET tool", "install-as-a-net-tool")]
+    [InlineData("Install from a GitHub release", "install-from-a-github-release")]
+    [InlineData("Using Times", "using-times")]
+    public void GitHubSlug_FollowsGitHubRule(string heading, string slug)
+    {
+        Assert.Equal(slug, GitHubSlug(heading));
     }
 
     // AC-6
@@ -508,7 +603,7 @@ public sealed class ToolPackagingTests
         Assert.True(sdk < readme.IndexOf("\n## Commands\n", StringComparison.Ordinal));
     }
 
-    // AC-1 (077)
+    // AC-1 (077), AC-1 and AC-2 (090: "## Install your own build" in the developer part)
     [Fact]
     public void Readme_HasUserPartThenDeveloperPart()
     {
@@ -534,7 +629,7 @@ public sealed class ToolPackagingTests
             ["## Install as a .NET tool", "## Commands", "## Keys", "## Mouse", "## The day view", "## Your data"],
             headings.GetRange(user + 1, developer - user - 1));
         Assert.Equal(
-            ["## Prerequisites", "## Build and test", "## Run from source", "## Project layout", "## Releasing"],
+            ["## Prerequisites", "## Build and test", "## Run from source", "## Install your own build", "## Project layout", "## Releasing"],
             headings.GetRange(developer + 1, headings.Count - developer - 1));
     }
 
@@ -1092,6 +1187,85 @@ public sealed class ToolPackagingTests
 
         Assert.Contains("deletes older `-develop` prereleases with their tags", note, StringComparison.Ordinal);
         Assert.Contains("old-prereleases.sh", note, StringComparison.Ordinal);
+    }
+
+    /// <summary>The <c>#</c> to <c>###</c> heading lines of <paramref name="text"/> outside fenced code (fences may be indented).</summary>
+    private static List<string> ReadmeHeadings(string text)
+    {
+        List<string> headings = [];
+        bool inFence = false;
+        foreach (string line in text.ReplaceLineEndings("\n").Split('\n'))
+        {
+            if (line.TrimStart().StartsWith("```", StringComparison.Ordinal))
+            {
+                inFence = !inFence;
+            }
+            else if (!inFence && Regex.IsMatch(line, "^#{1,3} "))
+            {
+                headings.Add(line);
+            }
+        }
+
+        return headings;
+    }
+
+    /// <summary>A <c>###</c> section: from its heading to the next <c>#</c>, <c>##</c> or <c>###</c> heading outside fenced code.</summary>
+    private static string ReadmeSubsection(string heading)
+    {
+        string[] lines = File.ReadAllText(Path.Combine(RepoRoot, "README.md")).ReplaceLineEndings("\n").Split('\n');
+        int start = Array.IndexOf(lines, heading);
+        Assert.True(start >= 0, "README has no '" + heading + "' section");
+
+        bool inFence = false;
+        int end = start + 1;
+        for (; end < lines.Length; end++)
+        {
+            if (lines[end].TrimStart().StartsWith("```", StringComparison.Ordinal))
+            {
+                inFence = !inFence;
+            }
+            else if (!inFence && Regex.IsMatch(lines[end], "^#{1,3} "))
+            {
+                break;
+            }
+        }
+
+        return string.Join("\n", lines[start..end]);
+    }
+
+    /// <summary>The bodies of the fenced blocks in <paramref name="text"/> whose info string is <paramref name="language"/>.</summary>
+    private static List<string> FencedBlocks(string text, string language)
+    {
+        List<string> blocks = [];
+        List<string>? current = null;
+        bool inFence = false;
+        foreach (string line in text.Split('\n'))
+        {
+            string trimmed = line.Trim();
+            if (trimmed.StartsWith("```", StringComparison.Ordinal))
+            {
+                if (inFence && current != null)
+                {
+                    blocks.Add(string.Join("\n", current));
+                }
+
+                current = !inFence && trimmed == "```" + language ? [] : null;
+                inFence = !inFence;
+            }
+            else if (current != null)
+            {
+                current.Add(line);
+            }
+        }
+
+        return blocks;
+    }
+
+    /// <summary>GitHub's heading anchor: lowercase, only letters, digits, spaces and <c>-</c> kept, spaces turned into <c>-</c>.</summary>
+    private static string GitHubSlug(string heading)
+    {
+        string kept = new string(heading.ToLowerInvariant().Where(c => char.IsLetterOrDigit(c) || c == ' ' || c == '-').ToArray());
+        return kept.Replace(' ', '-');
     }
 
     // (077, replaces the end at the next "\n## " only): a section also ends at a "\n# " heading.
