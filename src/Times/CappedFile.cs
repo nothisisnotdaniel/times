@@ -206,7 +206,7 @@ internal static class CappedFile
     {
         if (error == EACCES || error == EPERM)
         {
-            return new UnauthorizedAccessException($"Access to the path '{path}' is denied.");
+            return new UnauthorizedAccessException($"Access to {fileName} is denied.");
         }
 
         if (error == ENOENT)
@@ -219,6 +219,8 @@ internal static class CappedFile
 
     private static InvalidDataException NotRegular(string fileName) => new($"{fileName} is not a regular file.");
 
+    // open(2) is variadic in C. Declaring it with two fixed arguments is safe because O_CREAT is never
+    // passed, so no mode argument is read (on macOS arm64 variadic arguments would go on the stack).
     [DllImport("libc", EntryPoint = "open", SetLastError = true)]
     private static extern int Open([MarshalAs(UnmanagedType.LPUTF8Str)] string path, int flags);
 
