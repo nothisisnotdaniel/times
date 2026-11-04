@@ -4,7 +4,13 @@
 # Usage: git tag --list 'v*' | sh develop-version.sh <build number>
 # Tag names come one per line on stdin. Lines that are not v plus a SemVer version, and develop
 # tags (anything containing -develop), are ignored. Only the MAJOR.MINOR.PATCH core counts.
+# A tag whose MAJOR, MINOR or PATCH has more than 9 digits (above 999999999) is ignored too, so the
+# bumped patch (at most 1000000000) fits in any shell's arithmetic and in .NET/NuGet's 32-bit parts.
+# LC_ALL=C makes the character classes in the SemVer check plain ASCII in every runner locale.
 set -eu
+
+LC_ALL=C
+export LC_ALL
 
 build="${1-}"
 case "$build" in
@@ -33,6 +39,9 @@ while IFS= read -r tag || [ -n "$tag" ]; do
   rest="${core#*.}"
   mi="${rest%%.*}"
   pa="${rest#*.}"
+  if [ "${#ma}" -gt 9 ] || [ "${#mi}" -gt 9 ] || [ "${#pa}" -gt 9 ]; then
+    continue
+  fi
 
   if [ "$ma" -gt "$major" ] ||
     { [ "$ma" -eq "$major" ] && [ "$mi" -gt "$minor" ]; } ||

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
+using Xunit.Sdk;
 
 namespace Times.Tests;
 
@@ -8,7 +9,11 @@ public sealed class ToolPackagingTests
 {
     private const string NugetOrg = "https://api.nuget.org/v3/index.json";
     private const string LocalFolder = "./nupkg";
-    private const string SemVerGrep = "grep -Eq '^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$'";
+    private const string SemVerGrep = "LC_ALL=C grep -Eq '^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$'";
+
+    private const string CheckoutAction = "actions/checkout@11d5960a326750d5838078e36cf38b85af677262";
+    private const string SetupDotnetAction = "actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9";
+    private const string JobIf = "github.event_name == 'push' || (github.event.pull_request.merged == true && github.event.pull_request.head.ref == 'develop' && github.event.pull_request.head.repo.full_name == github.repository)";
 
     private static readonly string RepoRoot = FindRepoRoot();
 
@@ -101,44 +106,61 @@ public sealed class ToolPackagingTests
         Assert.Contains(".github/workflows/release.yml", section, StringComparison.Ordinal);
     }
 
-    // AC-1 (075, replaces 072 "ReleaseWorkflow_TriggersOnDevelopPushVersionTagPushAndClosedPrIntoMain"), AC-3 (075)
+    // AC-1, AC-6 (089; replaces the line-based checks from 070, 071, 072, 075 and 081 on triggers,
+    // permissions, the job if:, the checkout, the action pins, the Version env: and the prune step).
     [Fact]
-    public void ReleaseWorkflow_TriggersOnDevelopPushVersionTagPushAndClosedPrIntoMain_IgnoringBacklogOnlyPushes()
+    public void ReleaseWorkflow_HasExpectedStructure()
     {
-        string workflow = ReadWorkflow();
-
-        string on = TopLevelBlock(workflow, "on");
-        List<string> keys = ChildLines(on).Select(line => line.Trim()).ToList();
-        Assert.Equal(
-            ["push:", "branches:", "- \"develop\"", "tags:", "- \"v*\"", "paths-ignore:", "- \"backlog.md\"", "pull_request:", "types:", "- \"closed\"", "branches:", "- \"main\""],
-            keys);
-        Assert.DoesNotContain("pull_request_target", workflow, StringComparison.Ordinal);
-        Assert.DoesNotContain("workflow_dispatch", workflow, StringComparison.Ordinal);
-        Assert.DoesNotContain(workflow.Split('\n'), line => line.Trim().StartsWith("paths:", StringComparison.Ordinal));
+        AssertWorkflowStructure(ReadWorkflow());
     }
 
-    // AC-2 (075): only push ignores paths, and only the root backlog.md; a merged release PR always runs.
+    // AC-1 (089): the pinned uses: lines name their version in a trailing comment, in the source too.
     [Fact]
-    public void ReleaseWorkflow_PathsIgnoreOnlyUnderPushAndOnlyRootBacklog()
+    public void ReleaseWorkflow_PinsActionsToCommitShasWithVersionComments()
+    {
+        List<YamlScalar> uses = Steps(ReadWorkflow())
+            .Where(step => step.ContainsKey("uses"))
+            .Select(step => Assert.IsType<YamlScalar>(step["uses"]))
+            .ToList();
+        string[] lines = ReadWorkflow().Split('\n');
+
+        Assert.Equal([CheckoutAction, SetupDotnetAction], uses.Select(scalar => scalar.Value));
+        Assert.Equal(["v4.4.0", "v4.3.1"], uses.Select(scalar => scalar.Comment));
+        Assert.EndsWith(" # v4.4.0", lines[uses[0].Line - 1], StringComparison.Ordinal);
+        Assert.EndsWith(" # v4.3.1", lines[uses[1].Line - 1], StringComparison.Ordinal);
+        Assert.All(uses, scalar => Assert.DoesNotMatch(@"@(v[0-9]+|main|master|develop)$", scalar.Value));
+    }
+
+    // AC-7 (089): the structure check reads only the parsed model, so reformatting the YAML keeps it passing.
+    [Theory]
+    [InlineData("develop")]
+    [InlineData("'develop'")]
+    public void ReleaseWorkflow_StructureCheckPassesOnReformattedCopy(string develop)
+    {
+        string reformatted = ReformattedWorkflow(ReadWorkflow(), develop);
+
+        Assert.NotEqual(ReadWorkflow(), reformatted);
+        Assert.Contains("\n            -   " + develop + "\n", reformatted, StringComparison.Ordinal);
+        AssertWorkflowStructure(reformatted);
+    }
+
+    // AC-7 (089): the structure check fails on an unpinned action, a wider token and an extra trigger.
+    [Theory]
+    [InlineData("unpinned checkout")]
+    [InlineData("write-all")]
+    [InlineData("workflow_dispatch")]
+    public void ReleaseWorkflow_StructureCheckFailsOnUnsafeCopy(string change)
     {
         string workflow = ReadWorkflow();
-        List<string> on = ChildLines(TopLevelBlock(workflow, "on")).Select(line => line.Trim()).ToList();
-        int pr = on.IndexOf("pull_request:");
-        Assert.True(pr > 0, "the on block has no pull_request:");
-        List<string> push = on[..pr];
-        List<string> pullRequest = on[pr..];
+        string copy = change switch
+        {
+            "unpinned checkout" => ReplaceOnce(workflow, CheckoutAction + " # v4.4.0", "actions/checkout@v4"),
+            "write-all" => ReplaceOnce(workflow, "permissions:\n  contents: write\n", "permissions: write-all\n"),
+            _ => ReplaceOnce(workflow, "\non:\n", "\non:\n  workflow_dispatch:\n"),
+        };
 
-        Assert.Contains("paths-ignore:", push);
-        Assert.DoesNotContain("paths-ignore:", pullRequest);
-        Assert.Equal(["pull_request:", "types:", "- \"closed\"", "branches:", "- \"main\""], pullRequest);
-
-        Assert.Single(workflow.Split('\n'), line => line.Trim().StartsWith("paths-ignore:", StringComparison.Ordinal));
-        int ignore = push.IndexOf("paths-ignore:");
-        List<string> entries = push[(ignore + 1)..].TakeWhile(line => line.StartsWith("- ", StringComparison.Ordinal)).ToList();
-        string entry = Assert.Single(entries);
-        Assert.Equal("- \"backlog.md\"", entry);
-        string path = entry[2..].Trim('"');
-        Assert.DoesNotContain(path, c => c == '*' || c == '?' || c == '[' || c == '!' || c == '/' || c == '\\');
+        WorkflowYaml.Parse(copy);
+        Assert.ThrowsAny<XunitException>(() => AssertWorkflowStructure(copy));
     }
 
     // AC-4 (075)
@@ -150,64 +172,6 @@ public sealed class ToolPackagingTests
         Assert.True(name >= 0, "workflow has no 'name: Release' line");
 
         Assert.Contains("backlog.md", workflow[..name], StringComparison.Ordinal);
-    }
-
-    // AC-1 (072): the job runs for every push, and for a pull_request only when merged from develop in this repo.
-    [Fact]
-    public void ReleaseWorkflow_JobIfSkipsUnmergedForeignAndForkPullRequests()
-    {
-        string jobs = TopLevelBlock(ReadWorkflow(), "jobs");
-        string ifLine = Assert.Single(jobs.Split('\n'), line => line.StartsWith("    if:", StringComparison.Ordinal));
-
-        Assert.Equal(
-            "    if: github.event_name == 'push' || (github.event.pull_request.merged == true && github.event.pull_request.head.ref == 'develop' && github.event.pull_request.head.repo.full_name == github.repository)",
-            ifLine);
-        int runsOn = jobs.IndexOf("    runs-on:", StringComparison.Ordinal);
-        int steps = jobs.IndexOf("    steps:", StringComparison.Ordinal);
-        Assert.True(jobs.IndexOf(ifLine, StringComparison.Ordinal) < steps && runsOn < steps, "the if: must be on the job, not a step");
-    }
-
-    // AC-1 (072): a release PR checks out its merge commit; pushes keep the default (the expression is empty).
-    [Fact]
-    public void ReleaseWorkflow_CheckoutUsesMergeCommitForPullRequests()
-    {
-        string[] step = CheckoutStep();
-
-        Assert.Contains(step, line => line.Trim() == "ref: ${{ github.event.pull_request.merge_commit_sha }}");
-    }
-
-    // AC-1 (071): full history, so the tags and origin/main are there.
-    [Fact]
-    public void ReleaseWorkflow_CheckoutFetchesFullHistory()
-    {
-        string[] step = CheckoutStep();
-
-        Assert.Contains(step, line => line.Trim() == "fetch-depth: 0");
-        Assert.Contains(step, line => line.Trim() == "persist-credentials: false");
-    }
-
-    // AC-1 (070)
-    [Fact]
-    public void ReleaseWorkflow_GrantsContentsWriteOnly()
-    {
-        string permissions = TopLevelBlock(ReadWorkflow(), "permissions");
-
-        Assert.Equal(["contents: write"], ChildLines(permissions).Select(line => line.Trim()).ToList());
-    }
-
-    // AC-1 (070), security note: only GitHub-owned actions.
-    [Fact]
-    public void ReleaseWorkflow_UsesOnlyGitHubOwnedActions()
-    {
-        List<string> uses = ReadWorkflow().Split('\n')
-            .Select(line => line.Trim())
-            .Where(line => line.StartsWith("uses:", StringComparison.Ordinal) || line.StartsWith("- uses:", StringComparison.Ordinal))
-            .Select(line => line[(line.IndexOf("uses:", StringComparison.Ordinal) + 5)..].Trim())
-            .ToList();
-
-        Assert.NotEmpty(uses);
-        Assert.All(uses, action => Assert.Matches(@"^actions/(checkout|setup-dotnet)@", action));
-        Assert.Contains("dotnet-version: \"10.0.x\"", ReadWorkflow(), StringComparison.Ordinal);
     }
 
     // AC-2 (070)
@@ -231,7 +195,7 @@ public sealed class ToolPackagingTests
     {
         List<string> scripts = RunScripts(ReadWorkflow());
 
-        Assert.NotEmpty(scripts);
+        Assert.Equal(6, scripts.Count);
         Assert.All(scripts, script =>
         {
             Assert.DoesNotContain("${{ github.ref", script, StringComparison.Ordinal);
@@ -263,7 +227,6 @@ public sealed class ToolPackagingTests
         Assert.True(check < release, "gh release create must run after the smoke check");
         Assert.Contains("gh release create \"$TAG\" \"nupkg/Times.$VERSION.nupkg\" --title \"Times $VERSION\" --generate-notes --target \"$TARGET\" $PRERELEASE", all, StringComparison.Ordinal);
         Assert.Contains("--prerelease", all, StringComparison.Ordinal);
-        Assert.Contains("GH_TOKEN: ${{ github.token }}", ReadWorkflow(), StringComparison.Ordinal);
     }
 
     // AC-3 (070), security review round 1: the smoke install sees only the local folder, never nuget.org.
@@ -287,20 +250,12 @@ public sealed class ToolPackagingTests
         Assert.Contains("--configfile \"$RUNNER_TEMP/smoke-nuget.config\"", lines[install], StringComparison.Ordinal);
     }
 
-    // Security review round 1: the checkout does not leave the write token in .git/config.
-    [Fact]
-    public void ReleaseWorkflow_CheckoutDoesNotPersistCredentials()
-    {
-        string[] step = CheckoutStep();
-
-        Assert.Contains(step, line => line.Trim() == "persist-credentials: false");
-    }
-
     // Security review round 1: the tag is checked against SemVer where it enters, before msbuild.
+    // AC-2 (089): the check runs under LC_ALL=C and is the only grep in the Version step.
     [Fact]
     public void ReleaseWorkflow_ChecksTagIsSemVerBeforeExportingIt()
     {
-        string script = Assert.Single(RunScripts(ReadWorkflow()), s => s.Contains("GITHUB_REF_NAME#v", StringComparison.Ordinal));
+        string script = VersionScript();
 
         int check = script.IndexOf(SemVerGrep, StringComparison.Ordinal);
         int export = script.IndexOf(">> \"$GITHUB_ENV\"", StringComparison.Ordinal);
@@ -308,6 +263,8 @@ public sealed class ToolPackagingTests
         Assert.True(check < export, "the tag must be checked before VERSION is exported");
         Assert.Contains("exit 1", script[check..export], StringComparison.Ordinal);
         Assert.Single(Regex.Matches(script, Regex.Escape(SemVerGrep)));
+        Assert.Single(Regex.Matches(script, @"\bgrep\b"));
+        Assert.Contains("| " + SemVerGrep + "; then", script, StringComparison.Ordinal);
         Assert.Equal(script.LastIndexOf(SemVerGrep, StringComparison.Ordinal), check);
         Assert.Contains("echo \"VERSION=$VERSION\" >> \"$GITHUB_ENV\"", script[check..], StringComparison.Ordinal);
         Assert.Contains("echo \"TAG=$TAG\" >> \"$GITHUB_ENV\"", script[check..], StringComparison.Ordinal);
@@ -627,7 +584,15 @@ public sealed class ToolPackagingTests
     [InlineData("v0.1.0\n", "abc", "", false)]
     [InlineData("v0.1.0\n", "12;x", "", false)]
     [InlineData("v0.1.0\n", "", "", false)]
-    public async Task DevelopVersionScript_PrintsNextPatchDevelopVersion(string tags, string build, string expected, bool succeeds)
+    // AC-3 (089): a non-ASCII prerelease is ignored even in a UTF-8 locale.
+    [InlineData("v0.1.0\nv9.0.0-b\u00e9t\u00e0\n", "12", "0.1.1-develop.12", true, "en_US.UTF-8")]
+    // AC-4 (089): tags with a MAJOR, MINOR or PATCH of more than 9 digits are ignored.
+    [InlineData("v0.1.0\nv1000000000.0.0\n", "12", "0.1.1-develop.12", true)]
+    [InlineData("v0.0.9223372036854775807\n", "12", "0.0.1-develop.12", true)]
+    [InlineData("v99999999999999999999.0.0\nv0.2.0\n", "12", "0.2.1-develop.12", true)]
+    [InlineData("v999999999.999999999.999999999\n", "12", "999999999.999999999.1000000000-develop.12", true)]
+    [InlineData("v0.1000000000.0\nv0.0.1000000000\nv0.0.3\n", "12", "0.0.4-develop.12", true, "en_US.UTF-8")]
+    public async Task DevelopVersionScript_PrintsNextPatchDevelopVersion(string tags, string build, string expected, bool succeeds, string locale = "")
     {
         if (OperatingSystem.IsWindows())
         {
@@ -644,6 +609,11 @@ public sealed class ToolPackagingTests
         };
         startInfo.ArgumentList.Add(Path.Combine(".github", "scripts", "develop-version.sh"));
         startInfo.ArgumentList.Add(build);
+        if (locale.Length > 0)
+        {
+            startInfo.Environment["LC_ALL"] = locale;
+            startInfo.Environment["LANG"] = locale;
+        }
 
         using Process process = Process.Start(startInfo)!;
         try
@@ -672,6 +642,19 @@ public sealed class ToolPackagingTests
         }
     }
 
+    // AC-3 (089): the script runs in the C locale before its first grep.
+    [Fact]
+    public void DevelopVersionScript_SetsCLocaleBeforeFirstGrep()
+    {
+        string source = File.ReadAllText(Path.Combine(RepoRoot, ".github", "scripts", "develop-version.sh")).ReplaceLineEndings("\n");
+        string code = string.Join("\n", source.Split('\n').Where(line => !line.TrimStart().StartsWith('#')));
+
+        int locale = code.IndexOf("\nLC_ALL=C\nexport LC_ALL\n", StringComparison.Ordinal);
+        int grep = code.IndexOf("grep", StringComparison.Ordinal);
+        Assert.True(locale >= 0, "develop-version.sh must set and export LC_ALL=C on lines of their own");
+        Assert.True(grep > locale, "LC_ALL=C must be set before the first grep");
+    }
+
     // AC-3 (071), AC-5 (072): pull_request first, then develop push, then tag push; one SemVer check after all three.
     [Fact]
     public void ReleaseWorkflow_DevelopPushComputesVersionFromTags()
@@ -698,29 +681,12 @@ public sealed class ToolPackagingTests
         Assert.True(File.Exists(Path.Combine(RepoRoot, ".github", "scripts", "develop-version.sh")));
     }
 
-    // AC-4 (072): PR fields come only from the step env:, are re-checked, and all refusals run before dotnet test.
+    // AC-4 (072): PR fields come only from the step env: (checked in AssertWorkflowStructure), are re-checked,
+    // and all refusals run before dotnet test.
     [Fact]
     public void ReleaseWorkflow_PullRequestBranchRechecksPrAndMergeCommit()
     {
         string workflow = ReadWorkflow();
-        string[] lines = workflow.Split('\n');
-        int versionStep = Array.FindIndex(lines, line => line.Trim() == "- name: Version");
-        int run = Array.FindIndex(lines, versionStep, line => line.Trim() == "run: |");
-        List<string> env = lines[(versionStep + 1)..run]
-            .Select(line => line.Trim())
-            .Where(line => line.Length > 0 && !line.StartsWith('#'))
-            .ToList();
-        Assert.Equal(
-            [
-                "env:",
-                "PR_TITLE: ${{ github.event.pull_request.title }}",
-                "PR_MERGED: ${{ github.event.pull_request.merged }}",
-                "PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}",
-                "PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}",
-                "MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}",
-            ],
-            env);
-
         string script = VersionScript();
         int pr = script.IndexOf("if [ \"$GITHUB_EVENT_NAME\" = \"pull_request\" ]; then", StringComparison.Ordinal);
         string[] checks =
@@ -1076,23 +1042,6 @@ public sealed class ToolPackagingTests
         Assert.DoesNotMatch(@"[^""{]\$tag", code);
     }
 
-    // AC-5 (081): the prune step comes after the release, may fail without failing the run, and has the token.
-    [Fact]
-    public void ReleaseWorkflow_PruneStepFollowsReleaseAndMayFail()
-    {
-        string[] lines = ReadWorkflow().Split('\n');
-        int create = Array.FindIndex(lines, line => line.Trim() == "- name: Create GitHub release");
-        int prune = Array.FindIndex(lines, line => line.Trim() == "- name: Prune old prereleases");
-        Assert.True(create >= 0, "workflow has no 'Create GitHub release' step");
-        Assert.True(prune > create, "'Prune old prereleases' must come after 'Create GitHub release'");
-
-        int next = Array.FindIndex(lines, prune + 1, line => line.TrimStart().StartsWith("- name:", StringComparison.Ordinal));
-        List<string> step = lines[(prune + 1)..(next < 0 ? lines.Length : next)].Select(line => line.Trim()).ToList();
-        Assert.Contains("continue-on-error: true", step);
-        Assert.Contains("GH_TOKEN: ${{ github.token }}", step);
-        Assert.Equal("contents: write", string.Join(" ", ChildLines(TopLevelBlock(ReadWorkflow(), "permissions")).Select(line => line.Trim())));
-    }
-
     // AC-6 (081)
     [Fact]
     public void ReleaseWorkflow_PruneScriptSkipsPrereleasesAndDeletesOnlyFilteredTags()
@@ -1178,17 +1127,7 @@ public sealed class ToolPackagingTests
 
     private static string VersionScript()
     {
-        return Assert.Single(RunScripts(ReadWorkflow()), script => script.Contains("GITHUB_REF_TYPE", StringComparison.Ordinal));
-    }
-
-    private static string[] CheckoutStep()
-    {
-        string[] lines = ReadWorkflow().Split('\n');
-
-        int checkout = Array.FindIndex(lines, line => line.Trim() == "uses: actions/checkout@v4");
-        Assert.True(checkout >= 0, "workflow has no actions/checkout step");
-        int next = Array.FindIndex(lines, checkout + 1, line => line.TrimStart().StartsWith("- ", StringComparison.Ordinal));
-        return lines[(checkout + 1)..(next < 0 ? lines.Length : next)];
+        return RunScript(Step(ReadWorkflow(), "Version"));
     }
 
     // (077, replaces the end at the next "\n## " only): the section also ends at a "\n# " heading.
@@ -1207,75 +1146,148 @@ public sealed class ToolPackagingTests
         return File.ReadAllText(Path.Combine(RepoRoot, ".github", "workflows", "release.yml")).ReplaceLineEndings("\n");
     }
 
-    /// <summary>The lines of the top-level <c>key:</c> block, up to the next top-level line (comments and blank lines skipped).</summary>
-    private static string TopLevelBlock(string yaml, string key)
+    /// <summary>
+    /// AC-6 (089): every structural check on the release workflow, on the parsed model only (no raw lines
+    /// or indents): triggers, permissions, the job if:, step names and order, the pinned actions, the
+    /// checkout with:, the Version env: and the release and prune steps' settings. Throws on a mismatch.
+    /// </summary>
+    private static void AssertWorkflowStructure(string yaml)
     {
-        string[] lines = yaml.Split('\n');
-        int start = Array.FindIndex(lines, line => line == key + ":");
-        Assert.True(start >= 0, "workflow has no top-level '" + key + ":'");
+        YamlMapping root = Map(WorkflowYaml.Parse(yaml));
 
-        List<string> block = [lines[start]];
-        for (int i = start + 1; i < lines.Length; i++)
+        YamlMapping on = Map(root["on"]);
+        Assert.Equal(["pull_request", "push"], Sorted(on.Keys));
+        YamlMapping push = Map(on["push"]);
+        Assert.Equal(["branches", "paths-ignore", "tags"], Sorted(push.Keys));
+        Assert.Equal(["develop"], Strings(push["branches"]));
+        Assert.Equal(["v*"], Strings(push["tags"]));
+        Assert.Equal(["backlog.md"], Strings(push["paths-ignore"]));
+        YamlMapping pullRequest = Map(on["pull_request"]);
+        Assert.Equal(["branches", "types"], Sorted(pullRequest.Keys));
+        Assert.Equal(["closed"], Strings(pullRequest["types"]));
+        Assert.Equal(["main"], Strings(pullRequest["branches"]));
+
+        Assert.Equal(["contents=write"], Pairs(root["permissions"]));
+
+        YamlMapping jobs = Map(root["jobs"]);
+        Assert.Equal(["release"], jobs.Keys);
+        YamlMapping job = Map(jobs["release"]);
+        Assert.False(job.ContainsKey("permissions"), "the job must not widen the workflow permissions");
+        Assert.Equal(JobIf, Regex.Replace(Scalar(job["if"]), @"\s+", " ").Trim());
+        Assert.Equal("ubuntu-latest", Scalar(job["runs-on"]));
+
+        List<YamlMapping> steps = Steps(root);
+        Assert.Equal(
+            ["Check out", "Set up .NET", "Version", "Test", "Pack", "Smoke check the packed tool", "Create GitHub release", "Prune old prereleases"],
+            steps.Select(step => Scalar(step["name"])));
+
+        List<YamlScalar> uses = steps.Where(step => step.ContainsKey("uses")).Select(step => Assert.IsType<YamlScalar>(step["uses"])).ToList();
+        Assert.Equal([CheckoutAction, SetupDotnetAction], uses.Select(scalar => scalar.Value));
+        Assert.Equal(["v4.4.0", "v4.3.1"], uses.Select(scalar => scalar.Comment));
+        Assert.All(uses, scalar => Assert.Matches("@[0-9a-f]{40}$", scalar.Value));
+        Assert.Equal(CheckoutAction, Scalar(steps[0]["uses"]));
+        Assert.Equal(SetupDotnetAction, Scalar(steps[1]["uses"]));
+
+        Assert.Equal(
+            ["fetch-depth=0", "persist-credentials=false", "ref=${{ github.event.pull_request.merge_commit_sha }}"],
+            Pairs(steps[0]["with"]));
+        Assert.Equal(["dotnet-version=10.0.x"], Pairs(steps[1]["with"]));
+
+        YamlMapping version = steps[2];
+        Assert.Equal(
+            [
+                "MERGE_SHA=${{ github.event.pull_request.merge_commit_sha }}",
+                "PR_HEAD_REF=${{ github.event.pull_request.head.ref }}",
+                "PR_HEAD_REPO=${{ github.event.pull_request.head.repo.full_name }}",
+                "PR_MERGED=${{ github.event.pull_request.merged }}",
+                "PR_TITLE=${{ github.event.pull_request.title }}",
+            ],
+            Pairs(version["env"]));
+        Assert.Equal(["env", "name", "run"], Sorted(version.Keys));
+
+        Assert.Equal(["GH_TOKEN=${{ github.token }}"], Pairs(steps[6]["env"]));
+        Assert.False(steps[6].ContainsKey("continue-on-error"), "a failed release must fail the run");
+        YamlMapping prune = steps[7];
+        Assert.Equal("true", Scalar(prune["continue-on-error"]));
+        Assert.Equal(["GH_TOKEN=${{ github.token }}"], Pairs(prune["env"]));
+        Assert.All(steps, step => Assert.True(step.ContainsKey("uses") != step.ContainsKey("run"), "each step has either uses: or run:"));
+    }
+
+    /// <summary>AC-7 (089): the real workflow with 4-space indents, other quoting, extra comments and blank lines, and reordered step keys.</summary>
+    private static string ReformattedWorkflow(string workflow, string develop)
+    {
+        string text = workflow;
+        text = ReplaceOnce(text, "      - \"develop\"\n", "      - " + develop + "\n");
+        text = ReplaceOnce(text, "      - \"main\"\n", "      - main\n");
+        text = ReplaceOnce(text, "dotnet-version: \"10.0.x\"\n", "dotnet-version: '10.0.x'   # any 10.0 patch\n");
+        text = ReplaceOnce(
+            text,
+            "      - name: Check out\n        uses: " + CheckoutAction + " # v4.4.0\n",
+            "      - uses: " + CheckoutAction + "    # v4.4.0\n        # name after uses\n        name: \"Check out\"\n");
+        text = ReplaceOnce(
+            text,
+            "        continue-on-error: true\n        env:\n          GH_TOKEN: ${{ github.token }}\n",
+            "        env:\n\n          GH_TOKEN: ${{ github.token }}\n        continue-on-error: 'true'\n");
+        text = ReplaceOnce(text, "    if: github.event_name == 'push' || (", "    if: >\n      github.event_name == 'push' ||\n        (");
+        text = ReplaceOnce(text, "\non:\n", "\non: # triggers\n\n  # every push\n");
+        text = ReplaceOnce(text, "permissions:\n  contents: write\n", "permissions:   # token scope\n\n  contents: write # nothing else\n");
+        text = ReplaceOnce(text, "      - name: Test\n", "\n      # an extra comment\n\n      - name: Test\n");
+
+        return string.Join('\n', text.Split('\n').Select(line =>
         {
-            string line = lines[i];
-            if (line.Trim().Length == 0 || line.TrimStart().StartsWith('#'))
+            int indent = line.Length - line.TrimStart(' ').Length;
+            string rest = line[indent..];
+            if (rest.StartsWith("- ", StringComparison.Ordinal))
             {
-                continue;
+                rest = "-   " + rest[2..];
             }
 
-            if (!char.IsWhiteSpace(line[0]))
-            {
-                break;
-            }
-
-            block.Add(line);
-        }
-
-        return string.Join('\n', block);
+            return new string(' ', indent * 2) + rest;
+        }));
     }
 
-    private static IEnumerable<string> ChildLines(string block)
+    private static string ReplaceOnce(string text, string old, string replacement)
     {
-        return block.Split('\n').Skip(1);
+        Assert.Single(Regex.Matches(text, Regex.Escape(old)));
+        return text.Replace(old, replacement, StringComparison.Ordinal);
     }
 
-    /// <summary>The body of every <c>run:</c> key: the inline value, or the indented lines of a <c>run: |</c> block.</summary>
+    private static YamlMapping Map(YamlNode node) => Assert.IsType<YamlMapping>(node);
+
+    private static string Scalar(YamlNode node) => Assert.IsType<YamlScalar>(node).Value;
+
+    private static List<string> Strings(YamlNode node)
+    {
+        return Assert.IsType<YamlSequence>(node).Items.Select(Scalar).ToList();
+    }
+
+    private static List<string> Sorted(IEnumerable<string> keys) => keys.Order(StringComparer.Ordinal).ToList();
+
+    /// <summary>A mapping of scalars as sorted <c>key=value</c> strings, so key order does not matter.</summary>
+    private static List<string> Pairs(YamlNode node)
+    {
+        return Sorted(Map(node).Entries.Select(entry => entry.Key + "=" + Scalar(entry.Value)));
+    }
+
+    private static List<YamlMapping> Steps(string yaml) => Steps(WorkflowYaml.Parse(yaml));
+
+    private static List<YamlMapping> Steps(YamlNode root)
+    {
+        YamlMapping job = Map(Map(Map(root)["jobs"])["release"]);
+        return Assert.IsType<YamlSequence>(job["steps"]).Items.Select(Map).ToList();
+    }
+
+    private static YamlMapping Step(string yaml, string name)
+    {
+        return Assert.Single(Steps(yaml), step => Scalar(step["name"]) == name);
+    }
+
+    private static string RunScript(YamlMapping step) => Scalar(step["run"]);
+
+    /// <summary>The body of every step's <c>run:</c>, in step order, read from the parsed model.</summary>
     private static List<string> RunScripts(string yaml)
     {
-        string[] lines = yaml.Split('\n');
-        List<string> scripts = [];
-        for (int i = 0; i < lines.Length; i++)
-        {
-            string trimmed = lines[i].TrimStart();
-            if (trimmed.StartsWith("- ", StringComparison.Ordinal))
-            {
-                trimmed = trimmed[2..].TrimStart();
-            }
-
-            if (!trimmed.StartsWith("run:", StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            string value = trimmed[4..].Trim();
-            if (value != "|" && value != ">")
-            {
-                scripts.Add(value);
-                continue;
-            }
-
-            int indent = lines[i].Length - lines[i].TrimStart().Length;
-            List<string> body = [];
-            while (i + 1 < lines.Length && (lines[i + 1].Trim().Length == 0 || lines[i + 1].Length - lines[i + 1].TrimStart().Length > indent))
-            {
-                i++;
-                body.Add(lines[i]);
-            }
-
-            scripts.Add(string.Join('\n', body));
-        }
-
-        return scripts;
+        return Steps(yaml).Where(step => step.ContainsKey("run")).Select(RunScript).ToList();
     }
 
     private static XElement LoadNugetConfig()
