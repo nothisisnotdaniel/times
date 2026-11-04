@@ -1154,6 +1154,8 @@ public sealed class ToolPackagingTests
     private static void AssertWorkflowStructure(string yaml)
     {
         YamlMapping root = Map(WorkflowYaml.Parse(yaml));
+        // Exact key sets: no workflow- or job-level env:, defaults:, container: or services: next to the write token.
+        Assert.Equal(["jobs", "name", "on", "permissions"], Sorted(root.Keys));
 
         YamlMapping on = Map(root["on"]);
         Assert.Equal(["pull_request", "push"], Sorted(on.Keys));
@@ -1172,7 +1174,7 @@ public sealed class ToolPackagingTests
         YamlMapping jobs = Map(root["jobs"]);
         Assert.Equal(["release"], jobs.Keys);
         YamlMapping job = Map(jobs["release"]);
-        Assert.False(job.ContainsKey("permissions"), "the job must not widen the workflow permissions");
+        Assert.Equal(["if", "runs-on", "steps"], Sorted(job.Keys));
         Assert.Equal(JobIf, Regex.Replace(Scalar(job["if"]), @"\s+", " ").Trim());
         Assert.Equal("ubuntu-latest", Scalar(job["runs-on"]));
 
