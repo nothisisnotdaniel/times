@@ -17,6 +17,7 @@ internal sealed class App
     private const int InputHeight = 3;
     private const string Prompt = "> ";
     private const string Placeholder = "Type help for commands";
+    private const string RetypeHiddenCharacters = "Retype it without the hidden characters.";
 
     /// <summary>What to do when <c>projects.json</c> cannot be read, shown in the quicklist panel and in every command hint about it.</summary>
     public const string UnreadableProjectsNextStep = "Fix or delete projects.json in the data folder (help shows where).";
@@ -216,12 +217,12 @@ internal sealed class App
 
         if (ProjectList.HasControlCharacters(title))
         {
-            return Hint($"{Name}: the title must not contain control characters.");
+            return Hint($"{Name}: the title must not contain control characters. {RetypeHiddenCharacters}");
         }
 
         if (ProjectList.HasFormatOrBrokenCharacters(title))
         {
-            return Hint($"{Name}: the title must not contain invisible formatting or broken characters.");
+            return Hint($"{Name}: the title must not contain invisible formatting or broken characters. {RetypeHiddenCharacters}");
         }
 
         ProjectList current;
@@ -516,12 +517,12 @@ internal sealed class App
 
         if (ProjectList.HasControlCharacters(checkpoint))
         {
-            return Hint($"{Name}: the name must not contain control characters.");
+            return Hint($"{Name}: the name must not contain control characters. {RetypeHiddenCharacters}");
         }
 
         if (ProjectList.HasFormatOrBrokenCharacters(checkpoint))
         {
-            return Hint($"{Name}: the name must not contain invisible formatting or broken characters.");
+            return Hint($"{Name}: the name must not contain invisible formatting or broken characters. {RetypeHiddenCharacters}");
         }
 
         int? workItem = null;

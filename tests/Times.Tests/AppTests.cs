@@ -2991,7 +2991,7 @@ public sealed class AppTests : IDisposable
             c.Input.PushTextWithEnter("quit");
         });
 
-        AssertOnHintRow(LastLayout(output), "addproject: the title must not contain control characters.");
+        AssertOnHintRow(LastLayout(output), "addproject: the title must not contain control characters. Retype it without the hidden characters.");
         Assert.False(File.Exists(ProjectsFile));
     }
 
@@ -3723,7 +3723,7 @@ public sealed class AppTests : IDisposable
     [InlineData("checkpoint 25:00 Standup", "checkpoint: 25:00 is not a time. Use H:mm, e.g. 8:15.")]
     [InlineData("checkpoint 9:5 Standup", "checkpoint: 9:5 is not a time. Use H:mm, e.g. 8:15.")]
     [InlineData("checkpoint 25:00", "checkpoint: 25:00 is not a time. Use H:mm, e.g. 8:15.")]
-    [InlineData("checkpoint a\u2028b", "checkpoint: the name must not contain control characters.")]
+    [InlineData("checkpoint a\u2028b", "checkpoint: the name must not contain control characters. Retype it without the hidden characters.")]
     public void Checkpoint_InvalidInput_ShowsHint_AndWritesNoFile(string typed, string expected)
     {
         WriteTwoProjects();
@@ -5099,8 +5099,8 @@ public sealed class AppTests : IDisposable
 
     // Safer titles and names (job 056) ---------------------------------------------------------
 
-    private const string AddProjectFormatHint = "addproject: the title must not contain invisible formatting or broken characters.";
-    private const string CheckpointFormatHint = "checkpoint: the name must not contain invisible formatting or broken characters.";
+    private const string AddProjectFormatHint = "addproject: the title must not contain invisible formatting or broken characters. Retype it without the hidden characters.";
+    private const string CheckpointFormatHint = "checkpoint: the name must not contain invisible formatting or broken characters. Retype it without the hidden characters.";
 
     /// <summary>
     /// Types <paramref name="escaped"/> (unescaped with <see cref="Regex.Unescape"/>, so lone surrogates
@@ -5158,7 +5158,7 @@ public sealed class AppTests : IDisposable
 
         (_, string output) = TypeEscaped("addproject 1234 abc\\u202Edef", ansi: true);
 
-        Assert.Matches(@"\x1b\[(31|91|38;5;9)maddproject: the title must not contain invisible formatting or broken characters\.", output);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)maddproject: the title must not contain invisible formatting or broken characters\. Retype it without the hidden characters\.", output);
         Assert.Equal(before, File.ReadAllBytes(ProjectsFile));
     }
 
@@ -5204,7 +5204,7 @@ public sealed class AppTests : IDisposable
 
         (_, string output) = TypeEscaped("checkpoint abc\\u202Edef", ansi: true);
 
-        Assert.Matches(@"\x1b\[(31|91|38;5;9)mcheckpoint: the name must not contain invisible formatting or broken characters\.", output);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mcheckpoint: the name must not contain invisible formatting or broken characters\. Retype it without the hidden characters\.", output);
         Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
     }
 
@@ -5220,8 +5220,8 @@ public sealed class AppTests : IDisposable
 
     // AC-9 (056): the control-character check still comes first.
     [Theory]
-    [InlineData("checkpoint a\\u2028\\u202Eb", "checkpoint: the name must not contain control characters.")]
-    [InlineData("addproject 12 a\\u2028\\u202Eb", "addproject: the title must not contain control characters.")]
+    [InlineData("checkpoint a\\u2028\\u202Eb", "checkpoint: the name must not contain control characters. Retype it without the hidden characters.")]
+    [InlineData("addproject 12 a\\u2028\\u202Eb", "addproject: the title must not contain control characters. Retype it without the hidden characters.")]
     public void FormatAndControlCharacters_ControlHintWins(string escaped, string expected)
     {
         (_, string output) = TypeEscaped(escaped);
@@ -5229,6 +5229,73 @@ public sealed class AppTests : IDisposable
         AssertOnHintRow(LastLayout(output), expected);
         Assert.False(File.Exists(ProjectsFile));
         Assert.False(File.Exists(DayFile("2026-10-27")));
+    }
+
+    // Fix-it hint for rejected titles (job 087) ------------------------------------------------
+
+    private const string RetypeHint = "Retype it without the hidden characters.";
+
+    // AC-1..AC-5 (087)
+    [Theory]
+    [InlineData("addproject 12 a\\u202Eb", "addproject: the title must not contain invisible formatting or broken characters. Retype it without the hidden characters.")]
+    [InlineData("addproject 12 a\\u2028b", "addproject: the title must not contain control characters. Retype it without the hidden characters.")]
+    [InlineData("checkpoint a\\u200Bb", "checkpoint: the name must not contain invisible formatting or broken characters. Retype it without the hidden characters.")]
+    [InlineData("checkpoint a\\u2028b", "checkpoint: the name must not contain control characters. Retype it without the hidden characters.")]
+    [InlineData("addproject 12 a\\uD800b", "addproject: the title must not contain invisible formatting or broken characters. Retype it without the hidden characters.")]
+    [InlineData("checkpoint a\\uD800b", "checkpoint: the name must not contain invisible formatting or broken characters. Retype it without the hidden characters.")]
+    public void RejectedHiddenCharacters_HintSaysRetype_AndWritesNothing(string escaped, string expected)
+    {
+        (int exitCode, string output) = TypeEscaped(escaped);
+
+        Assert.Equal(0, exitCode);
+        AssertOnHintRow(LastLayout(output), expected);
+        Assert.False(File.Exists(ProjectsFile));
+        Assert.False(File.Exists(DayFile("2026-10-27")));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
+    }
+
+    // AC-1, AC-3 (087)
+    [Theory]
+    [InlineData("addproject 12 a\\u202Eb", @"\x1b\[(31|91|38;5;9)maddproject: the title must not contain invisible formatting or broken characters\. Retype it without the hidden characters\.")]
+    [InlineData("checkpoint a\\u200Bb", @"\x1b\[(31|91|38;5;9)mcheckpoint: the name must not contain invisible formatting or broken characters\. Retype it without the hidden characters\.")]
+    public void RejectedHiddenCharacters_RetypeHintIsRed(string escaped, string pattern)
+    {
+        (_, string output) = TypeEscaped(escaped, ansi: true);
+
+        Assert.Matches(pattern, output);
+        Assert.False(File.Exists(ProjectsFile));
+        Assert.False(File.Exists(DayFile("2026-10-27")));
+    }
+
+    // AC-6 (087)
+    [Theory]
+    [InlineData("addproject 12 ", "the title is longer than 200 characters.", 201)]
+    [InlineData("checkpoint ", "the name is longer than 200 characters.", 201)]
+    [InlineData("addproject 12", "the title is missing.", 0)]
+    [InlineData("checkpoint", "say the checkpoint's name.", 0)]
+    [InlineData("addproject abc Title", "abc is not a work item number.", 0)]
+    [InlineData("checkpoint #abc Standup", "#abc is not a project number.", 0)]
+    public void OtherTitleHints_DoNotSayRetype(string command, string expected, int padding)
+    {
+        (_, string output) = RunWide(200, command + new string('x', padding), "quit");
+
+        string[] frame = LastLayout(output);
+        AssertOnHintRow(frame, expected);
+        Assert.DoesNotContain("Retype it", frame[^4]);
+        Assert.DoesNotContain(RetypeHint, output);
+    }
+
+    // AC-7 (087)
+    [Theory]
+    [InlineData("addproject 12 Launch \\uD83D\\uDE80")]
+    [InlineData("checkpoint 9:00 Launch \\uD83D\\uDE80")]
+    public void ValidTitleWithEmoji_IsAccepted_WithoutRetypeHint(string escaped)
+    {
+        (int exitCode, string output) = TypeEscaped(escaped);
+
+        Assert.Equal(0, exitCode);
+        Assert.DoesNotContain("Retype it", output);
+        Assert.DoesNotContain("must not contain", output);
     }
 
     // Bracketed paste (job 066) ---------------------------------------------------------------
