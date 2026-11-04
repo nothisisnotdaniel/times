@@ -46,7 +46,8 @@ folder on your machine; nothing else needs to be downloaded or built.
    `<clear />` removes every other package source, and `value="."` means the folder that holds
    this `nuget.config`, so it does not matter which folder your terminal is in.
 
-3. Install the tool with that file, pinning the version you downloaded:
+3. Install the tool with that file, pinning the version you downloaded (`<folder>` is the folder
+   from step 1):
 
    ```sh
    dotnet tool install --global --configfile <folder>/nuget.config --version <version> Times
