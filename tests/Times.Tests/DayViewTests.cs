@@ -780,4 +780,155 @@ public class DayViewTests
         Assert.Matches(@"2 +CP +09:15 +Done \[x\] #5678 ✓ +left 6:45", console.Output);
         Assert.Matches(@"3 +CP +10:45 +Open #1234 +left 5:15", console.Output);
     }
+
+    private static DayRecord UnendedDay() => new DayRecord(
+    [
+        new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)),
+        new DayEntry(EntryKind.BreakStart, new TimeOnly(12, 0)),
+        new DayEntry(EntryKind.Leaving, new TimeOnly(17, 0)),
+    ]);
+
+    private static DayRecord EarlyBreakDay() => new DayRecord(
+    [
+        new DayEntry(EntryKind.BreakStart, new TimeOnly(7, 0)),
+        new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)),
+        new DayEntry(EntryKind.Leaving, new TimeOnly(17, 0)),
+    ]);
+
+    // AC-7, AC-10 (083)
+    [Fact]
+    public void Render_UnendedBreak_HintDirectlyBelowSummary_SameIndent()
+    {
+        string[] lines = BreakLines(UnendedDay());
+
+        Assert.Equal(6, lines.Length);
+        Assert.Matches(@"^1 +AR +08:00 +left 8:00$", lines[1]);
+        Assert.Matches(@"^2 +BS +12:00 +left 4:00$", lines[2]);
+        Assert.Matches(@"^3 +LE +17:00 +left 4:00$", lines[3]);
+        Assert.Equal("   Breaks 5:00 taken · 0:00 required", lines[4]);
+        Assert.Equal("   ! Break not ended: entry 2", lines[5]);
+    }
+
+    // AC-7 (083)
+    [Fact]
+    public void Render_UnendedBreak_HintIsYellow()
+    {
+        string output = BreakAnsi(UnendedDay());
+
+        Assert.Contains("\u001b[38;5;11m! Break not ended: entry 2\u001b[0m", output);
+    }
+
+    // AC-7 (083)
+    [Fact]
+    public void Render_TwoUnendedBreaks_ListsEntries()
+    {
+        DayRecord record = new DayRecord(
+        [
+            new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)),
+            new DayEntry(EntryKind.BreakStart, new TimeOnly(10, 0)),
+            new DayEntry(EntryKind.Arrival, new TimeOnly(11, 0)),
+            new DayEntry(EntryKind.BreakStart, new TimeOnly(12, 0)),
+            new DayEntry(EntryKind.Leaving, new TimeOnly(17, 0)),
+        ]);
+
+        string[] lines = BreakLines(record);
+
+        Assert.Equal("   ! Break not ended: entries 2, 4", lines[^1]);
+        Assert.StartsWith("   Breaks ", lines[^2]);
+    }
+
+    // AC-8, AC-10 (083)
+    [Fact]
+    public void Render_BreakOutsideSpan_ShowsHintInYellow()
+    {
+        string[] lines = BreakLines(EarlyBreakDay());
+        string output = BreakAnsi(EarlyBreakDay());
+
+        // The break start is also never ended: the next break or leaving entry is the leaving.
+        Assert.Equal(7, lines.Length);
+        Assert.Matches(@"^1 +BS +07:00 +left 8:00$", lines[1]);
+        Assert.Matches(@"^3 +LE +17:00 +left -1:00$", lines[3]);
+        Assert.Equal("   Breaks 0:00 taken · 0:30 required  ! Breaks too short: 0:30 missing", lines[4]);
+        Assert.Equal("   ! Break not ended: entry 1", lines[5]);
+        Assert.Equal("   ! Break outside arrival and leaving: entry 1", lines[6]);
+        Assert.Contains("\u001b[38;5;11m! Break outside arrival and leaving: entry 1\u001b[0m", output);
+    }
+
+    // AC-8 (083)
+    [Fact]
+    public void Render_BothHints_NotEndedFirst_ThenOutside()
+    {
+        DayRecord record = new DayRecord(
+        [
+            new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)),
+            new DayEntry(EntryKind.BreakStart, new TimeOnly(12, 0)),
+            new DayEntry(EntryKind.Leaving, new TimeOnly(17, 0)),
+            new DayEntry(EntryKind.BreakStart, new TimeOnly(18, 0)),
+            new DayEntry(EntryKind.BreakEnd, new TimeOnly(18, 30)),
+        ]);
+
+        string[] lines = BreakLines(record);
+
+        Assert.StartsWith("   Breaks ", lines[^3]);
+        Assert.Equal("   ! Break not ended: entry 2", lines[^2]);
+        Assert.Equal("   ! Break outside arrival and leaving: entries 4, 5", lines[^1]);
+    }
+
+    // AC-4, AC-10 (083)
+    [Fact]
+    public void Render_BreakEndBetweenSpans_ShowsOutsideHint_ValuesUnchanged()
+    {
+        DayRecord record = new DayRecord(
+        [
+            new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)),
+            new DayEntry(EntryKind.Leaving, new TimeOnly(12, 0)),
+            new DayEntry(EntryKind.BreakEnd, new TimeOnly(12, 30)),
+            new DayEntry(EntryKind.Arrival, new TimeOnly(13, 0)),
+            new DayEntry(EntryKind.Leaving, new TimeOnly(17, 0)),
+        ]);
+
+        string[] lines = BreakLines(record);
+
+        Assert.Matches(@"^3 +BE +12:30 +left 4:00$", lines[3]);
+        Assert.Matches(@"^5 +LE +17:00 +left 0:00$", lines[5]);
+        Assert.Equal("   Breaks 0:00 taken · 0:30 required  ! Breaks too short: 0:30 missing", lines[6]);
+        Assert.Equal("   ! Break outside arrival and leaving: entry 3", lines[7]);
+    }
+
+    // AC-6, AC-10 (083)
+    [Fact]
+    public void Render_SameTime_BookingOrderDecidesHints()
+    {
+        DayEntry arrival = new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0));
+        DayEntry breakStart = new DayEntry(EntryKind.BreakStart, new TimeOnly(17, 0));
+        DayEntry leaving = new DayEntry(EntryKind.Leaving, new TimeOnly(17, 0));
+        string[] breakFirst = BreakLines(DayRecord.Empty.Add(arrival).Add(breakStart).Add(leaving));
+        string[] leaveFirst = BreakLines(DayRecord.Empty.Add(arrival).Add(leaving).Add(breakStart));
+
+        Assert.Equal(6, breakFirst.Length);
+        Assert.Matches(@"^3 +LE +17:00 +left -1:00$", breakFirst[3]);
+        Assert.Equal("   Breaks 0:00 taken · 0:30 required  ! Breaks too short: 0:30 missing", breakFirst[4]);
+        Assert.Equal("   ! Break not ended: entry 2", breakFirst[5]);
+        Assert.Equal(7, leaveFirst.Length);
+        Assert.Matches(@"^3 +BS +17:00 +left -1:00$", leaveFirst[3]);
+        Assert.Equal("   Breaks 0:00 taken · 0:30 required  ! Breaks too short: 0:30 missing", leaveFirst[4]);
+        Assert.Equal("   ! Break not ended: entry 3", leaveFirst[5]);
+        Assert.Equal("   ! Break outside arrival and leaving: entry 3", leaveFirst[6]);
+    }
+
+    // AC-9 (083)
+    [Fact]
+    public void Render_PairedBreaksInsideSpans_AndEmptyDay_ShowNoHint()
+    {
+        string paired = BreakAnsi(LongBreakDay());
+        string empty = BreakAnsi(DayRecord.Empty);
+
+        foreach (string output in new[] { paired, empty })
+        {
+            Assert.DoesNotContain("Break not ended", output);
+            Assert.DoesNotContain("Break outside", output);
+        }
+
+        Assert.Equal("Breaks 0:40 taken · 0:30 required", BreakLines(LongBreakDay())[^1].Trim());
+    }
 }

@@ -274,6 +274,76 @@ internal sealed record DayRecord
         return TimeSpan.Zero;
     }
 
+    /// <summary>
+    /// Returns the 1-based numbers, ascending, of every break start that is never ended: its next
+    /// entry among break starts, break ends and leavings is not a break end (another break start, a
+    /// leaving, or none at all). Arrivals and checkpoints are skipped. Uses the entry order of
+    /// <see cref="Entries"/>, so same-time entries count in that order. Empty when there is none.
+    /// </summary>
+    public IReadOnlyList<int> UnendedBreaks()
+    {
+        List<int> numbers = [];
+        for (int i = 0; i < entries.Length; i++)
+        {
+            if (entries[i].Kind != EntryKind.BreakStart)
+            {
+                continue;
+            }
+
+            bool ended = false;
+            for (int j = i + 1; j < entries.Length; j++)
+            {
+                EntryKind kind = entries[j].Kind;
+                if (kind is EntryKind.BreakStart or EntryKind.BreakEnd or EntryKind.Leaving)
+                {
+                    ended = kind == EntryKind.BreakEnd;
+                    break;
+                }
+            }
+
+            if (!ended)
+            {
+                numbers.Add(i + 1);
+            }
+        }
+
+        return numbers;
+    }
+
+    /// <summary>
+    /// Returns the 1-based numbers, ascending, of every break start or break end booked while no span
+    /// is open. Walking <see cref="Entries"/> in order, a span opens at an arrival and closes at the
+    /// next leaving; an arrival inside an open span and a leaving outside one change nothing, and a
+    /// span with no leaving stays open to the end of the day. Checkpoints are ignored. Empty when
+    /// there is none.
+    /// </summary>
+    public IReadOnlyList<int> BreaksOutsideSpans()
+    {
+        List<int> numbers = [];
+        bool open = false;
+        for (int i = 0; i < entries.Length; i++)
+        {
+            switch (entries[i].Kind)
+            {
+                case EntryKind.Arrival:
+                    open = true;
+                    break;
+                case EntryKind.Leaving:
+                    open = false;
+                    break;
+                case EntryKind.BreakStart or EntryKind.BreakEnd:
+                    if (!open)
+                    {
+                        numbers.Add(i + 1);
+                    }
+
+                    break;
+            }
+        }
+
+        return numbers;
+    }
+
     private TimeSpan Total(WorkState state)
     {
         TimeSpan total = TimeSpan.Zero;

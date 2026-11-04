@@ -68,7 +68,12 @@ internal sealed class DayView
     /// (<c>Breaks 0:20 taken · 0:30 required</c>, grey words, <c>SteelBlue1</c> values, see
     /// <see cref="DayRecord.BreakTime"/> and <see cref="DayRecord.RequiredBreak"/>). When the break
     /// taken is shorter than required, the same line ends with a yellow
-    /// <c>! Breaks too short: 0:10 missing</c> after two spaces. The empty day shows neither line.
+    /// <c>! Breaks too short: 0:10 missing</c> after two spaces. Below the break line, with the same
+    /// indent, up to two yellow hint lines follow, each on its own row and in this order:
+    /// <c>! Break not ended: entry 3</c> (<c>entries 3, 7</c> for more than one, see
+    /// <see cref="DayRecord.UnendedBreaks"/>) and <c>! Break outside arrival and leaving: entry 5</c>
+    /// (see <see cref="DayRecord.BreaksOutsideSpans"/>); each is left out when it names no entry.
+    /// The empty day shows none of these lines.
     /// </summary>
     public IRenderable Render(DayRecord day)
     {
@@ -129,7 +134,22 @@ internal sealed class DayView
             Text.Empty,
             new Padder(new Markup(summary), new Padding(indent, 0, 0, 0)),
         ];
+        AddHint(rows, "Break not ended", day.UnendedBreaks(), indent);
+        AddHint(rows, "Break outside arrival and leaving", day.BreaksOutsideSpans(), indent);
         return new Rows(rows);
+    }
+
+    // A yellow hint line under the break summary naming entry numbers; it holds no user text.
+    private static void AddHint(List<IRenderable> rows, string text, IReadOnlyList<int> numbers, int indent)
+    {
+        if (numbers.Count == 0)
+        {
+            return;
+        }
+
+        string label = numbers.Count == 1 ? "entry" : "entries";
+        string list = string.Join(", ", numbers.Select(n => n.ToString(CultureInfo.InvariantCulture)));
+        rows.Add(new Padder(new Markup($"[yellow]! {text}: {label} {list}[/]"), new Padding(indent, 0, 0, 0)));
     }
 
     // The spaces after the number column, set on the column itself so the summary indent follows it.
