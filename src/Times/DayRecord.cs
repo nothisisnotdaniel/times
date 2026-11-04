@@ -250,9 +250,48 @@ internal sealed record DayRecord
     /// <summary>
     /// Returns the total break time: the time between consecutive entries while on break in the walk
     /// of <see cref="TimeLeft"/> (a break start to the next break end, or to the leaving that closes
-    /// an open break). Time while off is not break time. Nothing accrues after the last entry.
+    /// an open break), plus every lunch gap. A lunch gap runs from a leaving that ends a span (moves
+    /// the day from working or on break to off) to the next arrival that starts one (moves it from
+    /// off to working); entries in between do not split it and add nothing on top of it. Other time
+    /// while off, before the first span or after the last leaving, is not break time. Nothing accrues
+    /// after the last entry, so a gap with no arrival after it yet counts nothing.
     /// </summary>
-    public TimeSpan BreakTime() => Total(WorkState.OnBreak);
+    public TimeSpan BreakTime()
+    {
+        TimeSpan total = TimeSpan.Zero;
+        TimeSpan lunchGap = TimeSpan.Zero;
+        bool afterSpan = false;
+        int i = 0;
+        foreach (Gap gap in Walk())
+        {
+            if (gap.State == WorkState.OnBreak)
+            {
+                total += gap.Length;
+            }
+            else if (gap.State == WorkState.Off && afterSpan)
+            {
+                lunchGap += gap.Length;
+            }
+
+            WorkState next = Next(gap.State, entries[i++].Kind);
+            if (gap.State == WorkState.Off && next == WorkState.Working)
+            {
+                total += lunchGap;
+            }
+
+            if (gap.State != WorkState.Off && next == WorkState.Off)
+            {
+                afterSpan = true;
+            }
+
+            if (next != WorkState.Off)
+            {
+                lunchGap = TimeSpan.Zero;
+            }
+        }
+
+        return total;
+    }
 
     /// <summary>
     /// Returns the break time required for <paramref name="worked"/>: <c>0:00</c> up to and including

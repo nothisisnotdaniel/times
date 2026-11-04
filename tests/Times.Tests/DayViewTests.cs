@@ -166,8 +166,24 @@ public class DayViewTests
         Assert.Matches(@"^1 +AR +08:15 +left +8:00$", lines[1]);
         Assert.Matches(@"^2 +LE +12:00 +left +4:15$", lines[2]);
         Assert.Matches(@"^3 +AR +13:00 +left +4:15$", lines[3]);
-        Assert.Equal("Breaks 0:00 taken · 0:00 required", lines[4]);
+        Assert.Equal("Breaks 1:00 taken · 0:00 required", lines[4]);
         Assert.DoesNotContain("—", console.Output);
+    }
+
+    // AC-9 (084)
+    [Fact]
+    public void Render_Today_AwayAfterLeaving_GapCountsNothingYet()
+    {
+        TestConsole console = new TestConsole();
+        DayView view = new DayView(
+            new FixedTimeProvider(new DateTimeOffset(2026, 10, 27, 12, 40, 0, TimeSpan.Zero), TimeZoneInfo.Utc));
+        DayRecord record = new DayRecord(
+            [new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)), new DayEntry(EntryKind.Leaving, new TimeOnly(12, 0))]);
+
+        console.Write(view.Render(record));
+
+        Assert.Equal(new DateOnly(2026, 10, 27), view.Current);
+        Assert.Contains("Breaks 0:00 taken · 0:00 required", console.Output);
     }
 
     // AC-5 (017)
@@ -263,7 +279,8 @@ public class DayViewTests
         Assert.Matches(@"^2 +LE +12:00 +left +4:00$", lines[2]);
         Assert.Matches(@"^3 +AR +12:30 +left +4:00$", lines[3]);
         Assert.Matches(@"^4 +LE +17:00 +left -0:30$", lines[4]);
-        Assert.Equal("Breaks 0:00 taken · 0:30 required  ! Breaks too short: 0:30 missing", lines[5].Trim());
+        Assert.Equal("Breaks 0:30 taken · 0:30 required", lines[5].Trim());
+        Assert.DoesNotContain("Breaks too short", console.Output);
 
         // The value column is right-aligned, so every entry row ends at the same column.
         int[] ends = lines[1..5].Select(l => l.Length).Distinct().ToArray();
@@ -891,7 +908,7 @@ public class DayViewTests
 
         Assert.Matches(@"^3 +BE +12:30 +left 4:00$", lines[3]);
         Assert.Matches(@"^5 +LE +17:00 +left 0:00$", lines[5]);
-        Assert.Equal("   Breaks 0:00 taken · 0:30 required  ! Breaks too short: 0:30 missing", lines[6]);
+        Assert.Equal("   Breaks 1:00 taken · 0:30 required", lines[6]);
         Assert.Equal("   ! Break outside arrival and leaving: entry 3", lines[7]);
     }
 
