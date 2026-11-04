@@ -273,6 +273,8 @@ internal sealed record DayRecord
                 lunchGap += gap.Length;
             }
 
+            // Walk is parallel to entries: gap i is the time before entries[i], so this is the state
+            // entries[i] moves the day into.
             WorkState next = Next(gap.State, entries[i++].Kind);
             if (gap.State == WorkState.Off && next == WorkState.Working)
             {
