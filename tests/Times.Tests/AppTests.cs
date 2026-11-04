@@ -1331,6 +1331,7 @@ public sealed class AppTests : IDisposable
     [InlineData("\u202Etimes")]
     [InlineData("ti\u200Bmes")]
     [InlineData("times\U000E0041")]
+    [InlineData("\u001b\u202Eti\u200Bmes")]
     public void InvalidOverride_WithFormatCharacters_ShowsCleanedValue(string folder)
     {
         (int exitCode, string plain) = RunInvalidFolder(folder, folderFromEnvironment: true);
