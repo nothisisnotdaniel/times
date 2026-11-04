@@ -1112,6 +1112,8 @@ public sealed class ToolPackagingTests
 
         Assert.True(skip >= 0 && skip < hyphen && hyphen < exit && exit < esac, "the script must exit 0 for a $VERSION containing '-'");
         Assert.True(esac < firstGh, "the prerelease skip must come before any gh call");
+        int pipefail = script.IndexOf("set -o pipefail", StringComparison.Ordinal);
+        Assert.True(pipefail >= 0 && pipefail < list, "a failed listing must fail the step (set -o pipefail before the gh release list pipe)");
         Assert.True(firstGh == list, "the first gh call must be the prerelease listing");
         Assert.True(list < filter && filter < loop && loop < delete && delete < done, "list | filter | while read loop with a delete that may fail");
         Assert.Single(Regex.Matches(script, @"gh release delete"));

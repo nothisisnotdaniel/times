@@ -187,6 +187,8 @@ jobs:
               exit 0
               ;;
           esac
+          # Without a shell: key, run: is bash -e with no pipefail: a failed listing must fail the step (a warning).
+          set -o pipefail
           # Tag names are external text: they reach the shell only as data, and only exact
           # v<X.Y.Z>-develop.<n> matches at or below the release come out of the filter.
           gh release list --limit 1000 --json tagName,isPrerelease --jq '.[] | select(.isPrerelease) | .tagName' |
