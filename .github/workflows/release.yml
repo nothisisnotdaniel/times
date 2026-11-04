@@ -13,6 +13,8 @@
 # Refs, PR fields and the run number reach the shell only through environment variables (GITHUB_REF_NAME,
 # GITHUB_REF_TYPE, GITHUB_RUN_NUMBER, GITHUB_SHA, and the Version step's env:), never through ${{ }}
 # inside a run: script.
+# Actions are pinned to full commit SHAs (the tag each one had is in the trailing comment), so a moved
+# tag cannot run new code with the contents: write token. LC_ALL=C keeps the SemVer check ASCII-only.
 name: Release
 
 on:
@@ -39,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # No later step needs git credentials (gh uses GH_TOKEN), so the write token is not left in .git/config.
           persist-credentials: false
@@ -50,7 +52,7 @@ jobs:
           ref: ${{ github.event.pull_request.merge_commit_sha }}
 
       - name: Set up .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: "10.0.x"
 
@@ -123,7 +125,8 @@ jobs:
             TARGET="$GITHUB_SHA"
           fi
           # Check the version where it enters, before it reaches msbuild (-p: would split on ';').
-          if ! printf '%s' "$VERSION" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'; then
+          # LC_ALL=C: the [A-Za-z] ranges mean ASCII letters only, whatever the runner's locale.
+          if ! printf '%s' "$VERSION" | LC_ALL=C grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'; then
             echo "Version '$VERSION' (ref '$GITHUB_REF_NAME') is not SemVer" >&2
             exit 1
           fi

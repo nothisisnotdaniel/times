@@ -118,6 +118,11 @@ Every factory agent reads this file before working on Times. Keep it short and a
     (non-prerelease) release `vX.Y.Z`, the `Prune old prereleases` step (`continue-on-error`) deletes
     older `-develop` prereleases with their tags (core <= X.Y.Z, filtered by
     `.github/scripts/old-prereleases.sh`); proper releases and higher prereleases stay.
+    Both actions are pinned to full commit SHAs with a trailing `# vX.Y.Z` comment (change the SHA and the comment together),
+    so a moved tag cannot run new code with the `contents: write` token. `develop-version.sh` runs under
+    `LC_ALL=C` and ignores a tag whose MAJOR, MINOR or PATCH has more than 9 digits, so the bumped patch
+    fits in 32-bit version parts. The workflow tests read `release.yml` through their own small YAML reader
+    (`tests/Times.Tests/WorkflowYaml.cs`), so reformatting the YAML does not break them.
     `<Version>0.1.0</Version>` is only the local default; `help` shows the running version above
     `Data folder:`.
 - **Style:**
