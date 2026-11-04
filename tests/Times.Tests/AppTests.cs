@@ -4713,12 +4713,19 @@ public sealed class AppTests : IDisposable
     {
         File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":1234,\"title\":\"Times\"}]}");
 
-        (int exitCode, string output) = RunCommands(
-            "cp 9:00 #1 Review", "cp 10:00 [x]", "cp 10:30 #1 Fix", "breakend 11:00", "cp 17:00 [x]", "leave 17:30", "summary", "quit");
+        // The lone break end shows the "outside arrival and leaving" hint, so give the frame room for it.
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Profile.Height = 30;
+            foreach (string command in new[] { "cp 9:00 #1 Review", "cp 10:00 [x]", "cp 10:30 #1 Fix", "breakend 11:00", "cp 17:00 [x]", "leave 17:30", "summary", "quit" })
+            {
+                c.Input.PushTextWithEnter(command);
+            }
+        });
 
         Assert.Equal(0, exitCode);
         string[] frame = LastLayout(output);
-        AssertLayout(frame);
+        AssertLayout(frame, 30);
         Assert.Contains(frame, l => Regex.IsMatch(l, @"│ Work item +│ Name +│ Time +│"));
         // #1234: 9:00-10:00 and 10:30-17:00 = 7:30; [x]: 10:00-10:30 and 17:00-17:30 = 1:00.
         int workItem = Array.FindIndex(frame, l => Regex.IsMatch(l, @"│ #1234 +│ Review, Fix +│ 7:30 +│"));
@@ -6634,5 +6641,18 @@ public sealed class AppTests : IDisposable
         // Paging down draws the footnote in place, like any other summary line.
         int scrolled = output.IndexOf(OpenFootnoteText, StringComparison.Ordinal);
         Assert.True(scrolled > output.LastIndexOf(frame[^1], StringComparison.Ordinal), "the footnote is not drawn after paging down");
+    }
+
+    // AC-11 (083)
+    [Fact]
+    public void Break_NotEnded_ShowsHintInFrame()
+    {
+        (int exitCode, string output) = RunCommands("arrive 8:00", "break 12:00", "leave 17:00", "quit");
+
+        Assert.Equal(0, exitCode);
+        string[] frame = LastLayout(output);
+        AssertLayout(frame);
+        Assert.Contains(frame, l => l.Contains("! Break not ended: entry 2", StringComparison.Ordinal));
+        Assert.DoesNotContain(frame, l => l.Contains("Break outside", StringComparison.Ordinal));
     }
 }

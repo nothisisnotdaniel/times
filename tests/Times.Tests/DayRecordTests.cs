@@ -1125,4 +1125,147 @@ public class DayRecordTests
         Assert.Equal(unbooked.WorkTime(), booked.WorkTime());
         Assert.Equal(unbooked.BreakTime(), booked.BreakTime());
     }
+
+    // AC-1 (083)
+    [Fact]
+    public void UnendedBreaks_PairedBreak_OrNoBreaks_IsEmpty()
+    {
+        DayRecord paired = new DayRecord([Arrival(8, 0), BreakStart(12, 0), BreakEnd(12, 30), Leaving(17, 0)]);
+        DayRecord none = new DayRecord([Arrival(8, 0), Leaving(17, 0)]);
+
+        Assert.Empty(paired.UnendedBreaks());
+        Assert.Empty(none.UnendedBreaks());
+        Assert.Empty(DayRecord.Empty.UnendedBreaks());
+    }
+
+    // AC-2 (083)
+    [Fact]
+    public void UnendedBreaks_LeavingBeforeBreakEnd_ReturnsBreakStart()
+    {
+        DayRecord record = new DayRecord([Arrival(8, 0), BreakStart(12, 0), Leaving(17, 0)]);
+
+        Assert.Equal([2], record.UnendedBreaks());
+    }
+
+    // AC-3 (083)
+    [Fact]
+    public void UnendedBreaks_EndOfDay_OrAnotherBreakStart_ReturnsBreakStart()
+    {
+        DayRecord endOfDay = new DayRecord([Arrival(8, 0), BreakStart(12, 0)]);
+        DayRecord twoStarts = new DayRecord(
+            [Arrival(8, 0), BreakStart(12, 0), BreakStart(13, 0), BreakEnd(13, 30), Leaving(17, 0)]);
+
+        Assert.Equal([2], endOfDay.UnendedBreaks());
+        Assert.Equal([2], twoStarts.UnendedBreaks());
+    }
+
+    // AC-3 (083)
+    [Fact]
+    public void UnendedBreaks_CheckpointBetweenStartAndEnd_DoesNotCount()
+    {
+        DayRecord record = new DayRecord(
+            [Arrival(8, 0), BreakStart(12, 0), Cp(12, 10, "A"), BreakEnd(12, 30), Leaving(17, 0)]);
+
+        Assert.Empty(record.UnendedBreaks());
+    }
+
+    // AC-3 (083)
+    [Fact]
+    public void UnendedBreaks_SeveralUnended_AscendingNumbers()
+    {
+        DayRecord record = new DayRecord(
+            [Arrival(8, 0), BreakStart(10, 0), Arrival(11, 0), BreakStart(12, 0), Leaving(17, 0)]);
+
+        Assert.Equal([2, 4], record.UnendedBreaks());
+    }
+
+    // AC-4 (083)
+    [Fact]
+    public void BreaksOutsideSpans_BeforeArrival_ReturnsBreakStart()
+    {
+        DayRecord record = new DayRecord([BreakStart(7, 0), Arrival(8, 0), Leaving(17, 0)]);
+
+        Assert.Equal([1], record.BreaksOutsideSpans());
+    }
+
+    // AC-4 (083)
+    [Fact]
+    public void BreaksOutsideSpans_BetweenSpans_ReturnsBreakEnd()
+    {
+        DayRecord record = new DayRecord(
+            [Arrival(8, 0), Leaving(12, 0), BreakEnd(12, 30), Arrival(13, 0), Leaving(17, 0)]);
+
+        Assert.Equal([3], record.BreaksOutsideSpans());
+    }
+
+    // AC-4 (083)
+    [Fact]
+    public void BreaksOutsideSpans_BreakEndAfterLeaving_ReturnsBreakEnd()
+    {
+        DayRecord record = new DayRecord([Arrival(8, 0), BreakStart(12, 0), Leaving(17, 0), BreakEnd(17, 30)]);
+
+        Assert.Equal([4], record.BreaksOutsideSpans());
+    }
+
+    // AC-4 (083)
+    [Fact]
+    public void BreaksOutsideSpans_ArrivalInsideSpan_AndLeavingOutside_ChangeNothing()
+    {
+        DayRecord record = new DayRecord(
+            [Arrival(8, 0), Arrival(9, 0), Leaving(12, 0), Leaving(12, 10), BreakStart(12, 20), BreakEnd(12, 30)]);
+
+        Assert.Equal([5, 6], record.BreaksOutsideSpans());
+    }
+
+    // AC-5 (083)
+    [Fact]
+    public void BreaksOutsideSpans_AllInsideSpans_IsEmpty()
+    {
+        DayRecord noLeaving = new DayRecord([Arrival(8, 0), BreakStart(12, 0), BreakEnd(12, 30)]);
+        DayRecord secondSpan = new DayRecord(
+            [Arrival(8, 0), Leaving(10, 0), Arrival(11, 0), BreakStart(12, 0), BreakEnd(12, 30), Leaving(17, 0)]);
+        DayRecord withCheckpoint = new DayRecord(
+            [Cp(7, 0, "A"), Arrival(8, 0), BreakStart(12, 0), BreakEnd(12, 30), Leaving(17, 0), Cp(18, 0, "B")]);
+
+        Assert.Empty(noLeaving.BreaksOutsideSpans());
+        Assert.Empty(secondSpan.BreaksOutsideSpans());
+        Assert.Empty(withCheckpoint.BreaksOutsideSpans());
+        Assert.Empty(DayRecord.Empty.BreaksOutsideSpans());
+    }
+
+    // AC-6 (083)
+    [Fact]
+    public void Hints_SameTime_FollowBookingOrder()
+    {
+        DayRecord breakFirst = DayRecord.Empty.Add(Arrival(8, 0)).Add(BreakStart(17, 0)).Add(Leaving(17, 0));
+        DayRecord leaveFirst = DayRecord.Empty.Add(Arrival(8, 0)).Add(Leaving(17, 0)).Add(BreakStart(17, 0));
+
+        Assert.Equal(EntryKind.BreakStart, breakFirst.Entries[1].Kind);
+        Assert.Equal([2], breakFirst.UnendedBreaks());
+        Assert.Empty(breakFirst.BreaksOutsideSpans());
+        Assert.Equal(EntryKind.BreakStart, leaveFirst.Entries[2].Kind);
+        Assert.Equal([3], leaveFirst.UnendedBreaks());
+        Assert.Equal([3], leaveFirst.BreaksOutsideSpans());
+    }
+
+    // AC-10 (083)
+    [Fact]
+    public void Hints_DoNotChangeTimeLeftWorkTimeOrBreakTime()
+    {
+        DayRecord unended = new DayRecord([Arrival(8, 0), BreakStart(12, 0), Leaving(17, 0)]);
+        DayRecord before = new DayRecord([BreakStart(7, 0), Arrival(8, 0), Leaving(17, 0)]);
+        DayRecord between = new DayRecord(
+            [Arrival(8, 0), Leaving(12, 0), BreakEnd(12, 30), Arrival(13, 0), Leaving(17, 0)]);
+        DayRecord sameTime = DayRecord.Empty.Add(Arrival(8, 0)).Add(Leaving(17, 0)).Add(BreakStart(17, 0));
+
+        Assert.Equal([TimeSpan.FromHours(8), TimeSpan.FromHours(4), TimeSpan.FromHours(4)], unended.TimeLeft());
+        Assert.Equal(TimeSpan.FromHours(4), unended.WorkTime());
+        Assert.Equal(TimeSpan.FromHours(5), unended.BreakTime());
+        Assert.Equal([TimeSpan.FromHours(8), TimeSpan.FromHours(8), TimeSpan.FromHours(-1)], before.TimeLeft());
+        Assert.Equal(TimeSpan.Zero, before.BreakTime());
+        Assert.Equal(TimeSpan.FromHours(8), between.WorkTime());
+        Assert.Equal(TimeSpan.Zero, between.BreakTime());
+        Assert.Equal([TimeSpan.FromHours(8), TimeSpan.FromHours(-1), TimeSpan.FromHours(-1)], sameTime.TimeLeft());
+        Assert.Equal(TimeSpan.Zero, sameTime.BreakTime());
+    }
 }
