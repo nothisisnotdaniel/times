@@ -139,6 +139,15 @@ internal sealed class App
             return new CommandResult(new Markup("[grey]No checkpoints on this day.[/]"));
         }
 
+        return new CommandResult(SummaryView(day, groups));
+    }
+
+    /// <summary>
+    /// The summary table for <paramref name="groups"/> (at least one), captioned with the day heading,
+    /// and, if any group is open, one grey footnote below it explaining <c>open</c>.
+    /// </summary>
+    internal static IRenderable SummaryView(DateOnly day, IReadOnlyList<CheckpointGroup> groups)
+    {
         Table table = new Table()
             .Border(TableBorder.Rounded)
             .BorderColor(Color.Grey)
@@ -158,8 +167,16 @@ internal sealed class App
                 new Markup($"[steelblue1]{DayView.FormatTimeLeft(group.Total)}[/]{open}"));
         }
 
-        return new CommandResult(table);
+        if (groups.Any(g => g.Open))
+        {
+            return new Rows(table, new Markup($"[grey]{OpenFootnote}[/]"));
+        }
+
+        return table;
     }
+
+    // Explains the "open" marker below the summary table; a fixed literal, so no escaping is needed.
+    internal const string OpenFootnote = "open: this checkpoint has no end on this day and counts no time.";
 
     private void RegisterProjects()
     {
