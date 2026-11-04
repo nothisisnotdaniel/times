@@ -43,28 +43,32 @@ internal sealed class DayStore
     /// <summary>
     /// Loads <paramref name="day"/>. A missing file or folder gives <see cref="DayRecord.Empty"/> and
     /// creates nothing. Throws <see cref="InvalidDataException"/> if the file cannot be read as a day.
+    /// The file's final link target must be a regular file (read through <see cref="CappedFile"/>, so
+    /// a FIFO or a device never blocks), and at most <see cref="MaxFileBytes"/> bytes are taken in,
+    /// whatever its reported size.
     /// </summary>
     public DayRecord Load(DateOnly day)
     {
         EnsureValidFolder();
-        FileInfo file = new FileInfo(PathFor(day));
-        if (!file.Exists)
+        string name = Name(day);
+        byte[]? bytes = CappedFile.Read(
+            PathFor(day),
+            $"The file for {name}",
+            MaxFileBytes,
+            $"The file for {name} is too large to be a day file.");
+        if (bytes is null)
         {
             return DayRecord.Empty;
         }
 
-        if (file.Length > MaxFileBytes)
-        {
-            throw new InvalidDataException($"The file for {Name(day)} is too large to be a day file.");
-        }
-
         try
         {
-            return DayRecord.FromJson(File.ReadAllText(file.FullName, Encoding.UTF8));
+            using StreamReader reader = new StreamReader(new MemoryStream(bytes), Encoding.UTF8);
+            return DayRecord.FromJson(reader.ReadToEnd());
         }
         catch (JsonException)
         {
-            throw new InvalidDataException($"The file for {Name(day)} is not a valid day file.");
+            throw new InvalidDataException($"The file for {name} is not a valid day file.");
         }
     }
 

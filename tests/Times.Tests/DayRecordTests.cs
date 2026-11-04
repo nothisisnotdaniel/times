@@ -1351,4 +1351,44 @@ public class DayRecordTests
         Assert.Equal([TimeSpan.FromHours(8), TimeSpan.FromHours(-1), TimeSpan.FromHours(-1)], sameTime.TimeLeft());
         Assert.Equal(TimeSpan.Zero, sameTime.BreakTime());
     }
+
+    /// <summary>
+    /// Day files with an escaped lone surrogate (<c>\ud800</c> or <c>\udc00</c>) in a root property
+    /// name, an entry property name, <c>kind</c>, <c>time</c> or a legacy <c>arrival</c>/<c>leaving</c>.
+    /// </summary>
+    public static TheoryData<string> LoneSurrogateDayFiles()
+    {
+        string[] templates =
+        [
+            "{{\"{0}\":1,\"entries\":[]}}",
+            "{{\"entries\":[],\"a{0}b\":1}}",
+            "{{\"entries\":[{{\"{0}\":1,\"kind\":\"arrival\",\"time\":\"08:00\"}}]}}",
+            "{{\"entries\":[{{\"kind\":\"arrival\",\"time\":\"08:00\",\"x{0}\":1}}]}}",
+            "{{\"entries\":[{{\"kind\":\"{0}\",\"time\":\"08:00\"}}]}}",
+            "{{\"entries\":[{{\"kind\":\"arrival{0}\",\"time\":\"08:00\"}}]}}",
+            "{{\"entries\":[{{\"kind\":\"arrival\",\"time\":\"{0}\"}}]}}",
+            "{{\"entries\":[{{\"kind\":\"arrival\",\"time\":\"08:00{0}\"}}]}}",
+            "{{\"arrival\":\"{0}\"}}",
+            "{{\"leaving\":\"08:00{0}\"}}",
+        ];
+        TheoryData<string> data = new TheoryData<string>();
+        foreach (string template in templates)
+        {
+            foreach (string surrogate in new[] { "\\ud800", "\\udc00" })
+            {
+                data.Add(string.Format(CultureInfo.InvariantCulture, template, surrogate));
+            }
+        }
+
+        return data;
+    }
+
+    // AC-1 (086)
+    [Theory]
+    [MemberData(nameof(LoneSurrogateDayFiles))]
+    public void FromJson_LoneSurrogateInNameKindOrTime_ThrowsJsonException(string json)
+    {
+        Assert.Contains("\\u", json);
+        Assert.Throws<JsonException>(() => DayRecord.FromJson(json));
+    }
 }
