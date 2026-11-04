@@ -80,7 +80,7 @@ Every factory agent reads this file before working on Times. Keep it short and a
   Project titles and checkpoint names (`ProjectList.IsValidTitle`) must be non-blank, at most 200
   characters, and hold no control characters, no Unicode Format (Cf) code points (bidi overrides,
   zero-width characters, soft hyphens, tag characters) and no unpaired surrogates; this is checked
-  when typed (red hint) and when `projects.json` or a day file is loaded (file is unreadable).
+  when typed (red hint; for hidden or broken characters it also says to retype the text without them) and when `projects.json` or a day file is loaded (file is unreadable).
 - **Settings:** features register their user preferences in the one `SettingsRegistry` (kinds
   `OnOff`, `Number` with min/max, `Choice` with options; registration order is display order;
   `CreateDefault()` has none yet), the way commands use `CommandRegistry`, and never add their own
