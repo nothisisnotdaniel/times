@@ -2,18 +2,39 @@ namespace Times.Tests;
 
 public sealed class SettingsRegistryTests
 {
-    // AC-1 (091)
+    // AC-1 (091); AC-1 (093): the daily target comes first, then the two update settings.
     [Fact]
-    public void CreateDefault_RegistersOnlyTheDailyTarget()
+    public void CreateDefault_RegistersTheDailyTargetFirst()
     {
-        Setting setting = Assert.Single(SettingsRegistry.CreateDefault().Settings);
+        IReadOnlyList<Setting> all = SettingsRegistry.CreateDefault().Settings;
+        Setting setting = all[0];
 
+        Assert.Equal(["daily-target", "update-mode", "update-channel"], all.Select(s => s.Name));
         Assert.Equal("daily-target", setting.Name);
         Assert.Equal("Daily work target in minutes (480 = 8:00)", setting.Description);
         Assert.Equal(SettingKind.Number, setting.Kind);
         Assert.Equal(480, setting.Default);
         Assert.Equal(0, setting.Min);
         Assert.Equal(1440, setting.Max);
+    }
+
+    // AC-1 (093)
+    [Fact]
+    public void CreateDefault_RegistersUpdateModeAndChannelChoices()
+    {
+        SettingsRegistry registry = SettingsRegistry.CreateDefault();
+
+        Assert.True(registry.TryGet("update-mode", out Setting mode));
+        Assert.Equal(SettingKind.Choice, mode.Kind);
+        Assert.Equal(["notify only", "install on quit", "install and restart"], mode.Options);
+        Assert.Equal("notify only", mode.Default);
+        Assert.False(string.IsNullOrWhiteSpace(mode.Description));
+
+        Assert.True(registry.TryGet("update-channel", out Setting channel));
+        Assert.Equal(SettingKind.Choice, channel.Kind);
+        Assert.Equal(["stable", "beta", "develop"], channel.Options);
+        Assert.Equal("stable", channel.Default);
+        Assert.False(string.IsNullOrWhiteSpace(channel.Description));
     }
 
     // AC-1

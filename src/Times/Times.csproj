@@ -18,6 +18,12 @@
     <PackageReference Include="Spectre.Console" Version="0.57.2" />
   </ItemGroup>
 
+  <!-- The public key update packages are verified with. Only the user commits it; without it the
+       build still works and Times stages no update (UpdateSignature has no key). -->
+  <ItemGroup Condition="Exists('update-key.pem')">
+    <EmbeddedResource Include="update-key.pem" LogicalName="Times.update-key.pem" />
+  </ItemGroup>
+
   <ItemGroup>
     <InternalsVisibleTo Include="Times.Tests" />
   </ItemGroup>

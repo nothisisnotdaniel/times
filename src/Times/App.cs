@@ -35,6 +35,14 @@ internal sealed class App
     private readonly MouseReporting? mouse;
     private readonly SettingsRegistry settings;
     private readonly SettingsStore settingsStore;
+    private readonly UpdateService? updates;
+
+    // The start-up update check (started once in Run), whether its hint was shown, and whether its
+    // staged package was taken over. The package staged for quit, from that check or from update.
+    private Task<UpdateOutcome>? startupCheck;
+    private bool startupHintShown;
+    private bool startupStagedTaken;
+    private StagedUpdate? staged;
 
     // Set by the settings command; the loop then runs the settings panel until Esc.
     private bool openSettings;
@@ -56,9 +64,12 @@ internal sealed class App
     /// <param name="folderFromEnvironment">True if the store's folder came from <see cref="DataFolder.VariableName"/>.</param>
     /// <param name="mouse">Turned on while the loop runs and off on every way out of it, or <c>null</c> for none.</param>
     /// <param name="settings">The settings the <c>settings</c> panel lists, or <c>null</c> for <see cref="SettingsRegistry.CreateDefault"/>.</param>
+    /// <param name="updates">Checks for and installs updates, or <c>null</c> for none (no network at all).</param>
     public App(IAnsiConsole console, TimeProvider time, DayStore store, CommandRegistry? registry = null,
-        bool folderFromEnvironment = false, MouseReporting? mouse = null, SettingsRegistry? settings = null)
+        bool folderFromEnvironment = false, MouseReporting? mouse = null, SettingsRegistry? settings = null,
+        UpdateService? updates = null)
     {
+        this.updates = updates;
         this.settings = settings ?? SettingsRegistry.CreateDefault();
         settingsStore = new SettingsStore(store.Folder);
         this.mouse = mouse;
@@ -77,6 +88,105 @@ internal sealed class App
             openSettings = true;
             return CommandResult.None;
         }));
+        this.registry.Register("update", "up", "Check for a newer Times now and install it when you quit", NoArguments("update", Update));
+    }
+
+    // Runs the check and download now, with the settings as they are, and stages the result for quit
+    // in every mode. All its hints are grey (or steelblue): an update problem is never an input error.
+    private CommandResult Update()
+    {
+        if (updates is null)
+        {
+            return new CommandResult(hint: new Markup("[grey]Update check skipped: this build cannot update itself.[/]"));
+        }
+
+        TakeStartupStaged();
+        UpdateOutcome outcome = updates
+            .CheckAsync(UpdateMode(), UpdateChannel(), Store.Folder, command: true, CancellationToken.None)
+            .GetAwaiter().GetResult();
+        if (outcome.Staged is not null)
+        {
+            if (staged is not null && staged.Folder != outcome.Staged.Folder)
+            {
+                UpdateDownloader.DeleteFolder(staged.Folder);
+            }
+
+            staged = outcome.Staged;
+            // A package the start-up check stages later is not taken over: this one is newer or the same.
+            startupStagedTaken = true;
+        }
+
+        return outcome.Hint is null ? CommandResult.None : new CommandResult(hint: new Markup(outcome.Hint));
+    }
+
+    // The update-mode setting, or notify only when it is missing, unreadable or not registered.
+    private string UpdateMode() =>
+        ChoiceSetting(SettingsRegistry.UpdateModeName, SettingsRegistry.UpdateNotifyOnly);
+
+    // The update-channel setting, or stable when it is missing, unreadable or not registered.
+    private string UpdateChannel() =>
+        ChoiceSetting(SettingsRegistry.UpdateChannelName, UpdateChecker.Stable);
+
+    private string ChoiceSetting(string name, string fallback)
+    {
+        if (settings.TryGet(name, out Setting setting) && setting.Kind == SettingKind.Choice
+            && LoadSettings(out SettingValues values) is null)
+        {
+            return values.Choice(name);
+        }
+
+        return fallback;
+    }
+
+    // Takes over the package the start-up check staged, once it is done (never waits for it).
+    private void TakeStartupStaged()
+    {
+        if (startupStagedTaken || startupCheck is not { IsCompletedSuccessfully: true })
+        {
+            return;
+        }
+
+        startupStagedTaken = true;
+        if (startupCheck.Result.Staged is { } fromStartup)
+        {
+            staged ??= fromStartup;
+        }
+    }
+
+    // The start-up check's hint, once it is done, at the first full redraw that has no other hint.
+    private IRenderable? StartupHint(IRenderable? hint)
+    {
+        if (hint is not null || startupHintShown || startupCheck is not { IsCompletedSuccessfully: true })
+        {
+            return hint;
+        }
+
+        startupHintShown = true;
+        return startupCheck.Result.Hint is { } markup ? new Markup(markup) : null;
+    }
+
+    // At quit with a staged package: write the pending file, start the helper once and return. Only
+    // install and restart prints a line, after the screen was cleared.
+    private void InstallStaged()
+    {
+        TakeStartupStaged();
+        if (updates?.Install is null || staged is null)
+        {
+            return;
+        }
+
+        string? failed = updates.Applier.Apply(staged, updates.Install, Store.Folder, Environment.ProcessId, time.GetUtcNow());
+        string version = Markup.Escape(staged.Version.ToString());
+        if (failed is not null)
+        {
+            console.MarkupLine($"[red]Update to {version} could not start: {Markup.Escape(failed)}[/]");
+            return;
+        }
+
+        if (UpdateMode() == SettingsRegistry.UpdateInstallAndRestart)
+        {
+            console.MarkupLine($"[grey]Times {version} is installing. Start tm again in a few seconds.[/]");
+        }
     }
 
     /// <summary>Where the day files live. Booking features read and write through it.</summary>
@@ -642,11 +752,18 @@ internal sealed class App
             return 2;
         }
 
+        // The outcome of an update a previous run started, then the one start-up check, outside the loop.
+        string? pending = UpdateApplier.ReadOutcome(Store.Folder, updates?.RunningVersion ?? AppVersion.Current);
+        if (updates is not null)
+        {
+            startupCheck = updates.StartBackground(UpdateMode(), UpdateChannel(), Store.Folder);
+        }
+
         // Mouse reporting is on only while the loop runs: off again on every exit, even an exception.
         mouse?.Enable();
         try
         {
-            return Loop();
+            return Loop(pending is null ? null : new Markup(pending));
         }
         finally
         {
@@ -654,11 +771,11 @@ internal sealed class App
         }
     }
 
-    private int Loop()
+    private int Loop(IRenderable? startHint)
     {
         LineEditor editor = new LineEditor(console, registry);
         IRenderable? message = null;
-        IRenderable? hint = null;
+        IRenderable? hint = startHint;
         bool hideQuicklist = false;
 
         while (true)
@@ -685,6 +802,7 @@ internal sealed class App
             if (result.Quit)
             {
                 console.Clear(home: true);
+                InstallStaged();
                 return 0;
             }
 
@@ -778,7 +896,8 @@ internal sealed class App
         }
 
         SetTop(new Rows(parts));
-        frameHint = hint ?? Text.Empty;
+        TakeStartupStaged();
+        frameHint = StartupHint(hint) ?? Text.Empty;
         offset = 0;
         DrawFull();
     }

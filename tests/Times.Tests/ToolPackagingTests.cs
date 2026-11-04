@@ -290,7 +290,7 @@ public sealed class ToolPackagingTests
     {
         List<string> scripts = RunScripts(ReadWorkflow());
 
-        Assert.Equal(6, scripts.Count);
+        Assert.Equal(7, scripts.Count);
         Assert.All(scripts, script =>
         {
             Assert.DoesNotContain("${{ github.ref", script, StringComparison.Ordinal);
@@ -320,7 +320,7 @@ public sealed class ToolPackagingTests
         int release = all.IndexOf("gh release create", StringComparison.Ordinal);
         Assert.True(pack < check, "the smoke check must run after dotnet pack");
         Assert.True(check < release, "gh release create must run after the smoke check");
-        Assert.Contains("gh release create \"$TAG\" \"nupkg/Times.$VERSION.nupkg\" --title \"Times $VERSION\" --generate-notes --target \"$TARGET\" $PRERELEASE", all, StringComparison.Ordinal);
+        Assert.Contains("gh release create \"$TAG\" \"nupkg/Times.$VERSION.nupkg\" \"nupkg/Times.$VERSION.nupkg.sig\" --title \"Times $VERSION\" --generate-notes --target \"$TARGET\" $PRERELEASE", all, StringComparison.Ordinal);
         Assert.Contains("--prerelease", all, StringComparison.Ordinal);
     }
 
@@ -1354,7 +1354,7 @@ public sealed class ToolPackagingTests
 
         List<YamlMapping> steps = Steps(root);
         Assert.Equal(
-            ["Check out", "Set up .NET", "Version", "Test", "Pack", "Smoke check the packed tool", "Create GitHub release", "Prune old prereleases"],
+            ["Check out", "Set up .NET", "Version", "Test", "Pack", "Smoke check the packed tool", "Sign", "Create GitHub release", "Prune old prereleases"],
             steps.Select(step => Scalar(step["name"])));
 
         List<YamlScalar> uses = steps.Where(step => step.ContainsKey("uses")).Select(step => Assert.IsType<YamlScalar>(step["uses"])).ToList();
@@ -1381,9 +1381,13 @@ public sealed class ToolPackagingTests
             Pairs(version["env"]));
         Assert.Equal(["env", "name", "run"], Sorted(version.Keys));
 
-        Assert.Equal(["GH_TOKEN=${{ github.token }}"], Pairs(steps[6]["env"]));
-        Assert.False(steps[6].ContainsKey("continue-on-error"), "a failed release must fail the run");
-        YamlMapping prune = steps[7];
+        YamlMapping sign = steps[6];
+        Assert.Equal(["env", "name", "run"], Sorted(sign.Keys));
+        Assert.Equal(["TIMES_SIGNING_KEY=${{ secrets.TIMES_SIGNING_KEY }}"], Pairs(sign["env"]));
+        Assert.False(sign.ContainsKey("continue-on-error"), "a failed signature must fail the run");
+        Assert.Equal(["GH_TOKEN=${{ github.token }}"], Pairs(steps[7]["env"]));
+        Assert.False(steps[7].ContainsKey("continue-on-error"), "a failed release must fail the run");
+        YamlMapping prune = steps[8];
         Assert.Equal("true", Scalar(prune["continue-on-error"]));
         Assert.Equal(["GH_TOKEN=${{ github.token }}"], Pairs(prune["env"]));
         Assert.All(steps, step => Assert.True(step.ContainsKey("uses") != step.ContainsKey("run"), "each step has either uses: or run:"));
@@ -1497,4 +1501,97 @@ public sealed class ToolPackagingTests
 
         throw new InvalidOperationException("Times.slnx not found above " + AppContext.BaseDirectory);
     }
+
+    // AC-12 (093): the Sign step sits between the smoke check and the release, and its script refuses an
+    // empty secret, keeps the key file private and deletes it, signs, then checks with the committed public key.
+    [Fact]
+    public void SignStep_SignsThenVerifiesWithTheCommittedKey()
+    {
+        List<string> names = Steps(ReadWorkflow()).Select(step => Scalar(step["name"])).ToList();
+        Assert.Equal(names.IndexOf("Smoke check the packed tool") + 1, names.IndexOf("Sign"));
+        Assert.Equal(names.IndexOf("Sign") + 1, names.IndexOf("Create GitHub release"));
+
+        string script = RunScript(Step(ReadWorkflow(), "Sign"));
+        Assert.DoesNotContain("${{", script, StringComparison.Ordinal);
+        string[] order =
+        [
+            "if [ -z \"$TIMES_SIGNING_KEY\" ]; then",
+            "exit 1",
+            "KEY=\"$RUNNER_TEMP/",
+            "trap 'rm -f \"$KEY\"' EXIT",
+            "umask 077",
+            "printf '%s\\n' \"$TIMES_SIGNING_KEY\" > \"$KEY\"",
+            "openssl dgst -sha256 -sign \"$KEY\" -out \"$PACKAGE.sig\" \"$PACKAGE\"",
+            "openssl dgst -sha256 -verify src/Times/update-key.pem -signature \"$PACKAGE.sig\" \"$PACKAGE\"",
+            "exit 1",
+        ];
+        int at = 0;
+        foreach (string part in order)
+        {
+            int found = script.IndexOf(part, at, StringComparison.Ordinal);
+            Assert.True(found >= 0, "missing or out of order: " + part);
+            at = found + part.Length;
+        }
+
+        Assert.DoesNotContain("echo \"$TIMES_SIGNING_KEY", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("set -x", script, StringComparison.Ordinal);
+    }
+
+    // AC-12 (093): the Sign script fails on an empty secret, and with a test key (never the real one) it makes
+    // a .sig that the committed-key check and Times's own verifier both accept, and leaves no key file behind.
+    [Theory]
+    [InlineData(false, false, 1)]
+    [InlineData(true, false, 0)]
+    [InlineData(true, true, 1)]
+    public async Task SignStep_RunsWithATestKey(bool secret, bool otherPublicKey, int expectedExit)
+    {
+        if (OperatingSystem.IsWindows() || !OnPath("openssl"))
+        {
+            return;
+        }
+
+        using TempFolder work = new TempFolder();
+        using TestSigner signer = new TestSigner();
+        using TestSigner other = new TestSigner();
+        string runnerTemp = Directory.CreateDirectory(Path.Combine(work.Path, "runner-temp")).FullName;
+        Directory.CreateDirectory(Path.Combine(work.Path, "nupkg"));
+        Directory.CreateDirectory(Path.Combine(work.Path, "src", "Times"));
+        byte[] package = TestSigner.Package("Times", "1.2.0");
+        string packagePath = Path.Combine(work.Path, "nupkg", "Times.1.2.0.nupkg");
+        File.WriteAllBytes(packagePath, package);
+        File.WriteAllText(Path.Combine(work.Path, "src", "Times", "update-key.pem"), (otherPublicKey ? other : signer).PublicPem);
+
+        ProcessStartInfo startInfo = new ProcessStartInfo("bash")
+        {
+            WorkingDirectory = work.Path,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        startInfo.ArgumentList.Add("-e");
+        startInfo.ArgumentList.Add("-c");
+        startInfo.ArgumentList.Add(RunScript(Step(ReadWorkflow(), "Sign")));
+        startInfo.Environment["TIMES_SIGNING_KEY"] = secret ? signer.PrivatePem.TrimEnd('\n') : "";
+        startInfo.Environment["RUNNER_TEMP"] = runnerTemp;
+        startInfo.Environment["VERSION"] = "1.2.0";
+
+        using Process process = Process.Start(startInfo)!;
+        process.StandardInput.Close();
+        Task<string> error = process.StandardError.ReadToEndAsync();
+        await process.StandardOutput.ReadToEndAsync();
+        await error;
+        await process.WaitForExitAsync();
+
+        Assert.Equal(expectedExit, process.ExitCode);
+        Assert.Empty(Directory.GetFiles(runnerTemp));
+        if (expectedExit == 0)
+        {
+            Assert.True(signer.Signature.Verify(package, File.ReadAllBytes(packagePath + ".sig")));
+        }
+    }
+
+    private static bool OnPath(string tool) =>
+        (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator)
+            .Any(folder => folder.Length > 0 && File.Exists(Path.Combine(folder, tool)));
 }

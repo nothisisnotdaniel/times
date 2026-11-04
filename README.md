@@ -90,6 +90,8 @@ then run:
 dotnet tool update --global --configfile <folder>/nuget.config --version <new version> Times
 ```
 
+Times can also do this for you: see [Updates](#updates).
+
 ### Uninstall
 
 ```sh
@@ -127,6 +129,7 @@ required. A booking without a time uses the current time. `remove`, `change`, `b
 | `addproject` | `ap` | `<work item> <title>` | Add a project to the quicklist |
 | `projects` | `pr` | none | List the projects on the quicklist |
 | `settings` | `se` | none | Open the settings panel (see [Settings](#settings)) |
+| `update` | `up` | none | Check for a newer Times now and install it when you quit (see [Updates](#updates)) |
 | `help` | `h` | none | List all commands, the running version and the data folder |
 | `quit` | `q` | none | Exit Times |
 
@@ -143,6 +146,26 @@ panel says why, shows the defaults and saves nothing until the file is fixed or 
 | Setting | Kind | Default | What it does |
 |---------|------|---------|--------------|
 | `daily-target` | number, 0 to 1440 | 480 | Your daily work target in minutes (480 = 8:00). The `left` column, the `day` value and the flexitime `balance` use it, for every day. |
+| `update-mode` | `notify only`, `install on quit`, `install and restart` | `notify only` | What Times does when it finds a newer version at start (see [Updates](#updates)). |
+| `update-channel` | `stable`, `beta`, `develop` | `stable` | Which releases count as updates: `stable` takes proper releases only, `beta` also `-beta` versions, `develop` also `-develop` builds. |
+
+### Updates
+
+At start, Times looks in the GitHub releases of this repository for a version above the running one
+on your `update-channel`. It never blocks you while it looks; the result shows on the line above the
+input box. Offline, rate-limited or any other failed check only says `Update check skipped: …` in grey.
+
+- `notify only`: Times says `Times X is available. Type update to install it when you quit.`
+- `install on quit`: Times downloads the new package, checks its signature and installs it after
+  you `quit`.
+- `install and restart`: the same, and at `quit` it says when to start `tm` again (Times does not
+  start itself).
+
+`update` (`up`) does the check and download right away and installs after `quit`, in every mode.
+A package is only installed if its ECDSA signature, made by the release workflow, verifies with the
+public key built into Times. The install runs after Times has exited, as `dotnet tool update`, and
+writes its output to `update.log` in the data folder; the next start says `Updated to X.` or that
+it failed. This works only for Times installed as a dotnet tool (`-g` or `--tool-path`).
 
 ## Keys
 

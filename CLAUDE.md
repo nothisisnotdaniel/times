@@ -99,6 +99,15 @@ Every factory agent reads this file before working on Times. Keep it short and a
   counts). `FlexitimeBalance.Compute` sums `WorkTime() - target` over every day file (`DayStore.Days()`:
   names exactly `yyyy-MM-dd.json`, folder listing only) on or before the shown day that holds an
   arrival; unreadable files are skipped and counted (yellow `! N day file(s) skipped`, no names).
+- **Updates:** `UpdateService` (wired in `Program.cs`, `null` in tests unless injected) runs one background
+  check at start (`IReleaseSource`, GitHub's release list only, allow-listed asset URLs, capped and timed out) and
+  the `update` (`up`) command. Settings `update-mode` (`notify only` / `install on quit` / `install and restart`)
+  and `update-channel` (`stable` / `beta` / `develop`). A package is staged only after `UpdateDownloader` checks
+  the digest, the ECDSA P-256 `.sig` against the keys embedded from `src/Times/update-key.pem` (public key only,
+  committed by the user; missing means nothing is staged) and the nuspec. At quit `UpdateApplier` writes
+  `update-pending.json` and starts one detached helper (`nohup sh -c` fixed script, or `cmd /c` with refused
+  characters) through `IProcessLauncher`; the next start reports and deletes the pending file. Tests use
+  `FakeReleaseSource`, `TestSigner` and `FakeLauncher`: no network, no real `dotnet tool update`, never the real key.
 - **Days:** the app always shows one "current" day, starting at today. The user can move to
   the previous or next day or jump to a date. Navigating to a day with no file shows it as an
   empty day **without creating a file**. The day's file is created only when the first

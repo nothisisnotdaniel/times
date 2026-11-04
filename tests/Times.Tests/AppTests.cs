@@ -827,11 +827,11 @@ public sealed class AppTests : IDisposable
         Assert.Contains("\u001b[21;1H", output);
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal([14, 15, 16, 17, 18, 19, 20, 21], popup.Select(w => w.Row));
-        // Eighteen commands: the first seven by name, then a row counting the other eleven.
+        // Nineteen commands: the first seven by name, then a row counting the other twelve.
         Assert.Equal(
             ["addproject", "arrive", "booked", "break", "breakend", "change", "checkpoint", "…"],
             popup.Select(w => w.Text.Split(' ')[0]));
-        Assert.StartsWith("… 11 more", popup[^1].Text);
+        Assert.StartsWith("… 12 more", popup[^1].Text);
         Assert.Contains("Book a checkpoint", popup[6].Text);
         Assert.Equal(80, popup[0].Text.Length);
     }
@@ -904,9 +904,9 @@ public sealed class AppTests : IDisposable
         List<string> hintRow = TypingWrites(output, 1).Where(w => w.Row == 21).Select(w => w.Text).ToList();
 
         // popup, restored (Backspace), popup, restored (Esc), popup (quit typing), ...
-        Assert.StartsWith("… 11 more", hintRow[0]);
+        Assert.StartsWith("… 12 more", hintRow[0]);
         Assert.Contains("Unknown command nope", hintRow[1]);
-        Assert.StartsWith("… 11 more", hintRow[2]);
+        Assert.StartsWith("… 12 more", hintRow[2]);
         Assert.Contains("Unknown command nope", hintRow[3]);
         Assert.Contains("Unknown command nope", hintRow[^1]);
         Assert.Contains("\u001b[38;5;9mUnknown command", output[output.LastIndexOf("\u001b[21;1H", StringComparison.Ordinal)..]);
@@ -939,8 +939,8 @@ public sealed class AppTests : IDisposable
 
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
-        // 30 commands: 7 shown, the eighth row counts the other 23.
-        Assert.StartsWith("… 23 more", popup[^1].Text);
+        // 31 commands: 7 shown, the eighth row counts the other 24.
+        Assert.StartsWith("… 24 more", popup[^1].Text);
         // Nothing is drawn on row 1 while typing (the final clear on quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
@@ -4770,6 +4770,7 @@ public sealed class AppTests : IDisposable
             ["summary"] = "s",
             ["today"] = "t",
             ["unbooked"] = "ub",
+            ["update"] = "up",
         };
 
         Assert.Equal(expected, registry.Commands.ToDictionary(c => c.Name, c => c.Alias));
@@ -7180,5 +7181,326 @@ public sealed class AppTests : IDisposable
         Assert.Contains("Target 7:30 · day -3:30 · balance -3:00", after);
         string before = output[..output.IndexOf("daily-target", StringComparison.Ordinal)];
         Assert.Contains("Target 8:00 · day -4:00 · balance -4:00", before);
+    }
+
+    // ---- 093 auto update ----
+
+    private sealed class UpdateRig : IDisposable
+    {
+        public UpdateRig(AppTests owner, string? release = "1.2.0", bool installed = true, UpdateSignature? signature = null,
+            Func<Func<Task<UpdateOutcome>>, Task<UpdateOutcome>>? background = null)
+        {
+            Owner = owner;
+            Source = new FakeReleaseSource([]);
+            if (release is not null)
+            {
+                Source.Releases.Add(Signer.SignedRelease(Source, release));
+            }
+
+            Install = installed ? new ToolInstall(global: true, Path.Combine(Stage.Path, "tools")) : null;
+            Applier = new UpdateApplier(Launcher, windows: false);
+            Service = new UpdateService(Source, signature ?? Signer.Signature, Install, Applier, "1.0.0",
+                () => Directory.CreateDirectory(StageFolder), background ?? (work => work()));
+        }
+
+        public AppTests Owner { get; }
+
+        public TempFolder Stage { get; } = new();
+
+        public TestSigner Signer { get; } = new();
+
+        public FakeReleaseSource Source { get; }
+
+        public FakeLauncher Launcher { get; } = new();
+
+        public ToolInstall? Install { get; }
+
+        public UpdateApplier Applier { get; }
+
+        public UpdateService Service { get; }
+
+        public string StageFolder => Path.Combine(Stage.Path, "times-update-x");
+
+        public (int ExitCode, string Output) Run(params string[] commands)
+        {
+            TestConsole console = new TestConsole().Interactive();
+            console.Profile.Width = 120;
+            foreach (string command in commands)
+            {
+                console.Input.PushTextWithEnter(command);
+            }
+
+            int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(Owner.data.Path), updates: Service).Run([]);
+            return (exitCode, console.Output);
+        }
+
+        public void Dispose()
+        {
+            Signer.Dispose();
+            Stage.Dispose();
+        }
+    }
+
+    private void WriteUpdateMode(string mode, string channel = "stable") =>
+        File.WriteAllText(SettingsPath, "{\"settings\":{\"update-mode\":\"" + mode + "\",\"update-channel\":\"" + channel + "\"}}");
+
+    private const string Available = "Times 1.2.0 is available. Type update to install it when you quit.";
+    private const string Ready = "Times 1.2.0 is ready and installs when you quit.";
+    private const string Installing = "Times 1.2.0 is installing. Start tm again in a few seconds.";
+
+    // AC-6: notify only (the default) shows the steelblue hint at the first redraw; nothing is downloaded or installed.
+    [Fact]
+    public void Update_NotifyOnly_ShowsAvailableAtStart()
+    {
+        using UpdateRig rig = new UpdateRig(this);
+
+        (int exitCode, string output) = rig.Run("quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(Available, output);
+        Assert.Equal(1, rig.Source.ListCalls);
+        Assert.Empty(rig.Source.Downloads);
+        Assert.Empty(rig.Launcher.Calls);
+        Assert.False(File.Exists(Path.Combine(data.Path, "update-pending.json")));
+    }
+
+    // AC-6: the hint shows once, at the first full redraw only.
+    [Fact]
+    public void Update_StartupHint_ShowsOnce()
+    {
+        using UpdateRig rig = new UpdateRig(this);
+
+        (_, string output) = rig.Run("", "", "quit");
+
+        Assert.Single(Regex.Matches(output, Regex.Escape(Available)));
+    }
+
+    // AC-6: a command hint at that redraw wins; the check's hint waits for the next redraw with none.
+    [Fact]
+    public void Update_StartupHint_WaitsBehindACommandHint()
+    {
+        using UpdateRig rig = new UpdateRig(this);
+        File.WriteAllText(Path.Combine(data.Path, "update-pending.json"), "{\"version\":\"0.9.0\",\"time\":\"2026-10-27T08:00:00+00:00\"}");
+
+        (_, string output) = rig.Run("bogus", "", "quit");
+
+        int failed = output.IndexOf("Update to 0.9.0 failed; see update.log in the data folder.", StringComparison.Ordinal);
+        int unknown = output.IndexOf("Unknown command bogus", StringComparison.Ordinal);
+        int available = output.IndexOf(Available, StringComparison.Ordinal);
+        Assert.True(failed >= 0);
+        Assert.True(unknown > failed);
+        // Not in the first frame (the pending outcome) nor the second (the unknown command), but in the third.
+        Assert.True(available > unknown);
+        Assert.Equal(3, Regex.Matches(output, Regex.Escape(Heading)).Count);
+    }
+
+    // AC-6: a check that never finishes never blocks input, redraws or quit.
+    [Fact]
+    public void Update_HangingCheck_NeverBlocks()
+    {
+        using UpdateRig rig = new UpdateRig(this, background: null);
+        rig.Source.ListTask = new TaskCompletionSource<IReadOnlyList<ReleaseInfo>>().Task;
+        UpdateService service = new UpdateService(rig.Source, rig.Signer.Signature, rig.Install, rig.Applier, "1.0.0");
+        TestConsole console = new TestConsole().Interactive();
+        console.Input.PushTextWithEnter("arrive 8:00");
+        console.Input.PushTextWithEnter("quit");
+
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), updates: service).Run([]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("08:00", console.Output);
+        Assert.DoesNotContain("Update", console.Output);
+        Assert.Empty(rig.Launcher.Calls);
+    }
+
+    // AC-6: offline, rate limit and the like: a grey skip on the hint row, the loop goes on.
+    [Fact]
+    public void Update_CheckFails_ShowsSkipAndGoesOn()
+    {
+        using UpdateRig rig = new UpdateRig(this);
+        rig.Source.ListFailure = new UpdateException("GitHub's rate limit was reached");
+
+        (int exitCode, string output) = rig.Run("quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Update check skipped: GitHub's rate limit was reached.", output);
+    }
+
+    // AC-6/AC-9: install on quit stages at start; quit writes the pending file, calls the launcher once and prints nothing.
+    [Fact]
+    public void Update_InstallOnQuit_StagesAndLaunchesOnceAtQuit()
+    {
+        using UpdateRig rig = new UpdateRig(this);
+        WriteUpdateMode("install on quit");
+
+        (int exitCode, string output) = rig.Run("quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(Ready, output);
+        Assert.DoesNotContain(Installing, output);
+        ProcessCall call = Assert.Single(rig.Launcher.Calls);
+        Assert.Equal("nohup", call.FileName);
+        Assert.Equal(
+            ["Times", "-g", "--add-source", rig.StageFolder, "--version", "1.2.0"],
+            call.Arguments.Skip(7));
+        Assert.Equal(Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture), call.Arguments[4]);
+        Assert.Equal(Path.Combine(data.Path, "update.log"), call.Arguments[5]);
+        Assert.Contains("\"version\":\"1.2.0\"", File.ReadAllText(Path.Combine(data.Path, "update-pending.json")));
+    }
+
+    // AC-10: install and restart makes the same single launcher call, and only it prints the quit line.
+    [Fact]
+    public void Update_InstallAndRestart_SameCallPlusQuitLine()
+    {
+        List<string> calls = [];
+        foreach (string mode in new[] { "install on quit", "install and restart" })
+        {
+            using UpdateRig rig = new UpdateRig(this);
+            WriteUpdateMode(mode);
+            File.Delete(Path.Combine(data.Path, "update-pending.json"));
+
+            (int exitCode, string output) = rig.Run("quit");
+
+            Assert.Equal(0, exitCode);
+            ProcessCall call = Assert.Single(rig.Launcher.Calls);
+            calls.Add(call.FileName + "|" + string.Join("|", call.Arguments).Replace(rig.Stage.Path, "<stage>", StringComparison.Ordinal));
+            string afterQuit = output[output.LastIndexOf("Type help", StringComparison.Ordinal)..];
+            if (mode == "install and restart")
+            {
+                Assert.Contains(Installing, afterQuit);
+                Assert.Single(Regex.Matches(output, Regex.Escape(Installing)));
+            }
+            else
+            {
+                Assert.DoesNotContain(Installing, output);
+            }
+        }
+
+        Assert.Equal(calls[0], calls[1]);
+    }
+
+    // AC-7: update (and up) checks right away, stages in notify only mode and installs at quit.
+    [Theory]
+    [InlineData("update")]
+    [InlineData("up")]
+    [InlineData("/up")]
+    public void Update_Command_StagesForQuit(string command)
+    {
+        using UpdateRig rig = new UpdateRig(this);
+
+        (int exitCode, string output) = rig.Run(command, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(Ready, output);
+        Assert.Equal(2, rig.Source.ListCalls);
+        Assert.Single(rig.Launcher.Calls);
+    }
+
+    // AC-7: update takes no arguments.
+    [Fact]
+    public void Update_Command_RefusesArguments()
+    {
+        using UpdateRig rig = new UpdateRig(this);
+
+        (_, string output) = rig.Run("update now", "quit");
+
+        Assert.Equal(1, rig.Source.ListCalls);
+        Assert.Empty(rig.Launcher.Calls);
+        Assert.Contains("update", LastFrame(output));
+    }
+
+    // AC-7: nothing newer: up to date with the running version, nothing staged.
+    [Fact]
+    public void Update_Command_UpToDate()
+    {
+        using UpdateRig rig = new UpdateRig(this, release: null);
+
+        (_, string output) = rig.Run("update", "quit");
+
+        Assert.Contains("Times is up to date (1.0.0).", output);
+        Assert.Empty(rig.Launcher.Calls);
+    }
+
+    // AC-7: the command uses the settings as they are now (a channel changed after the start).
+    [Fact]
+    public void Update_Command_UsesTheChannelAsItIsNow()
+    {
+        using UpdateRig rig = new UpdateRig(this, release: null);
+        rig.Source.Releases.Add(rig.Signer.SignedRelease(rig.Source, "1.2.0-beta.1", prerelease: true));
+
+        (_, string output) = rig.Run("update", "quit");
+        Assert.Contains("Times is up to date (1.0.0).", output);
+
+        WriteUpdateMode("notify only", "beta");
+        (_, output) = rig.Run("update", "quit");
+        Assert.Contains("Times 1.2.0-beta.1 is ready and installs when you quit.", output);
+        Assert.Equal("--prerelease", Assert.Single(rig.Launcher.Calls).Arguments[^1]);
+    }
+
+    // AC-8: a copy that is not an installed tool stages nothing.
+    [Fact]
+    public void Update_NotInstalled_StagesNothing()
+    {
+        using UpdateRig rig = new UpdateRig(this, installed: false);
+
+        (_, string output) = rig.Run("update", "quit");
+
+        Assert.Contains("Times is not installed as a dotnet tool; update it by hand.", output);
+        Assert.Empty(rig.Source.Downloads);
+        Assert.Empty(rig.Launcher.Calls);
+    }
+
+    // AC-13: no embedded key: still notifies, but update and the install modes stage nothing.
+    [Fact]
+    public void Update_NoKey_NotifiesButNeverStages()
+    {
+        using UpdateRig rig = new UpdateRig(this, signature: UpdateSignature.None);
+
+        (_, string output) = rig.Run("update", "quit");
+        Assert.Contains(Available, output);
+        Assert.Contains("Update skipped: this build has no signing key.", output);
+
+        WriteUpdateMode("install and restart");
+        (_, output) = rig.Run("quit");
+        Assert.Contains("Update skipped: this build has no signing key.", output);
+        Assert.DoesNotContain(Installing, output);
+        Assert.Empty(rig.Source.Downloads);
+        Assert.Empty(rig.Launcher.Calls);
+    }
+
+    // AC-11: the pending file from the last run is reported at start and deleted.
+    [Fact]
+    public void Update_PendingOutcome_ShownAtStartAndDeleted()
+    {
+        string pending = Path.Combine(data.Path, "update-pending.json");
+        File.WriteAllText(pending, "{\"version\":\"" + AppVersion.Current + "\",\"time\":\"2026-10-27T08:00:00+00:00\"}");
+
+        (_, string output) = Run(c => c.Input.PushTextWithEnter("quit"));
+
+        Assert.Contains("Updated to " + AppVersion.Current + ".", output);
+        Assert.False(File.Exists(pending));
+    }
+
+    // AC-11: a broken pending file is deleted and ignored.
+    [Fact]
+    public void Update_BrokenPendingFile_DeletedAndIgnored()
+    {
+        string pending = Path.Combine(data.Path, "update-pending.json");
+        File.WriteAllText(pending, "{oops");
+
+        (int exitCode, string output) = Run(c => c.Input.PushTextWithEnter("quit"));
+
+        Assert.Equal(0, exitCode);
+        Assert.DoesNotContain("Update", output);
+        Assert.False(File.Exists(pending));
+    }
+
+    // Without an update service (the default in tests), update says so and nothing touches the network.
+    [Fact]
+    public void Update_NoService_SaysSo()
+    {
+        (_, string output) = RunCommands("update", "quit");
+
+        Assert.Contains("Update check skipped: this build cannot update itself.", output);
     }
 }
