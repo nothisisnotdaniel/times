@@ -81,12 +81,13 @@ internal sealed class DayView
     {
         if (day.IsEmpty)
         {
-            if (balance.CountedDays == 0)
+            List<IRenderable> empty = [HeadingRule(), new Markup("[grey]No entries yet.[/]")];
+            if (balance.CountedDays > 0)
             {
-                return new Rows(HeadingRule(), new Markup("[grey]No entries yet.[/]"));
+                empty.Add(new Markup(TargetLine(target, null, balance)));
             }
 
-            return new Rows(HeadingRule(), new Markup("[grey]No entries yet.[/]"), new Markup(TargetLine(target, null, balance)));
+            return new Rows(empty);
         }
 
         // Only days with a checkpoint get the details column, so other days look exactly as before.
