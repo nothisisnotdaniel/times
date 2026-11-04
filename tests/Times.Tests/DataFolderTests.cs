@@ -97,4 +97,67 @@ public sealed class DataFolderTests
     {
         Assert.Equal(value, DataFolder.ForDisplay(value));
     }
+
+    // 085 AC-1
+    [Theory]
+    [InlineData("/a\u202Eb", "/ab")]
+    [InlineData("\u202E/ab", "/ab")]
+    [InlineData("/ab\u202E", "/ab")]
+    [InlineData("\u200B/a\u200Bb\u200B", "/ab")]
+    [InlineData("/a\u200Cb", "/ab")]
+    [InlineData("/a\u200Db", "/ab")]
+    [InlineData("/a\u200Eb", "/ab")]
+    [InlineData("/a\u200Fb", "/ab")]
+    [InlineData("/a\u2066\u2067\u2068\u2069b", "/ab")]
+    [InlineData("/a\u202A\u202B\u202C\u202D\u202Eb", "/ab")]
+    [InlineData("/a\u00ADb", "/ab")]
+    [InlineData("/a\u061Cb", "/ab")]
+    [InlineData("\uFEFF/ab", "/ab")]
+    [InlineData("\u200B\u200C\u200D\u200E\u200F\u2066\u2067\u2068\u2069\u202A\u202B\u202C\u202D\u202E\u00AD\u061C\uFEFF", "")]
+    public void ForDisplay_RemovesFormatCharacters(string value, string expected)
+    {
+        Assert.Equal(expected, DataFolder.ForDisplay(value));
+    }
+
+    // 085 AC-2
+    [Theory]
+    [InlineData("/a\U000E0041b\U000E007F", "/ab")]
+    [InlineData("\U000E0001/a", "/a")]
+    [InlineData("\U000E0001\U000E0020\U000E007F", "")]
+    public void ForDisplay_RemovesSupplementaryFormatCharacters_AsWholePairs(string value, string expected)
+    {
+        string shown = DataFolder.ForDisplay(value);
+
+        Assert.Equal(expected, shown);
+        Assert.DoesNotContain(shown, char.IsSurrogate);
+    }
+
+    // 085 AC-3
+    [Theory]
+    [InlineData("\u001b\u202E/a\u200B\n", "/a")]
+    [InlineData("\t\u200D/a\u2028\uFEFFb\U000E0041\u0085", "/ab")]
+    public void ForDisplay_RemovesMixedControlAndFormatCharacters(string value, string expected)
+    {
+        Assert.Equal(expected, DataFolder.ForDisplay(value));
+    }
+
+    // 085 AC-4
+    [Theory]
+    [InlineData("/a/\U0001F600")]
+    [InlineData("e\u0301")]
+    [InlineData("/a\uFE0Fb")]
+    public void ForDisplay_KeepsNonFormatCharacters(string value)
+    {
+        Assert.Equal(value, DataFolder.ForDisplay(value));
+    }
+
+    // 085 AC-4: unpaired surrogates in one fact, because xUnit gives such InlineData cases the same ID.
+    [Fact]
+    public void ForDisplay_KeepsUnpairedSurrogates()
+    {
+        foreach (string value in new[] { "/a\uD800b", "/a\uDC00b", "/a\uD800", "\uDC00/a", "/a\uDC00\uD800b" })
+        {
+            Assert.Equal(value, DataFolder.ForDisplay(value));
+        }
+    }
 }

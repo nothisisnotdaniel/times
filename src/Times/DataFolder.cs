@@ -45,17 +45,34 @@ internal sealed class DataFolder
     }
 
     /// <summary>
-    /// <paramref name="value"/> without control characters (C0, DEL, C1) and line or paragraph
-    /// separators, so it can be shown on one terminal line without sending anything to the terminal.
-    /// Every other character, spaces included, is kept. Escape the result before it goes into markup.
+    /// <paramref name="value"/> without control characters (C0, DEL, C1), line or paragraph
+    /// separators and code points of Unicode category Format (Cf), such as bidi overrides, zero-width
+    /// characters, soft hyphens and tag characters. So it can be shown on one terminal line without
+    /// sending anything to the terminal, and it cannot look different from the real path. A
+    /// supplementary Cf code point is removed with both halves of its surrogate pair. Every other
+    /// character, spaces, valid non-Cf surrogate pairs (e.g. emoji) and unpaired surrogates included,
+    /// is kept. Escape the result before it goes into markup.
     /// </summary>
     internal static string ForDisplay(string value)
     {
         StringBuilder shown = new StringBuilder(value.Length);
-        foreach (char c in value)
+        for (int i = 0; i < value.Length; i++)
         {
+            char c = value[i];
+            if (char.IsHighSurrogate(c) && i + 1 < value.Length && char.IsLowSurrogate(value[i + 1]))
+            {
+                if (CharUnicodeInfo.GetUnicodeCategory(char.ConvertToUtf32(c, value[i + 1])) != UnicodeCategory.Format)
+                {
+                    shown.Append(c).Append(value[i + 1]);
+                }
+
+                i++;
+                continue;
+            }
+
             if (char.IsControl(c)
-                || CharUnicodeInfo.GetUnicodeCategory(c) is UnicodeCategory.LineSeparator or UnicodeCategory.ParagraphSeparator)
+                || CharUnicodeInfo.GetUnicodeCategory(c) is UnicodeCategory.LineSeparator
+                    or UnicodeCategory.ParagraphSeparator or UnicodeCategory.Format)
             {
                 continue;
             }

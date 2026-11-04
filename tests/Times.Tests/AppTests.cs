@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 using Spectre.Console;
 using Spectre.Console.Testing;
@@ -1303,6 +1304,70 @@ public sealed class AppTests : IDisposable
         Assert.Contains(named, Regex.Replace(console.Output, @"\x1b\[[0-9;]*m", string.Empty));
         Assert.DoesNotContain(Heading, console.Output);
         Assert.Equal(before, WorkingDirectoryEntries());
+    }
+
+    /// <summary>True if <paramref name="text"/> holds a code point of Unicode category Format (Cf).</summary>
+    private static bool HasFormatCodePoint(string text) =>
+        text.EnumerateRunes().Any(r => Rune.GetUnicodeCategory(r) == System.Globalization.UnicodeCategory.Format);
+
+    /// <summary>Runs an invalid data folder and returns the exit code and the ANSI-stripped output, checking the red prefix and the working directory.</summary>
+    private static (int ExitCode, string Plain) RunInvalidFolder(string folder, bool folderFromEnvironment)
+    {
+        string[] before = WorkingDirectoryEntries();
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 300;
+        console.Input.PushTextWithEnter("arrive 8:15");
+
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(folder), folderFromEnvironment: folderFromEnvironment).Run([]);
+
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mTimes cannot start", console.Output);
+        Assert.DoesNotContain(Heading, console.Output);
+        Assert.Equal(before, WorkingDirectoryEntries());
+        return (exitCode, Regex.Replace(console.Output, @"\x1b\[[0-9;]*m", string.Empty));
+    }
+
+    // 085 AC-5
+    [Theory]
+    [InlineData("\u202Etimes")]
+    [InlineData("ti\u200Bmes")]
+    [InlineData("times\U000E0041")]
+    [InlineData("\u001b\u202Eti\u200Bmes")]
+    public void InvalidOverride_WithFormatCharacters_ShowsCleanedValue(string folder)
+    {
+        (int exitCode, string plain) = RunInvalidFolder(folder, folderFromEnvironment: true);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("the data folder \"times\" from TIMES_DATA_DIR is not an absolute path", plain);
+        Assert.False(HasFormatCodePoint(plain));
+        Assert.False(ProjectList.HasFormatOrBrokenCharacters(plain));
+    }
+
+    // 085 AC-6
+    [Theory]
+    [InlineData(" /a\u200Bb")]
+    [InlineData(" /a\u202Eb")]
+    public void EdgeWhitespaceOverride_WithFormatCharacters_ShowsCleanedValue(string folder)
+    {
+        (int exitCode, string plain) = RunInvalidFolder(folder, folderFromEnvironment: true);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("the data folder \" /ab\" from TIMES_DATA_DIR starts or ends with whitespace", plain);
+        Assert.False(HasFormatCodePoint(plain));
+    }
+
+    // 085 AC-7
+    [Theory]
+    [InlineData("Ti\u202Emes", "\u202E")]
+    [InlineData("Ti\u001bmes", "\u001b")]
+    [InlineData("Ti\u200Bmes", "\u200B")]
+    public void InvalidDefaultFolder_WithFormatOrControlCharacters_ShowsCleanedValue(string folder, string removed)
+    {
+        (int exitCode, string plain) = RunInvalidFolder(folder, folderFromEnvironment: false);
+
+        Assert.Equal(2, exitCode);
+        Assert.Contains("the data folder Times is not an absolute path", plain);
+        Assert.DoesNotContain(removed, plain, StringComparison.Ordinal);
+        Assert.False(HasFormatCodePoint(plain));
     }
 
     // AC-9
@@ -2654,6 +2719,40 @@ public sealed class AppTests : IDisposable
 
         Assert.Contains($"Data folder: {folder}", output);
         Assert.False(Directory.Exists(folder));
+    }
+
+    // 085 AC-8
+    [Theory]
+    [InlineData(false, "")]
+    [InlineData(true, " (from TIMES_DATA_DIR)")]
+    public void Help_DataFolderWithFormatCharacter_ShowsCleanedPath(bool folderFromEnvironment, string suffix)
+    {
+        string folder = Path.Combine(data.Path, "a\u202Eb");
+
+        string ansi = RunHelp(folder, folderFromEnvironment, ansi: true);
+
+        string last = TopScreens(ansi, 1)[^1].Last(l => l.Length > 0);
+        Assert.Equal($"Data folder: {Path.Combine(data.Path, "ab")}{suffix}", last);
+        Assert.DoesNotContain("\u202E", ansi, StringComparison.Ordinal);
+        Assert.DoesNotContain("\u202E", RunHelp(folder, folderFromEnvironment), StringComparison.Ordinal);
+    }
+
+    // 085 AC-8
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DataFolderWithFormatCharacter_BooksIntoTheRealFolder(bool folderFromEnvironment)
+    {
+        string folder = Path.Combine(data.Path, "a\u202Eb");
+        TestConsole console = new TestConsole().Interactive();
+        console.Input.PushTextWithEnter("arrive 8:15");
+        console.Input.PushTextWithEnter("quit");
+
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(folder), folderFromEnvironment: folderFromEnvironment).Run([]);
+
+        Assert.Equal(0, exitCode);
+        Assert.True(File.Exists(Path.Combine(folder, "2026-10-27.json")));
+        Assert.False(Directory.Exists(Path.Combine(data.Path, "ab")));
     }
 
     // AC-6
