@@ -6403,4 +6403,236 @@ public sealed class AppTests : IDisposable
     {
         Assert.False(App.TryParseWhole(text, out _));
     }
+
+    // Job 082 ------------------------------------------------------------------------------
+
+    private const string OpenFootnoteText = "open: this checkpoint has no end on this day and counts no time.";
+
+    /// <summary>The first non-empty line below the summary caption, trimmed, or <c>null</c> if there is none.</summary>
+    private static string? LineBelowSummaryCaption(string[] frame)
+    {
+        int bottom = Array.FindIndex(frame, l => l.TrimStart().StartsWith('╰') && l.Contains('┴', StringComparison.Ordinal));
+        Assert.True(bottom > 0, "no summary table bottom border in the frame");
+        int caption = Array.FindIndex(frame, bottom + 1, l => l.Trim().Length > 0);
+        Assert.True(caption > bottom, "no summary caption in the frame");
+        return frame.Skip(caption + 1).FirstOrDefault(l => l.Trim().Length > 0)?.Trim();
+    }
+
+    // AC-1, AC-7
+    [Fact]
+    public void OpenFootnote_OnAPastDay_IsTheLineBelowTheCaption()
+    {
+        File.WriteAllText(DayFile("2026-10-26"), SummaryDay);
+
+        (int exitCode, string output) = RunCommands("prev", "summary", "quit");
+
+        Assert.Equal(0, exitCode);
+        string[] frame = LastLayout(output);
+        AssertLayout(frame);
+        Assert.Equal("Monday, 2026-10-26", SummaryCaption(frame));
+        Assert.Equal(OpenFootnoteText, LineBelowSummaryCaption(frame));
+        Assert.Equal(OpenFootnoteText, App.OpenFootnote);
+    }
+
+    // AC-1, AC-7
+    [Fact]
+    public void OpenFootnote_OnAFutureDay_OnlyCheckpointOpen_IsTheLineBelowTheCaption()
+    {
+        File.WriteAllText(DayFile("2026-10-28"), "{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"Plan\"}]}");
+
+        (_, string output) = RunCommands("next", "summary", "quit");
+
+        string[] frame = LastLayout(output);
+        AssertLayout(frame);
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ +│ Plan +│ 0:00 open +│"));
+        Assert.Equal("Wednesday, 2026-10-28", SummaryCaption(frame));
+        Assert.Equal(OpenFootnoteText, LineBelowSummaryCaption(frame));
+    }
+
+    // AC-2
+    [Fact]
+    public void OpenFootnote_IsGrey_WithNoOtherStyle()
+    {
+        File.WriteAllText(DayFile("2026-10-26"), SummaryDay);
+
+        string output = RunAnsiCommands("prev", "summary");
+
+        Assert.Matches(@"\x1b\[(90|38;5;8)m" + Regex.Escape(OpenFootnoteText) + @"\x1b\[0m", output);
+        // Nothing but the grey code opens the footnote.
+        Assert.DoesNotMatch(@"\x1b\[[0-9;]*;(90|38;5;8)m" + Regex.Escape(OpenFootnoteText), output);
+        Assert.DoesNotMatch(@"\x1b\[(90|38;5;8);[0-9;]*m" + Regex.Escape(OpenFootnoteText), output);
+    }
+
+    // AC-3
+    [Fact]
+    public void OpenFootnote_ShowsOnce_ForTwoOpenGroups()
+    {
+        // Calculate leaves at most the day's last checkpoint without an end, so two open groups are
+        // built directly and rendered the way Summary does.
+        List<CheckpointGroup> groups =
+        [
+            new CheckpointGroup(1234, ["Review"], TimeSpan.Zero, open: true),
+            new CheckpointGroup(null, ["Plan"], TimeSpan.Zero, open: true),
+        ];
+        TestConsole console = new TestConsole();
+        console.Profile.Width = 80;
+
+        console.Write(App.SummaryView(new DateOnly(2026, 10, 26), groups));
+
+        string[] lines = console.Output.Split('\n');
+        Assert.Single(lines, l => l.Contains("counts no time", StringComparison.Ordinal));
+        Assert.Equal(2, lines.Count(l => l.Contains(" open ", StringComparison.Ordinal)));
+        Assert.Equal(OpenFootnoteText, LineBelowSummaryCaption(lines));
+    }
+
+    // AC-3
+    [Fact]
+    public void OpenFootnote_ShowsOnce_InTheLoop_WithAWorkItemAndANameGroup()
+    {
+        File.WriteAllText(DayFile("2026-10-26"),
+            "{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"Plan\"}," +
+            "{\"kind\":\"checkpoint\",\"time\":\"10:00\",\"name\":\"Review\",\"workItem\":1234}]}");
+
+        (_, string output) = RunCommands("prev", "summary", "quit");
+
+        string[] frame = LastLayout(output);
+        Assert.Single(frame, l => l.Contains("counts no time", StringComparison.Ordinal));
+    }
+
+    // AC-4
+    [Fact]
+    public void OpenFootnote_NotShown_OnToday()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), SummaryDay);
+
+        (_, string output) = RunCommands("summary", "quit");
+
+        string[] frame = LastLayout(output);
+        Assert.Contains(frame, l => l.Contains("Work item", StringComparison.Ordinal));
+        Assert.DoesNotContain(frame, l => l.Contains("counts no time", StringComparison.Ordinal));
+    }
+
+    // AC-4
+    [Theory]
+    [InlineData("leaving")]
+    [InlineData("breakStart")]
+    [InlineData("checkpoint")]
+    public void OpenFootnote_NotShown_OnAPastDay_FullyClosed(string ending)
+    {
+        string end = ending == "checkpoint"
+            ? "{\"kind\":\"checkpoint\",\"time\":\"12:00\",\"name\":\"Fix\"},{\"kind\":\"leaving\",\"time\":\"13:00\"}"
+            : "{\"kind\":\"" + ending + "\",\"time\":\"12:00\"}";
+        File.WriteAllText(DayFile("2026-10-26"),
+            "{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"Plan\"}," +
+            "{\"kind\":\"checkpoint\",\"time\":\"10:00\",\"name\":\"Review\",\"workItem\":1234}," + end + "]}");
+
+        (_, string output) = RunCommands("prev", "summary", "quit");
+
+        string[] frame = LastLayout(output);
+        AssertLayout(frame);
+        Assert.Contains(frame, l => l.Contains("Work item", StringComparison.Ordinal));
+        Assert.DoesNotContain(frame, l => l.Contains("open", StringComparison.Ordinal));
+        Assert.DoesNotContain(frame, l => l.Contains("counts no time", StringComparison.Ordinal));
+    }
+
+    // AC-5
+    [Fact]
+    public void OpenFootnote_NotShown_ForNoteAndHints()
+    {
+        // No file on the previous day.
+        (_, string none) = RunCommands("prev", "summary", "quit");
+        Assert.Contains("No checkpoints on this day.", LastFrame(none));
+        Assert.DoesNotContain("counts no time", none);
+
+        // A past day without checkpoints.
+        File.WriteAllText(DayFile("2026-10-25"), "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}");
+        (_, string empty) = RunCommands("prev", "prev", "summary", "quit");
+        Assert.Contains("No checkpoints on this day.", LastFrame(empty));
+        Assert.DoesNotContain("counts no time", empty);
+
+        // An invalid past day file.
+        File.WriteAllText(DayFile("2026-10-26"), "{not json");
+        (_, string invalid) = RunCommands("prev", "summary", "quit");
+        AssertOnHintRow(LastLayout(invalid), "summary: The file for 2026-10-26");
+        Assert.DoesNotContain("counts no time", invalid);
+
+        // An argument on a past day with an open checkpoint.
+        File.WriteAllText(DayFile("2026-10-26"), SummaryDay);
+        (_, string argument) = RunCommands("prev", "summary x", "quit");
+        AssertOnHintRow(LastLayout(argument), "summary takes no arguments.");
+        Assert.DoesNotContain("counts no time", argument);
+    }
+
+    // AC-5
+    [Fact]
+    public void OpenFootnote_NotShown_ForUnreadableDayFile()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        File.WriteAllText(DayFile("2026-10-26"), SummaryDay);
+        UnixFileMode mode = File.GetUnixFileMode(DayFile("2026-10-26"));
+        File.SetUnixFileMode(DayFile("2026-10-26"), UnixFileMode.None);
+        try
+        {
+            if (CanRead(DayFile("2026-10-26")))
+            {
+                // Running as root: access can't be denied.
+                return;
+            }
+
+            (_, string output) = RunCommands("prev", "summary", "quit");
+
+            Assert.Contains("summary: ", LastLayout(output)[^4]);
+            Assert.DoesNotContain("counts no time", output);
+        }
+        finally
+        {
+            File.SetUnixFileMode(DayFile("2026-10-26"), mode);
+        }
+    }
+
+    // AC-6
+    [Fact]
+    public void OpenFootnote_SummaryStaysReadOnly()
+    {
+        File.WriteAllText(DayFile("2026-10-26"), SummaryDay);
+        byte[] before = File.ReadAllBytes(DayFile("2026-10-26"));
+
+        (int exitCode, string output) = RunCommands("prev", "summary", "summary", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(LastLayout(output), l => l.Contains("counts no time", StringComparison.Ordinal));
+        Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-26")));
+        Assert.Equal(["2026-10-26.json"], Directory.EnumerateFileSystemEntries(data.Path).Select(Path.GetFileName));
+    }
+
+    // AC-7
+    [Fact]
+    public void OpenFootnote_OnAShortTerminal_ScrollsLikeTheRest()
+    {
+        File.WriteAllText(DayFile("2026-10-26"), SummaryDay);
+
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Height = 12;
+        console.Input.PushTextWithEnter("prev");
+        console.Input.PushTextWithEnter("summary");
+        console.Input.PushKey(ConsoleKey.PageDown);
+        console.Input.PushKey(ConsoleKey.PageDown);
+        console.Input.PushKey(ConsoleKey.PageDown);
+        console.Input.PushTextWithEnter("quit");
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+        string output = console.Output;
+
+        List<string[]> frames = Frames(output);
+        string[] frame = frames[^1];
+        AssertLayout(frame, 12);
+        Assert.Matches(@"^↓ \d+ more lines? below · PgDn / Ctrl\+↓$", frame[^5].TrimEnd());
+        Assert.DoesNotContain(frame, l => l.Contains("counts no time", StringComparison.Ordinal));
+        // Paging down draws the footnote in place, like any other summary line.
+        int scrolled = output.IndexOf(OpenFootnoteText, StringComparison.Ordinal);
+        Assert.True(scrolled > output.LastIndexOf(frame[^1], StringComparison.Ordinal), "the footnote is not drawn after paging down");
+    }
 }
