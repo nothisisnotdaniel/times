@@ -186,9 +186,10 @@ internal sealed record ProjectList
         HashSet<string> seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (JsonProperty property in root.EnumerateObject())
         {
-            if (!seen.Add(property.Name))
+            string propertyName = ReadPropertyName(property);
+            if (!seen.Add(propertyName))
             {
-                throw new JsonException($"The project file has \"{property.Name}\" more than once.");
+                throw new JsonException($"The project file has \"{propertyName}\" more than once.");
             }
 
             if (property.NameEquals(ProjectsProperty))
@@ -235,12 +236,13 @@ internal sealed record ProjectList
         HashSet<string> seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (JsonProperty property in item.EnumerateObject())
         {
-            if (!seen.Add(property.Name))
+            string propertyName = ReadPropertyName(property);
+            if (!seen.Add(propertyName))
             {
-                throw new JsonException($"A project in the project file has \"{property.Name}\" more than once.");
+                throw new JsonException($"A project in the project file has \"{propertyName}\" more than once.");
             }
 
-            switch (property.Name)
+            switch (propertyName)
             {
                 case WorkItemProperty:
                     workItem = ReadWorkItem(property.Value);
@@ -290,5 +292,21 @@ internal sealed record ProjectList
         }
 
         return title;
+    }
+
+    /// <summary>
+    /// The property's name. An escaped lone surrogate such as <c>\ud800</c> cannot be turned into a
+    /// string; that becomes a <see cref="JsonException"/>, never an <see cref="InvalidOperationException"/>.
+    /// </summary>
+    private static string ReadPropertyName(JsonProperty property)
+    {
+        try
+        {
+            return property.Name;
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new JsonException("A property name in the project file holds broken characters.", ex);
+        }
     }
 }

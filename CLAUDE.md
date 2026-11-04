@@ -72,8 +72,11 @@ Every factory agent reads this file before working on Times. Keep it short and a
   so tests use a temp folder and never touch the real app data. Use `System.Text.Json`.
   The project quicklist lives next to the day files in `projects.json` (`ProjectStore`), as
   `{"projects":[{"workItem":1234,"title":"…"}]}`; a project's number is its 1-based position.
-  `projects.json` must be a regular file (its final link target, checked by `FileKind` before it is
-  opened, so a FIFO or device is refused without blocking) of at most 64 KiB, read through a capped stream.
+  Day files and `projects.json` must be regular files (the final link target) of at most 64 KiB, read
+  through `CappedFile`: `FileKind` checks the path first, then on Unix the file is opened with
+  `O_NONBLOCK | O_CLOEXEC` and the opened descriptor is checked with `fstat` before a capped read, so a
+  FIFO or device (even one swapped in after the check) is refused without blocking. A day file or
+  `projects.json` whose property names or strings cannot be decoded (lone surrogates) is unreadable.
   Project titles and checkpoint names (`ProjectList.IsValidTitle`) must be non-blank, at most 200
   characters, and hold no control characters, no Unicode Format (Cf) code points (bidi overrides,
   zero-width characters, soft hyphens, tag characters) and no unpaired surrogates; this is checked

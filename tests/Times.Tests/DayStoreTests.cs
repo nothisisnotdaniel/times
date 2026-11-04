@@ -366,4 +366,111 @@ public class DayStoreTests
     private static string Describe(DayRecord record) =>
         string.Join(' ', record.Entries.Select(e =>
             (e.Kind == EntryKind.Arrival ? "A" : "L") + e.Time.ToString("HH:mm", CultureInfo.InvariantCulture)));
+
+    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(5);
+
+    // AC-1 (086)
+    [Theory]
+    [MemberData(nameof(DayRecordTests.LoneSurrogateDayFiles), MemberType = typeof(DayRecordTests))]
+    public void Load_LoneSurrogateInNameKindOrTime_ThrowsInvalidData(string contents)
+    {
+        using TempFolder temp = new TempFolder();
+        DayStore store = new DayStore(temp.Path);
+        File.WriteAllText(store.PathFor(Day), contents);
+
+        Exception? thrown = Record.Exception(() => store.Load(Day));
+
+        InvalidDataException ex = Assert.IsType<InvalidDataException>(thrown);
+        Assert.Equal("The file for 2026-10-27 is not a valid day file.", ex.Message);
+    }
+
+    // AC-5 (086)
+    [Fact]
+    public void Load_Fifo_IsRefused_WithoutBlocking_AndStaysAFifo()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder temp = new TempFolder();
+        DayStore store = new DayStore(temp.Path);
+        SpecialFiles.MakeFifo(store.PathFor(Day));
+
+        Exception? thrown = SpecialFiles.RunWithin(Timeout, () => store.Load(Day));
+
+        InvalidDataException ex = Assert.IsType<InvalidDataException>(thrown);
+        Assert.Equal("The file for 2026-10-27 is not a regular file.", ex.Message);
+        Assert.True(SpecialFiles.IsFifo(store.PathFor(Day)));
+    }
+
+    // AC-5 (086)
+    [Fact]
+    public void Load_LinkToFifo_IsRefused_WithoutBlocking_AndBothStay()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder temp = new TempFolder();
+        DayStore store = new DayStore(temp.Path);
+        string fifo = Path.Combine(temp.Path, "pipe");
+        SpecialFiles.MakeFifo(fifo);
+        File.CreateSymbolicLink(store.PathFor(Day), fifo);
+
+        Exception? thrown = SpecialFiles.RunWithin(Timeout, () => store.Load(Day));
+
+        InvalidDataException ex = Assert.IsType<InvalidDataException>(thrown);
+        Assert.Equal("The file for 2026-10-27 is not a regular file.", ex.Message);
+        Assert.True(SpecialFiles.IsFifo(fifo));
+        Assert.Equal(fifo, new FileInfo(store.PathFor(Day)).LinkTarget);
+    }
+
+    // AC-7 (086)
+    [Fact]
+    public void Load_TooLargeFile_HasTheTooLargeMessage()
+    {
+        using TempFolder temp = new TempFolder();
+        DayStore store = new DayStore(temp.Path);
+        File.WriteAllText(store.PathFor(Day), new string(' ', (int)DayStore.MaxFileBytes - 1) + "{}");
+        Assert.Equal(DayStore.MaxFileBytes + 1, new FileInfo(store.PathFor(Day)).Length);
+
+        InvalidDataException ex = Assert.Throws<InvalidDataException>(() => store.Load(Day));
+        Assert.Equal("The file for 2026-10-27 is too large to be a day file.", ex.Message);
+    }
+
+    // AC-7 (086)
+    [Fact]
+    public void Load_LinkToTooLargeFile_HasTheTooLargeMessage_AndLeavesItUnchanged()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder temp = new TempFolder();
+        DayStore store = new DayStore(temp.Path);
+        string target = Path.Combine(temp.Path, "big.json");
+        File.WriteAllText(target, new string(' ', (int)DayStore.MaxFileBytes - 1) + "{}");
+        byte[] before = File.ReadAllBytes(target);
+        File.CreateSymbolicLink(store.PathFor(Day), target);
+
+        InvalidDataException ex = Assert.Throws<InvalidDataException>(() => store.Load(Day));
+        Assert.Equal("The file for 2026-10-27 is too large to be a day file.", ex.Message);
+        Assert.Equal(before, File.ReadAllBytes(target));
+    }
+
+    // AC-7 (086)
+    [Fact]
+    public void Load_FileOfExactlyMaxBytes_Loads()
+    {
+        using TempFolder temp = new TempFolder();
+        DayStore store = new DayStore(temp.Path);
+        string json = "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:15\"}]}";
+        File.WriteAllText(store.PathFor(Day), new string(' ', (int)DayStore.MaxFileBytes - json.Length) + json);
+        Assert.Equal(DayStore.MaxFileBytes, new FileInfo(store.PathFor(Day)).Length);
+
+        Assert.Equal("A08:15", Describe(store.Load(Day)));
+    }
 }

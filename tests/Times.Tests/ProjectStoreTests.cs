@@ -280,5 +280,19 @@ public class ProjectStoreTests
 
         Assert.Equal(data, ProjectStore.ReadAtMost(stream, ProjectStore.MaxFileBytes + 1));
     }
-}
 
+    // AC-2 (086)
+    [Theory]
+    [MemberData(nameof(ProjectListTests.LoneSurrogateProjectFiles), MemberType = typeof(ProjectListTests))]
+    public void Load_LoneSurrogateInPropertyName_ThrowsInvalidData(string contents)
+    {
+        using TempFolder temp = new TempFolder();
+        ProjectStore store = new ProjectStore(temp.Path);
+        File.WriteAllText(store.FilePath, contents);
+
+        Exception? thrown = Record.Exception(() => store.Load());
+
+        InvalidDataException ex = Assert.IsType<InvalidDataException>(thrown);
+        Assert.Equal("projects.json is not valid.", ex.Message);
+    }
+}

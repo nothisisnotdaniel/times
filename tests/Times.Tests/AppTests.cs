@@ -6754,4 +6754,99 @@ public sealed class AppTests : IDisposable
         Assert.Contains(frame, l => l.Contains("! Break not ended: entry 2", StringComparison.Ordinal));
         Assert.DoesNotContain(frame, l => l.Contains("Break outside", StringComparison.Ordinal));
     }
+
+    // Safer file loading (job 086) ------------------------------------------------------------
+
+    // AC-3 (086)
+    [Theory]
+    [MemberData(nameof(DayRecordTests.LoneSurrogateDayFiles), MemberType = typeof(DayRecordTests))]
+    public void LoneSurrogateDayFile_ShowsUnreadableDay_AndArriveBooksNothing(string contents)
+    {
+        File.WriteAllText(DayFile("2026-10-27"), contents);
+        byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
+
+        (int exitCode, string output) = RunCommands("arrive 9:00", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
+        string[] first = Frames(output)[0];
+        Assert.Contains(first[..^4], l => l.Contains("The file for 2026-10-27 is not a valid day file.", StringComparison.Ordinal));
+        string[] frame = LastLayout(output);
+        AssertOnHintRow(frame, "is not a valid day file. Nothing was booked.");
+        Assert.Contains("is not a valid day file.", string.Join('\n', frame[..^4]));
+        Assert.DoesNotContain("   at ", output);
+    }
+
+    // AC-3 (086): the day view's unreadable line is red.
+    [Fact]
+    public void LoneSurrogateDayFile_UnreadableLineIsRed()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), "{\"entries\":[{\"kind\":\"\\ud800\",\"time\":\"08:00\"}]}");
+
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mThe file for 2026-10-27 is not a valid day file\.", RunAnsi("quit"));
+    }
+
+    // AC-4 (086)
+    [Theory]
+    [MemberData(nameof(ProjectListTests.LoneSurrogateProjectFiles), MemberType = typeof(ProjectListTests))]
+    public void LoneSurrogateProjectsFile_ShowsReasonInPanel_AndCommandsChangeNothing(string contents)
+    {
+        File.WriteAllText(ProjectsFile, contents);
+        byte[] before = File.ReadAllBytes(ProjectsFile);
+
+        (int panelExit, string panelOutput) = RunWide(200, "quit");
+        (int listExit, string listed) = RunWide(200, "projects", "quit");
+        (int addExit, string added) = RunWide(200, "addproject 1 x", "quit");
+        (int bookExit, string booked) = RunWide(200, "checkpoint #1 x", "quit");
+
+        Assert.Equal([0, 0, 0, 0], new[] { panelExit, listExit, addExit, bookExit });
+        string[] panel = PanelRows(LastLayout(panelOutput));
+        Assert.Contains("The project list cannot be read: projects.json is not valid.", panel[1]);
+        AssertOnHintRow(LastLayout(listed), "projects: the project list cannot be read: projects.json is not valid. Fix or delete projects.json in the data folder (help shows where).");
+        AssertOnHintRow(LastLayout(added), "addproject: the project list cannot be read: projects.json is not valid. Nothing was added.");
+        AssertOnHintRow(LastLayout(booked), "checkpoint: the project list cannot be read: projects.json is not valid. Nothing was booked.");
+        Assert.DoesNotContain("   at ", panelOutput + listed + added + booked);
+        Assert.Equal(before, File.ReadAllBytes(ProjectsFile));
+        Assert.False(File.Exists(DayFile("2026-10-27")));
+    }
+
+    // AC-4 (086): the hints are red.
+    [Fact]
+    public void LoneSurrogateProjectsFile_HintsAreRed()
+    {
+        File.WriteAllText(ProjectsFile, "{\"projects\":[],\"\\udc00\":1}");
+
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mprojects: the project list cannot be read: projects\.json is not valid\.", RunAnsi("projects"));
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)maddproject: the project list cannot be read: projects\.json is not valid\. Nothing was added\.", RunAnsi("addproject 1 x"));
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mcheckpoint: the project list cannot be read: projects\.json is not valid\. Nothing was booked\.", RunAnsi("checkpoint #1 x"));
+    }
+
+    // AC-6 (086)
+    [Fact]
+    public void FifoDayFile_QuitFinishes_ShowsNotRegular_AndArriveBooksNothing()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        SpecialFiles.MakeFifo(DayFile("2026-10-27"));
+        string quitOutput = string.Empty;
+        string arriveOutput = string.Empty;
+        string ansi = string.Empty;
+        int quitExit = -1;
+        int arriveExit = -1;
+
+        Assert.Null(SpecialFiles.RunWithin(TimeSpan.FromSeconds(5), () => (quitExit, quitOutput) = RunCommands("quit")));
+        Assert.Null(SpecialFiles.RunWithin(TimeSpan.FromSeconds(5), () => (arriveExit, arriveOutput) = RunCommands("arrive 9:00", "quit")));
+        Assert.Null(SpecialFiles.RunWithin(TimeSpan.FromSeconds(5), () => ansi = RunAnsi("quit")));
+
+        Assert.Equal(0, quitExit);
+        Assert.Contains(LastLayout(quitOutput)[..^4], l => l.Contains("The file for 2026-10-27 is not a regular file.", StringComparison.Ordinal));
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mThe file for 2026-10-27 is not a regular file\.", ansi);
+        Assert.Equal(0, arriveExit);
+        AssertOnHintRow(LastLayout(arriveOutput), "is not a regular file. Nothing was booked.");
+        Assert.True(SpecialFiles.IsFifo(DayFile("2026-10-27")));
+        Assert.Equal([DayFile("2026-10-27")], Directory.EnumerateFileSystemEntries(data.Path));
+    }
 }

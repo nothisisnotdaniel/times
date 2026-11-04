@@ -580,12 +580,13 @@ internal sealed record DayRecord
         HashSet<string> seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (JsonProperty property in root.EnumerateObject())
         {
-            if (!seen.Add(property.Name))
+            string propertyName = ReadPropertyName(property);
+            if (!seen.Add(propertyName))
             {
-                throw new JsonException($"The day file has \"{property.Name}\" more than once.");
+                throw new JsonException($"The day file has \"{propertyName}\" more than once.");
             }
 
-            switch (property.Name)
+            switch (propertyName)
             {
                 case EntriesProperty:
                     entriesElement = property.Value;
@@ -658,7 +659,7 @@ internal sealed record DayRecord
         JsonElement? bookedElement = null;
         foreach (JsonProperty property in item.EnumerateObject())
         {
-            switch (property.Name)
+            switch (ReadPropertyName(property))
             {
                 case KindProperty:
                     if (kind is not null)
@@ -767,7 +768,7 @@ internal sealed record DayRecord
 
     private static EntryKind ReadKind(JsonElement value)
     {
-        string? text = value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+        string? text = ReadStringOrNull(value, "An entry in the day file has an unknown kind.");
         return text switch
         {
             ArrivalName => EntryKind.Arrival,
@@ -785,7 +786,7 @@ internal sealed record DayRecord
 
     private static TimeOnly ReadTime(JsonElement value)
     {
-        string? text = value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+        string? text = ReadStringOrNull(value, "A time in the day file is not HH:mm.");
         if (text is null
             || !TimeOnly.TryParseExact(text, TimeFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out TimeOnly time))
         {
@@ -793,5 +794,42 @@ internal sealed record DayRecord
         }
 
         return time;
+    }
+
+    /// <summary>
+    /// The property's name. An escaped lone surrogate such as <c>\ud800</c> cannot be turned into a
+    /// string; that becomes a <see cref="JsonException"/>, never an <see cref="InvalidOperationException"/>.
+    /// </summary>
+    private static string ReadPropertyName(JsonProperty property)
+    {
+        try
+        {
+            return property.Name;
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new JsonException("A property name in the day file holds broken characters.", ex);
+        }
+    }
+
+    /// <summary>
+    /// The value as a string, or <c>null</c> if it is not a string. A string that cannot be read
+    /// (such as an escaped lone surrogate) throws <see cref="JsonException"/> with <paramref name="message"/>.
+    /// </summary>
+    private static string? ReadStringOrNull(JsonElement value, string message)
+    {
+        if (value.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+
+        try
+        {
+            return value.GetString();
+        }
+        catch (InvalidOperationException ex)
+        {
+            throw new JsonException(message, ex);
+        }
     }
 }

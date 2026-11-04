@@ -247,4 +247,38 @@ public class ProjectListTests
 
         Assert.Equal("Launch \uD83D\uDE80", list.Projects[0].Title);
     }
+
+    /// <summary>
+    /// Project files with an escaped lone surrogate (<c>\ud800</c> or <c>\udc00</c>) in a root or a
+    /// project property name.
+    /// </summary>
+    public static TheoryData<string> LoneSurrogateProjectFiles()
+    {
+        string[] templates =
+        [
+            "{{\"{0}\":1,\"projects\":[]}}",
+            "{{\"projects\":[],\"a{0}b\":1}}",
+            "{{\"projects\":[{{\"{0}\":1,\"workItem\":1,\"title\":\"A\"}}]}}",
+            "{{\"projects\":[{{\"workItem\":1,\"title\":\"A\",\"x{0}\":1}}]}}",
+        ];
+        TheoryData<string> data = new TheoryData<string>();
+        foreach (string template in templates)
+        {
+            foreach (string surrogate in new[] { "\\ud800", "\\udc00" })
+            {
+                data.Add(string.Format(System.Globalization.CultureInfo.InvariantCulture, template, surrogate));
+            }
+        }
+
+        return data;
+    }
+
+    // AC-2 (086)
+    [Theory]
+    [MemberData(nameof(LoneSurrogateProjectFiles))]
+    public void FromJson_LoneSurrogateInPropertyName_ThrowsJsonException(string json)
+    {
+        Assert.Contains("\\u", json);
+        Assert.Throws<JsonException>(() => ProjectList.FromJson(json));
+    }
 }
