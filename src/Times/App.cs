@@ -20,7 +20,8 @@ internal sealed class App
     private const string RetypeHiddenCharacters = "Retype it without the hidden characters.";
 
     private static readonly string PasteCutHint =
-        $"[red]Paste cut to {LineEditor.MaxPasteLength.ToString(CultureInfo.InvariantCulture)} characters; the rest was dropped.[/]";
+        $"[red]Paste cut to {LineEditor.MaxPasteLength.ToString(CultureInfo.InvariantCulture)} characters; " +
+        "the rest was dropped.[/]";
 
     /// <summary>What to do when <c>projects.json</c> cannot be read, shown in the quicklist panel and in every command hint about it.</summary>
     public const string UnreadableProjectsNextStep = "Fix or delete projects.json in the data folder (help shows where).";
