@@ -639,15 +639,17 @@ public class DayRecordTests
         Assert.Equal(Hm(9, 35), record.WorkTime());
     }
 
-    // AC-1 (047)
+    // AC-1 (047), AC-3 (084)
     [Fact]
-    public void BreakTime_NothingAccruesAfterLastEntry_AndOffTimeIsNotBreak()
+    public void BreakTime_NothingAccruesAfterLastEntry_AndLunchGapAddsToBreaks()
     {
-        // The open break after 18:05 has no end, so it adds nothing; 12:00 to 13:00 is off.
+        // The open break after 18:05 has no end, so it adds nothing; the 12:00 to 13:00 gap adds 1:00.
         DayRecord record = new DayRecord(
             [Arrival(7, 10), BreakStart(9, 0), BreakEnd(9, 20), Leaving(12, 0), Arrival(13, 0), BreakStart(18, 5)]);
 
-        Assert.Equal(Hm(0, 20), record.BreakTime());
+        Assert.Equal(Hm(1, 20), record.BreakTime());
+        Assert.Equal(Hm(9, 35), record.WorkTime());
+        Assert.Equal([Hm(8, 0), Hm(6, 10), Hm(6, 10), Hm(3, 30), Hm(3, 30), Hm(-1, -35)], record.TimeLeft());
     }
 
     // AC-2 (047)
@@ -727,13 +729,94 @@ public class DayRecordTests
         Assert.Equal(Hm(1, 0), record.BreakTime());
     }
 
-    // AC-3 (047)
+    // AC-1, AC-10 (084)
     [Fact]
-    public void Breaks_LeaveAndReturn_IsNotBreak()
+    public void Breaks_LeaveAndReturn_CountsGapAsBreak()
     {
-        AssertBreaks(
-            new DayRecord([Arrival(8, 0), Leaving(12, 0), Arrival(12, 45), Leaving(17, 0)]),
-            Hm(8, 15), Hm(0, 0), Hm(0, 30));
+        DayRecord record = new DayRecord([Arrival(8, 0), Leaving(12, 0), Arrival(12, 45), Leaving(17, 0)]);
+
+        AssertBreaks(record, Hm(8, 15), Hm(0, 45), Hm(0, 30));
+        Assert.True(record.BreakTime() >= DayRecord.RequiredBreak(record.WorkTime()));
+        Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(0, -15)], record.TimeLeft());
+    }
+
+    // AC-4, AC-10 (084)
+    [Fact]
+    public void BreakTime_OffTimeWithoutLeavingBeforeOrArrivalAfter_IsNotBreak()
+    {
+        DayRecord morning = new DayRecord([Arrival(8, 0), Leaving(12, 0)]);
+        DayRecord afterLeaving = new DayRecord([Arrival(8, 0), Leaving(17, 0), BreakStart(17, 30)]);
+        DayRecord beforeArrival = new DayRecord([BreakStart(7, 0), BreakEnd(7, 30), Arrival(8, 0), Leaving(9, 0)]);
+
+        Assert.Equal(TimeSpan.Zero, morning.BreakTime());
+        Assert.Equal(Hm(4, 0), morning.WorkTime());
+        Assert.Equal([Hm(8, 0), Hm(4, 0)], morning.TimeLeft());
+        Assert.Equal(TimeSpan.Zero, afterLeaving.BreakTime());
+        Assert.Equal(Hm(9, 0), afterLeaving.WorkTime());
+        Assert.Equal([Hm(8, 0), Hm(-1, 0), Hm(-1, 0)], afterLeaving.TimeLeft());
+        Assert.Equal(TimeSpan.Zero, beforeArrival.BreakTime());
+        Assert.Equal(Hm(1, 0), beforeArrival.WorkTime());
+        Assert.Equal([Hm(8, 0), Hm(8, 0), Hm(8, 0), Hm(7, 0)], beforeArrival.TimeLeft());
+    }
+
+    // AC-5, AC-10 (084)
+    [Fact]
+    public void BreakTime_EntriesInsideLunchGap_DoNotSplitOrAddToIt()
+    {
+        DayRecord breakEnd = new DayRecord(
+            [Arrival(8, 0), Leaving(12, 0), BreakEnd(12, 30), Arrival(13, 0), Leaving(17, 0)]);
+        DayRecord secondLeaving = new DayRecord(
+            [Arrival(8, 0), Leaving(12, 0), Leaving(12, 30), Arrival(13, 0), Leaving(17, 0)]);
+        DayRecord checkpoint = new DayRecord(
+            [Arrival(8, 0), Leaving(12, 0), Checkpoint(12, 15, "Lunch"), Arrival(13, 0), Leaving(17, 0)]);
+
+        foreach (DayRecord record in new[] { breakEnd, secondLeaving, checkpoint })
+        {
+            AssertBreaks(record, Hm(8, 0), Hm(1, 0), Hm(0, 30));
+            Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(4, 0), Hm(0, 0)], record.TimeLeft());
+        }
+    }
+
+    // AC-6, AC-10 (084)
+    [Fact]
+    public void BreakTime_UnendedBreakClosedByLeaving_ThenArrival_CountsBreakAndGap()
+    {
+        DayRecord record = new DayRecord(
+            [Arrival(8, 0), BreakStart(12, 0), Leaving(12, 30), Arrival(13, 0), Leaving(17, 0)]);
+
+        AssertBreaks(record, Hm(8, 0), Hm(1, 0), Hm(0, 30));
+        Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(4, 0), Hm(0, 0)], record.TimeLeft());
+    }
+
+    // AC-7, AC-10 (084)
+    [Fact]
+    public void BreakTime_LeavingAndArrivalAtSameTime_IsZeroGap()
+    {
+        DayRecord record = new DayRecord([Arrival(8, 0), Leaving(12, 0), Arrival(12, 0), Leaving(17, 0)]);
+
+        AssertBreaks(record, Hm(9, 0), Hm(0, 0), Hm(0, 30));
+        Assert.True(record.BreakTime() < DayRecord.RequiredBreak(record.WorkTime()));
+        Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(-1, 0)], record.TimeLeft());
+    }
+
+    // AC-8, AC-10 (084)
+    [Fact]
+    public void BreakTime_SeveralLunchGaps_AddUp()
+    {
+        DayRecord record = new DayRecord(
+            [Arrival(7, 0), Leaving(10, 0), Arrival(10, 15), Leaving(12, 0), Arrival(12, 30), Leaving(17, 0)]);
+
+        AssertBreaks(record, Hm(9, 15), Hm(0, 45), Hm(0, 45));
+        Assert.Equal([Hm(8, 0), Hm(5, 0), Hm(5, 0), Hm(3, 15), Hm(3, 15), Hm(-1, -15)], record.TimeLeft());
+    }
+
+    // AC-9 (084)
+    [Fact]
+    public void BreakTime_AwayAfterLeavingWithNoArrivalYet_CountsNothing()
+    {
+        DayRecord record = new DayRecord([Arrival(8, 0), Leaving(12, 0), Checkpoint(12, 30, "Away")]);
+
+        Assert.Equal(TimeSpan.Zero, record.BreakTime());
     }
 
     // AC-3 (047)
@@ -1264,7 +1347,7 @@ public class DayRecordTests
         Assert.Equal([TimeSpan.FromHours(8), TimeSpan.FromHours(8), TimeSpan.FromHours(-1)], before.TimeLeft());
         Assert.Equal(TimeSpan.Zero, before.BreakTime());
         Assert.Equal(TimeSpan.FromHours(8), between.WorkTime());
-        Assert.Equal(TimeSpan.Zero, between.BreakTime());
+        Assert.Equal(TimeSpan.FromHours(1), between.BreakTime());
         Assert.Equal([TimeSpan.FromHours(8), TimeSpan.FromHours(-1), TimeSpan.FromHours(-1)], sameTime.TimeLeft());
         Assert.Equal(TimeSpan.Zero, sameTime.BreakTime());
     }
