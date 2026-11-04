@@ -6916,4 +6916,72 @@ public sealed class AppTests : IDisposable
         Assert.True(SpecialFiles.IsFifo(DayFile("2026-10-27")));
         Assert.Equal([DayFile("2026-10-27")], Directory.EnumerateFileSystemEntries(data.Path));
     }
+
+    // Job 088: paste size cap ---------------------------------------------------------------
+
+    private const string PasteCutText = "Paste cut to 4096 characters; the rest was dropped.";
+
+    private static void PushLongPaste(TestConsole console, char c)
+    {
+        console.Input.PushKey(new ConsoleKeyInfo('\u001b', ConsoleKey.Escape, false, false, false));
+        console.Input.PushText("[200~" + new string(c, LineEditor.MaxPasteLength + 1000));
+        console.Input.PushKey(new ConsoleKeyInfo('\u001b', ConsoleKey.Escape, false, false, false));
+        console.Input.PushText("[201~");
+    }
+
+    // The hint is written on the hint row (height - 3) in red, after the paste and before the next full redraw.
+    private static void AssertPasteCutHintInPlace(string output, int height = 24)
+    {
+        int hint = output.IndexOf(PasteCutText, StringComparison.Ordinal);
+        Assert.True(hint > 0, "no paste-cut hint");
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)m" + Regex.Escape(PasteCutText), output);
+        Assert.True(hint > output.IndexOf(ClearScreen, StringComparison.Ordinal), "hint after the first full frame");
+        Assert.Contains(AnsiWrites.Parse(output), w => w.Row == height - 3 && w.Column == 1 && w.Text.Contains(PasteCutText, StringComparison.Ordinal));
+    }
+
+    // AC-10
+    [Fact]
+    public void Paste_OverTheCap_AtThePrompt_ShowsTheRedHintInPlace_AndRunsNothing()
+    {
+        List<string> calls = [];
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+        registry.Register("rec", "rc", "Records its argument", args => { calls.Add(args); return CommandResult.None; });
+
+        (int exitCode, string output) = RunWithMouse(c =>
+        {
+            PushLongPaste(c, 'a');
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        }, registry: registry);
+
+        Assert.Equal(0, exitCode);
+        AssertPasteCutHintInPlace(output);
+        // Only the first frame and the clear on quit: the hint came without a full redraw.
+        Assert.Equal(2, Count(output, ClearScreen));
+        Assert.True(output.IndexOf(PasteCutText, StringComparison.Ordinal) < output.LastIndexOf(ClearScreen, StringComparison.Ordinal));
+        Assert.Empty(calls);
+        Assert.False(File.Exists(DayFile("2026-10-27")));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
+    }
+
+    // AC-10
+    [Fact]
+    public void Paste_OverTheCap_InTheNumberEditor_ShowsTheRedHint_AndSavesNothing()
+    {
+        (int exitCode, string output) = RunSettings(c =>
+        {
+            c.Input.PushTextWithEnter("settings");
+            c.Input.PushKey(ConsoleKey.DownArrow);
+            c.Input.PushKey(ConsoleKey.Enter);
+            PushLongPaste(c, '1');
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Equal(0, exitCode);
+        AssertPasteCutHintInPlace(output);
+        Assert.False(File.Exists(SettingsPath));
+    }
 }

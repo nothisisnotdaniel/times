@@ -50,6 +50,8 @@ Every factory agent reads this file before working on Times. Keep it short and a
     `MouseReporting` also turns bracketed paste on and off (`ESC[?2004h` / `ESC[?2004l`): the editor
     appends the text between `ESC[200~` and `ESC[201~` to the line in one step (line breaks and Tab
     become one space each, other control characters and `ESC [` sequences are dropped), never submitting it.
+    A paste keeps at most 4096 characters (`LineEditor.MaxPasteLength`, counted after that clean-up, never
+    half a surrogate pair); the rest is read to `ESC[201~` and dropped, and a red hint on the hint row says so.
   - **Command popup:** while the line is non-empty and does not start with whitespace (after Esc:
     closed until the line is empty again; a lone `/` lists every command), a popup just above the input box lists the
     registered commands with their descriptions, filtered by what was typed and ranked by

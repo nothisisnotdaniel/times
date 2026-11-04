@@ -2218,4 +2218,204 @@ public class LineEditorTests
         public Task<ConsoleKeyInfo?> ReadKeyAsync(bool intercept, CancellationToken cancellationToken) =>
             Task.FromResult<ConsoleKeyInfo?>(null);
     }
+
+    // Job 088: paste size cap ---------------------------------------------------------------
+
+    private const int Cap = LineEditor.MaxPasteLength;
+
+    // AC-1
+    [Fact]
+    public void Paste_OfExactlyTheCap_IsAppendedWhole_WithoutACut()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        int cuts = 0;
+        PushPaste(console, Keys(new string('a', Cap)));
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal(new string('a', Cap), editor.ReadLine(5, 23, 70, pasteCut: () => cuts++));
+        Assert.Equal(0, cuts);
+    }
+
+    // AC-2
+    [Fact]
+    public void Paste_OverTheCap_KeepsTheCap_AndReportsTheCutOnce()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        int cuts = 0;
+        PushPaste(console, Keys(new string('a', Cap + 1000)));
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal(new string('a', Cap), editor.ReadLine(5, 23, 70, pasteCut: () => cuts++));
+        Assert.Equal(1, cuts);
+    }
+
+    // AC-2: the callback comes after the kept text is in the buffer and before the line is redrawn.
+    [Fact]
+    public void Paste_OverTheCap_CallsTheCallback_BeforeTheLineIsRedrawn()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        LineEditor editor = new LineEditor(console, CommandRegistry.CreateDefault());
+        int outputAtCut = -1;
+        PushPaste(console, Keys(new string('a', Cap + 10)));
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        editor.ReadLine(5, 23, 70, pasteCut: () => outputAtCut = console.Output.Length);
+
+        Assert.True(outputAtCut >= 0);
+        Assert.DoesNotContain("aaa", console.Output[..outputAtCut]);
+        Assert.Contains("aaa", console.Output[outputAtCut..]);
+    }
+
+    // AC-3
+    [Fact]
+    public void Paste_OverTheCap_KeepsTypedTextBeforeIt_AndCountsOnlyThePaste()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        int cuts = 0;
+        console.Input.PushText("x");
+        PushPaste(console, Keys(new string('a', Cap + 1000)));
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal("x" + new string('a', Cap), editor.ReadLine(5, 23, 70, pasteCut: () => cuts++));
+        Assert.Equal(1, cuts);
+    }
+
+    // AC-4
+    [Fact]
+    public void Paste_KeysAfterTheCut_AreNotTypedOrSubmitted_AndKeysAfterTheEndAreRead()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        int cuts = 0;
+        PushPaste(console, [.. Keys(new string('a', Cap)), Enter, .. Keys("quit"), Enter, CharLf, .. Keys("rest")]);
+        console.Input.PushText("b");
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        string? line = editor.ReadLine(5, 23, 70, pasteCut: () => cuts++);
+
+        Assert.Equal(new string('a', Cap) + "b", line);
+        Assert.Equal(1, cuts);
+        Assert.Equal([line!], editor.History);
+    }
+
+    // AC-5
+    [Fact]
+    public void Paste_CapCountsCharactersAfterCleanUp()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        int cuts = 0;
+        List<ConsoleKeyInfo> keys = [];
+        for (int i = 0; i < 5000; i++)
+        {
+            keys.Add(CharCr);
+            keys.Add(CharLf);
+            keys.Add(new ConsoleKeyInfo('\u0001', default, false, false, false));
+            keys.Add(new ConsoleKeyInfo('\u007f', default, false, false, false));
+        }
+
+        PushPaste(console, [.. keys]);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        string? line = editor.ReadLine(5, 23, 70, pasteCut: () => cuts++);
+
+        Assert.Equal(new string(' ', Cap), line);
+        Assert.Equal(1, cuts);
+    }
+
+    // AC-5: dropped control characters do not count towards the cap.
+    [Fact]
+    public void Paste_DroppedControlCharacters_DoNotCount()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        int cuts = 0;
+        List<ConsoleKeyInfo> keys = [];
+        for (int i = 0; i < Cap; i++)
+        {
+            keys.Add(new ConsoleKeyInfo('\u0007', default, false, false, false));
+            keys.Add(new ConsoleKeyInfo('b', default, false, false, false));
+        }
+
+        PushPaste(console, [.. keys]);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal(new string('b', Cap), editor.ReadLine(5, 23, 70, pasteCut: () => cuts++));
+        Assert.Equal(0, cuts);
+    }
+
+    // AC-6
+    [Fact]
+    public void Paste_CutBeforeASurrogatePair_DropsThePair()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        int cuts = 0;
+        PushPaste(console, Keys(new string('a', Cap - 1) + string.Concat(Enumerable.Repeat("\U0001F600", 10))));
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        string? line = editor.ReadLine(5, 23, 70, pasteCut: () => cuts++);
+
+        Assert.Equal(new string('a', Cap - 1), line);
+        Assert.False(char.IsHighSurrogate(line![^1]));
+        Assert.Equal(1, cuts);
+    }
+
+    // AC-6
+    [Fact]
+    public void Paste_OfSurrogatePairs_KeepsWholePairsOnly()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        int cuts = 0;
+        PushPaste(console, Keys(string.Concat(Enumerable.Repeat("\U0001F600", Cap))));
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        string? line = editor.ReadLine(5, 23, 70, pasteCut: () => cuts++);
+
+        Assert.Equal(Cap, line!.Length);
+        Assert.Equal(0, line.Length % 2);
+        Assert.Equal(string.Concat(Enumerable.Repeat("\U0001F600", Cap / 2)), line);
+        Assert.False(char.IsHighSurrogate(line[^1]));
+        Assert.Equal(1, cuts);
+    }
+
+    // AC-7
+    [Fact]
+    public void InputEnding_InsideAnOverLongPaste_ReturnsNull()
+    {
+        PausingInput input = new PausingInput();
+        input.Push(Esc);
+        input.Push("[200~" + new string('a', Cap + 1000));
+        input.Push(Enter);
+        LineEditor editor = new LineEditor(new InputOverrideConsole(new TestConsole().Interactive(), input), CommandRegistry.CreateDefault());
+        int cuts = 0;
+
+        Assert.Null(editor.ReadLine(5, 23, 70, pasteCut: () => cuts++));
+        Assert.Equal(0, cuts);
+        Assert.Empty(editor.History);
+    }
+
+    // AC-8
+    [Fact]
+    public void ReadKey_DropsAnOverLongPaste_AndDrawsNothing()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        int cuts = 0;
+        PushPaste(console, [.. Keys(new string('p', Cap + 1000)), Enter]);
+        console.Input.PushText("q");
+
+        Assert.Equal('q', editor.ReadKey(() => cuts++)?.KeyChar);
+        Assert.Equal(0, cuts);
+        Assert.DoesNotContain("p", console.Output);
+    }
+
+    // AC-9
+    [Fact]
+    public void ReadValue_CapsAPaste_AndCallsItsCallbackOnce()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        int cuts = 0;
+        PushPaste(console, Keys(new string('1', Cap + 1000)));
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal(new string('1', Cap), editor.ReadValue(5, 23, 70, "a whole number", out bool cancelled, () => cuts++));
+        Assert.False(cancelled);
+        Assert.Equal(1, cuts);
+    }
 }
