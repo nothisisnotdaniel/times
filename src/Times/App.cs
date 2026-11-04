@@ -19,6 +19,9 @@ internal sealed class App
     private const string Placeholder = "Type help for commands";
     private const string RetypeHiddenCharacters = "Retype it without the hidden characters.";
 
+    private static readonly string PasteCutHint =
+        $"[red]Paste cut to {LineEditor.MaxPasteLength.ToString(CultureInfo.InvariantCulture)} characters; the rest was dropped.[/]";
+
     /// <summary>What to do when <c>projects.json</c> cannot be read, shown in the quicklist panel and in every command hint about it.</summary>
     public const string UnreadableProjectsNextStep = "Fix or delete projects.json in the data folder (help shows where).";
 
@@ -671,7 +674,7 @@ internal sealed class App
 
             // The popup ends on the hint row (just above the input box) and grows upwards.
             PopupArea popup = new PopupArea(height - InputHeight, width, RestoreRow);
-            string? input = editor.ReadLine(column, line, width - column - 2, popup, Placeholder, Scroll);
+            string? input = editor.ReadLine(column, line, width - column - 2, popup, Placeholder, Scroll, ShowPasteCut);
             if (input is null)
             {
                 return 0;
@@ -982,7 +985,7 @@ internal sealed class App
         {
             ShowSettings(values, selected, null, null, full: false);
             int width = console.Profile.Width;
-            return editor.ReadValue(InputColumn, InputLine, width - InputColumn - 2, framePlaceholder, out cancelled);
+            return editor.ReadValue(InputColumn, InputLine, width - InputColumn - 2, framePlaceholder, out cancelled, ShowPasteCut);
         }
         finally
         {
@@ -1074,6 +1077,15 @@ internal sealed class App
         {
             return dayView.RenderUnreadable(Markup.Escape(ex.Message));
         }
+    }
+
+    // Called by the line editor when a paste was cut: shows the hint on the hint row in place, without
+    // a full redraw. The next full redraw shows the hint it is given, as always.
+    private void ShowPasteCut()
+    {
+        frameHint = new Markup(PasteCutHint);
+        frame = RenderFrame();
+        RestoreRow(console.Profile.Height - InputHeight);
     }
 
     // Redraws one screen row (1-based) with what the last frame had there.

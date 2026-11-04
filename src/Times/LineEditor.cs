@@ -41,7 +41,10 @@ internal enum ScrollStep
 /// line as text in one step, never submitted. Each line break (<c>\r</c>, <c>\n</c> or
 /// <c>\r\n</c>, as an Enter key or as a <c>KeyChar</c>) and each Tab becomes one space; other
 /// control characters, and any other <c>ESC [</c> sequence inside the paste, are dropped. The
-/// popup and the line are then drawn as for the same text typed key by key.
+/// popup and the line are then drawn as for the same text typed key by key. A paste keeps at most
+/// <see cref="MaxPasteLength"/> characters after that clean-up (never half a surrogate pair); the
+/// rest is still read up to <c>ESC[201~</c> but dropped, never typed or submitted, and the
+/// <c>pasteCut</c> callback, if given, is called once for that paste.
 /// </para>
 /// <para>
 /// Tab completes a unique command prefix; on an empty line it does nothing. When 2 or more names
@@ -77,6 +80,13 @@ internal sealed class LineEditor
     // A key read after a plain Esc in ReadKey, handed to the next read so it is not lost.
     private ConsoleKeyInfo? carried;
 
+    /// <summary>
+    /// The most UTF-16 characters one bracketed paste keeps, counted after the clean-up (line
+    /// breaks and Tab as a space, other control characters and sequences dropped). The rest is
+    /// dropped.
+    /// </summary>
+    public const int MaxPasteLength = 4096;
+
     public LineEditor(IAnsiConsole console, CommandRegistry registry)
     {
         this.console = console;
@@ -94,30 +104,37 @@ internal sealed class LineEditor
     /// and redraws it (cropped to the room) whenever the line becomes empty again.
     /// <paramref name="scroll"/> is called with -1 or +1 and the kind of step for a scroll key or a
     /// wheel notch and returns <c>true</c> if it redrew anything, or is <c>null</c> to ignore both.
+    /// <paramref name="pasteCut"/> is called once for each paste that was cut to
+    /// <see cref="MaxPasteLength"/> characters, after the kept text was added to the line and
+    /// before the line is redrawn, or is <c>null</c> for no notice.
     /// Returns <c>null</c> if the input has no more keys, also in the middle of an escape sequence
     /// or a paste.
     /// </summary>
-    public string? ReadLine(int column, int line, int width, PopupArea? popup = null, string? placeholder = null, Func<int, ScrollStep, bool>? scroll = null) =>
-        Read(column, line, width, popup, placeholder, scroll, value: false, out _);
+    public string? ReadLine(int column, int line, int width, PopupArea? popup = null, string? placeholder = null,
+        Func<int, ScrollStep, bool>? scroll = null, Action? pasteCut = null) =>
+        Read(column, line, width, popup, placeholder, scroll, pasteCut, value: false, out _);
 
     /// <summary>
     /// Reads a value (not a command) at the same place as <see cref="ReadLine"/>: no popup, no
     /// scrolling, no Tab completion and no history (↑/↓ do nothing and the value is not added).
     /// Esc cancels: <paramref name="cancelled"/> is set and an empty string is returned. Mouse and
-    /// paste sequences behave as in <see cref="ReadLine"/>. Returns <c>null</c> if the input has no
-    /// more keys.
+    /// paste sequences behave as in <see cref="ReadLine"/>, including the
+    /// <see cref="MaxPasteLength"/> cap and the <paramref name="pasteCut"/> callback. Returns
+    /// <c>null</c> if the input has no more keys.
     /// </summary>
-    public string? ReadValue(int column, int line, int width, string? placeholder, out bool cancelled) =>
-        Read(column, line, width, null, placeholder, null, value: true, out cancelled);
+    public string? ReadValue(int column, int line, int width, string? placeholder, out bool cancelled, Action? pasteCut = null) =>
+        Read(column, line, width, null, placeholder, null, pasteCut, value: true, out cancelled);
 
     /// <summary>
     /// Reads one key for a dialog such as the settings panel. A mouse sequence (an Esc with a
     /// <c>[</c> waiting) is read to its end and dropped, and a bracketed paste is read to its end
-    /// and dropped, so neither reaches the dialog as keys. Any Esc comes back as
+    /// and dropped (keeping at most <see cref="MaxPasteLength"/> characters while it reads; the
+    /// <paramref name="pasteCut"/> callback is never called, since nothing of the paste is used),
+    /// so neither reaches the dialog as keys. Any Esc comes back as
     /// <see cref="ConsoleKey.Escape"/>; a key that followed a plain Esc is kept for the next read.
     /// Returns <c>null</c> if the input has no more keys.
     /// </summary>
-    public ConsoleKeyInfo? ReadKey()
+    public ConsoleKeyInfo? ReadKey(Action? pasteCut = null)
     {
         while (true)
         {
@@ -152,7 +169,7 @@ internal sealed class LineEditor
             }
 
             MouseInputKind? kind = ReadSequence();
-            if (kind is null || (kind == MouseInputKind.PasteStart && ReadPaste() is null))
+            if (kind is null || (kind == MouseInputKind.PasteStart && ReadPaste(out _) is null))
             {
                 return null;
             }
@@ -160,7 +177,7 @@ internal sealed class LineEditor
     }
 
     private string? Read(int column, int line, int width, PopupArea? popup, string? placeholder,
-        Func<int, ScrollStep, bool>? scroll, bool value, out bool cancelled)
+        Func<int, ScrollStep, bool>? scroll, Action? pasteCut, bool value, out bool cancelled)
     {
         cancelled = false;
         string buffer = string.Empty;
@@ -186,6 +203,7 @@ internal sealed class LineEditor
             ScrollStep step = ScrollStep.Page;
             int? direction = ScrollDirection(info);
             string? pasted = null;
+            bool cut = false;
             if (IsEscape(info))
             {
                 info = new ConsoleKeyInfo('\u001b', ConsoleKey.Escape, false, false, false);
@@ -197,7 +215,7 @@ internal sealed class LineEditor
                         MouseInputKind? kind = ReadSequence();
                         if (kind == MouseInputKind.PasteStart)
                         {
-                            pasted = ReadPaste();
+                            pasted = ReadPaste(out cut);
                         }
 
                         if (kind is null || (kind == MouseInputKind.PasteStart && pasted is null))
@@ -250,6 +268,10 @@ internal sealed class LineEditor
             if (pasted is not null)
             {
                 buffer += pasted;
+                if (cut)
+                {
+                    pasteCut?.Invoke();
+                }
             }
             else
             {
@@ -397,9 +419,12 @@ internal sealed class LineEditor
 
     // Reads a bracketed paste whose ESC[200~ was already read, up to ESC[201~, and returns its text:
     // line breaks (\r, \n, \r\n) and Tabs as one space each, other control characters and other
-    // ESC [ sequences dropped. Returns null if the input runs out first.
-    private string? ReadPaste()
+    // ESC [ sequences dropped. Keeps at most MaxPasteLength of those characters, never a lone high
+    // surrogate at the cut; once full, it reads on to the end marker and stores nothing more, and
+    // cut says whether anything was dropped that way. Returns null if the input runs out first.
+    private string? ReadPaste(out bool cut)
     {
+        cut = false;
         System.Text.StringBuilder text = new System.Text.StringBuilder();
         bool afterCarriageReturn = false;
         ConsoleKeyInfo? pending = null;
@@ -451,14 +476,33 @@ internal sealed class LineEditor
             }
 
             afterCarriageReturn = c == '\r';
+            char kept;
             if (c is '\r' or '\n' or '\t')
             {
-                text.Append(' ');
+                kept = ' ';
             }
             else if (c != '\0' && !char.IsControl(c))
             {
-                text.Append(c);
+                kept = c;
             }
+            else
+            {
+                continue;
+            }
+
+            if (cut)
+            {
+                continue;
+            }
+
+            int left = MaxPasteLength - text.Length;
+            if (left == 0 || (left == 1 && char.IsHighSurrogate(kept)))
+            {
+                cut = true;
+                continue;
+            }
+
+            text.Append(kept);
         }
     }
 
