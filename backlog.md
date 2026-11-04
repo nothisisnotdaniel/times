@@ -112,3 +112,6 @@ Write one feature per line, in plain language.
 - [?] Dash test for the prune script: run the prerelease prune script under dash (POSIX sh) in a test or CI job, since this machine's sh is bash. (from 081-prune-old-prereleases)
 - [?] review-code 1: on Windows the file is still opened by path. The spec puts this out of scope, and it needs its own job. (from 086-safer-file-loading)
 - [?] review-security (verify nupkg checksum/provenance): this would be new user guidance the spec doesn't cover, so it needs its own job. (from 090-readme-user-install)
+- [?] review-security 1: capping or caching the folder scan changes behaviour and needs its own job. (from 091-daily-target-flexitime)
+- [?] review-security 2: matching .JSON without case changes which files count, so it changes behaviour. (from 091-daily-target-flexitime)
+- [?] review-ux 1: showing the skipped hint on an empty day where no day counts goes against AC-6 as written, so it needs its own job. (from 091-daily-target-flexitime)
