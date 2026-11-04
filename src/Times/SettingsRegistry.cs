@@ -73,8 +73,22 @@ internal sealed partial class SettingsRegistry
     /// <summary>The registered settings, in registration order.</summary>
     public IReadOnlyList<Setting> Settings => settings;
 
-    /// <summary>The registry the app ships with. It has no settings yet: they arrive with their features.</summary>
-    public static SettingsRegistry CreateDefault() => new SettingsRegistry();
+    /// <summary>The name of the daily work target setting, in minutes.</summary>
+    public const string DailyTargetName = "daily-target";
+
+    /// <summary>The daily work target, in minutes, when none is set (8:00).</summary>
+    public const int DailyTargetDefault = 480;
+
+    /// <summary>The highest daily work target, in minutes (24:00).</summary>
+    public const int DailyTargetMax = 1440;
+
+    /// <summary>The registry the app ships with: each feature registers its settings here.</summary>
+    public static SettingsRegistry CreateDefault()
+    {
+        SettingsRegistry registry = new SettingsRegistry();
+        registry.RegisterNumber(DailyTargetName, "Daily work target in minutes (480 = 8:00)", DailyTargetDefault, 0, DailyTargetMax);
+        return registry;
+    }
 
     /// <summary>Finds a setting by its name (exact, ordinal).</summary>
     public bool TryGet(string name, out Setting setting)

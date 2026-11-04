@@ -142,11 +142,17 @@ public class DayRecordTests
 
     private static TimeSpan Hm(int hours, int minutes) => new(hours, minutes, 0);
 
-    // AC-2 (019)
+    private static readonly TimeSpan EightHours = TimeSpan.FromHours(8);
+
+    // AC-2 (091)
     [Fact]
-    public void DailyTarget_IsEightHours()
+    public void TimeLeft_StartsAtTheGivenTarget()
     {
-        Assert.Equal(TimeSpan.FromHours(8), DayRecord.DailyTarget);
+        DayRecord record = DayRecord.Empty.Add(Arrival(8, 0)).Add(Leaving(12, 0));
+
+        Assert.Equal([Hm(7, 30), Hm(3, 30)], record.TimeLeft(Hm(7, 30)));
+        Assert.Equal([Hm(0, 0), Hm(-4, 0)], record.TimeLeft(TimeSpan.Zero));
+        Assert.Equal(Hm(4, 0), record.WorkTime());
     }
 
     // AC-1, AC-2 (019)
@@ -155,7 +161,7 @@ public class DayRecordTests
     {
         DayRecord record = new DayRecord([Arrival(8, 0), Leaving(12, 0), Arrival(12, 30), Leaving(17, 0)]);
 
-        Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(0, -30)], record.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(0, -30)], record.TimeLeft(EightHours));
     }
 
     // AC-2 (019)
@@ -164,14 +170,14 @@ public class DayRecordTests
     {
         DayRecord record = DayRecord.Empty.Add(Leaving(17, 0)).Add(Arrival(8, 0));
 
-        Assert.Equal([Hm(8, 0), Hm(-1, 0)], record.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(-1, 0)], record.TimeLeft(EightHours));
     }
 
     // AC-3 (019)
     [Fact]
     public void TimeLeft_EmptyDay_IsEmpty()
     {
-        Assert.Empty(DayRecord.Empty.TimeLeft());
+        Assert.Empty(DayRecord.Empty.TimeLeft(EightHours));
     }
 
     // AC-1, AC-3 (019); AC-4, AC-7 (045)
@@ -180,7 +186,7 @@ public class DayRecordTests
     {
         DayRecord record = new DayRecord([Arrival(9, 0), Arrival(10, 0), Leaving(12, 0)]);
 
-        Assert.Equal([Hm(8, 0), Hm(7, 0), Hm(5, 0)], record.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(7, 0), Hm(5, 0)], record.TimeLeft(EightHours));
     }
 
     // AC-1, AC-3 (019)
@@ -189,7 +195,7 @@ public class DayRecordTests
     {
         DayRecord record = new DayRecord([Leaving(7, 0), Arrival(8, 0)]);
 
-        Assert.Equal([Hm(8, 0), Hm(8, 0)], record.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(8, 0)], record.TimeLeft(EightHours));
     }
 
     // AC-1 (019)
@@ -198,7 +204,7 @@ public class DayRecordTests
     {
         DayRecord record = new DayRecord([Arrival(8, 0), Leaving(12, 0), Leaving(13, 0)]);
 
-        Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0)], record.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0)], record.TimeLeft(EightHours));
     }
 
     // AC-1 (019)
@@ -207,7 +213,7 @@ public class DayRecordTests
     {
         DayRecord record = new DayRecord([Arrival(8, 0), Leaving(10, 0), Arrival(11, 0)]);
 
-        Assert.Equal([Hm(8, 0), Hm(6, 0), Hm(6, 0)], record.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(6, 0), Hm(6, 0)], record.TimeLeft(EightHours));
     }
 
     // AC-3 (019)
@@ -216,7 +222,7 @@ public class DayRecordTests
     {
         DayRecord record = new DayRecord([Arrival(9, 0), Leaving(9, 0)]);
 
-        Assert.Equal([Hm(8, 0), Hm(8, 0)], record.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(8, 0)], record.TimeLeft(EightHours));
     }
 
     // Remove entry (job 021) ---------------------------------------------------------------
@@ -508,7 +514,7 @@ public class DayRecordTests
         DayRecord record = new DayRecord(
             [Arrival(8, 0), BreakStart(12, 0), Checkpoint(12, 15, "Lunch talk", 5), BreakEnd(12, 30), Leaving(17, 0)]);
 
-        Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(4, 0), Hm(0, -30)], record.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(4, 0), Hm(0, -30)], record.TimeLeft(EightHours));
     }
 
     // AC-9 (036); AC-1, AC-7 (045)
@@ -518,7 +524,7 @@ public class DayRecordTests
         DayRecord record = new DayRecord([Arrival(8, 0), BreakEnd(10, 0), Checkpoint(11, 0, "X"), BreakStart(12, 0), Leaving(13, 0)]);
 
         // Work runs 08:00 to 12:00; the break from 12:00 ends at the 13:00 leaving.
-        Assert.Equal([Hm(8, 0), Hm(6, 0), Hm(5, 0), Hm(4, 0), Hm(4, 0)], record.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(6, 0), Hm(5, 0), Hm(4, 0), Hm(4, 0)], record.TimeLeft(EightHours));
     }
 
     // AC-1, AC-2 (045)
@@ -528,7 +534,7 @@ public class DayRecordTests
         DayRecord record = new DayRecord(
             [Arrival(8, 0), Checkpoint(9, 30, "Kickoff"), BreakStart(12, 0), BreakEnd(12, 30), Checkpoint(15, 0, "Review"), Leaving(17, 0)]);
 
-        Assert.Equal([Hm(8, 0), Hm(6, 30), Hm(4, 0), Hm(4, 0), Hm(1, 30), Hm(0, -30)], record.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(6, 30), Hm(4, 0), Hm(4, 0), Hm(1, 30), Hm(0, -30)], record.TimeLeft(EightHours));
     }
 
     // AC-4 (045)
@@ -537,7 +543,7 @@ public class DayRecordTests
     {
         DayRecord record = new DayRecord([Arrival(8, 0), Checkpoint(10, 0, "X")]);
 
-        Assert.Equal([Hm(8, 0), Hm(6, 0)], record.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(6, 0)], record.TimeLeft(EightHours));
     }
 
     // AC-4 (045)
@@ -546,7 +552,7 @@ public class DayRecordTests
     {
         DayRecord record = new DayRecord([Arrival(8, 0), BreakStart(12, 0), Leaving(13, 0), Arrival(14, 0), Leaving(15, 0)]);
 
-        Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(4, 0), Hm(3, 0)], record.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(4, 0), Hm(3, 0)], record.TimeLeft(EightHours));
     }
 
     // AC-4 (045)
@@ -555,7 +561,7 @@ public class DayRecordTests
     {
         DayRecord record = new DayRecord([Arrival(8, 0), BreakEnd(10, 0), Leaving(12, 0)]);
 
-        Assert.Equal([Hm(8, 0), Hm(6, 0), Hm(4, 0)], record.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(6, 0), Hm(4, 0)], record.TimeLeft(EightHours));
     }
 
     // AC-4 (045)
@@ -564,7 +570,7 @@ public class DayRecordTests
     {
         DayRecord record = new DayRecord([BreakStart(7, 0), Arrival(8, 0), BreakEnd(9, 0), Leaving(10, 0)]);
 
-        Assert.Equal([Hm(8, 0), Hm(8, 0), Hm(7, 0), Hm(6, 0)], record.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(8, 0), Hm(7, 0), Hm(6, 0)], record.TimeLeft(EightHours));
     }
 
     // AC-4 (045)
@@ -574,7 +580,7 @@ public class DayRecordTests
         DayRecord record = new DayRecord(
             [Arrival(8, 0), BreakStart(10, 0), BreakStart(11, 0), Arrival(11, 30), BreakEnd(12, 0), Leaving(13, 0)]);
 
-        Assert.Equal([Hm(8, 0), Hm(6, 0), Hm(6, 0), Hm(6, 0), Hm(6, 0), Hm(5, 0)], record.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(6, 0), Hm(6, 0), Hm(6, 0), Hm(6, 0), Hm(5, 0)], record.TimeLeft(EightHours));
     }
 
     // AC-4 (045)
@@ -583,7 +589,7 @@ public class DayRecordTests
     {
         DayRecord record = new DayRecord([Checkpoint(9, 0, "X")]);
 
-        Assert.Equal([Hm(8, 0)], record.TimeLeft());
+        Assert.Equal([Hm(8, 0)], record.TimeLeft(EightHours));
     }
 
     // AC-10 (036)
@@ -635,7 +641,7 @@ public class DayRecordTests
         DayRecord record = new DayRecord(
             [Arrival(7, 10), BreakStart(9, 0), BreakEnd(9, 20), Leaving(12, 0), Arrival(13, 0), BreakStart(18, 5)]);
 
-        Assert.Equal(DayRecord.DailyTarget - record.TimeLeft()[^1], record.WorkTime());
+        Assert.Equal(EightHours - record.TimeLeft(EightHours)[^1], record.WorkTime());
         Assert.Equal(Hm(9, 35), record.WorkTime());
     }
 
@@ -649,7 +655,7 @@ public class DayRecordTests
 
         Assert.Equal(Hm(1, 20), record.BreakTime());
         Assert.Equal(Hm(9, 35), record.WorkTime());
-        Assert.Equal([Hm(8, 0), Hm(6, 10), Hm(6, 10), Hm(3, 30), Hm(3, 30), Hm(-1, -35)], record.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(6, 10), Hm(6, 10), Hm(3, 30), Hm(3, 30), Hm(-1, -35)], record.TimeLeft(EightHours));
     }
 
     // AC-2 (047)
@@ -737,7 +743,7 @@ public class DayRecordTests
 
         AssertBreaks(record, Hm(8, 15), Hm(0, 45), Hm(0, 30));
         Assert.True(record.BreakTime() >= DayRecord.RequiredBreak(record.WorkTime()));
-        Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(0, -15)], record.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(0, -15)], record.TimeLeft(EightHours));
     }
 
     // AC-4, AC-10 (084)
@@ -750,13 +756,13 @@ public class DayRecordTests
 
         Assert.Equal(TimeSpan.Zero, morning.BreakTime());
         Assert.Equal(Hm(4, 0), morning.WorkTime());
-        Assert.Equal([Hm(8, 0), Hm(4, 0)], morning.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(4, 0)], morning.TimeLeft(EightHours));
         Assert.Equal(TimeSpan.Zero, afterLeaving.BreakTime());
         Assert.Equal(Hm(9, 0), afterLeaving.WorkTime());
-        Assert.Equal([Hm(8, 0), Hm(-1, 0), Hm(-1, 0)], afterLeaving.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(-1, 0), Hm(-1, 0)], afterLeaving.TimeLeft(EightHours));
         Assert.Equal(TimeSpan.Zero, beforeArrival.BreakTime());
         Assert.Equal(Hm(1, 0), beforeArrival.WorkTime());
-        Assert.Equal([Hm(8, 0), Hm(8, 0), Hm(8, 0), Hm(7, 0)], beforeArrival.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(8, 0), Hm(8, 0), Hm(7, 0)], beforeArrival.TimeLeft(EightHours));
     }
 
     // AC-5, AC-10 (084)
@@ -773,7 +779,7 @@ public class DayRecordTests
         foreach (DayRecord record in new[] { breakEnd, secondLeaving, checkpoint })
         {
             AssertBreaks(record, Hm(8, 0), Hm(1, 0), Hm(0, 30));
-            Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(4, 0), Hm(0, 0)], record.TimeLeft());
+            Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(4, 0), Hm(0, 0)], record.TimeLeft(EightHours));
         }
     }
 
@@ -785,7 +791,7 @@ public class DayRecordTests
             [Arrival(8, 0), BreakStart(12, 0), Leaving(12, 30), Arrival(13, 0), Leaving(17, 0)]);
 
         AssertBreaks(record, Hm(8, 0), Hm(1, 0), Hm(0, 30));
-        Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(4, 0), Hm(0, 0)], record.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(4, 0), Hm(0, 0)], record.TimeLeft(EightHours));
     }
 
     // AC-7, AC-10 (084)
@@ -796,7 +802,7 @@ public class DayRecordTests
 
         AssertBreaks(record, Hm(9, 0), Hm(0, 0), Hm(0, 30));
         Assert.True(record.BreakTime() < DayRecord.RequiredBreak(record.WorkTime()));
-        Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(-1, 0)], record.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(-1, 0)], record.TimeLeft(EightHours));
     }
 
     // AC-8, AC-10 (084)
@@ -807,7 +813,7 @@ public class DayRecordTests
             [Arrival(7, 0), Leaving(10, 0), Arrival(10, 15), Leaving(12, 0), Arrival(12, 30), Leaving(17, 0)]);
 
         AssertBreaks(record, Hm(9, 15), Hm(0, 45), Hm(0, 45));
-        Assert.Equal([Hm(8, 0), Hm(5, 0), Hm(5, 0), Hm(3, 15), Hm(3, 15), Hm(-1, -15)], record.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(5, 0), Hm(5, 0), Hm(3, 15), Hm(3, 15), Hm(-1, -15)], record.TimeLeft(EightHours));
     }
 
     // AC-9 (084)
@@ -988,7 +994,7 @@ public class DayRecordTests
         Assert.Equal(without.WorkTime(), record.WorkTime());
         Assert.Equal(Hm(4, 30), record.WorkTime());
         Assert.Equal(Hm(0, 30), record.BreakTime());
-        Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(4, 0), Hm(3, 30)], record.TimeLeft());
+        Assert.Equal([Hm(8, 0), Hm(4, 0), Hm(4, 0), Hm(4, 0), Hm(3, 30)], record.TimeLeft(EightHours));
     }
 
     // Safer titles and names (job 056) ---------------------------------------------------------
@@ -1204,7 +1210,7 @@ public class DayRecordTests
         ]);
         DayRecord booked = unbooked.SetBooked(2, true).SetBooked(5, true);
 
-        Assert.Equal(unbooked.TimeLeft(), booked.TimeLeft());
+        Assert.Equal(unbooked.TimeLeft(EightHours), booked.TimeLeft(EightHours));
         Assert.Equal(unbooked.WorkTime(), booked.WorkTime());
         Assert.Equal(unbooked.BreakTime(), booked.BreakTime());
     }
@@ -1341,14 +1347,14 @@ public class DayRecordTests
             [Arrival(8, 0), Leaving(12, 0), BreakEnd(12, 30), Arrival(13, 0), Leaving(17, 0)]);
         DayRecord sameTime = DayRecord.Empty.Add(Arrival(8, 0)).Add(Leaving(17, 0)).Add(BreakStart(17, 0));
 
-        Assert.Equal([TimeSpan.FromHours(8), TimeSpan.FromHours(4), TimeSpan.FromHours(4)], unended.TimeLeft());
+        Assert.Equal([TimeSpan.FromHours(8), TimeSpan.FromHours(4), TimeSpan.FromHours(4)], unended.TimeLeft(EightHours));
         Assert.Equal(TimeSpan.FromHours(4), unended.WorkTime());
         Assert.Equal(TimeSpan.FromHours(5), unended.BreakTime());
-        Assert.Equal([TimeSpan.FromHours(8), TimeSpan.FromHours(8), TimeSpan.FromHours(-1)], before.TimeLeft());
+        Assert.Equal([TimeSpan.FromHours(8), TimeSpan.FromHours(8), TimeSpan.FromHours(-1)], before.TimeLeft(EightHours));
         Assert.Equal(TimeSpan.Zero, before.BreakTime());
         Assert.Equal(TimeSpan.FromHours(8), between.WorkTime());
         Assert.Equal(TimeSpan.FromHours(1), between.BreakTime());
-        Assert.Equal([TimeSpan.FromHours(8), TimeSpan.FromHours(-1), TimeSpan.FromHours(-1)], sameTime.TimeLeft());
+        Assert.Equal([TimeSpan.FromHours(8), TimeSpan.FromHours(-1), TimeSpan.FromHours(-1)], sameTime.TimeLeft(EightHours));
         Assert.Equal(TimeSpan.Zero, sameTime.BreakTime());
     }
 

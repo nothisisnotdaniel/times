@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace Times;
 
@@ -9,7 +10,7 @@ namespace Times;
 /// Reading never creates the folder or a file, so browsing leaves nothing behind. Only
 /// <see cref="Save"/> writes, and only into an absolute folder.
 /// </summary>
-internal sealed class DayStore
+internal sealed partial class DayStore
 {
     /// <summary>Day files are tiny. Anything bigger is not ours and is not read.</summary>
     internal const long MaxFileBytes = 64 * 1024;
@@ -73,6 +74,43 @@ internal sealed class DayStore
     }
 
     /// <summary>
+    /// Lists the days that have an entry in the folder, in ascending order. Only names that are exactly
+    /// <c>yyyy-MM-dd.json</c> (ASCII digits, lower-case extension) and parse as a date with the invariant
+    /// culture count; every other name is ignored. An entry is listed whatever it is (a directory or FIFO
+    /// with a day's name too), so <see cref="Load"/> decides whether it can be read. Reads only the
+    /// folder listing: never opens a file and never creates the folder. A missing or invalid folder lists
+    /// nothing. Throws <see cref="IOException"/> or <see cref="UnauthorizedAccessException"/> if the
+    /// folder cannot be listed.
+    /// </summary>
+    public IReadOnlyList<DateOnly> Days()
+    {
+        if (!IsValidFolder(Folder) || !Directory.Exists(Folder))
+        {
+            return [];
+        }
+
+        List<DateOnly> days = [];
+        foreach (string path in Directory.EnumerateFileSystemEntries(Folder))
+        {
+            if (TryParseName(Path.GetFileName(path), out DateOnly day))
+            {
+                days.Add(day);
+            }
+        }
+
+        days.Sort();
+        return days;
+    }
+
+    /// <summary>True if <paramref name="fileName"/> is exactly a day file's name, <c>yyyy-MM-dd.json</c>, for a real date.</summary>
+    internal static bool TryParseName(string fileName, out DateOnly day)
+    {
+        day = default;
+        return DayFileName().IsMatch(fileName)
+            && DateOnly.TryParseExact(fileName[..10], "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out day);
+    }
+
+    /// <summary>
     /// Saves <paramref name="record"/> for <paramref name="day"/>. Creates the folder if it is
     /// missing, writes a temp file next to the target and moves it over the target. Throws
     /// <see cref="InvalidOperationException"/> and writes nothing if <see cref="Folder"/> is not valid.
@@ -106,4 +144,8 @@ internal sealed class DayStore
     }
 
     private static string Name(DateOnly day) => day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+    // \z, not $: a trailing line break is not part of a name.
+    [GeneratedRegex(@"^[0-9]{4}-[0-9]{2}-[0-9]{2}\.json\z", RegexOptions.CultureInvariant)]
+    private static partial Regex DayFileName();
 }

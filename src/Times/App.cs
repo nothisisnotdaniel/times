@@ -1068,11 +1068,31 @@ internal sealed class App
         }
     }
 
+    // The daily-target setting, read from settings.json on every redraw. A missing or broken file, or
+    // a registry without the setting, gives the default (8:00). Reading never writes the file.
+    private TimeSpan DailyTarget()
+    {
+        int minutes = SettingsRegistry.DailyTargetDefault;
+        if (settings.TryGet(SettingsRegistry.DailyTargetName, out Setting setting) && setting.Kind == SettingKind.Number
+            && LoadSettings(out SettingValues values) is null)
+        {
+            int value = values.Number(SettingsRegistry.DailyTargetName);
+            if (value >= 0 && value <= SettingsRegistry.DailyTargetMax)
+            {
+                minutes = value;
+            }
+        }
+
+        return TimeSpan.FromMinutes(minutes);
+    }
+
     private IRenderable RenderDay()
     {
         try
         {
-            return dayView.Render(Store.Load(dayView.Current));
+            DayRecord day = Store.Load(dayView.Current);
+            TimeSpan target = DailyTarget();
+            return dayView.Render(day, target, FlexitimeBalance.Compute(Store, dayView.Current, target));
         }
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
         {
