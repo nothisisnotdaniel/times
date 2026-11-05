@@ -107,8 +107,9 @@ Every factory agent reads this file before working on Times. Keep it short and a
   (signed values via `DayView.FormatSigned`; an empty day shows it without `day`, only when a day
   counts). `FlexitimeBalance.Compute` sums `WorkTime() - target` over every day file (`DayStore.Days()`:
   names exactly `yyyy-MM-dd.json`, folder listing only) on or before the shown day that holds an
-  arrival; unreadable files are skipped and counted (yellow `! N day file(s) skipped`, no names). An absence day counts with
-  a delta of zero, and `DayView` shows `Absence: Vacation` plus the target line with `day +0:00` for it.
+  arrival; unreadable files are skipped and counted (yellow `! N day file(s) skipped`, no names).
+  An absence day counts with a delta of zero, and `DayView` shows `Absence: Vacation` plus the
+  target line with `day +0:00` for it.
 - **Updates:** `UpdateService` (wired in `Program.cs`, `null` in tests unless injected) runs one background
   check at start (`IReleaseSource`, GitHub's release list only, allow-listed asset URLs, capped and timed out) and
   the `update` (`up`) command. Settings `update-mode` (`notify only` / `install on quit` / `install and restart`)

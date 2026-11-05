@@ -5,7 +5,8 @@ namespace Times;
 /// <summary>
 /// The running flexitime balance up to and including a shown day: the sum of
 /// <see cref="DayRecord.WorkTime"/> minus the daily target over every day file dated on or before
-/// that day that holds at least one arrival. An absence day counts too, with a delta of zero. Day files that cannot be read are skipped and counted.
+/// that day that holds at least one arrival. An absence day counts too, with a delta of zero. Day
+/// files that cannot be read are skipped and counted.
 /// Computing it only reads: it never creates or changes a file or folder.
 /// </summary>
 internal sealed class FlexitimeBalance
