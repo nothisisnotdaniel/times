@@ -5,7 +5,7 @@ namespace Times;
 /// <summary>
 /// The running flexitime balance up to and including a shown day: the sum of
 /// <see cref="DayRecord.WorkTime"/> minus the daily target over every day file dated on or before
-/// that day that holds at least one arrival. Day files that cannot be read are skipped and counted.
+/// that day that holds at least one arrival. An absence day counts too, with a delta of zero. Day files that cannot be read are skipped and counted.
 /// Computing it only reads: it never creates or changes a file or folder.
 /// </summary>
 internal sealed class FlexitimeBalance
@@ -68,7 +68,12 @@ internal sealed class FlexitimeBalance
                 continue;
             }
 
-            if (record.Entries.Any(e => e.Kind == EntryKind.Arrival))
+            if (record.Absence is not null)
+            {
+                // An absence day meets the target exactly: it counts, with a delta of zero.
+                counted++;
+            }
+            else if (record.Entries.Any(e => e.Kind == EntryKind.Arrival))
             {
                 total += record.WorkTime() - target;
                 counted++;

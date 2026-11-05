@@ -240,6 +240,76 @@ internal sealed class App
         registry.Register("unbooked", "ub", "Mark a checkpoint on this day as not yet booked by its number", argument =>
             SetBooked("unbooked", argument, false));
         registry.Register("summary", "s", "Show the time taken per work item from this day's checkpoints", NoArguments("summary", Summary));
+        registry.Register("absence", "ab", "Mark this day as vacation, sick or holiday, or clear it", Absence);
+    }
+
+    // Marks the day being viewed as an absence (vacation, sick, holiday) or clears it. Nothing is written
+    // if the argument is not one of the four words, the day's file cannot be read, the day has entries,
+    // or (for clear) the day has no absence.
+    private CommandResult Absence(string argument)
+    {
+        const string Name = "absence";
+        const string Usage = "Use [bold]absence vacation|sick|holiday|clear[/].";
+        string word = argument.Trim();
+        if (word.Length == 0)
+        {
+            return Hint($"{Name}: say which absence. {Usage}");
+        }
+
+        // ASCII only, so no culture or Unicode case folding (such as a long s) can turn a word into one of ours.
+        string key = word.All(char.IsAscii) ? word.ToLowerInvariant() : string.Empty;
+        AbsenceKind? wanted;
+        bool clear = false;
+        switch (key)
+        {
+            case "vacation":
+                wanted = AbsenceKind.Vacation;
+                break;
+            case "sick":
+                wanted = AbsenceKind.Sick;
+                break;
+            case "holiday":
+                wanted = AbsenceKind.PublicHoliday;
+                break;
+            case "clear":
+                wanted = null;
+                clear = true;
+                break;
+            default:
+                return Hint($"{Name}: [bold]{Markup.Escape(word)}[/] is not an absence. {Usage}");
+        }
+
+        DateOnly day = dayView.Current;
+        DayRecord current;
+        try
+        {
+            current = Store.Load(day);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{Name}: {Markup.Escape(ex.Message)} Nothing was changed.");
+        }
+
+        if (clear && current.Absence is null)
+        {
+            return Hint($"{Name}: This day has no absence.");
+        }
+
+        if (!clear && current.Entries.Count > 0)
+        {
+            return Hint($"{Name}: this day has entries. Remove them first with [bold]remove <number>[/].");
+        }
+
+        try
+        {
+            Store.Save(day, current.WithAbsence(wanted));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{Name}: could not save the day. {Markup.Escape(ex.Message)}");
+        }
+
+        return CommandResult.None;
     }
 
     // Shows the time taken per work item (and per name without one) on the day being viewed, as a
@@ -705,6 +775,12 @@ internal sealed class App
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
         {
             return Hint($"{name}: {Markup.Escape(ex.Message)} Nothing was booked.");
+        }
+
+        if (current.Absence is { } absence)
+        {
+            return Hint($"{name}: this day is marked as absence ({DayView.AbsenceLabel(absence)}). " +
+                "Use [bold]absence clear[/] first. Nothing was booked.");
         }
 
         DayRecord updated = current.Add(entry);

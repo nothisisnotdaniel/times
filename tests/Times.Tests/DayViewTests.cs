@@ -1097,4 +1097,35 @@ public class DayViewTests
             "\u001b[38;5;11m! 1 day file skipped\u001b[0m",
             AnsiOutput(MorningDay(), EightHours, new FlexitimeBalance(TimeSpan.Zero, 1, 1)));
     }
+
+    // Job 098 ------------------------------------------------------------------------------
+
+    // AC-10
+    [Theory]
+    [InlineData("Vacation", "Vacation")]
+    [InlineData("Sick", "Sick")]
+    [InlineData("PublicHoliday", "Public holiday")]
+    public void Render_AbsenceDay_ShowsHeadingAbsenceAndTargetLine(string kind, string label)
+    {
+        AbsenceKind absence = Enum.Parse<AbsenceKind>(kind);
+        DayRecord record = DayRecord.Empty.WithAbsence(absence);
+
+        string[] lines = PlainLines(record, EightHours, new FlexitimeBalance(new TimeSpan(1, 15, 0), 3, 0));
+
+        Assert.Equal(3, lines.Length);
+        Assert.Contains("Tuesday, 2026-10-27", lines[0]);
+        Assert.Equal("Absence: " + label, lines[1]);
+        Assert.Equal("Target 8:00 · day +0:00 · balance +1:15", lines[2]);
+        Assert.DoesNotContain(lines, l => l.Contains("No entries yet.", StringComparison.Ordinal));
+    }
+
+    // AC-10
+    [Fact]
+    public void Render_AbsenceDay_GreyLabel_SteelBlueValue()
+    {
+        string output = AnsiOutput(DayRecord.Empty.WithAbsence(AbsenceKind.Sick), EightHours, FlexitimeBalance.None);
+
+        Assert.Contains("\u001b[38;5;8mAbsence:\u001b[0m \u001b[38;5;75mSick\u001b[0m", output);
+        Assert.Contains("\u001b[38;5;75m+0:00\u001b[0m", output);
+    }
 }

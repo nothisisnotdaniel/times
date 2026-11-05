@@ -123,6 +123,7 @@ required. A booking without a time uses the current time. `remove`, `change`, `b
 | `booked` | `bk` | `<number>` | Mark a checkpoint on this day as booked in Azure DevOps |
 | `unbooked` | `ub` | `<number>` | Mark a checkpoint on this day as not yet booked |
 | `summary` | `s` | none | Show the time taken per work item from this day's checkpoints |
+| `absence` | `ab` | `vacation`, `sick`, `holiday` or `clear` | Mark this day as vacation, sick or public holiday (it counts as meeting the daily target), or clear it |
 | `prev` | `p` | none | Go to the previous day |
 | `next` | `n` | none | Go to the next day |
 | `today` | `t` | none | Go back to today |

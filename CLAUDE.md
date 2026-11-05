@@ -90,6 +90,9 @@ Every factory agent reads this file before working on Times. Keep it short and a
   U+FE0E/U+FE0F are allowed, and only right after a visible code point (so `❤️` stays valid); this is checked
   when typed (red hint; for hidden or broken characters it also says to retype the text without
   them) and when `projects.json` or a day file is loaded (file is unreadable).
+  A day file may instead hold `"absence":"vacation"|"sick"|"publicHoliday"` (written before `"entries"`,
+  left out when none; never together with entries or the legacy properties, otherwise unreadable), set by
+  `absence` (`ab`) on the shown day; booking commands refuse an absence day.
 - **Settings:** features register their user preferences in the one `SettingsRegistry` (kinds
   `OnOff`, `Number` with min/max, `Choice` with options; registration order is display order;
   `CreateDefault()` registers `daily-target`, a `Number` 0..1440 with default 480, the daily work target
@@ -104,7 +107,8 @@ Every factory agent reads this file before working on Times. Keep it short and a
   (signed values via `DayView.FormatSigned`; an empty day shows it without `day`, only when a day
   counts). `FlexitimeBalance.Compute` sums `WorkTime() - target` over every day file (`DayStore.Days()`:
   names exactly `yyyy-MM-dd.json`, folder listing only) on or before the shown day that holds an
-  arrival; unreadable files are skipped and counted (yellow `! N day file(s) skipped`, no names).
+  arrival; unreadable files are skipped and counted (yellow `! N day file(s) skipped`, no names). An absence day counts with
+  a delta of zero, and `DayView` shows `Absence: Vacation` plus the target line with `day +0:00` for it.
 - **Updates:** `UpdateService` (wired in `Program.cs`, `null` in tests unless injected) runs one background
   check at start (`IReleaseSource`, GitHub's release list only, allow-listed asset URLs, capped and timed out) and
   the `update` (`up`) command. Settings `update-mode` (`notify only` / `install on quit` / `install and restart`)

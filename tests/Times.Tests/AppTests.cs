@@ -842,12 +842,12 @@ public sealed class AppTests : IDisposable
         Assert.Contains("\u001b[21;1H", output);
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal([14, 15, 16, 17, 18, 19, 20, 21], popup.Select(w => w.Row));
-        // Nineteen commands: the first seven by name, then a row counting the other twelve.
+        // Twenty commands: the first seven by name, then a row counting the other thirteen.
         Assert.Equal(
-            ["addproject", "arrive", "booked", "break", "breakend", "change", "checkpoint", "…"],
+            ["absence", "addproject", "arrive", "booked", "break", "breakend", "change", "…"],
             popup.Select(w => w.Text.Split(' ')[0]));
-        Assert.StartsWith("… 12 more", popup[^1].Text);
-        Assert.Contains("Book a checkpoint", popup[6].Text);
+        Assert.StartsWith("… 13 more", popup[^1].Text);
+        Assert.Contains("Change the time of an entry", popup[6].Text);
         Assert.Equal(80, popup[0].Text.Length);
     }
 
@@ -919,9 +919,9 @@ public sealed class AppTests : IDisposable
         List<string> hintRow = TypingWrites(output, 1).Where(w => w.Row == 21).Select(w => w.Text).ToList();
 
         // popup, restored (Backspace), popup, restored (Esc), popup (quit typing), ...
-        Assert.StartsWith("… 12 more", hintRow[0]);
+        Assert.StartsWith("… 13 more", hintRow[0]);
         Assert.Contains("Unknown command nope", hintRow[1]);
-        Assert.StartsWith("… 12 more", hintRow[2]);
+        Assert.StartsWith("… 13 more", hintRow[2]);
         Assert.Contains("Unknown command nope", hintRow[3]);
         Assert.Contains("Unknown command nope", hintRow[^1]);
         Assert.Contains("\u001b[38;5;9mUnknown command", output[output.LastIndexOf("\u001b[21;1H", StringComparison.Ordinal)..]);
@@ -954,8 +954,8 @@ public sealed class AppTests : IDisposable
 
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
-        // 31 commands: 7 shown, the eighth row counts the other 24.
-        Assert.StartsWith("… 24 more", popup[^1].Text);
+        // 32 commands: 7 shown, the eighth row counts the other 25.
+        Assert.StartsWith("… 25 more", popup[^1].Text);
         // Nothing is drawn on row 1 while typing (the final clear on quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
@@ -4768,6 +4768,7 @@ public sealed class AppTests : IDisposable
 
         Dictionary<string, string> expected = new Dictionary<string, string>
         {
+            ["absence"] = "ab",
             ["addproject"] = "ap",
             ["arrive"] = "a",
             ["booked"] = "bk",
@@ -7953,5 +7954,213 @@ public sealed class AppTests : IDisposable
         Assert.Equal("daily-target", Selected(screen[..^5]));
         Assert.Equal("480", ValueOf(screen[..^5], "daily-target"));
         Assert.False(File.Exists(SettingsPath));
+    }
+
+    // Job 098 ------------------------------------------------------------------------------
+
+    // AC-1
+    [Theory]
+    [InlineData("absence vacation", "vacation")]
+    [InlineData("ab vacation", "vacation")]
+    [InlineData("/absence Vacation", "vacation")]
+    [InlineData("absence SICK", "sick")]
+    [InlineData("ab holiday", "publicHoliday")]
+    public void Absence_OnDayWithoutFile_CreatesFileWithAbsence(string command, string saved)
+    {
+        (int exitCode, string output) = RunCommands(command, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("{\"absence\":\"" + saved + "\",\"entries\":[]}", File.ReadAllText(DayFile("2026-10-27")));
+        Assert.Contains("Absence:", LastFrame(output));
+    }
+
+    // AC-1
+    [Fact]
+    public void Absence_MarksTheShownDay_NotToday()
+    {
+        (int exitCode, _) = RunCommands("prev", "absence sick", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.False(File.Exists(DayFile("2026-10-27")));
+        Assert.Equal("{\"absence\":\"sick\",\"entries\":[]}", File.ReadAllText(DayFile("2026-10-26")));
+    }
+
+    // AC-2
+    [Fact]
+    public void Absence_OnAbsenceDay_ReplacesIt()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), "{\"absence\":\"vacation\",\"entries\":[]}");
+
+        (int exitCode, _) = RunCommands("absence holiday", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("{\"absence\":\"publicHoliday\",\"entries\":[]}", File.ReadAllText(DayFile("2026-10-27")));
+    }
+
+    // AC-3
+    [Fact]
+    public void AbsenceClear_OnAbsenceDay_SavesWithoutAbsence()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), "{\"absence\":\"sick\",\"entries\":[]}");
+
+        (int exitCode, string output) = RunCommands("absence clear", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("{\"entries\":[]}", File.ReadAllText(DayFile("2026-10-27")));
+        Assert.Contains("No entries yet.", LastFrame(output));
+    }
+
+    // AC-3
+    [Fact]
+    public void AbsenceClear_OnDayWithoutAbsence_ShowsHint_AndWritesNothing()
+    {
+        (int exitCode, string output) = RunCommands("absence clear", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.False(File.Exists(DayFile("2026-10-27")));
+        Assert.Contains("This day has no absence.", HintText(LastLayout(output), "absence:"));
+    }
+
+    // AC-3
+    [Fact]
+    public void AbsenceClear_OnDayWithEntries_ShowsHint_AndLeavesFileUnchanged()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}");
+        byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
+
+        (_, string output) = RunCommands("absence clear", "quit");
+
+        Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
+        Assert.Contains("This day has no absence.", HintText(LastLayout(output), "absence:"));
+    }
+
+    // AC-4
+    [Theory]
+    [InlineData("absence")]
+    [InlineData("ab")]
+    [InlineData("absence party")]
+    [InlineData("absence vacation sick")]
+    public void Absence_WithMissingOrUnknownArgument_ShowsUsage_AndWritesNothing(string command)
+    {
+        (int exitCode, string output) = RunCommands(command, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.False(File.Exists(DayFile("2026-10-27")));
+        string[] frame = LastLayout(output);
+        AssertLayout(frame);
+        Assert.Contains("absence vacation|sick|holiday|clear", HintText(frame, "absence:"));
+    }
+
+    // AC-4: only ASCII letters match, so a long s (which folds to S) is no "sick".
+    [Fact]
+    public void Absence_NonAsciiLookalike_IsUnknown_AndWritesNothing()
+    {
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Input.PushText("absence ");
+            c.Input.PushKey(new ConsoleKeyInfo('\u017F', ConsoleKey.NoName, false, false, false));
+            c.Input.PushTextWithEnter("ick");
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Equal(0, exitCode);
+        Assert.False(File.Exists(DayFile("2026-10-27")));
+        Assert.Contains("absence vacation|sick|holiday|clear", HintText(LastLayout(output), "absence:"));
+    }
+
+    // AC-4
+    [Fact]
+    public void Absence_UsageHint_IsRed()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Input.PushTextWithEnter("absence party");
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+
+        Assert.Matches(@"\x1b\[38;5;9mabsence: ", console.Output);
+    }
+
+    // AC-5
+    [Fact]
+    public void Absence_OnDayWithEntries_ShowsHint_AndLeavesFileUnchanged()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}");
+        byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
+
+        (int exitCode, string output) = RunCommands("absence vacation", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
+        string hint = HintText(LastLayout(output), "absence:");
+        Assert.Contains("this day has entries", hint);
+        Assert.Contains("Remove them first", hint);
+    }
+
+    // AC-6
+    [Theory]
+    [InlineData("arrive 8:00", "arrive:")]
+    [InlineData("leave 17:00", "leave:")]
+    [InlineData("break 12:00", "break:")]
+    [InlineData("breakend 12:30", "breakend:")]
+    [InlineData("checkpoint 9:00 Review", "checkpoint:")]
+    [InlineData("a", "arrive:")]
+    public void Booking_OnAbsenceDay_ShowsHint_AndLeavesFileUnchanged(string command, string start)
+    {
+        File.WriteAllText(DayFile("2026-10-27"), "{\"absence\":\"vacation\",\"entries\":[]}");
+        byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
+
+        (int exitCode, string output) = RunCommands(command, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
+        string hint = HintText(LastLayout(output), start);
+        Assert.Contains("Vacation", hint);
+        Assert.Contains("absence clear", hint);
+    }
+
+    // AC-7
+    [Theory]
+    [InlineData("absence vacation")]
+    [InlineData("absence clear")]
+    public void Absence_UnreadableFile_ShowsHint_AndLeavesFileUnchanged(string command)
+    {
+        File.WriteAllText(DayFile("2026-10-27"), "{\"absence\":\"party\",\"entries\":[]}");
+        byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
+
+        (int exitCode, string output) = RunCommands(command, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
+        Assert.Contains("is not a valid day file. Nothing was changed.", HintText(LastLayout(output), "absence:"));
+    }
+
+    // AC-10
+    [Fact]
+    public void AbsenceDay_ShowsAbsenceAndTargetLine_InTheApp()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), "{\"absence\":\"publicHoliday\",\"entries\":[]}");
+
+        (_, string output) = RunCommands("quit");
+
+        string frame = LastFrame(output);
+        Assert.Contains("Absence: Public holiday", frame);
+        Assert.Contains("Target 8:00 · day +0:00 · balance 0:00", frame);
+        Assert.DoesNotContain("No entries yet.", frame);
+    }
+
+    // AC-11
+    [Fact]
+    public void Help_ListsAbsence_WithAlias()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Input.PushTextWithEnter("help");
+        PageDown(console, HelpPages);
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+        string plain = Regex.Replace(console.Output, @"\x1b\[[0-9;?]*[A-Za-z]", string.Empty);
+
+        Assert.Matches(@"│ absence +│ ab +│ Mark this day as vacation", plain);
     }
 }
