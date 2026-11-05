@@ -115,3 +115,5 @@ Write one feature per line, in plain language.
 - [ ] Folder scan cap: cap or cache the day-file folder scan behind the flexitime balance, so a very large data folder can't slow every redraw. (from 091-daily-target-flexitime)
 - [ ] Case-insensitive day files: also count day files with an upper-case `.JSON` extension on file systems that ignore case. (from 091-daily-target-flexitime)
 - [ ] Skipped hint on empty days: show the skipped hint on an empty day where no day counts. This changes AC-6 of 091. (from 091-daily-target-flexitime)
+- [?] the AC-9 wording in spec.md should mention --configfile <staged>/nuget.config (one-line spec amendment) (from 093-auto-update)
+- [?] --no-cache to bypass ~/.nuget/packages when installing the staged update; may break across SDKs, needs its own job (from 093-auto-update)
