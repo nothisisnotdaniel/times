@@ -1339,7 +1339,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(2, exitCode);
         Assert.Contains("the data folder \"times\" from TIMES_DATA_DIR is not an absolute path", plain);
         Assert.False(HasFormatCodePoint(plain));
-        Assert.False(ProjectList.HasFormatOrBrokenCharacters(plain));
+        Assert.False(ProjectList.HasInvisibleOrBrokenCharacters(plain));
     }
 
     // 085 AC-6
@@ -5230,6 +5230,79 @@ public sealed class AppTests : IDisposable
         AssertOnHintRow(LastLayout(output), expected);
         Assert.False(File.Exists(ProjectsFile));
         Assert.False(File.Exists(DayFile("2026-10-27")));
+    }
+
+    // Wider invisible-character check (job 095) -----------------------------------------------
+
+    // AC-5 (095)
+    [Theory]
+    [InlineData("addproject 7 abc\\u3164def")]
+    [InlineData("addproject 7 abc\\u2800def")]
+    [InlineData("addproject 7 a\\uFE0F\\uFE0F")]
+    public void AddProject_InvisibleTitle_ShowsHint_AndWritesNothing(string escaped)
+    {
+        (int exitCode, string output) = TypeEscaped(escaped);
+
+        Assert.Equal(0, exitCode);
+        string[] frame = LastLayout(output);
+        AssertOnHintRow(frame, AddProjectFormatHint);
+        Assert.False(File.Exists(ProjectsFile));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
+    }
+
+    // AC-5 (095)
+    [Fact]
+    public void AddProject_InvisibleTitle_LeavesExistingFileUnchanged_AndHintIsRed()
+    {
+        WriteTwoProjects();
+        byte[] before = File.ReadAllBytes(ProjectsFile);
+
+        (_, string output) = TypeEscaped("addproject 7 abc\\u3164def", ansi: true);
+
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)maddproject: the title must not contain invisible formatting or broken characters\. Retype it without the hidden characters\.", output);
+        Assert.Equal(before, File.ReadAllBytes(ProjectsFile));
+    }
+
+    // AC-5 (095)
+    [Theory]
+    [InlineData("checkpoint abc\\u2800def")]
+    [InlineData("checkpoint abc\\u115Fdef")]
+    public void Checkpoint_InvisibleName_ShowsHint_AndWritesNoFile(string escaped)
+    {
+        (int exitCode, string output) = TypeEscaped(escaped);
+
+        Assert.Equal(0, exitCode);
+        string[] frame = LastLayout(output);
+        AssertOnHintRow(frame, CheckpointFormatHint);
+        Assert.False(File.Exists(DayFile("2026-10-27")));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
+    }
+
+    // AC-5 (095): the loop goes on after the hint, and an emoji with its selector is still booked.
+    [Fact]
+    public void Checkpoint_InvisibleName_ThenEmojiName_IsBooked()
+    {
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Profile.Width = 200;
+            foreach (char ch in "checkpoint 9:00 abc\u2800def")
+            {
+                c.Input.PushKey(new ConsoleKeyInfo(ch, ch < 256 ? (ConsoleKey)char.ToUpperInvariant(ch) : ConsoleKey.NoName, false, false, false));
+            }
+
+            c.Input.PushKey(ConsoleKey.Enter);
+            foreach (char ch in "checkpoint 9:00 Love \u2764\uFE0F")
+            {
+                c.Input.PushKey(new ConsoleKeyInfo(ch, ch < 256 ? (ConsoleKey)char.ToUpperInvariant(ch) : ConsoleKey.NoName, false, false, false));
+            }
+
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(CheckpointFormatHint, output);
+        Assert.Equal([Checkpoint(9, 0, "Love \u2764\uFE0F")], LoadDay().Entries);
     }
 
     // Fix-it hint for rejected titles (job 087) ------------------------------------------------

@@ -161,9 +161,9 @@ public class ProjectListTests
     [InlineData("\\uDC00\\uD800")]
     [InlineData("ok\\uD800")]
     [InlineData("\\uD800ok")]
-    public void HasFormatOrBrokenCharacters_True(string escaped)
+    public void HasInvisibleOrBrokenCharacters_True(string escaped)
     {
-        Assert.True(ProjectList.HasFormatOrBrokenCharacters(Unescape(escaped)));
+        Assert.True(ProjectList.HasInvisibleOrBrokenCharacters(Unescape(escaped)));
     }
 
     // AC-1 (056)
@@ -173,19 +173,19 @@ public class ProjectListTests
     [InlineData("\\u65E5\\u672C\\u8A9E")]
     [InlineData("Launch \\uD83D\\uDE80")]
     [InlineData("")]
-    public void HasFormatOrBrokenCharacters_False(string escaped)
+    public void HasInvisibleOrBrokenCharacters_False(string escaped)
     {
-        Assert.False(ProjectList.HasFormatOrBrokenCharacters(Unescape(escaped)));
+        Assert.False(ProjectList.HasInvisibleOrBrokenCharacters(Unescape(escaped)));
     }
 
     // AC-1 (056): the U+E0041 tag character is checked as one code point, not as two surrogates.
     [Fact]
-    public void HasFormatOrBrokenCharacters_TagCharacter_IsCheckedPerCodePoint()
+    public void HasInvisibleOrBrokenCharacters_TagCharacter_IsCheckedPerCodePoint()
     {
         string tag = char.ConvertFromUtf32(0xE0041);
 
         Assert.Equal("\uDB40\uDC41", tag);
-        Assert.True(ProjectList.HasFormatOrBrokenCharacters("a" + tag + "b"));
+        Assert.True(ProjectList.HasInvisibleOrBrokenCharacters("a" + tag + "b"));
     }
 
     // AC-2 (056)
@@ -280,5 +280,129 @@ public class ProjectListTests
     {
         Assert.Contains("\\u", json);
         Assert.Throws<JsonException>(() => ProjectList.FromJson(json));
+    }
+
+    // Wider invisible-character check (job 095) -----------------------------------------------
+
+    // AC-1 (095)
+    [Theory]
+    [InlineData("abc\\u115Fdef")]
+    [InlineData("abc\\u1160def")]
+    [InlineData("abc\\u3164def")]
+    [InlineData("abc\\uFFA0def")]
+    [InlineData("abc\\u2800def")]
+    [InlineData("abc\\u034Fdef")]
+    [InlineData("abc\\u17B4def")]
+    [InlineData("abc\\u17B5def")]
+    [InlineData("abc\\u180Bdef")]
+    [InlineData("abc\\u180Cdef")]
+    [InlineData("abc\\u180Ddef")]
+    [InlineData("abc\\u180Fdef")]
+    [InlineData("abc\\uFE00def")]
+    [InlineData("abc\\uFE0Ddef")]
+    [InlineData("abc\\uDB40\\uDD00def")]
+    [InlineData("abc\\uDB40\\uDDEFdef")]
+    [InlineData("abc\\u2065def")]
+    [InlineData("abc\\uFFF0def")]
+    [InlineData("abc\\uFFF8def")]
+    [InlineData("abc\\uDB40\\uDC80def")]
+    [InlineData("abc\\uDB43\\uDFFFdef")]
+    [InlineData("\\u3164")]
+    [InlineData("\\u2800")]
+    [InlineData("\\u3164\\u3164\\u3164")]
+    [InlineData("\\u2800\\u2800")]
+    public void IsValidTitle_InvisibleCodePoint_IsFalse_AndAddThrows(string escaped)
+    {
+        string title = Unescape(escaped);
+
+        Assert.True(ProjectList.HasInvisibleOrBrokenCharacters(title));
+        Assert.False(ProjectList.IsValidTitle(title));
+        Assert.Throws<ArgumentException>(() => ProjectList.Empty.Add(new Project(1, title)));
+    }
+
+    // AC-1 (095): U+E0100 is checked as one code point, not as two surrogates.
+    [Fact]
+    public void IsValidTitle_SupplementarySelector_IsCheckedPerCodePoint()
+    {
+        string selector = char.ConvertFromUtf32(0xE0100);
+
+        Assert.Equal("\uDB40\uDD00", selector);
+        Assert.False(ProjectList.IsValidTitle("abc" + selector + "def"));
+    }
+
+    // AC-2 (095)
+    [Theory]
+    [InlineData("\\uFE0F")]
+    [InlineData("\\uFE0E")]
+    [InlineData("a\\uFE0F\\uFE0F")]
+    [InlineData("a\\uFE0E\\uFE0F")]
+    [InlineData("a\\uFE0F\\uFE0E")]
+    [InlineData("\\u2764\\uFE0F\\uFE0F")]
+    [InlineData("a\\u200B\\uFE0F")]
+    [InlineData("a\\u3164\\uFE0F")]
+    [InlineData("\\u2764\\uFE00")]
+    [InlineData("\\u2764\\uDB40\\uDD00")]
+    public void IsValidTitle_SelectorOutsideEmojiException_IsFalse(string escaped)
+    {
+        string title = Unescape(escaped);
+
+        Assert.False(ProjectList.IsValidTitle(title));
+        Assert.Throws<ArgumentException>(() => ProjectList.Empty.Add(new Project(1, title)));
+    }
+
+    // AC-2 (095): "variation-selector smuggling" with supplementary selectors is refused.
+    [Fact]
+    public void IsValidTitle_TwentySupplementarySelectors_IsFalse()
+    {
+        string title = "a";
+        for (int i = 0; i < 20; i++)
+        {
+            title += char.ConvertFromUtf32(0xE0100 + (i * 11));
+        }
+
+        Assert.Equal(41, title.Length);
+        Assert.False(ProjectList.IsValidTitle(title));
+    }
+
+    // AC-3 (095)
+    [Theory]
+    [InlineData("Love \\u2764\\uFE0F")]
+    [InlineData("Text \\u2764\\uFE0E")]
+    [InlineData("Launch \\uD83D\\uDE80")]
+    [InlineData("Caf\\u00E9 \\u00DCn\\u00EFcode")]
+    [InlineData("\\u65E5\\u672C\\u8A9E")]
+    [InlineData("\\uD55C\\uAD6D\\uC5B4")]
+    [InlineData("Website relaunch")]
+    [InlineData("\\u2764\\uFE0F \\u2764\\uFE0E")]
+    public void IsValidTitle_VisibleTextAndEmoji_IsTrue_AndAddKeepsIt(string escaped)
+    {
+        string title = Unescape(escaped);
+
+        Assert.False(ProjectList.HasInvisibleOrBrokenCharacters(title));
+        Assert.True(ProjectList.IsValidTitle(title));
+        Assert.Equal(title, ProjectList.Empty.Add(new Project(1, title)).Projects[0].Title);
+    }
+
+    // AC-6 (095)
+    [Theory]
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"abc\u3164def\"}]}")]
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"abc\\u3164def\"}]}")]
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"abc\\u2800def\"}]}")]
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"abc\\ufe00def\"}]}")]
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"abc\\udb40\\udd00def\"}]}")]
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"\\ufe0f\"}]}")]
+    public void FromJson_InvisibleTitle_ThrowsJsonException(string json)
+    {
+        JsonException ex = Assert.Throws<JsonException>(() => ProjectList.FromJson(json));
+        Assert.Contains("control, formatting or broken characters", ex.Message);
+    }
+
+    // AC-6 (095): an emoji with its presentation selector still loads.
+    [Fact]
+    public void FromJson_EmojiWithSelector_Loads()
+    {
+        ProjectList list = ProjectList.FromJson("{\"projects\":[{\"workItem\":1,\"title\":\"Love \\u2764\\ufe0f\"}]}");
+
+        Assert.Equal("Love \u2764\uFE0F", list.Projects[0].Title);
     }
 }

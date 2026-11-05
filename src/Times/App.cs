@@ -334,7 +334,7 @@ internal sealed class App
             return Hint($"{Name}: the title must not contain control characters. {RetypeHiddenCharacters}");
         }
 
-        if (ProjectList.HasFormatOrBrokenCharacters(title))
+        if (ProjectList.HasInvisibleOrBrokenCharacters(title))
         {
             return Hint($"{Name}: the title must not contain invisible formatting or broken characters. {RetypeHiddenCharacters}");
         }
@@ -634,7 +634,7 @@ internal sealed class App
             return Hint($"{Name}: the name must not contain control characters. {RetypeHiddenCharacters}");
         }
 
-        if (ProjectList.HasFormatOrBrokenCharacters(checkpoint))
+        if (ProjectList.HasInvisibleOrBrokenCharacters(checkpoint))
         {
             return Hint($"{Name}: the name must not contain invisible formatting or broken characters. {RetypeHiddenCharacters}");
         }

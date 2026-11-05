@@ -1049,6 +1049,38 @@ public class DayRecordTests
         Assert.Contains("control, formatting or broken characters", ex.Message);
     }
 
+    // AC-6 (095)
+    [Theory]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"abc\u115Fdef\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"abc\\u115fdef\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"abc\\udb40\\udd00def\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"abc\\u2800def\"}]}")]
+    public void FromJson_InvisibleName_ThrowsJsonException(string json)
+    {
+        JsonException ex = Assert.Throws<JsonException>(() => DayRecord.FromJson(json));
+        Assert.Contains("control, formatting or broken characters", ex.Message);
+    }
+
+    // AC-1, AC-3 (095): the DayEntry constructor uses the same check.
+    [Theory]
+    [InlineData("abc\\u3164def", false)]
+    [InlineData("abc\\u2800def", false)]
+    [InlineData("a\\uFE0F\\uFE0F", false)]
+    [InlineData("Love \\u2764\\uFE0F", true)]
+    public void Checkpoint_WiderInvisibleCheck(string escaped, bool valid)
+    {
+        string name = Regex.Unescape(escaped);
+
+        if (valid)
+        {
+            Assert.Equal(name, Checkpoint(9, 0, name).Name);
+        }
+        else
+        {
+            Assert.Throws<ArgumentException>(() => new DayEntry(EntryKind.Checkpoint, new TimeOnly(9, 0), name, null));
+        }
+    }
+
     // Booked checkpoints (job 078) --------------------------------------------------------
 
     private static DayEntry Cp(int hour, int minute, string name, bool booked = false) =>

@@ -23,7 +23,7 @@ internal sealed record Project
 /// 1-based position and is not stored. Saved as
 /// <c>{"projects":[{"workItem":1234,"title":"Website relaunch"},…]}</c>. Work item numbers are
 /// positive and unique; titles are non-blank, at most <see cref="MaxTitleLength"/> characters and
-/// hold no control characters, invisible formatting characters or broken (unpaired) surrogates.
+/// hold no control characters, invisible characters or broken (unpaired) surrogates.
 /// </summary>
 internal sealed record ProjectList
 {
@@ -56,15 +56,18 @@ internal sealed record ProjectList
     /// <summary>
     /// True if <paramref name="title"/> can be a project title: not blank, at most
     /// <see cref="MaxTitleLength"/> characters, free of control characters and line or paragraph
-    /// separators, so it can never break up a one-line hint or a table row, and free of formatting
-    /// characters and unpaired surrogates (see <see cref="HasFormatOrBrokenCharacters"/>), so what is
-    /// shown never differs from what is stored.
+    /// separators, so it can never break up a one-line hint or a table row, and free of invisible
+    /// code points (formatting characters, default-ignorable code points such as Hangul fillers and
+    /// variation selectors, the braille blank) and unpaired surrogates (see
+    /// <see cref="HasInvisibleOrBrokenCharacters"/>), so what is shown never differs from what is
+    /// stored. U+FE0E and U+FE0F are allowed right after a visible code point, so emoji such as
+    /// <c>❤️</c> stay valid.
     /// </summary>
     public static bool IsValidTitle(string title) =>
         !string.IsNullOrWhiteSpace(title)
         && title.Length <= MaxTitleLength
         && !HasControlCharacters(title)
-        && !HasFormatOrBrokenCharacters(title);
+        && !HasInvisibleOrBrokenCharacters(title);
 
     /// <summary>True if <paramref name="text"/> holds a control character or a line or paragraph separator.</summary>
     public static bool HasControlCharacters(string text) =>
@@ -72,15 +75,61 @@ internal sealed record ProjectList
             || CharUnicodeInfo.GetUnicodeCategory(c) is UnicodeCategory.LineSeparator or UnicodeCategory.ParagraphSeparator);
 
     /// <summary>
-    /// True if <paramref name="text"/> holds a code point of Unicode category Format (Cf), such as a
-    /// bidi override, a zero-width character, a soft hyphen or a tag character, or a high or low
-    /// surrogate that is not part of a valid pair. Valid pairs (e.g. emoji) are fine.
+    /// The Unicode <c>Default_Ignorable_Code_Point</c> ranges (Unicode 16, DerivedCoreProperties.txt),
+    /// inclusive. Most are also category Format (Cf); the table matters for those that are not:
+    /// U+034F combining grapheme joiner, U+115F/U+1160/U+3164/U+FFA0 Hangul fillers, U+17B4/U+17B5
+    /// Khmer inherent vowels, U+180B..U+180D and U+180F Mongolian free variation selectors,
+    /// U+FE00..U+FE0F and U+E0100..U+E01EF variation selectors, and the unassigned U+2065,
+    /// U+FFF0..U+FFF8 and U+E0000..U+E0FFF. U+FE0E and U+FE0F are let through by the emoji
+    /// exception in <see cref="HasInvisibleOrBrokenCharacters"/>.
     /// </summary>
-    public static bool HasFormatOrBrokenCharacters(string text)
+    private static readonly (int First, int Last)[] DefaultIgnorableRanges =
+    [
+        (0x00AD, 0x00AD),
+        (0x034F, 0x034F),
+        (0x061C, 0x061C),
+        (0x115F, 0x1160),
+        (0x17B4, 0x17B5),
+        (0x180B, 0x180F),
+        (0x200B, 0x200F),
+        (0x202A, 0x202E),
+        (0x2060, 0x206F),
+        (0x3164, 0x3164),
+        (0xFE00, 0xFE0F),
+        (0xFEFF, 0xFEFF),
+        (0xFFA0, 0xFFA0),
+        (0xFFF0, 0xFFF8),
+        (0x1BCA0, 0x1BCA3),
+        (0x1D173, 0x1D17A),
+        (0xE0000, 0xE0FFF),
+    ];
+
+    /// <summary>U+2800 BRAILLE PATTERN BLANK: a symbol (So), not ignorable, yet it shows as blank.</summary>
+    private const int BrailleBlank = 0x2800;
+
+    /// <summary>U+FE0E VARIATION SELECTOR-15 (text presentation).</summary>
+    private const int TextPresentationSelector = 0xFE0E;
+
+    /// <summary>U+FE0F VARIATION SELECTOR-16 (emoji presentation).</summary>
+    private const int EmojiPresentationSelector = 0xFE0F;
+
+    /// <summary>
+    /// True if <paramref name="text"/> holds a high or low surrogate that is not part of a valid pair,
+    /// or an invisible code point: category Format (Cf), such as a bidi override, a zero-width
+    /// character, a soft hyphen or a tag character; a <c>Default_Ignorable_Code_Point</c> (see
+    /// <see cref="DefaultIgnorableRanges"/>), such as a Hangul filler or a variation selector; or
+    /// U+2800 braille blank. The check works on code points, so supplementary ones are tested as
+    /// pairs. Valid pairs (e.g. emoji) are fine. Emoji exception: U+FE0E or U+FE0F is allowed when it
+    /// directly follows a code point that is neither invisible nor a variation selector (so
+    /// <c>❤️</c> is fine), but not at the start or after another selector.
+    /// </summary>
+    public static bool HasInvisibleOrBrokenCharacters(string text)
     {
+        bool previousIsVisible = false;
         for (int i = 0; i < text.Length; i++)
         {
             char c = text[i];
+            int codePoint;
             if (char.IsHighSurrogate(c))
             {
                 if (i + 1 >= text.Length || !char.IsLowSurrogate(text[i + 1]))
@@ -88,14 +137,50 @@ internal sealed record ProjectList
                     return true;
                 }
 
-                if (CharUnicodeInfo.GetUnicodeCategory(char.ConvertToUtf32(c, text[i + 1])) == UnicodeCategory.Format)
+                codePoint = char.ConvertToUtf32(c, text[i + 1]);
+                i++;
+            }
+            else if (char.IsLowSurrogate(c))
+            {
+                return true;
+            }
+            else
+            {
+                codePoint = c;
+            }
+
+            if (codePoint is TextPresentationSelector or EmojiPresentationSelector)
+            {
+                if (!previousIsVisible)
                 {
                     return true;
                 }
 
-                i++;
+                previousIsVisible = false;
+                continue;
             }
-            else if (char.IsLowSurrogate(c) || CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.Format)
+
+            if (IsInvisible(codePoint))
+            {
+                return true;
+            }
+
+            previousIsVisible = true;
+        }
+
+        return false;
+    }
+
+    private static bool IsInvisible(int codePoint)
+    {
+        if (codePoint == BrailleBlank || CharUnicodeInfo.GetUnicodeCategory(codePoint) == UnicodeCategory.Format)
+        {
+            return true;
+        }
+
+        foreach ((int first, int last) in DefaultIgnorableRanges)
+        {
+            if (codePoint >= first && codePoint <= last)
             {
                 return true;
             }

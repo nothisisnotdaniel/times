@@ -80,8 +80,12 @@ Every factory agent reads this file before working on Times. Keep it short and a
   FIFO or device (even one swapped in after the check) is refused without blocking. A day file or
   `projects.json` whose property names or strings cannot be decoded (lone surrogates) is unreadable.
   Project titles and checkpoint names (`ProjectList.IsValidTitle`) must be non-blank, at most 200
-  characters, and hold no control characters, no Unicode Format (Cf) code points (bidi overrides,
-  zero-width characters, soft hyphens, tag characters) and no unpaired surrogates; this is checked
+  characters, and hold no control characters, no unpaired surrogates and no invisible code points
+  (`ProjectList.HasInvisibleOrBrokenCharacters`, checked per code point): Unicode Format (Cf) (bidi
+  overrides, zero-width characters, soft hyphens, tag characters), `Default_Ignorable_Code_Point`
+  (Hangul fillers, combining grapheme joiner, Khmer inherent vowels, Mongolian and other variation
+  selectors, unassigned ignorables; one table, `DefaultIgnorableRanges`) and U+2800 braille blank. Only
+  U+FE0E/U+FE0F are allowed, and only right after a visible code point (so `❤️` stays valid); this is checked
   when typed (red hint; for hidden or broken characters it also says to retype the text without
   them) and when `projects.json` or a day file is loaded (file is unreadable).
 - **Settings:** features register their user preferences in the one `SettingsRegistry` (kinds
