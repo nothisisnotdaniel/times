@@ -76,9 +76,19 @@ internal sealed class DayView
     /// The empty day shows none of these lines, only <c>No entries yet.</c>, followed by the target
     /// line without its <c>day</c> part (<c>Target 8:00 · balance +0:30</c>) when at least one day
     /// counts toward the balance.
+    /// An absence day shows the heading, then <c>Absence: Vacation</c> (<c>Sick</c>, <c>Public holiday</c>;
+    /// grey label, <c>SteelBlue1</c> value), then the target line with <c>day +0:00</c>.
     /// </summary>
     public IRenderable Render(DayRecord day, TimeSpan target, FlexitimeBalance balance)
     {
+        if (day.Absence is { } absence)
+        {
+            return new Rows(
+                HeadingRule(),
+                new Markup($"[grey]Absence:[/] [steelblue1]{AbsenceLabel(absence)}[/]"),
+                new Markup(TargetLineWith(target, "+0:00", balance)));
+        }
+
         if (day.IsEmpty)
         {
             List<IRenderable> empty = [HeadingRule(), new Markup("[grey]No entries yet.[/]")];
@@ -154,12 +164,16 @@ internal sealed class DayView
     /// signed (see <see cref="FormatSigned"/>). When day files were skipped, a yellow
     /// <c>! 1 day file skipped</c> (<c>2 day files skipped</c>) follows after two spaces. It holds no user text.
     /// </summary>
-    internal static string TargetLine(TimeSpan target, TimeSpan? dayDelta, FlexitimeBalance balance)
+    internal static string TargetLine(TimeSpan target, TimeSpan? dayDelta, FlexitimeBalance balance) =>
+        TargetLineWith(target, dayDelta is { } delta ? FormatSigned(delta) : null, balance);
+
+    // The target line with the day part already formatted (null leaves it out).
+    private static string TargetLineWith(TimeSpan target, string? dayText, FlexitimeBalance balance)
     {
         string line = $"[grey]Target[/] [steelblue1]{FormatTimeLeft(target)}[/]";
-        if (dayDelta is { } delta)
+        if (dayText is not null)
         {
-            line += $" [grey]· day[/] [steelblue1]{FormatSigned(delta)}[/]";
+            line += $" [grey]· day[/] [steelblue1]{dayText}[/]";
         }
 
         line += $" [grey]· balance[/] [steelblue1]{FormatSigned(balance.Total)}[/]";
@@ -197,6 +211,15 @@ internal sealed class DayView
         string list = string.Join(", ", numbers.Select(n => n.ToString(CultureInfo.InvariantCulture)));
         rows.Add(new Padder(new Markup($"[yellow]! {text}: {label} {list}[/]"), new Padding(indent, 0, 0, 0)));
     }
+
+    /// <summary>The absence's display name: <c>Vacation</c>, <c>Sick</c> or <c>Public holiday</c>. Fixed text, no markup.</summary>
+    internal static string AbsenceLabel(AbsenceKind absence) => absence switch
+    {
+        AbsenceKind.Vacation => "Vacation",
+        AbsenceKind.Sick => "Sick",
+        AbsenceKind.PublicHoliday => "Public holiday",
+        _ => throw new ArgumentOutOfRangeException(nameof(absence)),
+    };
 
     // The spaces after the number column, set on the column itself so the summary indent follows it.
     private const int NumberColumnGap = 2;

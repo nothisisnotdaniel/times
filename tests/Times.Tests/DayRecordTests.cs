@@ -1429,4 +1429,88 @@ public class DayRecordTests
         Assert.Contains("\\u", json);
         Assert.Throws<JsonException>(() => DayRecord.FromJson(json));
     }
+
+    // Job 098 ------------------------------------------------------------------------------
+
+    // AC-8
+    [Theory]
+    [InlineData("Vacation", "{\"absence\":\"vacation\",\"entries\":[]}")]
+    [InlineData("Sick", "{\"absence\":\"sick\",\"entries\":[]}")]
+    [InlineData("PublicHoliday", "{\"absence\":\"publicHoliday\",\"entries\":[]}")]
+    public void Absence_RoundTripsThroughJson(string kind, string json)
+    {
+        AbsenceKind absence = Enum.Parse<AbsenceKind>(kind);
+        DayRecord record = DayRecord.Empty.WithAbsence(absence);
+
+        Assert.Equal(json, record.ToJson());
+        DayRecord read = DayRecord.FromJson(json);
+        Assert.Equal(absence, read.Absence);
+        Assert.Equal(record, read);
+        Assert.Empty(read.Entries);
+        Assert.False(read.IsEmpty);
+    }
+
+    // AC-8
+    [Fact]
+    public void Absence_WithoutEntriesProperty_Loads()
+    {
+        Assert.Equal(AbsenceKind.Sick, DayRecord.FromJson("{\"absence\":\"sick\"}").Absence);
+    }
+
+    // AC-8
+    [Theory]
+    [InlineData("{\"absence\":\"party\",\"entries\":[]}")]
+    [InlineData("{\"absence\":\"Vacation\",\"entries\":[]}")]
+    [InlineData("{\"absence\":\"holiday\",\"entries\":[]}")]
+    [InlineData("{\"absence\":\"\",\"entries\":[]}")]
+    [InlineData("{\"absence\":1,\"entries\":[]}")]
+    [InlineData("{\"absence\":null,\"entries\":[]}")]
+    [InlineData("{\"absence\":true,\"entries\":[]}")]
+    [InlineData("{\"absence\":[\"sick\"],\"entries\":[]}")]
+    [InlineData("{\"absence\":\"sick\",\"absence\":\"sick\",\"entries\":[]}")]
+    [InlineData("{\"absence\":\"sick\",\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"x\"}],\"absence\":\"vacation\"}")]
+    [InlineData("{\"absence\":\"sick\",\"entries\":{}}")]
+    [InlineData("{\"absence\":\"sick\",\"arrival\":\"08:00\"}")]
+    [InlineData("{\"absence\":\"sick\",\"leaving\":\"17:00\"}")]
+    [InlineData("{\"absence\":\"sick\",\"arrival\":null}")]
+    [InlineData("{\"absence\":\"sic\\ud800\"}")]
+    public void FromJson_InvalidAbsence_ThrowsJsonException(string json)
+    {
+        Assert.Throws<JsonException>(() => DayRecord.FromJson(json));
+    }
+
+    // AC-8
+    [Fact]
+    public void ToJson_WithoutAbsence_IsUnchanged()
+    {
+        DayRecord record = DayRecord.Empty.Add(Arrival(8, 15)).Add(Leaving(12, 0));
+
+        Assert.Null(record.Absence);
+        Assert.Equal(
+            "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:15\"},{\"kind\":\"leaving\",\"time\":\"12:00\"}]}",
+            record.ToJson());
+        Assert.Equal("{\"entries\":[]}", DayRecord.Empty.ToJson());
+        Assert.Equal("{\"entries\":[]}", DayRecord.Empty.WithAbsence(AbsenceKind.Sick).WithAbsence(null).ToJson());
+    }
+
+    // AC-8
+    [Fact]
+    public void Absence_AndEntries_CannotBeCombined()
+    {
+        Assert.Throws<ArgumentException>(() => DayRecord.Empty.Add(Arrival(8, 0)).WithAbsence(AbsenceKind.Vacation));
+        Assert.Throws<ArgumentException>(() => DayRecord.Empty.WithAbsence(AbsenceKind.Vacation).Add(Arrival(8, 0)));
+    }
+
+    // AC-8
+    [Fact]
+    public void Absence_IsPartOfEquality()
+    {
+        DayRecord vacation = DayRecord.Empty.WithAbsence(AbsenceKind.Vacation);
+
+        Assert.NotEqual(DayRecord.Empty, vacation);
+        Assert.NotEqual(vacation, DayRecord.Empty.WithAbsence(AbsenceKind.Sick));
+        Assert.Equal(vacation, DayRecord.Empty.WithAbsence(AbsenceKind.Vacation));
+        Assert.Equal(vacation.GetHashCode(), DayRecord.Empty.WithAbsence(AbsenceKind.Vacation).GetHashCode());
+    }
 }

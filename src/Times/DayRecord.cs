@@ -14,6 +14,14 @@ internal enum EntryKind
     Checkpoint,
 }
 
+/// <summary>Why a day is off work. An absence day counts as exactly meeting the daily target.</summary>
+internal enum AbsenceKind
+{
+    Vacation,
+    Sick,
+    PublicHoliday,
+}
+
 /// <summary>
 /// One booking on a day at a local wall-clock time. Only a <see cref="EntryKind.Checkpoint"/> has a
 /// <see cref="Name"/> (always valid, see <see cref="ProjectList.IsValidTitle"/>) and optionally the
@@ -103,7 +111,10 @@ internal sealed record DayEntry
 /// A checkpoint also has a <c>"name"</c>, if it belongs to a project a <c>"workItem"</c>, and, once it
 /// is booked, <c>"booked":true</c> (left out while unbooked, so older files load as unbooked). The
 /// legacy single-value format <c>{"arrival":"08:15","leaving":"17:30"}</c> still loads; it is
-/// converted to entries and written in the new format on the next save.
+/// converted to entries and written in the new format on the next save. A day can instead be marked
+/// as an absence (<see cref="Absence"/>), saved as a top-level <c>"absence"</c> (<c>"vacation"</c>,
+/// <c>"sick"</c> or <c>"publicHoliday"</c>) before <c>"entries"</c>; it is left out when there is none.
+/// A record holds an absence or entries, never both.
 /// </summary>
 internal sealed record DayRecord
 {
@@ -119,6 +130,10 @@ internal sealed record DayRecord
     private const string NameProperty = "name";
     private const string WorkItemProperty = "workItem";
     private const string BookedProperty = "booked";
+    private const string AbsenceProperty = "absence";
+    private const string VacationName = "vacation";
+    private const string SickName = "sick";
+    private const string PublicHolidayName = "publicHoliday";
 
     private readonly DayEntry[] entries;
 
@@ -128,8 +143,24 @@ internal sealed record DayRecord
     }
 
     public DayRecord(IEnumerable<DayEntry> entries)
+        : this(entries, null)
     {
-        this.entries = Order(entries);
+    }
+
+    /// <summary>
+    /// A record with <paramref name="entries"/> and <paramref name="absence"/>. Throws
+    /// <see cref="ArgumentException"/> if it would hold both an absence and entries.
+    /// </summary>
+    public DayRecord(IEnumerable<DayEntry> entries, AbsenceKind? absence)
+    {
+        DayEntry[] ordered = Order(entries);
+        if (absence is not null && ordered.Length > 0)
+        {
+            throw new ArgumentException("A day holds an absence or entries, never both.", nameof(absence));
+        }
+
+        this.entries = ordered;
+        Absence = absence;
     }
 
     // Sorts by time, stable. Then, within each group with the same time, every checkpoint before the
@@ -208,7 +239,17 @@ internal sealed record DayRecord
     /// </summary>
     public IReadOnlyList<DayEntry> Entries => entries;
 
-    public bool IsEmpty => entries.Length == 0;
+    /// <summary>True if the day has neither entries nor an absence.</summary>
+    public bool IsEmpty => entries.Length == 0 && Absence is null;
+
+    /// <summary>The day's absence, or <c>null</c> if it is not marked as one.</summary>
+    public AbsenceKind? Absence { get; }
+
+    /// <summary>
+    /// Returns the same day with <paramref name="absence"/> as its absence (<c>null</c> clears it). Throws
+    /// <see cref="ArgumentException"/> if an absence is set on a day that has entries.
+    /// </summary>
+    public DayRecord WithAbsence(AbsenceKind? absence) => new(entries, absence);
 
     /// <summary>
     /// Returns the work time left at each entry's time, parallel to <see cref="Entries"/>. Walking the
@@ -444,9 +485,10 @@ internal sealed record DayRecord
     /// <summary>
     /// Returns a new record with <paramref name="entry"/> added in time order, after any entries
     /// with the same time, except that an added arrival or break end goes before any checkpoints
-    /// already at that time (see <see cref="DayRecord"/>).
+    /// already at that time (see <see cref="DayRecord"/>). Throws <see cref="ArgumentException"/> on an
+    /// absence day.
     /// </summary>
-    public DayRecord Add(DayEntry entry) => new(entries.Append(entry));
+    public DayRecord Add(DayEntry entry) => new(entries.Append(entry), Absence);
 
     /// <summary>
     /// Returns a new record without entry <paramref name="number"/> (1-based, the numbering of
@@ -497,11 +539,12 @@ internal sealed record DayRecord
     }
 
     public bool Equals(DayRecord? other) =>
-        other is not null && entries.SequenceEqual(other.entries);
+        other is not null && Absence == other.Absence && entries.SequenceEqual(other.entries);
 
     public override int GetHashCode()
     {
         HashCode hash = new HashCode();
+        hash.Add(Absence);
         foreach (DayEntry entry in entries)
         {
             hash.Add(entry);
@@ -516,6 +559,11 @@ internal sealed record DayRecord
         using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
         {
             writer.WriteStartObject();
+            if (Absence is { } absence)
+            {
+                writer.WriteString(AbsenceProperty, AbsenceName(absence));
+            }
+
             writer.WriteStartArray(EntriesProperty);
             foreach (DayEntry entry in entries)
             {
@@ -557,6 +605,26 @@ internal sealed record DayRecord
         _ => throw new ArgumentOutOfRangeException(nameof(kind)),
     };
 
+    private static string AbsenceName(AbsenceKind absence) => absence switch
+    {
+        AbsenceKind.Vacation => VacationName,
+        AbsenceKind.Sick => SickName,
+        AbsenceKind.PublicHoliday => PublicHolidayName,
+        _ => throw new ArgumentOutOfRangeException(nameof(absence)),
+    };
+
+    private static AbsenceKind ReadAbsence(JsonElement value)
+    {
+        string? text = ReadStringOrNull(value, "The day file has an unknown absence.");
+        return text switch
+        {
+            VacationName => AbsenceKind.Vacation,
+            SickName => AbsenceKind.Sick,
+            PublicHolidayName => AbsenceKind.PublicHoliday,
+            _ => throw new JsonException("The day file has an unknown absence."),
+        };
+    }
+
     /// <summary>
     /// Reads a day file's contents, in the new or the legacy format. Throws
     /// <see cref="JsonException"/> if they are not a valid day; never returns a partial day.
@@ -571,6 +639,7 @@ internal sealed record DayRecord
         }
 
         JsonElement? entriesElement = null;
+        AbsenceKind? absence = null;
         TimeOnly? arrival = null;
         TimeOnly? leaving = null;
         bool hasLegacy = false;
@@ -588,6 +657,9 @@ internal sealed record DayRecord
                 case EntriesProperty:
                     entriesElement = property.Value;
                     break;
+                case AbsenceProperty:
+                    absence = ReadAbsence(property.Value);
+                    break;
                 case ArrivalName:
                     hasLegacy = true;
                     arrival = ReadOptionalTime(property.Value);
@@ -600,6 +672,21 @@ internal sealed record DayRecord
                     // Unknown properties are ignored, as before.
                     break;
             }
+        }
+
+        if (absence is { } kind)
+        {
+            if (hasLegacy)
+            {
+                throw new JsonException("The day file mixes an absence with a legacy arrival or leaving.");
+            }
+
+            if (entriesElement is { } absenceList && ReadEntries(absenceList).Count > 0)
+            {
+                throw new JsonException("The day file mixes an absence with entries.");
+            }
+
+            return new DayRecord([], kind);
         }
 
         if (entriesElement is { } list)

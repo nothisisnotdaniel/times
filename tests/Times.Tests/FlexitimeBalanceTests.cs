@@ -188,4 +188,35 @@ public sealed class FlexitimeBalanceTests
         Assert.Equal(TimeSpan.FromMinutes(1000), balance.Total);
         Assert.True(watch.Elapsed < TimeSpan.FromSeconds(5), $"Took {watch.Elapsed}.");
     }
+
+    // Job 098 ------------------------------------------------------------------------------
+
+    // AC-9
+    [Fact]
+    public void Compute_AbsenceDay_CountsWithZeroDelta()
+    {
+        using TempFolder temp = new TempFolder();
+        Write(temp, "2026-10-20.json", Day("08:00", "15:30"));
+        Write(temp, "2026-10-21.json", "{\"absence\":\"vacation\",\"entries\":[]}");
+
+        FlexitimeBalance balance = FlexitimeBalance.Compute(new DayStore(temp.Path), Shown, EightHours);
+
+        Assert.Equal(TimeSpan.FromMinutes(-30), balance.Total);
+        Assert.Equal(2, balance.CountedDays);
+        Assert.Equal(0, balance.SkippedFiles);
+    }
+
+    // AC-9
+    [Fact]
+    public void Compute_AbsenceDayAfterShownDay_IsIgnored()
+    {
+        using TempFolder temp = new TempFolder();
+        Write(temp, "2026-10-27.json", "{\"absence\":\"sick\",\"entries\":[]}");
+        Write(temp, "2026-10-28.json", "{\"absence\":\"publicHoliday\",\"entries\":[]}");
+
+        FlexitimeBalance balance = FlexitimeBalance.Compute(new DayStore(temp.Path), Shown, EightHours);
+
+        Assert.Equal(TimeSpan.Zero, balance.Total);
+        Assert.Equal(1, balance.CountedDays);
+    }
 }
