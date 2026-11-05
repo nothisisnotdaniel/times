@@ -14,7 +14,7 @@ internal sealed record CommandResult
     /// </param>
     /// <param name="quit">True to end the loop with exit code 0.</param>
     /// <param name="hint">
-    /// Shown on the one-line hint row just above the input box until the next command, or
+    /// Shown on the hint rows (up to 3, wrapped) just above the input box until the next command, or
     /// <c>null</c> for nothing.
     /// </param>
     /// <param name="hideQuicklist">
@@ -49,7 +49,7 @@ internal sealed record CommandResult
     public IRenderable? Message { get; }
 
     /// <summary>
-    /// Shown on the one-line hint row just above the input box until the next command, or
+    /// Shown on the hint rows (up to 3, wrapped) just above the input box until the next command, or
     /// <c>null</c> for nothing.
     /// </summary>
     public IRenderable? Hint { get; }
