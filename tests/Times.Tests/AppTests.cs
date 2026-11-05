@@ -5490,6 +5490,93 @@ public sealed class AppTests : IDisposable
         Assert.Single(frame, l => l.Contains("2026-10-27", StringComparison.Ordinal));
     }
 
+    // Job 097 ------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Runs the commands, then <c>quit</c>, on a console <paramref name="width"/> columns wide and 80 rows
+    /// high (so the whole summary fits without a scroll cue), with ANSI escapes when <paramref name="ansi"/> is set.
+    /// </summary>
+    private string RunNarrow(int width, bool ansi, params string[] commands)
+    {
+        TestConsole console = new TestConsole().Interactive();
+        if (ansi)
+        {
+            console.EmitAnsiSequences();
+        }
+
+        console.Profile.Width = width;
+        console.Profile.Height = 80;
+        foreach (string command in commands)
+        {
+            console.Input.PushTextWithEnter(command);
+        }
+
+        console.Input.PushTextWithEnter("quit");
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+        return console.Output;
+    }
+
+    // AC-1, AC-2, AC-4 (097)
+    [Theory]
+    [InlineData(40)]
+    [InlineData(24)]
+    public void SummaryCaption_NarrowTerminal_StaysOnOneLineDirectlyBelowTheTable(int width)
+    {
+        File.WriteAllText(DayFile("2026-10-28"), SummaryDay);
+
+        string[] frame = LastLayout(RunNarrow(width, false, "next", "summary"));
+
+        Assert.Equal(80, frame.Length);
+        Assert.StartsWith("╭", frame[^3]);
+        Assert.StartsWith("│ > ", frame[^2]);
+        Assert.StartsWith("╰", frame[^1]);
+        Assert.All(frame, l => Assert.True(l.Length <= width, $"line wider than {width}: '{l}'"));
+        int bottom = Array.FindIndex(frame, l => l.TrimStart().StartsWith('╰') && l.Contains('┴', StringComparison.Ordinal));
+        Assert.True(bottom > 0, "no summary table bottom border in the frame");
+        string caption = frame[bottom + 1];
+        Assert.Equal("Wednesday, 2026-10-28", caption.Trim());
+        Assert.DoesNotContain('…', caption);
+        int borderWidth = frame[bottom].Trim().Length;
+        Assert.True(borderWidth >= 21, $"table ({borderWidth}) narrower than the heading");
+        int lead = caption.Length - caption.TrimStart().Length;
+        Assert.InRange(lead, ((borderWidth - 21) / 2) - 1, ((borderWidth - 21) / 2) + 1);
+    }
+
+    // AC-3, AC-4 (097)
+    [Fact]
+    public void SummaryCaption_TableNarrowerThanHeading_WrapsAtTheWordBreakWithoutLosingText()
+    {
+        File.WriteAllText(DayFile("2026-10-28"), SummaryDay);
+
+        string[] frame = LastLayout(RunNarrow(20, false, "next", "summary"));
+
+        Assert.Equal(80, frame.Length);
+        Assert.StartsWith("╭", frame[^3]);
+        Assert.StartsWith("│ > ", frame[^2]);
+        Assert.StartsWith("╰", frame[^1]);
+        Assert.All(frame, l => Assert.True(l.Length <= 20, $"line wider than 20: '{l}'"));
+        int bottom = Array.FindIndex(frame, l => l.TrimStart().StartsWith('╰') && l.Contains('┴', StringComparison.Ordinal));
+        Assert.True(bottom > 0, "no summary table bottom border in the frame");
+        Assert.True(frame[bottom].Trim().Length < 21, "the table is not narrower than the heading");
+        Assert.Equal("Wednesday,", frame[bottom + 1].Trim());
+        Assert.Equal("2026-10-28", frame[bottom + 2].Trim());
+        Assert.DoesNotContain('…', frame[bottom + 1]);
+        Assert.DoesNotContain('…', frame[bottom + 2]);
+        Assert.DoesNotContain(frame[(bottom + 1)..], l => l.Contains("Wednesday, 2026-10-28", StringComparison.Ordinal));
+    }
+
+    // AC-5 (097)
+    [Fact]
+    public void SummaryCaption_NarrowTerminal_IsGrey()
+    {
+        File.WriteAllText(DayFile("2026-10-28"), SummaryDay);
+
+        Assert.Matches(@"\x1b\[(90|38;5;8)mWednesday, 2026-10-28\x1b\[0m", RunNarrow(40, true, "next", "summary"));
+        string narrow = RunNarrow(20, true, "next", "summary");
+        Assert.Matches(@"\x1b\[(90|38;5;8)mWednesday,\s*\x1b\[0m", narrow);
+        Assert.Matches(@"\x1b\[(90|38;5;8)m\s*2026-10-28\s*\x1b\[0m", narrow);
+    }
+
     /// <summary>The commands <see cref="App"/> registers, read from a registry it was built with; the loop is never run.</summary>
     private List<Command> RegisteredCommands()
     {
