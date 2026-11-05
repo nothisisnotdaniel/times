@@ -110,6 +110,10 @@ Every factory agent reads this file before working on Times. Keep it short and a
   arrival; unreadable files are skipped and counted (yellow `! N day file(s) skipped`, no names).
   An absence day counts with a delta of zero, and `DayView` shows `Absence: Vacation` plus the
   target line with `day +0:00` for it.
+- **Report:** `report <from> <to>` (`rp`, dates `yyyy-MM-dd`, inclusive) sums `CheckpointSummary` per day over the
+  day files `DayStore.Days()` lists in the range (`ProjectReport.Calculate`, read-only), one row per work item
+  (ascending, title from `projects.json` or the names) then per name (ordinal), with `H:mm`, decimal hours
+  (invariant, 2 decimals) and a `Total` row (`App.ReportView`); unreadable day files are skipped and counted.
 - **Updates:** `UpdateService` (wired in `Program.cs`, `null` in tests unless injected) runs one background
   check at start (`IReleaseSource`, GitHub's release list only, allow-listed asset URLs, capped and timed out) and
   the `update` (`up`) command. Settings `update-mode` (`notify only` / `install on quit` / `install and restart`)

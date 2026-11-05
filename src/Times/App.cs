@@ -241,6 +241,7 @@ internal sealed class App
             SetBooked("unbooked", argument, false));
         registry.Register("summary", "s", "Show the time taken per work item from this day's checkpoints", NoArguments("summary", Summary));
         registry.Register("absence", "ab", "Mark this day as vacation, sick or holiday, or clear it", Absence);
+        registry.Register("report", "rp", "Show the hours per project over a date range: <from> <to>", Report);
     }
 
     // Marks the day being viewed as an absence (vacation, sick, holiday) or clears it. Nothing is written
@@ -373,6 +374,124 @@ internal sealed class App
 
     // Explains the "open" marker below the summary table; a fixed literal, so no escaping is needed.
     internal const string OpenFootnote = "open: this checkpoint has no end on this day and counts no time.";
+
+    // Shows the checkpoint time per work item (and per name without one) over an inclusive date range,
+    // as one table with a total row, or a grey note if the range holds no checkpoints. Read-only.
+    private CommandResult Report(string argument)
+    {
+        const string Name = "report";
+        const string Usage = "Use [bold]report <from> <to>[/] with dates as [bold]yyyy-MM-dd[/].";
+        string[] parts = argument.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 2)
+        {
+            return Hint($"{Name}: say the first and the last day. {Usage}");
+        }
+
+        DateOnly[] dates = new DateOnly[2];
+        for (int i = 0; i < 2; i++)
+        {
+            if (!DateOnly.TryParseExact(parts[i], "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out dates[i]))
+            {
+                return Hint($"{Name}: [bold]{Markup.Escape(parts[i])}[/] is not a date. {Usage}");
+            }
+        }
+
+        DateOnly from = dates[0];
+        DateOnly to = dates[1];
+        if (from > to)
+        {
+            return Hint($"{Name}: the first day {ReportDate(from)} is after the last day {ReportDate(to)}. {Usage}");
+        }
+
+        ProjectReport report;
+        try
+        {
+            report = ProjectReport.Calculate(Store, from, to, DateOnly.FromDateTime(time.GetLocalNow().DateTime), Now());
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{Name}: the data folder cannot be listed: {Markup.Escape(ex.Message)}");
+        }
+
+        // Titles are optional: without a readable quicklist every row falls back to its names.
+        ProjectList? projects;
+        try
+        {
+            projects = projectStore.Load();
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            projects = null;
+        }
+
+        return new CommandResult(ReportView(from, to, report, projects), hideQuicklist: true);
+    }
+
+    private static string ReportDate(DateOnly day) => day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// The report table captioned with the range, with a <c>Total</c> row, or a grey note if
+    /// <paramref name="report"/> has no rows; then the open footnote and the yellow skipped line when
+    /// they apply. Titles come from <paramref name="projects"/> (<c>null</c>: none), otherwise the names.
+    /// </summary>
+    internal static IRenderable ReportView(DateOnly from, DateOnly to, ProjectReport report, ProjectList? projects)
+    {
+        List<IRenderable> parts = [];
+        if (report.Rows.Count == 0)
+        {
+            parts.Add(new Markup($"[grey]No checkpoints between {ReportDate(from)} and {ReportDate(to)}.[/]"));
+        }
+        else
+        {
+            Table table = new Table()
+                .Border(TableBorder.Rounded)
+                .BorderColor(Color.Grey)
+                .AddColumn("[grey]Work item[/]")
+                .AddColumn("[grey]Title[/]")
+                .AddColumn("[grey]Time[/]")
+                .AddColumn(new TableColumn("[grey]Hours[/]").RightAligned())
+                .Caption($"{ReportDate(from)} – {ReportDate(to)}", new Style(Color.Grey));
+
+            foreach (ReportRow row in report.Rows)
+            {
+                string workItem = row.WorkItem is { } w ? "#" + w.ToString(CultureInfo.InvariantCulture) : string.Empty;
+                string? title = row.WorkItem is { } item ? projects?.Projects.FirstOrDefault(p => p.WorkItem == item)?.Title : null;
+                string titleText = title ?? string.Join(", ", row.Names);
+                string open = row.Open ? " [grey]open[/]" : string.Empty;
+                table.AddRow(
+                    new Text(workItem),
+                    new Markup(Markup.Escape(titleText)),
+                    new Markup($"[steelblue1]{DayView.FormatTimeLeft(row.Total)}[/]{open}"),
+                    new Markup($"[steelblue1]{FormatHours(row.Total)}[/]"));
+            }
+
+            table.AddRow(
+                new Markup("[bold]Total[/]"),
+                Text.Empty,
+                new Markup($"[bold steelblue1]{DayView.FormatTimeLeft(report.Total)}[/]"),
+                new Markup($"[bold steelblue1]{FormatHours(report.Total)}[/]"));
+            parts.Add(table);
+            if (report.Rows.Any(r => r.Open))
+            {
+                parts.Add(new Markup($"[grey]{OpenFootnote}[/]"));
+            }
+        }
+
+        if (report.SkippedFiles > 0)
+        {
+            string files = report.SkippedFiles == 1 ? "day file" : "day files";
+            parts.Add(new Markup($"[yellow]! {report.SkippedFiles.ToString(CultureInfo.InvariantCulture)} {files} skipped[/]"));
+        }
+
+        return parts.Count == 1 ? parts[0] : new Rows(parts);
+    }
+
+    /// <summary>Whole minutes as decimal hours with two decimals and the invariant culture, e.g. <c>7.50</c>.</summary>
+    internal static string FormatHours(TimeSpan value)
+    {
+        long minutes = value.Ticks / TimeSpan.TicksPerMinute;
+        return (minutes / 60m).ToString("0.00", CultureInfo.InvariantCulture);
+    }
 
     private void RegisterProjects()
     {
