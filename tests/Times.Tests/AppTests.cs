@@ -846,7 +846,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(
             ["absence", "addproject", "arrive", "booked", "break", "breakend", "change", "…"],
             popup.Select(w => w.Text.Split(' ')[0]));
-        Assert.StartsWith("… 14 more", popup[^1].Text);
+        Assert.StartsWith("… 15 more", popup[^1].Text);
         Assert.Contains("Change the time of an entry", popup[6].Text);
         Assert.Equal(80, popup[0].Text.Length);
     }
@@ -919,9 +919,9 @@ public sealed class AppTests : IDisposable
         List<string> hintRow = TypingWrites(output, 1).Where(w => w.Row == 21).Select(w => w.Text).ToList();
 
         // popup, restored (Backspace), popup, restored (Esc), popup (quit typing), ...
-        Assert.StartsWith("… 14 more", hintRow[0]);
+        Assert.StartsWith("… 15 more", hintRow[0]);
         Assert.Contains("Unknown command nope", hintRow[1]);
-        Assert.StartsWith("… 14 more", hintRow[2]);
+        Assert.StartsWith("… 15 more", hintRow[2]);
         Assert.Contains("Unknown command nope", hintRow[3]);
         Assert.Contains("Unknown command nope", hintRow[^1]);
         Assert.Contains("\u001b[38;5;9mUnknown command", output[output.LastIndexOf("\u001b[21;1H", StringComparison.Ordinal)..]);
@@ -955,7 +955,7 @@ public sealed class AppTests : IDisposable
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
         // 33 commands: 7 shown, the eighth row counts the other 26.
-        Assert.StartsWith("… 26 more", popup[^1].Text);
+        Assert.StartsWith("… 27 more", popup[^1].Text);
         // Nothing is drawn on row 1 while typing (the final clear on quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
@@ -1458,7 +1458,13 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Help_ListsArriveAndLeave_WithOptionalTime()
     {
-        (_, string output) = RunCommands("help", "quit");
+        // The help table is taller than one page: page down so every row has been drawn.
+        (_, string output) = Run(c =>
+        {
+            c.Input.PushTextWithEnter("help");
+            PageDown(c, HelpPages);
+            c.Input.PushTextWithEnter("quit");
+        });
 
         Assert.Matches(@"arrive +│ a +│ Book your arrival: now, or at an optional H:mm", output);
         Assert.Matches(@"leave +│ l +│ Book your leaving: now, or at an optional H:mm", output);
@@ -3192,7 +3198,14 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Help_ListsProjectCommands_WithDescriptions()
     {
-        (_, string output) = RunWide(120, "help", "quit");
+        // The help table is taller than one page: page down so every row has been drawn.
+        (_, string output) = Run(c =>
+        {
+            c.Profile.Width = 120;
+            c.Input.PushTextWithEnter("help");
+            PageDown(c, HelpPages);
+            c.Input.PushTextWithEnter("quit");
+        });
 
         Assert.Matches(@"addproject +│ ap +│ Add a project to the quicklist: <work item> <title>", output);
         Assert.Matches(@"projects +│ pr +│ List the projects on the quicklist", output);
@@ -4783,6 +4796,7 @@ public sealed class AppTests : IDisposable
             ["projects"] = "pr",
             ["quit"] = "q",
             ["remove"] = "r",
+            ["export"] = "ex",
             ["report"] = "rp",
             ["settings"] = "se",
             ["summary"] = "s",
@@ -8475,5 +8489,429 @@ public sealed class AppTests : IDisposable
         string plain = Regex.Replace(console.Output, @"\x1b\[[0-9;?]*[A-Za-z]", string.Empty);
 
         Assert.Matches(@"│ report +│ rp +│ Show the hours per project over a date range: <from> <to> +│", plain);
+    }
+
+    // Job 100 ------------------------------------------------------------------------------
+
+    private const string ExportName = "times-report-2026-11-02-to-2026-11-04.csv";
+
+    /// <summary>The CSV for <see cref="WriteReportDays"/> over 2026-11-02 to 2026-11-04 with #1234 titled Times.</summary>
+    private const string ExportedCsv = "\uFEFFWork item,Title,Hours\r\n99,Call,0.50\r\n1234,Times,40.48\r\n,Mail,1.00\r\n";
+
+    /// <summary>Runs <paramref name="commands"/> then quit on a wide 40-row console and returns the exit code and the last frame.</summary>
+    private (int ExitCode, string[] Frame) RunExport(params string[] commands)
+    {
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Profile.Height = 40;
+            c.Profile.Width = 250;
+            foreach (string command in commands)
+            {
+                c.Input.PushTextWithEnter(command);
+            }
+
+            c.Input.PushTextWithEnter("quit");
+        });
+        Assert.DoesNotContain("   at ", output);
+        string[] frame = LastLayout(output);
+        AssertLayout(frame, 40);
+        return (exitCode, frame);
+    }
+
+    private static string[] Listing(string folder) =>
+        Directory.EnumerateFileSystemEntries(folder).Select(p => Path.GetFileName(p)!).Order(StringComparer.Ordinal).ToArray();
+
+    private static string ExportHint(string[] frame) => HintText(frame, "export:");
+
+    // AC-1, AC-2, AC-8, AC-11
+    [Fact]
+    public void Export_WritesTheReportRowsAsCsv_AndShowsThePath()
+    {
+        using TempFolder target = new TempFolder();
+        WriteReportDays();
+        File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":1234,\"title\":\"Times\"}]}");
+        string[] dataBefore = Listing(data.Path);
+        byte[] projectsBefore = File.ReadAllBytes(ProjectsFile);
+
+        (int exitCode, string[] frame) = RunExport($"export 2026-11-02 2026-11-04 {target.Path}");
+
+        Assert.Equal(0, exitCode);
+        string path = Path.Combine(target.Path, ExportName);
+        Assert.Equal(Encoding.UTF8.GetBytes(ExportedCsv), File.ReadAllBytes(path));
+        Assert.Contains(frame, l => l.Contains($"Exported 3 rows to {path}", StringComparison.Ordinal));
+        Assert.Equal(string.Empty, frame[^4].Trim());
+        Assert.Equal([ExportName], Listing(target.Path));
+        Assert.Equal(dataBefore, Listing(data.Path));
+        Assert.Equal(projectsBefore, File.ReadAllBytes(ProjectsFile));
+        Assert.DoesNotContain(frame, l => l.Contains(App.ExportOpenNote, StringComparison.Ordinal));
+    }
+
+    // AC-1: the same rows, in the same order, as report shows.
+    [Fact]
+    public void Export_RowsMatchTheReport()
+    {
+        using TempFolder target = new TempFolder();
+        WriteReportDays();
+
+        (_, string[] report) = RunReport("report 2026-11-02 2026-11-04", "quit");
+        RunExport($"export 2026-11-02 2026-11-04 {target.Path}");
+
+        string[] csvRows = File.ReadAllText(Path.Combine(target.Path, ExportName)).Split("\r\n")[1..^1];
+        List<string> reportRows = report
+            .Select(l => Regex.Match(l, @"^│ (#?\d*) +│ (.+?) +│ [0-9:]+(?: open)? +│ +([0-9.]+) │"))
+            .Where(m => m.Success)
+            .Select(m => $"{m.Groups[1].Value.TrimStart('#')},{CsvTitle(m.Groups[2].Value)},{m.Groups[3].Value}")
+            .ToList();
+        Assert.Equal(reportRows, csvRows);
+        Assert.Equal(3, csvRows.Length);
+    }
+
+    private static string CsvTitle(string title) => title.Contains(',', StringComparison.Ordinal) ? $"\"{title}\"" : title;
+
+    // AC-1
+    [Theory]
+    [InlineData("ex")]
+    [InlineData("EX")]
+    [InlineData("/export")]
+    [InlineData("/ex")]
+    public void Export_AliasAndSlash_WriteTheSameFile(string typed)
+    {
+        using TempFolder target = new TempFolder();
+        WriteReportDays();
+        File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":1234,\"title\":\"Times\"}]}");
+
+        (int exitCode, _) = RunExport($"{typed} 2026-11-02 2026-11-04 {target.Path}");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(Encoding.UTF8.GetBytes(ExportedCsv), File.ReadAllBytes(Path.Combine(target.Path, ExportName)));
+    }
+
+    // AC-5
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Export_FolderWithSpace_QuotedOrNot_IsTheRestOfTheLine(bool quoted)
+    {
+        using TempFolder target = new TempFolder();
+        string folder = Path.Combine(target.Path, "my  folder");
+        Directory.CreateDirectory(folder);
+        WriteReportDays();
+        string typed = quoted ? $"\"{folder}\"" : folder;
+
+        (int exitCode, _) = RunExport($"export   2026-11-02   2026-11-04   {typed}   ");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal([ExportName], Listing(folder));
+    }
+
+    // AC-5
+    [Fact]
+    public void ExpandFolder_RemovesOnePairOfQuotes_AndExpandsTheTilde()
+    {
+        string home = Path.Combine(Path.GetTempPath(), "home");
+
+        Assert.Equal(home, App.ExpandFolder("~", home));
+        Assert.Equal(Path.Combine(home, "Exports"), App.ExpandFolder("~/Exports", home));
+        Assert.Equal(Path.Combine(home, "a b"), App.ExpandFolder("\"~/a b\"", home));
+        Assert.Equal("~x", App.ExpandFolder("~x", home));
+        Assert.Equal("\"/tmp/x\"", App.ExpandFolder("\"\"/tmp/x\"\"", home));
+        Assert.Equal("\"/tmp/x", App.ExpandFolder("\"/tmp/x", home));
+        Assert.Equal("/tmp/~/x", App.ExpandFolder("/tmp/~/x", home));
+    }
+
+    // AC-5
+    [Fact]
+    public void Export_TildeFolder_IsExpandedToTheHomeFolder()
+    {
+        string missing = "times-test-" + Guid.NewGuid().ToString("N");
+        WriteReportDays();
+
+        (_, string[] frame) = RunExport($"export 2026-11-02 2026-11-04 ~/{missing}");
+
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        Assert.Contains($"export: the folder {Path.Combine(home, missing)} does not exist.", ExportHint(frame));
+        Assert.False(Directory.Exists(Path.Combine(home, missing)));
+    }
+
+    // AC-5
+    [Theory]
+    [InlineData("relative", "is not an absolute path.")]
+    [InlineData("missing", "does not exist. Nothing was created.")]
+    [InlineData("file", "is a file, not a folder.")]
+    public void Export_BadFolder_ShowsRedHint_AndCreatesNothing(string kind, string hint)
+    {
+        using TempFolder target = new TempFolder();
+        string file = Path.Combine(target.Path, "plain.txt");
+        File.WriteAllText(file, "x");
+        string folder = kind switch
+        {
+            "relative" => "exports" + Guid.NewGuid().ToString("N"),
+            "missing" => Path.Combine(target.Path, "missing"),
+            _ => file,
+        };
+        WriteReportDays();
+        string[] dataBefore = Listing(data.Path);
+        string[] cwdBefore = WorkingDirectoryEntries();
+
+        (int exitCode, string[] frame) = RunExport($"export 2026-11-02 2026-11-04 {folder}", "report 2026-11-02 2026-11-04");
+        (_, string[] hintFrame) = RunExport($"export 2026-11-02 2026-11-04 {folder}");
+
+        Assert.Equal(0, exitCode);
+        // The loop keeps running: report still works afterwards.
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ Total +│"));
+        string expected = kind == "missing" ? $"export: the folder {folder} {hint}" : $"export: {folder} {hint}";
+        Assert.Contains(expected, ExportHint(hintFrame));
+        Assert.Equal(["plain.txt"], Listing(target.Path));
+        Assert.Equal("x", File.ReadAllText(file));
+        Assert.Equal(dataBefore, Listing(data.Path));
+        Assert.Equal(cwdBefore, WorkingDirectoryEntries());
+    }
+
+    // AC-6
+    [Fact]
+    public void Export_ExistingFile_StaysByteIdentical_AndHintNamesIt()
+    {
+        using TempFolder target = new TempFolder();
+        string path = Path.Combine(target.Path, ExportName);
+        File.WriteAllBytes(path, [1, 2, 3]);
+        WriteReportDays();
+
+        (int exitCode, string[] frame) = RunExport($"export 2026-11-02 2026-11-04 {target.Path}");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal([1, 2, 3], File.ReadAllBytes(path));
+        Assert.Equal([ExportName], Listing(target.Path));
+        Assert.Equal($"export: {path} already exists. Move or delete it first.", ExportHint(frame));
+        Assert.DoesNotContain(frame, l => l.Contains("Exported", StringComparison.Ordinal));
+    }
+
+    // AC-6
+    [Fact]
+    public void Export_DanglingSymlink_IsNotFollowed()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder target = new TempFolder();
+        using TempFolder elsewhere = new TempFolder();
+        string link = Path.Combine(target.Path, ExportName);
+        string pointsTo = Path.Combine(elsewhere.Path, "victim.csv");
+        File.CreateSymbolicLink(link, pointsTo);
+        WriteReportDays();
+
+        (_, string[] frame) = RunExport($"export 2026-11-02 2026-11-04 {target.Path}");
+
+        Assert.Equal($"export: {link} already exists. Move or delete it first.", ExportHint(frame));
+        Assert.False(File.Exists(pointsTo));
+        Assert.Empty(Listing(elsewhere.Path));
+        Assert.Equal(pointsTo, new FileInfo(link).LinkTarget);
+    }
+
+    // AC-7
+    [Fact]
+    public void Export_ReadOnlyFolder_ShowsRedHint_AndLeavesNoFile()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder target = new TempFolder();
+        WriteReportDays();
+        UnixFileMode mode = File.GetUnixFileMode(target.Path);
+        File.SetUnixFileMode(target.Path, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        try
+        {
+            try
+            {
+                File.WriteAllText(Path.Combine(target.Path, "probe"), "x");
+                // Running as root: access can't be denied.
+                return;
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+
+            (int exitCode, string[] frame) = RunExport($"export 2026-11-02 2026-11-04 {target.Path}", "report 2026-11-02 2026-11-04");
+            (_, string[] hintFrame) = RunExport($"export 2026-11-02 2026-11-04 {target.Path}");
+
+            Assert.Equal(0, exitCode);
+            Assert.Contains(frame, l => Regex.IsMatch(l, @"│ Total +│"));
+            Assert.StartsWith($"export: could not write {Path.Combine(target.Path, ExportName)}.", ExportHint(hintFrame));
+            Assert.Empty(Listing(target.Path));
+        }
+        finally
+        {
+            File.SetUnixFileMode(target.Path, mode);
+        }
+    }
+
+    // AC-7, AC-10
+    [Fact]
+    public void Export_Hints_AreRed()
+    {
+        using TempFolder target = new TempFolder();
+        File.WriteAllBytes(Path.Combine(target.Path, ExportName), [1]);
+        WriteReportDays();
+
+        string output = RunAnsiCommands(
+            "export",
+            "export 2026-11-05 2026-11-04 /x",
+            "export 2026-11-02 2026-11-04 relative",
+            $"export 2026-11-02 2026-11-04 {target.Path}");
+
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mexport: say the first day", output);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mexport: the first day", output);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mexport: [^\n]{0,20}relative[^\n]{0,20} is not an absolute path", output);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mexport: .*already exists", output);
+    }
+
+    // AC-8
+    [Fact]
+    public void Export_OpenCheckpoint_AndSkippedFile_AddGreyNoteAndYellowLine()
+    {
+        using TempFolder target = new TempFolder();
+        WriteReportDay("2026-11-02", ReportCp("09:00", "Plan", 7));
+        File.WriteAllText(DayFile("2026-11-03"), "{not json");
+
+        (_, string[] frame) = RunExport($"export 2026-11-02 2026-11-04 {target.Path}");
+
+        int message = Array.FindIndex(frame, l => l.Contains("Exported 1 row to ", StringComparison.Ordinal));
+        int note = Array.FindIndex(frame, l => l.Contains(App.ExportOpenNote, StringComparison.Ordinal));
+        int skipped = Array.FindIndex(frame, l => l.Contains("! 1 day file skipped", StringComparison.Ordinal));
+        Assert.True(message >= 0 && note > message && skipped > note, string.Join("\n", frame));
+        Assert.Equal(Encoding.UTF8.GetBytes("\uFEFFWork item,Title,Hours\r\n7,Plan,0.00\r\n"), File.ReadAllBytes(Path.Combine(target.Path, ExportName)));
+
+        Directory.CreateDirectory(Path.Combine(target.Path, "again"));
+        string ansi = RunAnsiCommands($"export 2026-11-02 2026-11-04 {Path.Combine(target.Path, "again")}");
+        Assert.Matches(@"\x1b\[(90|38;5;8)mA row has an open checkpoint", ansi);
+        Assert.Matches(@"\x1b\[(33|93|38;5;11)m! 1 day file skipped", ansi);
+    }
+
+    // AC-8
+    [Fact]
+    public void Export_PathWithMarkupAndHiddenCharacters_IsShownEscapedAndCleaned()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder target = new TempFolder();
+        string folder = Path.Combine(target.Path, "[red]x‮y");
+        Directory.CreateDirectory(folder);
+        WriteReportDays();
+
+        // The test console types only chars up to U+00FF as text, so the U+202E is pushed as a key.
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Profile.Height = 40;
+            c.Profile.Width = 250;
+            c.Input.PushText($"export 2026-11-02 2026-11-04 {Path.Combine(target.Path, "[red]x")}");
+            c.Input.PushKey(new ConsoleKeyInfo('\u202E', ConsoleKey.NoName, false, false, false));
+            c.Input.PushTextWithEnter("y");
+            c.Input.PushTextWithEnter("quit");
+        });
+        string[] frame = LastLayout(output);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal([ExportName], Listing(folder));
+        string shown = Path.Combine(target.Path, "[red]xy", ExportName);
+        Assert.Contains(frame, l => l.Contains($"Exported 3 rows to {shown}", StringComparison.Ordinal));
+        Assert.DoesNotContain(frame, l => l.Contains('‮', StringComparison.Ordinal));
+    }
+
+    // AC-9
+    [Fact]
+    public void Export_NoCheckpoints_WritesNoFile_AndShowsGreyNote()
+    {
+        using TempFolder target = new TempFolder();
+        File.WriteAllText(DayFile("2026-11-02"), "{\"absence\":\"vacation\"}");
+
+        (int exitCode, string[] frame) = RunExport($"export 2026-11-02 2026-11-04 {target.Path}", "export 2026-11-02 2026-11-04 " + target.Path);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(frame, l => l.Contains("No checkpoints between 2026-11-02 and 2026-11-04. Nothing was exported.", StringComparison.Ordinal));
+        Assert.Empty(Listing(target.Path));
+
+        string ansi = RunAnsiCommands($"export 2026-11-02 2026-11-04 {target.Path}");
+        Assert.Matches(@"\x1b\[(90|38;5;8)mNo checkpoints between 2026-11-02 and 2026-11-04\. Nothing was exported\.", ansi);
+    }
+
+    // AC-10
+    [Theory]
+    [InlineData("export", "export: say the first day, the last day and the folder. Use export <from> <to> <folder> with dates as yyyy-MM-dd.")]
+    [InlineData("ex 2026-11-02", "export: say the first day, the last day and the folder.")]
+    [InlineData("export 2026-11-02 2026-11-04", "export: say the first day, the last day and the folder.")]
+    [InlineData("export 2026-11-02 2026-11-04   ", "export: say the first day, the last day and the folder.")]
+    [InlineData("export 2026-11-2 2026-11-04 /tmp", "export: 2026-11-2 is not a date. Use export <from> <to> <folder>")]
+    [InlineData("export 2026-11-02 04.11.2026 /tmp", "export: 04.11.2026 is not a date.")]
+    [InlineData("export [red]x 2026-11-04 /tmp", "export: [red]x is not a date.")]
+    [InlineData("export 2026-11-05 2026-11-04 /tmp", "export: the first day 2026-11-05 is after the last day 2026-11-04.")]
+    public void Export_BadInput_ShowsHint_AndLoopKeepsRunning(string command, string hint)
+    {
+        WriteReportDays();
+
+        (int exitCode, string[] frame) = RunExport(command);
+        (_, string[] next) = RunExport(command, "report 2026-11-02 2026-11-04");
+
+        Assert.Equal(0, exitCode);
+        Assert.StartsWith(hint, ExportHint(frame));
+        Assert.DoesNotContain(frame, l => l.Contains("Exported", StringComparison.Ordinal));
+        Assert.Contains(next, l => Regex.IsMatch(l, @"│ Total +│"));
+    }
+
+    // AC-10
+    [Fact]
+    public void Export_FolderThatCannotBeListed_ShowsRedHint()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder target = new TempFolder();
+        UnixFileMode mode = File.GetUnixFileMode(data.Path);
+        File.SetUnixFileMode(data.Path, UnixFileMode.None);
+        try
+        {
+            try
+            {
+                Directory.EnumerateFileSystemEntries(data.Path).ToList();
+                // Running as root: access can't be denied.
+                return;
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+
+            (int exitCode, string[] frame) = RunExport($"export 2026-11-02 2026-11-04 {target.Path}");
+
+            Assert.Equal(0, exitCode);
+            Assert.StartsWith("export: the data folder cannot be listed", ExportHint(frame));
+            Assert.Empty(Listing(target.Path));
+        }
+        finally
+        {
+            File.SetUnixFileMode(data.Path, mode);
+        }
+    }
+
+    // AC-12
+    [Fact]
+    public void Help_ListsExport_WithAliasEx()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 120;
+        console.Input.PushTextWithEnter("help");
+        PageDown(console, HelpPages);
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+        string plain = Regex.Replace(console.Output, @"\x1b\[[0-9;?]*[A-Za-z]", string.Empty);
+
+        Assert.Matches(@"│ export +│ ex +│ Save the project report for a date range as CSV: <from> <to> <folder> +│", plain);
     }
 }

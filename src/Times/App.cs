@@ -242,6 +242,7 @@ internal sealed class App
         registry.Register("summary", "s", "Show the time taken per work item from this day's checkpoints", NoArguments("summary", Summary));
         registry.Register("absence", "ab", "Mark this day as vacation, sick or holiday, or clear it", Absence);
         registry.Register("report", "rp", "Show the hours per project over a date range: <from> <to>", Report);
+        registry.Register("export", "ex", "Save the project report for a date range as CSV: <from> <to> <folder>", Export);
     }
 
     // Marks the day being viewed as an absence (vacation, sick, holiday) or clears it. Nothing is written
@@ -387,44 +388,258 @@ internal sealed class App
             return Hint($"{Name}: say the first and the last day. {Usage}");
         }
 
+        if (ParseRange(Name, Usage, parts[0], parts[1], out DateOnly from, out DateOnly to) is { } hint)
+        {
+            return hint;
+        }
+
+        if (CalculateReport(Name, from, to, out ProjectReport report) is { } failed)
+        {
+            return failed;
+        }
+
+        return new CommandResult(ReportView(from, to, report, LoadProjectsOrNull()), hideQuicklist: true);
+    }
+
+    // Parses the two report dates; a red hint (prefixed with name) if either is not a date or from is after to.
+    private static CommandResult? ParseRange(string name, string usage, string first, string last, out DateOnly from, out DateOnly to)
+    {
+        string[] parts = [first, last];
         DateOnly[] dates = new DateOnly[2];
         for (int i = 0; i < 2; i++)
         {
             if (!DateOnly.TryParseExact(parts[i], "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out dates[i]))
             {
-                return Hint($"{Name}: [bold]{Markup.Escape(parts[i])}[/] is not a date. {Usage}");
+                from = default;
+                to = default;
+                return Hint($"{name}: [bold]{Markup.Escape(parts[i])}[/] is not a date. {usage}");
             }
         }
 
-        DateOnly from = dates[0];
-        DateOnly to = dates[1];
+        from = dates[0];
+        to = dates[1];
         if (from > to)
         {
-            return Hint($"{Name}: the first day {ReportDate(from)} is after the last day {ReportDate(to)}. {Usage}");
+            return Hint($"{name}: the first day {ReportDate(from)} is after the last day {ReportDate(to)}. {usage}");
         }
 
-        ProjectReport report;
+        return null;
+    }
+
+    // Calculates the report over the range; a red hint (prefixed with name) if the data folder cannot be listed.
+    private CommandResult? CalculateReport(string name, DateOnly from, DateOnly to, out ProjectReport report)
+    {
         try
         {
             report = ProjectReport.Calculate(Store, from, to, DateOnly.FromDateTime(time.GetLocalNow().DateTime), Now());
+            return null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return Hint($"{Name}: the data folder cannot be listed: {Markup.Escape(ex.Message)}");
+            report = new ProjectReport([], 0);
+            return Hint($"{name}: the data folder cannot be listed: {Markup.Escape(ex.Message)}");
         }
+    }
 
-        // Titles are optional: without a readable quicklist every row falls back to its names.
-        ProjectList? projects;
+    // Titles are optional: without a readable quicklist every row falls back to its names.
+    private ProjectList? LoadProjectsOrNull()
+    {
         try
         {
-            projects = projectStore.Load();
+            return projectStore.Load();
         }
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
         {
-            projects = null;
+            return null;
+        }
+    }
+
+    // Writes the report over an inclusive date range as a CSV file into an existing folder the user
+    // names. Never overwrites: the file is created exclusively, and a failed write leaves no file.
+    // Reads the data folder only, and creates nothing but the one file in the target folder.
+    private CommandResult Export(string argument)
+    {
+        const string Name = "export";
+        const string Usage = "Use [bold]export <from> <to> <folder>[/] with dates as [bold]yyyy-MM-dd[/].";
+        if (!SplitExportArgument(argument, out string first, out string last, out string typedFolder))
+        {
+            return Hint($"{Name}: say the first day, the last day and the folder. {Usage}");
         }
 
-        return new CommandResult(ReportView(from, to, report, projects), hideQuicklist: true);
+        if (ParseRange(Name, Usage, first, last, out DateOnly from, out DateOnly to) is { } hint)
+        {
+            return hint;
+        }
+
+        string folder = ExpandFolder(typedFolder, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+        string shownFolder = Shown(folder);
+        if (!Path.IsPathFullyQualified(folder))
+        {
+            return Hint($"{Name}: [bold]{shownFolder}[/] is not an absolute path. {Usage}");
+        }
+
+        if (!Directory.Exists(folder))
+        {
+            return File.Exists(folder)
+                ? Hint($"{Name}: [bold]{shownFolder}[/] is a file, not a folder.")
+                : Hint($"{Name}: the folder [bold]{shownFolder}[/] does not exist. Nothing was created.");
+        }
+
+        if (CalculateReport(Name, from, to, out ProjectReport report) is { } failed)
+        {
+            return failed;
+        }
+
+        if (report.Rows.Count == 0)
+        {
+            List<IRenderable> empty = [new Markup($"[grey]No checkpoints between {ReportDate(from)} and {ReportDate(to)}. Nothing was exported.[/]")];
+            AddSkipped(empty, report);
+            return new CommandResult(empty.Count == 1 ? empty[0] : new Rows(empty));
+        }
+
+        string path = Path.GetFullPath(Path.Combine(folder, ReportCsv.FileName(from, to)));
+        string shownPath = Shown(path);
+        if (TargetExists(path))
+        {
+            return Hint($"{Name}: [bold]{shownPath}[/] already exists. Move or delete it first.");
+        }
+
+        byte[] bytes = ReportCsv.ToBytes(ReportCsv.Format(report, LoadProjectsOrNull()));
+        bool created = false;
+        try
+        {
+            // CreateNew is O_CREAT | O_EXCL: it never overwrites a file or follows a link at the name.
+            using (FileStream stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                created = true;
+                stream.Write(bytes);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            if (!created)
+            {
+                if (TargetExists(path))
+                {
+                    return Hint($"{Name}: [bold]{shownPath}[/] already exists. Move or delete it first.");
+                }
+
+                return Hint($"{Name}: could not write [bold]{shownPath}[/]. {Shown(ex.Message)}");
+            }
+
+            try
+            {
+                File.Delete(path);
+            }
+            catch (Exception deleteFailed) when (deleteFailed is IOException or UnauthorizedAccessException)
+            {
+                return Hint($"{Name}: could not write [bold]{shownPath}[/] and could not remove the partial file. {Shown(ex.Message)}");
+            }
+
+            return Hint($"{Name}: could not write [bold]{shownPath}[/]. {Shown(ex.Message)}");
+        }
+
+        string rows = report.Rows.Count == 1 ? "row" : "rows";
+        List<IRenderable> parts =
+        [
+            new Markup($"Exported [steelblue1]{report.Rows.Count.ToString(CultureInfo.InvariantCulture)}[/] {rows} to [steelblue1]{shownPath}[/]"),
+        ];
+        if (report.Rows.Any(r => r.Open))
+        {
+            parts.Add(new Markup($"[grey]{ExportOpenNote}[/]"));
+        }
+
+        AddSkipped(parts, report);
+        return new CommandResult(parts.Count == 1 ? parts[0] : new Rows(parts));
+    }
+
+    // The grey note after an export with an open row; a fixed literal, so no escaping is needed.
+    internal const string ExportOpenNote = "A row has an open checkpoint: it has no end on its day and counts no time.";
+
+    // Text for markup: without control or invisible characters, then escaped.
+    private static string Shown(string text) => Markup.Escape(DataFolder.ForDisplay(text));
+
+    // True if anything is at path, a symlink included, even one whose target is missing.
+    private static bool TargetExists(string path)
+    {
+        if (Path.Exists(path))
+        {
+            return true;
+        }
+
+        try
+        {
+            return new FileInfo(path).LinkTarget is not null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Splits the export argument into the two date words and the rest of the line (the folder,
+    /// trimmed). False if a date or the folder is missing.
+    /// </summary>
+    internal static bool SplitExportArgument(string argument, out string first, out string last, out string folder)
+    {
+        first = string.Empty;
+        last = string.Empty;
+        folder = string.Empty;
+        string rest = argument.TrimStart();
+        for (int i = 0; i < 2; i++)
+        {
+            int end = 0;
+            while (end < rest.Length && !char.IsWhiteSpace(rest[end]))
+            {
+                end++;
+            }
+
+            if (end == 0)
+            {
+                return false;
+            }
+
+            if (i == 0)
+            {
+                first = rest[..end];
+            }
+            else
+            {
+                last = rest[..end];
+            }
+
+            rest = rest[end..].TrimStart();
+        }
+
+        folder = rest.Trim();
+        return folder.Length > 0;
+    }
+
+    /// <summary>
+    /// <paramref name="typed"/> without one pair of surrounding double quotes, with a leading <c>~</c>
+    /// (alone, or before <c>/</c> or the platform's separator) replaced by <paramref name="home"/>.
+    /// Nothing else is changed; the result may still be relative.
+    /// </summary>
+    internal static string ExpandFolder(string typed, string home)
+    {
+        string folder = typed;
+        if (folder.Length >= 2 && folder[0] == '"' && folder[^1] == '"')
+        {
+            folder = folder[1..^1];
+        }
+
+        if (folder == "~")
+        {
+            return home;
+        }
+
+        if (folder.Length >= 2 && folder[0] == '~' && (folder[1] == '/' || folder[1] == Path.DirectorySeparatorChar))
+        {
+            return Path.Combine(home, folder[2..]);
+        }
+
+        return folder;
     }
 
     private static string ReportDate(DateOnly day) => day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
@@ -455,8 +670,7 @@ internal sealed class App
             foreach (ReportRow row in report.Rows)
             {
                 string workItem = row.WorkItem is { } w ? "#" + w.ToString(CultureInfo.InvariantCulture) : string.Empty;
-                string? title = row.WorkItem is { } item ? projects?.Projects.FirstOrDefault(p => p.WorkItem == item)?.Title : null;
-                string titleText = title ?? string.Join(", ", row.Names);
+                string titleText = row.Title(projects);
                 string open = row.Open ? " [grey]open[/]" : string.Empty;
                 table.AddRow(
                     new Text(workItem),
@@ -477,13 +691,18 @@ internal sealed class App
             }
         }
 
+        AddSkipped(parts, report);
+        return parts.Count == 1 ? parts[0] : new Rows(parts);
+    }
+
+    // Adds the yellow skipped line when the report skipped unreadable day files.
+    private static void AddSkipped(List<IRenderable> parts, ProjectReport report)
+    {
         if (report.SkippedFiles > 0)
         {
             string files = report.SkippedFiles == 1 ? "day file" : "day files";
             parts.Add(new Markup($"[yellow]! {report.SkippedFiles.ToString(CultureInfo.InvariantCulture)} {files} skipped[/]"));
         }
-
-        return parts.Count == 1 ? parts[0] : new Rows(parts);
     }
 
     /// <summary>Whole minutes as decimal hours with two decimals and the invariant culture, e.g. <c>7.50</c>.</summary>

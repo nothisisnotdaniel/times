@@ -114,6 +114,10 @@ Every factory agent reads this file before working on Times. Keep it short and a
   day files `DayStore.Days()` lists in the range (`ProjectReport.Calculate`, read-only), one row per work item
   (ascending, title from `projects.json` or the names) then per name (ordinal), with `H:mm`, decimal hours
   (invariant, 2 decimals) and a `Total` row (`App.ReportView`); unreadable day files are skipped and counted.
+  Titles come from `ReportRow.Title(projects)`. `export <from> <to> <folder>` (`ex`) writes the same rows as
+  `times-report-<from>-to-<to>.csv` (`ReportCsv`: UTF-8 BOM, CRLF, `Work item,Title,Hours`, RFC 4180 quoting, a `'`
+  before titles starting `=+-@`, no total) into an existing absolute folder (one pair of quotes removed, `~` expanded),
+  created with `FileMode.CreateNew` (never overwrites or follows a link; a failed write deletes the file).
 - **Updates:** `UpdateService` (wired in `Program.cs`, `null` in tests unless injected) runs one background
   check at start (`IReleaseSource`, GitHub's release list only, allow-listed asset URLs, capped and timed out) and
   the `update` (`up`) command. Settings `update-mode` (`notify only` / `install on quit` / `install and restart`)
