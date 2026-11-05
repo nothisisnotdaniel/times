@@ -25,6 +25,14 @@ MouseReporting mouse = new MouseReporting(console, inputMode);
 Console.CancelKeyPress += (_, _) => mouse.Disable();
 AppDomain.CurrentDomain.ProcessExit += (_, _) => mouse.Disable();
 
+// Updates come from the GitHub releases and are checked against the embedded key; the helper runs after quit.
+UpdateService updates = new UpdateService(
+    new GitHubReleaseSource(AppVersion.Current),
+    UpdateSignature.Embedded(),
+    ToolInstall.Current(),
+    new UpdateApplier(new ProcessLauncher(), OperatingSystem.IsWindows()),
+    AppVersion.Current);
+
 App app = new App(console, TimeProvider.System, new DayStore(dataFolder.Path),
-    folderFromEnvironment: dataFolder.FromEnvironment, mouse: mouse);
+    folderFromEnvironment: dataFolder.FromEnvironment, mouse: mouse, updates: updates);
 return app.Run(args);

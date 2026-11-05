@@ -82,11 +82,30 @@ internal sealed partial class SettingsRegistry
     /// <summary>The highest daily work target, in minutes (24:00).</summary>
     public const int DailyTargetMax = 1440;
 
+    /// <summary>The name of the setting that says what happens when a newer version is found.</summary>
+    public const string UpdateModeName = "update-mode";
+
+    /// <summary>Only say that a newer version is there; <c>update</c> stages it for quit.</summary>
+    public const string UpdateNotifyOnly = "notify only";
+
+    /// <summary>Download and verify at start, install after quit.</summary>
+    public const string UpdateInstallOnQuit = "install on quit";
+
+    /// <summary>Like <see cref="UpdateInstallOnQuit"/>, and at quit say when to start <c>tm</c> again.</summary>
+    public const string UpdateInstallAndRestart = "install and restart";
+
+    /// <summary>The name of the setting that picks which releases count as updates.</summary>
+    public const string UpdateChannelName = "update-channel";
+
     /// <summary>The registry the app ships with: each feature registers its settings here.</summary>
     public static SettingsRegistry CreateDefault()
     {
         SettingsRegistry registry = new SettingsRegistry();
         registry.RegisterNumber(DailyTargetName, "Daily work target in minutes (480 = 8:00)", DailyTargetDefault, 0, DailyTargetMax);
+        registry.RegisterChoice(UpdateModeName, "What Times does when a newer version is out", UpdateNotifyOnly,
+            [UpdateNotifyOnly, UpdateInstallOnQuit, UpdateInstallAndRestart]);
+        registry.RegisterChoice(UpdateChannelName, "Which releases count as updates", UpdateChecker.Stable,
+            [UpdateChecker.Stable, UpdateChecker.Beta, UpdateChecker.Develop]);
         return registry;
     }
 
