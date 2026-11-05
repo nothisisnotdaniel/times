@@ -27,6 +27,16 @@ internal sealed class ReportRow
 
     /// <summary>True if any of the row's checkpoints has no ending entry on a day that is not today.</summary>
     public bool Open { get; }
+
+    /// <summary>
+    /// The row's title: the quicklist title of its work item from <paramref name="projects"/>
+    /// (<c>null</c>: none), otherwise its names joined with <c>", "</c>. Shared by the report table and the CSV export.
+    /// </summary>
+    public string Title(ProjectList? projects)
+    {
+        string? title = WorkItem is { } item ? projects?.Projects.FirstOrDefault(p => p.WorkItem == item)?.Title : null;
+        return title ?? string.Join(", ", Names);
+    }
 }
 
 /// <summary>
