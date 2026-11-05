@@ -103,6 +103,20 @@ public sealed class AppTests : IDisposable
         Assert.DoesNotContain(frame[..^4], l => l.Contains(text, StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// The hint rows above the input panel, trimmed: from the lowest row above <c>frame[^3]</c> that
+    /// contains <paramref name="start"/> (the start of the hint) down to <c>frame[^4]</c>.
+    /// </summary>
+    private static string[] HintRowsOf(string[] frame, string start)
+    {
+        int first = Array.FindLastIndex(frame[..^3], l => l.Contains(start, StringComparison.Ordinal));
+        Assert.True(first >= 0, $"no hint row holds {start}");
+        return frame[first..^3].Select(l => l.Trim()).ToArray();
+    }
+
+    /// <summary>The hint rows joined with one space, as the hint reads.</summary>
+    private static string HintText(string[] frame, string start) => string.Join(' ', HintRowsOf(frame, start));
+
     private static int Count(string text, string value)
     {
         int count = 0;
@@ -444,9 +458,9 @@ public sealed class AppTests : IDisposable
         Assert.DoesNotContain(frame, l => l.Contains("Unknown command", StringComparison.Ordinal));
     }
 
-    // AC-8
+    // AC-8; since job 096 a long hint wraps onto at most 3 rows.
     [Fact]
-    public void LongHint_IsCroppedToOneLine_AndDoesNotMoveInputBox()
+    public void LongHint_IsCroppedToThreeRows_AndDoesNotMoveInputBox()
     {
         CommandRegistry registry = CommandRegistry.CreateDefault();
         string text = string.Concat(Enumerable.Repeat("word ", 60)); // 300 characters
@@ -461,8 +475,9 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, exitCode);
         string[] frame = Frames(output)[1];
         AssertLayout(frame);
-        Assert.Contains("word", frame[^4]);
-        Assert.DoesNotContain(frame[..^4], l => l.Contains("word", StringComparison.Ordinal));
+        Assert.All(frame[^6..^3], l => Assert.StartsWith("word", l));
+        Assert.EndsWith("\u2026", frame[^4].TrimEnd());
+        Assert.DoesNotContain(frame[..^6], l => l.Contains("word", StringComparison.Ordinal));
         Assert.Contains(Heading, frame[EmptyPanelRows]);
     }
 
@@ -4736,8 +4751,9 @@ public sealed class AppTests : IDisposable
         (_, string aliasDay, string aliasOutput) = RunInFreshFolder(clock, alias, "quit");
         (_, string fullDay, string fullOutput) = RunInFreshFolder(clock, full, "quit");
 
-        string aliasHint = LastLayout(aliasOutput)[^4];
-        string fullHint = LastLayout(fullOutput)[^4];
+        // The checkpoint usage hint wraps onto more than one row.
+        string aliasHint = string.Join(' ', LastLayout(aliasOutput)[^6..^3].Select(l => l.Trim()));
+        string fullHint = string.Join(' ', LastLayout(fullOutput)[^6..^3].Select(l => l.Trim()));
         Assert.Contains(expected, aliasHint);
         Assert.Equal(fullHint, aliasHint);
         Assert.Equal(fullDay, aliasDay);
@@ -6618,7 +6634,7 @@ public sealed class AppTests : IDisposable
         }
 
         string[] changed = PanelScreens(output)[1];
-        Assert.Contains("settings: could not save the settings.", changed[^4]);
+        Assert.Contains("settings: could not save the settings.", HintText(changed, "settings: could not"));
         Assert.Equal("off", ValueOf(changed, "round"));
         Assert.Equal(before, File.ReadAllBytes(SettingsPath));
     }
@@ -7575,5 +7591,280 @@ public sealed class AppTests : IDisposable
         (_, string output) = RunCommands("update", "quit");
 
         Assert.Contains("Update check skipped: this build cannot update itself.", output);
+    }
+
+    // Job 096: hint rows wrap on narrow terminals -------------------------------------------
+
+    /// <summary>A token whose unknown-command hint needs exactly 2 lines at width 40.</summary>
+    private const string TwoLineToken = "zzzzzzzzzzzz";
+
+    /// <summary>A token whose unknown-command hint needs exactly 3 lines at width 40.</summary>
+    private static readonly string ThreeLineToken = new string('z', 30);
+
+    /// <summary>A token whose unknown-command hint needs more than 3 lines at width 40.</summary>
+    private static readonly string LongToken = new string('z', 150);
+
+    private static string UnknownHint(string token) => $"Unknown command {token}. Type help to see all commands.";
+
+    private (int ExitCode, string Output) RunNarrow(int width, int height, params string[] commands) =>
+        Run(c =>
+        {
+            c.Profile.Width = width;
+            c.Profile.Height = height;
+            foreach (string command in commands)
+            {
+                c.Input.PushTextWithEnter(command);
+            }
+        });
+
+    // AC-1 (096)
+    [Fact]
+    public void OneLineHint_AtWidth60_StaysOnOneRow_AndTheTopAreaKeepsHeightMinus4Rows()
+    {
+        (_, string output) = RunNarrow(60, 24, "nope", "quit");
+
+        string[] frame = Frames(output)[1];
+        AssertOnHintRow(frame, "Unknown command nope");
+        Assert.Equal([UnknownHint("nope")], HintRowsOf(frame, "Unknown command"));
+        Assert.Equal(TopHeight, frame[..^4].Length);
+        Assert.Contains(Heading, frame[EmptyPanelRows]);
+    }
+
+    // AC-2 (096)
+    [Fact]
+    public void TwoLineHint_AtWidth40_TakesTwoRowsAboveTheInputPanel()
+    {
+        (int exitCode, string output) = RunNarrow(40, 24, TwoLineToken, "quit");
+
+        Assert.Equal(0, exitCode);
+        string[] frame = Frames(output)[1];
+        AssertLayout(frame);
+        Assert.Contains("Unknown command", frame[^5]);
+        Assert.False(string.IsNullOrWhiteSpace(frame[^4]));
+        Assert.Equal(2, HintRowsOf(frame, "Unknown command").Length);
+        Assert.Equal(UnknownHint(TwoLineToken), HintText(frame, "Unknown command"));
+        // The top area is 24 - 3 - 2 = 19 rows, still headed by the day.
+        Assert.Equal(19, frame[..^5].Length);
+        Assert.Contains(Heading, frame[EmptyPanelRows]);
+        Assert.DoesNotContain(frame[..^5], l => l.Contains("Unknown", StringComparison.Ordinal) || l.Contains("help to see", StringComparison.Ordinal));
+    }
+
+    // AC-3 (096)
+    [Fact]
+    public void LongerHint_TakesThreeRows_AndItsLastRowEndsInAnEllipsis()
+    {
+        (_, string output) = RunNarrow(40, 24, LongToken, "quit");
+
+        string[] frame = Frames(output)[1];
+        AssertLayout(frame);
+        Assert.StartsWith("Unknown command", frame[^6]);
+        Assert.Equal(3, HintRowsOf(frame, "Unknown command").Length);
+        Assert.EndsWith("…", frame[^4].TrimEnd());
+        Assert.DoesNotContain(frame[..^6], l => l.Contains("Unknown", StringComparison.Ordinal) || l.Contains("zzz", StringComparison.Ordinal));
+        Assert.Contains(Heading, frame[EmptyPanelRows]);
+    }
+
+    // AC-3 (096)
+    [Fact]
+    public void ThreeLineHint_ShowsInFull_WithoutAnEllipsis()
+    {
+        (_, string output) = RunNarrow(40, 24, ThreeLineToken, "quit");
+
+        string[] frame = Frames(output)[1];
+        AssertLayout(frame);
+        Assert.StartsWith("Unknown command", frame[^6]);
+        Assert.Equal(UnknownHint(ThreeLineToken), HintText(frame, "Unknown command"));
+        Assert.DoesNotContain(frame[^6..^3], l => l.Contains('…'));
+    }
+
+    // AC-3 (096): the grey ellipsis is drawn grey, the hint keeps its red.
+    [Fact]
+    public void Ellipsis_IsGrey_AndTheHintStaysRed()
+    {
+        string output = RunAnsi(c =>
+        {
+            c.Profile.Width = 40;
+            c.Input.PushTextWithEnter(LongToken);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mUnknown command", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)m…", output);
+    }
+
+    // AC-4 (096)
+    [Fact]
+    public void ShortTerminal_ThreeLineHint_GetsOneRow_EndingInAnEllipsis()
+    {
+        (_, string output) = RunNarrow(40, 8, ThreeLineToken, "quit");
+
+        string[] frame = Frames(output)[1];
+        Assert.Equal(8, frame.Length);
+        Assert.StartsWith("╭", frame[^3]);
+        Assert.StartsWith("Unknown command", frame[^4]);
+        Assert.EndsWith("…", frame[^4].TrimEnd());
+        Assert.DoesNotContain(frame[..^4], l => l.Contains("Unknown", StringComparison.Ordinal) || l.Contains("zzz", StringComparison.Ordinal));
+        // The top area keeps its 4 rows (at least 3).
+        Assert.Contains(frame[..^4], l => l.Contains("Projects", StringComparison.Ordinal));
+    }
+
+    // AC-5 (096)
+    [Fact]
+    public void NextCommandWithoutHint_BringsBackOneBlankHintRow()
+    {
+        (_, string output) = RunNarrow(40, 24, LongToken, "today", "quit");
+
+        string[] frame = Frames(output)[2];
+        AssertLayout(frame);
+        Assert.True(string.IsNullOrWhiteSpace(frame[^4]));
+        Assert.DoesNotContain(frame, l => l.Contains("Unknown", StringComparison.Ordinal) || l.Contains("zzz", StringComparison.Ordinal));
+        Assert.Contains(Heading, frame[EmptyPanelRows]);
+        // The top area is height - 4 = 20 rows: the 20th row is part of it, not hint.
+        Assert.Equal(TopHeight, frame[..^4].Length);
+    }
+
+    /// <summary>A command that shows <paramref name="lines"/> numbered lines and a 2-row hint at width 40.</summary>
+    private static CommandRegistry LongOutputWithHint(int lines)
+    {
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+        registry.Register("both", "bo", "Long output and a long hint", _ => new CommandResult(
+            message: new Rows(Enumerable.Range(1, lines).Select(i => new Markup($"line {i}"))),
+            hint: new Markup($"[red]{Markup.Escape(UnknownHint(TwoLineToken))}[/]"),
+            hideQuicklist: true));
+        return registry;
+    }
+
+    // AC-6 (096)
+    [Fact]
+    public void TwoRowHint_ScrollCuesAndPaging_UseTheSmallerTopArea()
+    {
+        string output = RunAnsi(c =>
+        {
+            c.Profile.Width = 40;
+            c.Input.PushTextWithEnter("both");
+            PageDown(c, 10);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("quit");
+        }, LongOutputWithHint(60));
+
+        // 24 rows: 3 input, 2 hint (rows 20 and 21), a 19-row top area.
+        string[] frame = AnsiFrames(output)[1];
+        Assert.Contains("Unknown command", frame[19]);
+        Assert.StartsWith("↓ ", frame[18]);
+        Assert.Contains(BelowCue, frame[18]);
+
+        List<string[]> screens = TopScreens(output, 1, 19);
+        Assert.True(screens.Count > 1);
+        Assert.Equal("line 60", screens[^1][18]);
+        Assert.StartsWith("↑ ", screens[^1][0]);
+        // Paging never wrote into the hint rows.
+        List<AnsiWrite> writes = AnsiWrites.Parse(BetweenFrames(output, 1));
+        Assert.DoesNotContain(writes.Skip(1), w => w.Column == 1 && (w.Row == 20 || w.Row == 21));
+    }
+
+    // AC-7 (096)
+    [Fact]
+    public void PasteCut_AtWidth40_WrapsTheHintOnTwoRows_InPlace_AndKeepsTheTypedLine()
+    {
+        (int exitCode, string output) = RunWithMouse(c =>
+        {
+            c.Profile.Width = 40;
+            PushLongPaste(c, 'a');
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Equal(0, exitCode);
+        // Only the first frame and the clear on quit: no full clear for the hint.
+        Assert.Equal(2, Count(output, ClearScreen));
+
+        List<AnsiWrite> writes = AnsiWrites.Parse(output);
+        int first = writes.FindIndex(w => w.Row == 20 && w.Column == 1 && w.Text.StartsWith("Paste cut", StringComparison.Ordinal));
+        Assert.True(first > 0, "no paste-cut hint on row 20");
+        AnsiWrite second = writes.Skip(first).First(w => w.Row == 21 && w.Column == 1);
+        Assert.Equal(PasteCutText, writes[first].Text.Trim() + " " + second.Text.Trim());
+
+        // Every row was rewritten in place, except the input line with the typed text.
+        int start = writes.FindLastIndex(first, w => w.Row == 1 && w.Column == 1);
+        List<AnsiWrite> rewrite = writes.Skip(start).TakeWhile(w => w.Column == 1).ToList();
+        Assert.Equal([.. Enumerable.Range(1, 22), 24], rewrite.Select(w => w.Row));
+
+        // Then the cursor is back on the input line and the editor redraws the typed line's tail.
+        AnsiWrite after = writes[start + rewrite.Count];
+        Assert.Equal(23, after.Row);
+        AnsiWrite typed = writes.Skip(start + rewrite.Count).First(w => w.Row == 23 && w.Text.Length > 0);
+        Assert.StartsWith("…aaa", typed.Text);
+    }
+
+    // AC-8 (096)
+    [Fact]
+    public void TwoRowHint_PopupEndsAboveTheInputBox_AndEscRestoresBothHintRows()
+    {
+        string output = RunAnsi(c =>
+        {
+            c.Profile.Width = 40;
+            c.Input.PushTextWithEnter(TwoLineToken);
+            c.Input.PushText("/");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        string[] frame = AnsiFrames(output)[1];
+        Assert.Contains("Unknown command", frame[19]);
+        Assert.Contains("to see all commands.", frame[20]);
+
+        List<AnsiWrite> writes = TypingWrites(output, 1);
+        List<AnsiWrite> popup = writes.TakeWhile(w => w.StartsWithCommand || w.Text.StartsWith('…')).ToList();
+        Assert.Equal(21, popup[^1].Row);
+        Assert.Contains(popup, w => w.Row == 20);
+
+        Dictionary<int, string> screen = [];
+        foreach (AnsiWrite write in writes)
+        {
+            screen[write.Row] = write.Text;
+        }
+
+        Assert.Equal(frame[19], screen[20]);
+        Assert.Equal(frame[20], screen[21]);
+    }
+
+    // AC-9 (096)
+    [Fact]
+    public void Settings_AtWidth40_OutOfRangeHint_WrapsOnTwoRows_AndKeepsTheSelectedRowVisible()
+    {
+        SettingsRegistry registry = new SettingsRegistry();
+        for (int i = 1; i <= 15; i++)
+        {
+            registry.RegisterOnOff($"extra-{i}", $"Extra setting {i}", false);
+        }
+
+        registry.RegisterNumber(SettingsRegistry.DailyTargetName, "Daily target", 480, 0, SettingsRegistry.DailyTargetMax);
+        const int Height = 16;
+        (int exitCode, string output) = RunSettings(c =>
+        {
+            c.Profile.Width = 40;
+            c.Input.PushTextWithEnter("settings");
+            for (int i = 0; i < 15; i++)
+            {
+                c.Input.PushKey(ConsoleKey.DownArrow);
+            }
+
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("9999");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        }, registry, height: Height);
+
+        Assert.Equal(0, exitCode);
+        string[] screen = PanelScreens(output, Height)[^1];
+        Assert.Equal(Height, screen.Length);
+        string[] hint = HintRowsOf(screen, "settings:");
+        Assert.Equal(2, hint.Length);
+        Assert.Equal("settings: daily-target takes a whole number from 0 to 1440.", string.Join(' ', hint));
+        Assert.Equal("daily-target", Selected(screen[..^5]));
+        Assert.Equal("480", ValueOf(screen[..^5], "daily-target"));
+        Assert.False(File.Exists(SettingsPath));
     }
 }

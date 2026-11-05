@@ -6,15 +6,20 @@ namespace Times;
 
 /// <summary>
 /// The interactive main screen. Each iteration clears the screen, draws the full-terminal layout
-/// (quicklist panel and day view on top, a one-line hint row, a 3-line input box at the bottom), reads one line and dispatches it through the
+/// (quicklist panel and day view on top, the hint rows (up to 3, wrapped), a 3-line input box at the bottom), reads one line and dispatches it through the
 /// <see cref="CommandRegistry"/>. All output goes through <see cref="IAnsiConsole"/> and all clock
 /// reads through <see cref="TimeProvider"/>, so both can be faked in tests. Day files live in the
 /// injected <see cref="DayStore"/>, so tests use a temp folder.
 /// </summary>
 internal sealed class App
 {
-    private const int HintHeight = 1;
     private const int InputHeight = 3;
+
+    /// <summary>The most rows a hint wraps onto; a longer hint ends its last row in a grey <c>…</c>.</summary>
+    private const int MaxHintRows = 3;
+
+    // While a hint takes more than one row, the top area keeps at least this many rows.
+    private const int MinTopRowsForWrap = 4;
     private const string Prompt = "> ";
     private const string Placeholder = "Type help for commands";
     private const string RetypeHiddenCharacters = "Retype it without the hidden characters.";
@@ -57,6 +62,12 @@ internal sealed class App
     private List<SegmentLine> topLines = [];
     private int offset;
     private IRenderable frameHint = Text.Empty;
+
+    // The hint rows last laid out, and for which hint and terminal size, so they are rendered once per hint.
+    private IRenderable? hintRowsFor;
+    private int hintRowsWidth = -1;
+    private int hintRowsHeight = -1;
+    private List<SegmentLine> hintRows = [];
 
     /// <summary>Lines one mouse-wheel notch moves the top area.</summary>
     public const int WheelLines = 3;
@@ -790,7 +801,7 @@ internal sealed class App
             int line = height - 1;
             console.Cursor.SetPosition(column, line);
 
-            // The popup ends on the hint row (just above the input box) and grows upwards.
+            // The popup ends on the last hint row (just above the input box) and grows upwards over the others.
             PopupArea popup = new PopupArea(height - InputHeight, width, RestoreRow);
             string? input = editor.ReadLine(column, line, width - column - 2, popup, Placeholder, Scroll, ShowPasteCut);
             if (input is null)
@@ -915,6 +926,68 @@ internal sealed class App
 
     private int TopHeight => console.Profile.Height - HintHeight - InputHeight;
 
+    private int HintHeight => HintRows().Count;
+
+    // The current hint wrapped at the terminal width, one entry per hint row: at least 1 row, at most
+    // MaxHintRows, and more than 1 only while the top area keeps MinTopRowsForWrap rows. A hint that
+    // needs more rows than it gets ends its last shown row in a grey ….
+    private List<SegmentLine> HintRows()
+    {
+        int width = console.Profile.Width;
+        int height = console.Profile.Height;
+        if (ReferenceEquals(hintRowsFor, frameHint) && hintRowsWidth == width && hintRowsHeight == height)
+        {
+            return hintRows;
+        }
+
+        List<SegmentLine> lines = Segment.SplitLines(frameHint.Render(RenderOptions.Create(console, console.Profile.Capabilities), width));
+        int rows = Math.Min(Math.Min(lines.Count, MaxHintRows), Math.Max(1, height - InputHeight - MinTopRowsForWrap));
+        rows = Math.Max(1, rows);
+        List<SegmentLine> shown = lines.Take(rows).ToList();
+        while (shown.Count < rows)
+        {
+            shown.Add(new SegmentLine());
+        }
+
+        if (lines.Count > rows)
+        {
+            shown[^1] = WithEllipsis(shown[^1], width);
+        }
+
+        hintRowsFor = frameHint;
+        hintRowsWidth = width;
+        hintRowsHeight = height;
+        hintRows = shown;
+        return shown;
+    }
+
+    // The line cut to leave room for one cell, without trailing whitespace, followed by a grey ….
+    private static SegmentLine WithEllipsis(SegmentLine line, int width)
+    {
+        List<Segment> segments = Segment.Truncate(line, Math.Max(0, width - 1)).ToList();
+        while (segments.Count > 0)
+        {
+            Segment last = segments[^1];
+            string trimmed = last.Text.TrimEnd();
+            if (trimmed.Length == last.Text.Length)
+            {
+                break;
+            }
+
+            segments.RemoveAt(segments.Count - 1);
+            if (trimmed.Length > 0)
+            {
+                segments.Add(new Segment(trimmed, last.Style));
+                break;
+            }
+        }
+
+        SegmentLine result = new SegmentLine();
+        result.AddRange(segments);
+        result.Add(new Segment("\u2026", new Style(Color.Grey)));
+        return result;
+    }
+
     // Lays out the whole screen for the current top lines, offset and hint, one entry per row.
     private List<SegmentLine> RenderFrame()
     {
@@ -924,9 +997,11 @@ internal sealed class App
             .Expand();
 
         IRenderable content = new SegmentsRenderable(topLines.SelectMany(l => l.Append(Segment.LineBreak)).SkipLast(1));
+        List<SegmentLine> hintLines = HintRows();
+        IRenderable hint = new SegmentsRenderable(hintLines.SelectMany(l => l.Append(Segment.LineBreak)).SkipLast(1));
         Layout layout = new Layout("Root").SplitRows(
             new Layout("Day", TopArea.Fit(content, TopHeight, offset)),
-            new Layout("Hint", frameHint).Size(HintHeight),
+            new Layout("Hint", hint).Size(hintLines.Count),
             new Layout("Input", input).Size(InputHeight));
 
         return Segment.SplitLines(layout.GetSegments(console));
@@ -1146,11 +1221,12 @@ internal sealed class App
     // full clears the screen first; otherwise every row is rewritten in place. The cursor ends in the input box.
     private void ShowSettings(SettingValues values, int selected, string? unreadable, IRenderable? hint, bool full)
     {
+        // The hint first: its height sets the top area's rows, which the offset must keep the selected row in.
+        frameHint = hint ?? Text.Empty;
         SetTop(SettingsPanel.Render(settings, values, selected, unreadable));
         offset = settings.Settings.Count == 0
             ? 0
             : TopArea.OffsetShowing(SettingsPanel.LineOf(selected, unreadable is not null), topLines.Count, TopHeight, offset);
-        frameHint = hint ?? Text.Empty;
         if (full)
         {
             DrawFull();
@@ -1219,13 +1295,38 @@ internal sealed class App
         }
     }
 
-    // Called by the line editor when a paste was cut: shows the hint on the hint row in place, without
-    // a full redraw. The next full redraw shows the hint it is given, as always.
+    // Called by the line editor when a paste was cut: shows the hint on the hint rows in place, without
+    // a clear. If the hint keeps the same number of rows, only those are rewritten; otherwise the top
+    // area changes size too, so every row is rewritten except the input line, which holds the typed
+    // text the editor redraws next. The next full redraw shows the hint it is given, as always.
     private void ShowPasteCut()
     {
+        int before = HintHeight;
         frameHint = new Markup(PasteCutHint);
+        int after = HintHeight;
+        int bottom = console.Profile.Height - InputHeight;
+        if (after == before)
+        {
+            frame = RenderFrame();
+            for (int row = bottom - after + 1; row <= bottom; row++)
+            {
+                RestoreRow(row);
+            }
+
+            return;
+        }
+
+        offset = Math.Min(offset, TopArea.MaxOffset(topLines.Count, TopHeight));
         frame = RenderFrame();
-        RestoreRow(console.Profile.Height - InputHeight);
+        for (int row = 1; row <= frame.Count; row++)
+        {
+            if (row != InputLine)
+            {
+                RestoreRow(row);
+            }
+        }
+
+        console.Cursor.SetPosition(InputColumn, InputLine);
     }
 
     // Redraws one screen row (1-based) with what the last frame had there.

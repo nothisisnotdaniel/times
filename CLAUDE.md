@@ -23,7 +23,9 @@ Every factory agent reads this file before working on Times. Keep it short and a
     steelblue1 header and the `#id` in grey, reloaded from `projects.json` on every redraw, at
     most 5 content lines; left out while `help` or `projects` output is shown, via
     `CommandResult.HideQuicklist`) and the day view on top, both fitted by `TopArea.Fit`, then
-    the hint line, and a 3-line bordered input panel at the bottom; the
+    the hint rows (the hint wrapped at the terminal width onto 1 to 3 rows, `App.MaxHintRows`; more than 1
+    only while the top area keeps 4 rows; a cut hint ends its last row in a grey `…`; the rows come out
+    of the top area, never moving the input box), and a 3-line bordered input panel at the bottom; the
     empty input line shows a grey `Type help for commands` placeholder after the prompt, and a
     line wider than the box shows its tail behind a grey leading `…`.
     After each command, clear the screen and redraw the whole layout. Input is read by our own
@@ -51,7 +53,7 @@ Every factory agent reads this file before working on Times. Keep it short and a
     appends the text between `ESC[200~` and `ESC[201~` to the line in one step (line breaks and Tab
     become one space each, other control characters and `ESC [` sequences are dropped), never submitting it.
     A paste keeps at most 4096 characters (`LineEditor.MaxPasteLength`, counted after that clean-up, never
-    half a surrogate pair); the rest is read to `ESC[201~` and dropped, and a red hint on the hint row says so.
+    half a surrogate pair); the rest is read to `ESC[201~` and dropped, and a red hint on the hint rows says so (in place; if the hint's row count changes, every row but the input line is rewritten in place).
   - **Command popup:** while the line is non-empty and does not start with whitespace (after Esc:
     closed until the line is empty again; a lone `/` lists every command), a popup just above the input box lists the
     registered commands with their descriptions, filtered by what was typed and ranked by
