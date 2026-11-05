@@ -119,3 +119,6 @@ Write one feature per line, in plain language.
 - [?] --no-cache to bypass ~/.nuget/packages when installing the staged update; may break across SDKs, needs its own job (from 093-auto-update)
 - [?] Hint wrap threshold: the 096 spec's Scope formula (height - InputHeight - 3) and AC-4 (needs - 4, MinTopRowsForWrap = 4) disagree; the build follows AC-4. Decide which stands; switching is one constant (4 → 3) plus the AC-4 test. (from 096-wrap-hint-rows)
 - [?] Shared sanitiser for echoed user text: the plain Markup.Escape echo of typed text in hints (remove, change, booked, time hints, absence) should go through one helper (from 098 security review) (from 098-absence-days)
+- [?] CSV export failure test: add an injectable stream factory so a test can check that a partial CSV file is deleted after a mid-write failure (from 100 code/security review) (from 100-csv-export)
+- [?] CSV export UNC paths: decide whether export should refuse UNC paths (\\server\share) on Windows (from 100 security review) (from 100-csv-export)
+- [?] CSV export file mode: decide whether exported CSV files are created owner-only (0600) or stay shareable (from 100 security review) (from 100-csv-export)
