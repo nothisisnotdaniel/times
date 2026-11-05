@@ -8216,10 +8216,10 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, exitCode);
         Assert.Contains(frame, l => Regex.IsMatch(l, @"│ Work item +│ Title +│ Time +│ Hours +│"));
         // #1234: 9:00-16:30 (7:30), 0:00-23:59 (23:59), 9:00-18:00 (9:00) = 40:29.
-        int first = Array.FindIndex(frame, l => Regex.IsMatch(l, @"│ #99 +│ Call +│ 0:30 +│ 0\.50 +│"));
-        int second = Array.FindIndex(frame, l => Regex.IsMatch(l, @"│ #1234 +│ Times +│ 40:29 +│ 40\.48 +│"));
-        int name = Array.FindIndex(frame, l => Regex.IsMatch(l, @"│ +│ Mail +│ 1:00 +│ 1\.00 +│"));
-        int total = Array.FindIndex(frame, l => Regex.IsMatch(l, @"│ Total +│ +│ 41:59 +│ 41\.98 +│"));
+        int first = Array.FindIndex(frame, l => Regex.IsMatch(l, @"│ #99 +│ Call +│ 0:30 +│ +0\.50 │"));
+        int second = Array.FindIndex(frame, l => Regex.IsMatch(l, @"│ #1234 +│ Times +│ 40:29 +│ +40\.48 │"));
+        int name = Array.FindIndex(frame, l => Regex.IsMatch(l, @"│ +│ Mail +│ 1:00 +│ +1\.00 │"));
+        int total = Array.FindIndex(frame, l => Regex.IsMatch(l, @"│ Total +│ +│ 41:59 +│ +41\.98 │"));
         Assert.True(first > 0 && second > first && name > second && total > name, string.Join("\n", frame));
         Assert.Contains(frame, l => l.Trim() == "2026-11-02 – 2026-11-04");
         Assert.DoesNotContain(frame, l => l.Contains("Outside", StringComparison.Ordinal));
@@ -8303,7 +8303,7 @@ public sealed class AppTests : IDisposable
 
         (_, string[] frame) = RunReport("report 2026-11-02 2026-11-02", "quit");
 
-        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ #7 +│ Plan +│ 0:00 open +│ 0\.00 +│"));
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ #7 +│ Plan +│ 0:00 open +│ +0\.00 │"));
         Assert.Contains(frame, l => l.Contains(App.OpenFootnote, StringComparison.Ordinal));
     }
 
@@ -8315,7 +8315,7 @@ public sealed class AppTests : IDisposable
 
         (_, string[] frame) = RunReport("report 2026-10-27 2026-10-27", "quit");
 
-        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ #7 +│ Plan +│ 1:30 +│ 1\.50 +│"));
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ #7 +│ Plan +│ 1:30 +│ +1\.50 │"));
         Assert.DoesNotContain(frame, l => l.Contains("open", StringComparison.Ordinal));
     }
 

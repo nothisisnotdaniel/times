@@ -449,7 +449,7 @@ internal sealed class App
                 .AddColumn("[grey]Work item[/]")
                 .AddColumn("[grey]Title[/]")
                 .AddColumn("[grey]Time[/]")
-                .AddColumn("[grey]Hours[/]")
+                .AddColumn(new TableColumn("[grey]Hours[/]").RightAligned())
                 .Caption($"{ReportDate(from)} – {ReportDate(to)}", new Style(Color.Grey));
 
             foreach (ReportRow row in report.Rows)
