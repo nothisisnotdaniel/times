@@ -117,3 +117,4 @@ Write one feature per line, in plain language.
 - [ ] Skipped hint on empty days: show the skipped hint on an empty day where no day counts. This changes AC-6 of 091. (from 091-daily-target-flexitime)
 - [?] the AC-9 wording in spec.md should mention --configfile <staged>/nuget.config (one-line spec amendment) (from 093-auto-update)
 - [?] --no-cache to bypass ~/.nuget/packages when installing the staged update; may break across SDKs, needs its own job (from 093-auto-update)
+- [?] Hint wrap threshold: the 096 spec's Scope formula (height - InputHeight - 3) and AC-4 (needs - 4, MinTopRowsForWrap = 4) disagree; the build follows AC-4. Decide which stands; switching is one constant (4 → 3) plus the AC-4 test. (from 096-wrap-hint-rows)
