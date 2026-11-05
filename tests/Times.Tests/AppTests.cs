@@ -842,11 +842,11 @@ public sealed class AppTests : IDisposable
         Assert.Contains("\u001b[21;1H", output);
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal([14, 15, 16, 17, 18, 19, 20, 21], popup.Select(w => w.Row));
-        // Twenty commands: the first seven by name, then a row counting the other thirteen.
+        // Twenty-one commands: the first seven by name, then a row counting the other fourteen.
         Assert.Equal(
             ["absence", "addproject", "arrive", "booked", "break", "breakend", "change", "…"],
             popup.Select(w => w.Text.Split(' ')[0]));
-        Assert.StartsWith("… 13 more", popup[^1].Text);
+        Assert.StartsWith("… 14 more", popup[^1].Text);
         Assert.Contains("Change the time of an entry", popup[6].Text);
         Assert.Equal(80, popup[0].Text.Length);
     }
@@ -919,9 +919,9 @@ public sealed class AppTests : IDisposable
         List<string> hintRow = TypingWrites(output, 1).Where(w => w.Row == 21).Select(w => w.Text).ToList();
 
         // popup, restored (Backspace), popup, restored (Esc), popup (quit typing), ...
-        Assert.StartsWith("… 13 more", hintRow[0]);
+        Assert.StartsWith("… 14 more", hintRow[0]);
         Assert.Contains("Unknown command nope", hintRow[1]);
-        Assert.StartsWith("… 13 more", hintRow[2]);
+        Assert.StartsWith("… 14 more", hintRow[2]);
         Assert.Contains("Unknown command nope", hintRow[3]);
         Assert.Contains("Unknown command nope", hintRow[^1]);
         Assert.Contains("\u001b[38;5;9mUnknown command", output[output.LastIndexOf("\u001b[21;1H", StringComparison.Ordinal)..]);
@@ -954,8 +954,8 @@ public sealed class AppTests : IDisposable
 
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
-        // 32 commands: 7 shown, the eighth row counts the other 25.
-        Assert.StartsWith("… 25 more", popup[^1].Text);
+        // 33 commands: 7 shown, the eighth row counts the other 26.
+        Assert.StartsWith("… 26 more", popup[^1].Text);
         // Nothing is drawn on row 1 while typing (the final clear on quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
@@ -4783,6 +4783,7 @@ public sealed class AppTests : IDisposable
             ["projects"] = "pr",
             ["quit"] = "q",
             ["remove"] = "r",
+            ["report"] = "rp",
             ["settings"] = "se",
             ["summary"] = "s",
             ["today"] = "t",
@@ -8162,5 +8163,317 @@ public sealed class AppTests : IDisposable
         string plain = Regex.Replace(console.Output, @"\x1b\[[0-9;?]*[A-Za-z]", string.Empty);
 
         Assert.Matches(@"│ absence +│ ab +│ Mark this day as vacation", plain);
+    }
+
+    // Job 099 ------------------------------------------------------------------------------
+
+    private static string ReportCp(string time, string name, int? workItem = null) =>
+        workItem is { } w
+            ? $"{{\"kind\":\"checkpoint\",\"time\":\"{time}\",\"name\":\"{name}\",\"workItem\":{w}}}"
+            : $"{{\"kind\":\"checkpoint\",\"time\":\"{time}\",\"name\":\"{name}\"}}";
+
+    private void WriteReportDay(string date, params string[] entries) =>
+        File.WriteAllText(DayFile(date), "{\"entries\":[" + string.Join(',', entries) + "]}");
+
+    private const string ReportLeave = "{\"kind\":\"leaving\",\"time\":\"18:00\"}";
+
+    /// <summary>Three days of checkpoints: #1234 7:30 + 24:00, #99 0:30, a name row "Mail" 1:00, plus days outside the range.</summary>
+    private void WriteReportDays()
+    {
+        WriteReportDay("2026-11-01", ReportCp("09:00", "Outside", 5), ReportLeave);
+        WriteReportDay("2026-11-02", ReportCp("09:00", "Review", 1234), ReportCp("16:30", "Mail"), ReportCp("17:30", "Call", 99), ReportLeave);
+        WriteReportDay("2026-11-03", ReportCp("00:00", "Fix", 1234), "{\"kind\":\"leaving\",\"time\":\"23:59\"}");
+        WriteReportDay("2026-11-04", ReportCp("09:00", "Fix", 1234), ReportLeave);
+        WriteReportDay("2026-11-05", ReportCp("09:00", "Outside", 5), ReportLeave);
+    }
+
+    /// <summary>Runs <paramref name="commands"/> then quit on a 40-row console and returns the exit code and the last frame.</summary>
+    private (int ExitCode, string[] Frame) RunReport(params string[] commands)
+    {
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Profile.Height = 40;
+            c.Profile.Width = 100;
+            foreach (string command in commands)
+            {
+                c.Input.PushTextWithEnter(command);
+            }
+        });
+        string[] frame = LastLayout(output);
+        AssertLayout(frame, 40);
+        return (exitCode, frame);
+    }
+
+    // AC-1, AC-2, AC-3
+    [Fact]
+    public void Report_ShowsColumnsRowsInWorkItemOrder_HoursAndTotal()
+    {
+        WriteReportDays();
+        File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":1234,\"title\":\"Times\"}]}");
+
+        (int exitCode, string[] frame) = RunReport("report 2026-11-02 2026-11-04", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ Work item +│ Title +│ Time +│ Hours +│"));
+        // #1234: 9:00-16:30 (7:30), 0:00-23:59 (23:59), 9:00-18:00 (9:00) = 40:29.
+        int first = Array.FindIndex(frame, l => Regex.IsMatch(l, @"│ #99 +│ Call +│ 0:30 +│ 0\.50 +│"));
+        int second = Array.FindIndex(frame, l => Regex.IsMatch(l, @"│ #1234 +│ Times +│ 40:29 +│ 40\.48 +│"));
+        int name = Array.FindIndex(frame, l => Regex.IsMatch(l, @"│ +│ Mail +│ 1:00 +│ 1\.00 +│"));
+        int total = Array.FindIndex(frame, l => Regex.IsMatch(l, @"│ Total +│ +│ 41:59 +│ 41\.98 +│"));
+        Assert.True(first > 0 && second > first && name > second && total > name, string.Join("\n", frame));
+        Assert.Contains(frame, l => l.Trim() == "2026-11-02 – 2026-11-04");
+        Assert.DoesNotContain(frame, l => l.Contains("Outside", StringComparison.Ordinal));
+        Assert.DoesNotContain(frame, l => l.Contains("open", StringComparison.Ordinal));
+        // The quicklist panel is hidden.
+        Assert.DoesNotContain(frame, l => l.Contains("Projects", StringComparison.Ordinal));
+        Assert.Equal(string.Empty, frame[^4].Trim());
+    }
+
+    // AC-2
+    [Fact]
+    public void Report_HeadersAndBorderAreGrey_TimesAreSteelBlue()
+    {
+        WriteReportDays();
+
+        string output = RunAnsiCommands("report 2026-11-02 2026-11-02");
+
+        Assert.Matches(@"\x1b\[(90|38;5;8)mWork item\x1b\[0m", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)mHours\x1b\[0m", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)m╭─", output);
+        Assert.Matches(@"\x1b\[38;5;75m7:30\x1b\[0m", output);
+        Assert.Matches(@"\x1b\[38;5;75m7\.50\x1b\[0m", output);
+    }
+
+    // AC-1
+    [Theory]
+    [InlineData("rp")]
+    [InlineData("RP")]
+    [InlineData("/report")]
+    [InlineData("/rp")]
+    public void Report_AliasAndSlash_DoTheSameAsReport(string typed)
+    {
+        WriteReportDays();
+
+        (_, string[] full) = RunReport("report 2026-11-02 2026-11-04", "quit");
+        (_, string[] other) = RunReport(typed + " 2026-11-02 2026-11-04", "quit");
+
+        Assert.Equal(full, other);
+        Assert.Contains(other, l => Regex.IsMatch(l, @"│ Total +│ +│ 41:59 +│"));
+    }
+
+    // AC-3
+    [Fact]
+    public void Report_WithoutQuicklistProject_ShowsTheNamesInFirstBookedOrder()
+    {
+        WriteReportDays();
+        File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":99,\"title\":\"Calls\"}]}");
+
+        (_, string[] frame) = RunReport("report 2026-11-02 2026-11-04", "quit");
+
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ #99 +│ Calls +│ 0:30 +│"));
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ #1234 +│ Review, Fix +│ 40:29 +│"));
+    }
+
+    // AC-3
+    [Theory]
+    [InlineData("{not json")]
+    [InlineData(null)]
+    public void Report_UnreadableOrMissingProjects_FallsBackToNames(string? projects)
+    {
+        WriteReportDays();
+        if (projects is not null)
+        {
+            File.WriteAllText(ProjectsFile, projects);
+        }
+
+        (int exitCode, string[] frame) = RunReport("report 2026-11-02 2026-11-04", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ #1234 +│ Review, Fix +│ 40:29 +│"));
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ #99 +│ Call +│ 0:30 +│"));
+        Assert.Equal(string.Empty, frame[^4].Trim());
+        Assert.Equal(projects is not null, File.Exists(ProjectsFile));
+    }
+
+    // AC-5
+    [Fact]
+    public void Report_OpenCheckpointOnAnotherDay_IsMarkedOpen_WithFootnote()
+    {
+        WriteReportDay("2026-11-02", ReportCp("09:00", "Plan", 7));
+
+        (_, string[] frame) = RunReport("report 2026-11-02 2026-11-02", "quit");
+
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ #7 +│ Plan +│ 0:00 open +│ 0\.00 +│"));
+        Assert.Contains(frame, l => l.Contains(App.OpenFootnote, StringComparison.Ordinal));
+    }
+
+    // AC-5
+    [Fact]
+    public void Report_OpenCheckpointToday_CountsToNow()
+    {
+        WriteReportDay("2026-10-27", ReportCp("17:00", "Plan", 7));
+
+        (_, string[] frame) = RunReport("report 2026-10-27 2026-10-27", "quit");
+
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ #7 +│ Plan +│ 1:30 +│ 1\.50 +│"));
+        Assert.DoesNotContain(frame, l => l.Contains("open", StringComparison.Ordinal));
+    }
+
+    // AC-6, AC-7
+    [Fact]
+    public void Report_NoCheckpoints_ShowsGreyMessage_SkippedLine_AndWritesNothing()
+    {
+        File.WriteAllText(DayFile("2026-11-02"), "{\"absence\":\"vacation\"}");
+        File.WriteAllText(DayFile("2026-11-03"), "{not json");
+        string[] before = Directory.EnumerateFileSystemEntries(data.Path).Order(StringComparer.Ordinal).ToArray();
+        byte[] bytes = File.ReadAllBytes(DayFile("2026-11-02"));
+
+        (int exitCode, string[] frame) = RunReport("report 2026-11-02 2026-11-04", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(frame, l => l.Contains("No checkpoints between 2026-11-02 and 2026-11-04.", StringComparison.Ordinal));
+        Assert.Contains(frame, l => l.Contains("! 1 day file skipped", StringComparison.Ordinal));
+        Assert.DoesNotContain(frame, l => l.Contains("2026-11-03", StringComparison.Ordinal));
+        Assert.Equal(before, Directory.EnumerateFileSystemEntries(data.Path).Order(StringComparer.Ordinal).ToArray());
+        Assert.Equal(bytes, File.ReadAllBytes(DayFile("2026-11-02")));
+
+        string ansi = RunAnsiCommands("report 2026-11-02 2026-11-04");
+        Assert.Matches(@"\x1b\[(90|38;5;8)mNo checkpoints between", ansi);
+        Assert.Matches(@"\x1b\[(33|93|38;5;11)m! 1 day file skipped", ansi);
+    }
+
+    // AC-6
+    [Fact]
+    public void Report_SkippedFile_ShowsYellowLineBelowTheTable()
+    {
+        WriteReportDays();
+        File.WriteAllText(DayFile("2026-11-03"), "{not json");
+
+        (_, string[] frame) = RunReport("report 2026-11-02 2026-11-04", "quit");
+
+        int total = Array.FindIndex(frame, l => l.Contains("│ Total", StringComparison.Ordinal));
+        int skipped = Array.FindIndex(frame, l => l.Contains("! 1 day file skipped", StringComparison.Ordinal));
+        Assert.True(total > 0 && skipped > total);
+    }
+
+    // AC-6
+    [Fact]
+    public void Report_MissingFolder_CreatesNothing()
+    {
+        using TempFolder missing = new TempFolder(create: false);
+        (_, string output) = Run(c =>
+        {
+            c.Input.PushTextWithEnter("report 2026-11-02 2026-11-04");
+            c.Input.PushTextWithEnter("quit");
+        }, dataFolder: missing.Path);
+
+        Assert.Contains("No checkpoints between 2026-11-02 and 2026-11-04.", output);
+        Assert.False(Directory.Exists(missing.Path));
+    }
+
+    // AC-8
+    [Theory]
+    [InlineData("report", "report: say the first and the last day. Use report <from> <to> with dates as yyyy-MM-dd.")]
+    [InlineData("report 2026-11-02", "report: say the first and the last day.")]
+    [InlineData("report 2026-11-02 2026-11-04 x", "report: say the first and the last day.")]
+    [InlineData("report 2026-11-2 2026-11-04", "report: 2026-11-2 is not a date.")]
+    [InlineData("report 2026-11-02 04.11.2026", "report: 04.11.2026 is not a date.")]
+    [InlineData("report 2026-02-30 2026-03-01", "report: 2026-02-30 is not a date.")]
+    [InlineData("report [red]x 2026-11-04", "report: [red]x is not a date.")]
+    [InlineData("report 2026-11-05 2026-11-04", "report: the first day 2026-11-05 is after the last day 2026-11-04.")]
+    public void Report_BadInput_ShowsRedHint_AndLoopKeepsRunning(string command, string hint)
+    {
+        WriteReportDays();
+
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Profile.Width = 200;
+            c.Input.PushTextWithEnter(command);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Equal(0, exitCode);
+        string[] frame = LastLayout(output);
+        AssertOnHintRow(frame, hint);
+        Assert.DoesNotContain(frame, l => l.Contains("Work item", StringComparison.Ordinal));
+        Assert.DoesNotContain("   at ", output);
+
+        // The loop keeps running: a following command still works.
+        (_, string[] next) = RunReport(command, "report 2026-11-02 2026-11-04", "quit");
+        Assert.Contains(next, l => Regex.IsMatch(l, @"│ Total +│"));
+    }
+
+    // AC-8
+    [Fact]
+    public void Report_BadInput_HintIsRed()
+    {
+        string output = RunAnsiCommands("report 2026-11-05 2026-11-04");
+
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mreport: the first day", output);
+    }
+
+    // AC-8
+    [Fact]
+    public void Report_FolderThatCannotBeListed_ShowsRedHint()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        UnixFileMode mode = File.GetUnixFileMode(data.Path);
+        File.SetUnixFileMode(data.Path, UnixFileMode.None);
+        try
+        {
+            try
+            {
+                Directory.EnumerateFileSystemEntries(data.Path).ToList();
+                // Running as root: access can't be denied.
+                return;
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+
+            (int exitCode, string output) = RunCommands("report 2026-11-02 2026-11-04", "quit");
+
+            Assert.Equal(0, exitCode);
+            Assert.StartsWith("report: the data folder cannot be listed", HintText(LastLayout(output), "report: the data folder"));
+            Assert.DoesNotContain("   at ", output);
+        }
+        finally
+        {
+            File.SetUnixFileMode(data.Path, mode);
+        }
+    }
+
+    // AC-10
+    [Fact]
+    public void Report_MarkupInTitlesAndNames_ShowsLiterally()
+    {
+        WriteReportDay("2026-11-02", ReportCp("09:00", "[red]x", 1), ReportCp("10:00", "[bold]y"), ReportLeave);
+        File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":1,\"title\":\"[red]x[/] title\"}]}");
+
+        (int exitCode, string[] frame) = RunReport("report 2026-11-02 2026-11-02", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ #1 +│ \[red\]x\[/\] title +│ 1:00 +│"));
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ +│ \[bold\]y +│ 8:00 +│"));
+    }
+
+    // AC-11
+    [Fact]
+    public void Help_ListsReport_WithAliasRp()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 120;
+        console.Input.PushTextWithEnter("help");
+        PageDown(console, HelpPages);
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+        string plain = Regex.Replace(console.Output, @"\x1b\[[0-9;?]*[A-Za-z]", string.Empty);
+
+        Assert.Matches(@"│ report +│ rp +│ Show the hours per project over a date range: <from> <to> +│", plain);
     }
 }
