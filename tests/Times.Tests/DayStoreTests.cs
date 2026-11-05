@@ -359,6 +359,21 @@ public class DayStoreTests
         Assert.Equal("The file for 2026-10-27 is not a valid day file.", ex.Message);
     }
 
+    // AC-6 (095): a day file with a hidden code point in a checkpoint name is unreadable, like a Cf name.
+    [Theory]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"abc\\u115fdef\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"abc\\udb40\\udd00def\"}]}")]
+    [InlineData("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"abc\\u200bdef\"}]}")]
+    public void Load_InvisibleCheckpointName_ThrowsInvalidData(string contents)
+    {
+        using TempFolder temp = new TempFolder();
+        DayStore store = new DayStore(temp.Path);
+        File.WriteAllText(store.PathFor(Day), contents);
+
+        InvalidDataException ex = Assert.Throws<InvalidDataException>(() => store.Load(Day));
+        Assert.Equal("The file for 2026-10-27 is not a valid day file.", ex.Message);
+    }
+
     private static DayEntry Arrival(int hour, int minute) => new(EntryKind.Arrival, new TimeOnly(hour, minute));
 
     private static DayEntry Leaving(int hour, int minute) => new(EntryKind.Leaving, new TimeOnly(hour, minute));
