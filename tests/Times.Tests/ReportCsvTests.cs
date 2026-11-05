@@ -97,6 +97,15 @@ public sealed class ReportCsvTests
         Assert.Equal($"Work item,Title,Hours\r\n,{expected},1.00\r\n", csv);
     }
 
+    // AC-4: Tab and CR (the other OWASP prefixes) are guarded too, should validation ever let them through.
+    [Theory]
+    [InlineData("\tx", "'\tx")]
+    [InlineData("\rx", "'\rx")]
+    public void GuardFormula_TabAndCr_GetALeadingApostrophe(string title, string expected)
+    {
+        Assert.Equal(expected, ReportCsv.GuardFormula(title));
+    }
+
     // AC-1
     [Fact]
     public void FileName_IsBuiltFromTheTwoDates()

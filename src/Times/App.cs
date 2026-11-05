@@ -475,7 +475,7 @@ internal sealed class App
         string shownFolder = Shown(folder);
         if (!Path.IsPathFullyQualified(folder))
         {
-            return Hint($"{Name}: [bold]{shownFolder}[/] is not an absolute path. {Usage}");
+            return Hint($"{Name}: [bold]{shownFolder}[/] is not an absolute path.");
         }
 
         if (!Directory.Exists(folder))

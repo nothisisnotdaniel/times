@@ -69,8 +69,9 @@ internal static class ReportCsv
 
     /// <summary>
     /// <paramref name="title"/> with a leading <c>'</c> if it starts with <c>=</c>, <c>+</c>, <c>-</c> or
-    /// <c>@</c>, so a spreadsheet shows it as text instead of running it as a formula.
+    /// <c>@</c> (or Tab or CR, which title validation refuses today), so a spreadsheet shows it as text
+    /// instead of running it as a formula.
     /// </summary>
     internal static string GuardFormula(string title) =>
-        title.Length > 0 && title[0] is '=' or '+' or '-' or '@' ? "'" + title : title;
+        title.Length > 0 && title[0] is '=' or '+' or '-' or '@' or '\t' or '\r' ? "'" + title : title;
 }
