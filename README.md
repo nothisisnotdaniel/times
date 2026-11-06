@@ -126,6 +126,7 @@ required. A booking without a time uses the current time. `remove`, `change`, `b
 | `absence` | `ab` | `vacation`, `sick`, `holiday` or `clear` | Mark this day as vacation, sick or public holiday (it counts as meeting the daily target), or clear it |
 | `report` | `rp` | `<from> <to>` (`yyyy-MM-dd`) | Show the checkpoint hours per work item over a date range (both days included), with a total, to copy into Azure DevOps |
 | `export` | `ex` | `<from> <to> <folder>` (`yyyy-MM-dd`, an existing absolute folder, `~` allowed) | Save the same report rows as `times-report-<from>-to-<to>.csv` (UTF-8, comma-separated, decimal hours) in the folder; an existing file is never overwritten |
+| `find` | `f` | `<text>` | Find every day whose checkpoint names or quicklist project titles contain the text (ignoring case), with the date and the time taken |
 | `sync` | `sy` | `<from> <to> [send]` (`yyyy-MM-dd`) | Preview the unbooked checkpoint hours per work item over a date range; with `send`, add them to each work item's Completed Work in Azure DevOps and mark those checkpoints booked (see [Azure DevOps](#azure-devops)) |
 | `devops` | `dv` | none, `connect <organization>` or `disconnect` | Show the Azure DevOps connection, connect (asks for the token in a masked prompt), or remove the stored token |
 | `prev` | `p` | none | Go to the previous day |
