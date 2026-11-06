@@ -127,6 +127,5 @@ Write one feature per line, in plain language.
 - [?] Azure DevOps sync: when saving the new Keychain item fails after the old one was deleted, the old token is lost; keep it (for example by updating the item in place) (from 101-azure-devops-sync)
 - [?] Help text for times: reword the arrive/leave/break/breakend help ("now, or at an optional H:mm, -10m or +5m") so it reads naturally; update the help tests to match. (from 103-relative-times)
 - [?] Report caption: keep the ' · rounded to <n> min' suffix on one line in narrow report tables (shorten or move it so it never wraps onto a second grey line). (from 104-report-rounding)
-- [?] review-code 1 — the `id < 1 || !seen.Add(id)` guard stays: `IDevOpsClient` can be faked or replaced, and `new ProjectList(...)` does not validate ids, so the guard is what stops a bad id from reaching `projects.json`. (from 105-devops-import)
 - [?] review-security 1 — wrapping `devOpsClient(credential)` in the `try` would change failure behaviour and should change `sync` the same way; needs its own cleanup job. (from 105-devops-import)
 - [?] review-security 2 — capping the skipped-ids list changes the output format AC-10 defines; needs its own job. (from 105-devops-import)
