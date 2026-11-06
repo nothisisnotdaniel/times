@@ -10161,4 +10161,216 @@ public sealed class AppTests : IDisposable
         Assert.Matches(@"checkpoint +│ cp +│ Book a checkpoint: \[H:mm\|now\|-10m\|\+5m\] \[#project\] <name>", output);
         Assert.Matches(@"change +│ c +│ Change the time of an entry on this day: <number> <H:mm\|now\|-10m\|\+5m>", output);
     }
+
+    // Job 104 ------------------------------------------------------------------------------
+
+    private const string RoundingDay = "2026-11-02";
+
+    /// <summary>Books #1 "Fix" from 9:00 to 9:23 (0:23) on <see cref="RoundingDay"/>.</summary>
+    private void WriteRoundingDay() =>
+        WriteReportDay(RoundingDay, ReportCp("09:00", "Fix", 1), "{\"kind\":\"leaving\",\"time\":\"09:23\"}");
+
+    private void WriteRounding(string json) =>
+        File.WriteAllText(SettingsPath, "{\"settings\":{\"report-rounding\":" + json + "}}");
+
+    // AC-6 (104)
+    [Fact]
+    public void Report_WithRounding15_ShowsRoundedRowsTotalAndCaption()
+    {
+        WriteRoundingDay();
+        WriteRounding("\"15 min\"");
+
+        (int exitCode, string[] frame) = RunReport($"report {RoundingDay} {RoundingDay}", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ #1 +│ Fix +│ 0:30 +│ +0\.50 │"));
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ Total +│ +│ 0:30 +│ +0\.50 │"));
+        Assert.Contains("2026-11-02 – 2026-11-02 · rounded to 15 min", Joined(frame));
+    }
+
+    // The frame's non-blank rows, trimmed and joined with one space, so a wrapped caption reads as one line.
+    private static string Joined(string[] frame) =>
+        string.Join(' ', frame.Select(l => l.Trim()).Where(l => l.Length > 0));
+
+    // AC-6 (104)
+    [Fact]
+    public void Report_CaptionSuffix_IsGrey()
+    {
+        WriteRoundingDay();
+        WriteRounding("\"5 min\"");
+
+        string output = RunAnsiCommands($"report {RoundingDay} {RoundingDay}");
+
+        // The narrow table wraps the caption; every part of it is grey.
+        Assert.Matches(@"\x1b\[(90|38;5;8)m2026-11-02 – 2026-11-02 · rounded to\x1b\[0m", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)m5 min\x1b\[0m", output);
+    }
+
+    // AC-6 (104)
+    [Theory]
+    [InlineData("{\"settings\":{\"report-rounding\":\"off\"}}")]
+    [InlineData("{\"settings\":{}}")]
+    [InlineData("{\"settings\":{\"daily-target\":480}}")]
+    public void Report_RoundingOffOrMissing_IsExactlyAsWithoutSettings(string settingsJson)
+    {
+        WriteReportDays();
+        WriteRoundingDay();
+        (_, string withoutFile) = RunCommands($"report {RoundingDay} 2026-11-04", "quit");
+        Assert.False(File.Exists(SettingsPath));
+        File.WriteAllText(SettingsPath, settingsJson);
+
+        (_, string with) = RunCommands($"report {RoundingDay} 2026-11-04", "quit");
+
+        Assert.Equal(withoutFile, with);
+        Assert.Contains("2026-11-02 – 2026-11-04", with);
+        Assert.DoesNotContain("rounded", with);
+        Assert.Matches(@"│ #1 +│ Fix +│ 0:23 +│ +0\.38 │", with);
+    }
+
+    // AC-7 (104)
+    [Fact]
+    public void Export_WithRounding10_WritesRoundedHours_AndSaysSo()
+    {
+        using TempFolder target = new TempFolder();
+        WriteRoundingDay();
+        WriteRounding("\"10 min\"");
+
+        (int exitCode, string[] frame) = RunExport($"export {RoundingDay} {RoundingDay} {target.Path}");
+
+        Assert.Equal(0, exitCode);
+        string path = Path.Combine(target.Path, "times-report-2026-11-02-to-2026-11-02.csv");
+        Assert.Equal(Encoding.UTF8.GetBytes("\uFEFFWork item,Title,Hours\r\n1,Fix,0.33\r\n"), File.ReadAllBytes(path));
+        Assert.Contains(frame, l => l.TrimEnd().EndsWith($"Exported 1 row to {path} · rounded to 10 min", StringComparison.Ordinal));
+    }
+
+    // AC-7 (104)
+    [Fact]
+    public void Export_RoundingOff_HasNoSuffix()
+    {
+        using TempFolder target = new TempFolder();
+        WriteRoundingDay();
+        WriteRounding("\"off\"");
+
+        (_, string[] frame) = RunExport($"export {RoundingDay} {RoundingDay} {target.Path}");
+
+        string path = Path.Combine(target.Path, "times-report-2026-11-02-to-2026-11-02.csv");
+        Assert.Equal(Encoding.UTF8.GetBytes("\uFEFFWork item,Title,Hours\r\n1,Fix,0.38\r\n"), File.ReadAllBytes(path));
+        Assert.Contains(frame, l => l.TrimEnd().EndsWith($"Exported 1 row to {path}", StringComparison.Ordinal));
+        Assert.DoesNotContain(frame, l => l.Contains("rounded", StringComparison.Ordinal));
+    }
+
+    // AC-8 (104)
+    [Theory]
+    [InlineData("{not json")]
+    [InlineData("{\"settings\":{\"report-rounding\":\"7 min\"}}")]
+    [InlineData("{\"settings\":{\"report-rounding\":15}}")]
+    [InlineData("{\"settings\":{\"report-rounding\":true}}")]
+    [InlineData("{\"settings\":{\"report-rounding\":\"15 MIN\"}}")]
+    public void BrokenOrUnknownRounding_ActsAsOff_AndLeavesTheFile(string settingsJson)
+    {
+        using TempFolder target = new TempFolder();
+        WriteRoundingDay();
+        File.WriteAllText(SettingsPath, settingsJson);
+        byte[] before = File.ReadAllBytes(SettingsPath);
+
+        (_, string[] report) = RunReport($"report {RoundingDay} {RoundingDay}", "quit");
+        (_, string[] export) = RunExport($"export {RoundingDay} {RoundingDay} {target.Path}");
+
+        Assert.Contains(report, l => Regex.IsMatch(l, @"│ #1 +│ Fix +│ 0:23 +│ +0\.38 │"));
+        Assert.Contains(report, l => l.Trim() == "2026-11-02 – 2026-11-02");
+        Assert.DoesNotContain(report, l => l.Contains("rounded", StringComparison.Ordinal));
+        Assert.DoesNotContain(export, l => l.Contains("rounded", StringComparison.Ordinal));
+        string csv = File.ReadAllText(Path.Combine(target.Path, "times-report-2026-11-02-to-2026-11-02.csv"));
+        Assert.EndsWith("1,Fix,0.38\r\n", csv);
+        Assert.Equal(before, File.ReadAllBytes(SettingsPath));
+    }
+
+    // AC-8 (104): a registry without the setting gives off.
+    [Fact]
+    public void Report_RegistryWithoutRounding_ActsAsOff()
+    {
+        WriteRoundingDay();
+        WriteRounding("\"15 min\"");
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 100;
+        console.Input.PushTextWithEnter($"report {RoundingDay} {RoundingDay}");
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), settings: new SettingsRegistry()).Run([]);
+
+        Assert.Matches(@"│ #1 +│ Fix +│ 0:23 +│ +0\.38 │", console.Output);
+        Assert.DoesNotContain("rounded", console.Output);
+    }
+
+    // AC-9 (104)
+    [Fact]
+    public void Rounding_ChangesNoFile_AndTheDayViewAndBalanceStayExact()
+    {
+        using TempFolder target = new TempFolder();
+        const string Today = "2026-10-27";
+        File.WriteAllText(
+            DayFile(Today),
+            "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"09:00\"}," + ReportCp("09:00", "Fix", 1)
+            + ",{\"kind\":\"leaving\",\"time\":\"09:23\"}]}");
+        File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":1,\"title\":\"Times\"}]}");
+        WriteRounding("\"15 min\"");
+        string[] files = [DayFile(Today), ProjectsFile, SettingsPath];
+        DateTime old = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        foreach (string file in files)
+        {
+            File.SetLastWriteTimeUtc(file, old);
+        }
+
+        byte[][] bytes = files.Select(File.ReadAllBytes).ToArray();
+        string[] listing = Listing(data.Path);
+
+        (_, string[] report) = RunReport($"report {Today} {Today}", "quit");
+        (_, string[] export) = RunExport($"export {Today} {Today} {target.Path}");
+        (_, string output) = RunShipped("summary", "quit");
+
+        Assert.Contains(report, l => Regex.IsMatch(l, @"│ #1 +│ Times +│ 0:30 +│ +0\.50 │"));
+        Assert.Contains(export, l => l.Contains("rounded to 15 min", StringComparison.Ordinal));
+        Assert.Equal(listing, Listing(data.Path));
+        for (int i = 0; i < files.Length; i++)
+        {
+            Assert.Equal(bytes[i], File.ReadAllBytes(files[i]));
+            Assert.Equal(old, File.GetLastWriteTimeUtc(files[i]));
+        }
+
+        // The day view's target line and the summary keep the exact 0:23.
+        Assert.Contains("Target 8:00 · day -7:37 · balance -7:37", output);
+        Assert.Matches(@"│ #1 +│ Fix +│ 0:23 │", output);
+        Assert.DoesNotContain("0:30", output);
+    }
+
+    // AC-10 (104)
+    [Fact]
+    public void Settings_ListsReportRounding_AndEnterCyclesAndSavesEachValue()
+    {
+        List<string> saved = [];
+        string output = string.Empty;
+        for (int i = 0; i < 4; i++)
+        {
+            TestConsole console = new TestConsole().Interactive();
+            console.Profile.Width = 120;
+            console.Input.PushTextWithEnter("settings");
+            console.Input.PushKey(ConsoleKey.DownArrow);
+            console.Input.PushKey(i % 2 == 0 ? ConsoleKey.Enter : ConsoleKey.Spacebar);
+            console.Input.PushKey(ConsoleKey.Escape);
+            console.Input.PushTextWithEnter("quit");
+            new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+            output += console.Output;
+            saved.Add(File.ReadAllText(SettingsPath));
+        }
+
+        Assert.Matches(@"report-rounding +off +Round report and export times per row and day", output);
+        Assert.Equal(
+            [
+                "{\"settings\":{\"report-rounding\":\"5 min\"}}",
+                "{\"settings\":{\"report-rounding\":\"10 min\"}}",
+                "{\"settings\":{\"report-rounding\":\"15 min\"}}",
+                "{\"settings\":{\"report-rounding\":\"off\"}}",
+            ],
+            saved);
+    }
 }

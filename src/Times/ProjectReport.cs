@@ -70,8 +70,13 @@ internal sealed class ProjectReport
     /// <see cref="IOException"/> or <see cref="UnauthorizedAccessException"/> if the folder cannot be listed.
     /// </summary>
     /// <param name="now">The current local minute, seconds already dropped.</param>
-    public static ProjectReport Calculate(DayStore store, DateOnly from, DateOnly to, DateOnly today, TimeOnly now)
+    /// <param name="stepMinutes">
+    /// The rounding step in minutes, 0 for exact times. Each row's time on each day is rounded to the
+    /// nearest multiple of the step (half a step or more rounds up) before it is added to the row.
+    /// </param>
+    public static ProjectReport Calculate(DayStore store, DateOnly from, DateOnly to, DateOnly today, TimeOnly now, int stepMinutes = 0)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(stepMinutes);
         Dictionary<int, Accumulator> byWorkItem = [];
         Dictionary<string, Accumulator> byName = new Dictionary<string, Accumulator>(StringComparer.Ordinal);
         int skipped = 0;
@@ -119,7 +124,7 @@ internal sealed class ProjectReport
                     }
                 }
 
-                row.Total += group.Total;
+                row.Total += Round(group.Total, stepMinutes);
                 row.Open |= group.Open;
             }
         }
@@ -136,6 +141,28 @@ internal sealed class ProjectReport
         }
 
         return new ProjectReport(rows, skipped);
+    }
+
+    /// <summary>
+    /// <paramref name="time"/> rounded to the nearest multiple of <paramref name="stepMinutes"/> minutes;
+    /// a remainder of half a step or more rounds up. A step of 0 (or less) returns the time unchanged.
+    /// </summary>
+    public static TimeSpan Round(TimeSpan time, int stepMinutes)
+    {
+        if (stepMinutes <= 0)
+        {
+            return time;
+        }
+
+        long step = TimeSpan.FromMinutes(stepMinutes).Ticks;
+        long steps = time.Ticks / step;
+        long remainder = time.Ticks % step;
+        if (remainder * 2 >= step)
+        {
+            steps++;
+        }
+
+        return TimeSpan.FromTicks(steps * step);
     }
 
     private sealed class Accumulator

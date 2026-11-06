@@ -9,13 +9,46 @@ public sealed class SettingsRegistryTests
         IReadOnlyList<Setting> all = SettingsRegistry.CreateDefault().Settings;
         Setting setting = all[0];
 
-        Assert.Equal(["daily-target", "update-mode", "update-channel"], all.Select(s => s.Name));
+        Assert.Equal(["daily-target", "report-rounding", "update-mode", "update-channel"], all.Select(s => s.Name));
         Assert.Equal("daily-target", setting.Name);
         Assert.Equal("Daily work target in minutes (480 = 8:00)", setting.Description);
         Assert.Equal(SettingKind.Number, setting.Kind);
         Assert.Equal(480, setting.Default);
         Assert.Equal(0, setting.Min);
         Assert.Equal(1440, setting.Max);
+    }
+
+    // AC-1 (104)
+    [Fact]
+    public void CreateDefault_RegistersReportRoundingDirectlyAfterTheDailyTarget()
+    {
+        IReadOnlyList<Setting> all = SettingsRegistry.CreateDefault().Settings;
+        Setting setting = all[1];
+
+        Assert.Equal("daily-target", all[0].Name);
+        Assert.Equal("report-rounding", setting.Name);
+        Assert.Equal(SettingsRegistry.ReportRoundingName, setting.Name);
+        Assert.Equal(SettingKind.Choice, setting.Kind);
+        Assert.Equal(["off", "5 min", "10 min", "15 min"], setting.Options);
+        Assert.Equal("off", setting.Default);
+        Assert.False(string.IsNullOrWhiteSpace(setting.Description));
+    }
+
+    // AC-1 (104)
+    [Theory]
+    [InlineData("off", 0)]
+    [InlineData("5 min", 5)]
+    [InlineData("10 min", 10)]
+    [InlineData("15 min", 15)]
+    [InlineData("7 min", 0)]
+    [InlineData("15 MIN", 0)]
+    [InlineData(" 15 min", 0)]
+    [InlineData("15", 0)]
+    [InlineData("", 0)]
+    [InlineData(null, 0)]
+    public void ReportRoundingMinutes_MapsOnlyTheExactOptions(string? option, int expected)
+    {
+        Assert.Equal(expected, SettingsRegistry.ReportRoundingMinutes(option));
     }
 
     // AC-1 (093)
