@@ -133,3 +133,7 @@ Write one feature per line, in plain language.
 - [?] review-security 2 — closing the TOCTOU window means opening the folder by handle and creating the file relative to it (openat). That is a design change that needs another review, and the reviewer places it outside the threat model. (from 108-backup-command)
 - [?] review-security 3 — 0600 on the zip would change the file mode, which the spec does not cover, and would make `backup` differ from `export`. Worth its own job if backups should be private. (from 108-backup-command)
 - [?] review-security 1 — bounding or coalescing the unbounded queue changes behaviour (dropping or merging events) and has no producer to design it against yet; belongs in the job that adds the first real event source (Teams, live clock). (from 110-background-events-loop)
+- [?] End-of-day alert: should an alert that is switched off at startup still be marked as fired by Prime, or ring later when it is switched on (review-ux 2)? (from 113-end-of-day-alert)
+- [?] End-of-day alert: remove the unused targetOn/limitOn parameters from Prime (review-code 1) (from 113-end-of-day-alert)
+- [?] End-of-day alert: pick a colour for the target hint instead of the steelblue1 accent (review-ui 1) (from 113-end-of-day-alert)
+- [?] End-of-day alert: mention the live clock in the alert setting descriptions (review-ux 1) (from 113-end-of-day-alert)
