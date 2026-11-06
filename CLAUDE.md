@@ -60,6 +60,14 @@ Every factory agent reads this file before working on Times. Keep it short and a
     Levenshtein distance so typos still match. The popup is the one thing redrawn **while
     typing**: the line editor redraws only the popup's rows and the input line in place (via
     `Cursor.SetPosition`), never the whole layout. Everything else redraws only after a command.
+  - **Background events:** `IBackgroundEvents` (`BackgroundEvents.cs`; production `BackgroundEventQueue`,
+    `ConcurrentQueue` plus a wake signal, polling `keyAvailable` at most every 50 ms) lets other threads `Post` a
+    `BackgroundEvent`. Only `LineEditor.ReadLine` (given `events` and `applied`) drains it, on the loop thread, before
+    each fresh key: wait, apply all in FIFO order (a throwing event is dropped), call `applied` for those that
+    changed the view, then redraw popup and line. `App.ApplyEvent` re-renders the top area with the last message and
+    hidden-quicklist flag and rewrites only its rows in place (offset kept, clamped). `ReadValue`, `ReadKey`, the
+    settings panel and the token prompt never apply events. `App` takes an optional `events`; `Program.cs` passes
+    none yet. Tests use `ScriptedEvents` (releases events on the n-th wait, never blocks) and `HookedInput`.
   - `quit` ends the loop with exit code 0.
   - Tests drive the loop by queuing input on `TestConsole.Input` (`PushTextWithEnter`, `PushKey`)
     and always end with `quit`, so they can't hang.

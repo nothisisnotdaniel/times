@@ -11754,4 +11754,295 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(5, Directory.EnumerateFileSystemEntries(data.Path).Count());
     }
+
+    // Background events (job 110) -----------------------------------------------------------
+
+    private static readonly DateOnly Shown = new(2026, 10, 27);
+
+    private static DayRecord Arrived(int hour) => new DayRecord().Add(new DayEntry(EntryKind.Arrival, new TimeOnly(hour, 0)));
+
+    /// <summary>Runs the app with ANSI output and <paramref name="events"/>, on <paramref name="console"/> (or a new one).</summary>
+    private string RunWithEvents(Action<TestConsole> input, IBackgroundEvents events, string? folder = null,
+        TestConsole? console = null, IAnsiConsole? appConsole = null)
+    {
+        console ??= new TestConsole().Interactive().EmitAnsiSequences();
+        input(console);
+        App app = new App(appConsole ?? console, FixedTimeProvider.At20261027(), new DayStore(folder ?? data.Path), ManyCommands(),
+            events: events);
+        Assert.Equal(0, app.Run([]));
+        return console.Output;
+    }
+
+    /// <summary>The ANSI output of the same keys without events, in <paramref name="folder"/>.</summary>
+    private static string RunPlain(Action<TestConsole> input, string folder)
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        input(console);
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(folder), ManyCommands()).Run([]));
+        return console.Output;
+    }
+
+    // AC-5
+    [Fact]
+    public void Event_BetweenTypedKeys_KeepsTheLine_AndTheCommandRuns()
+    {
+        ScriptedEvents events = new ScriptedEvents();
+        int appliedAt = -1;
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        events.At(3, new BackgroundEvent(() =>
+        {
+            appliedAt = console.Output.Length;
+            return true;
+        }));
+
+        string output = RunWithEvents(c =>
+        {
+            c.Input.PushText("he");
+            c.Input.PushTextWithEnter("lp");
+            c.Input.PushTextWithEnter("quit");
+        }, events, console: console);
+
+        Assert.True(appliedAt > 0);
+        Assert.Contains(HelpFirstRow, output[appliedAt..]);
+        Assert.DoesNotContain("Unknown command", output);
+    }
+
+    // AC-6
+    [Fact]
+    public void Event_ThatBooks_RedrawsTheTopArea_InPlace_KeepingHintAndQuicklist()
+    {
+        ScriptedEvents events = new ScriptedEvents();
+        int appliedAt = -1;
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        // "bogus" and Enter take waits 1-6; wait 7 comes before the next line's first key.
+        events.At(7, new BackgroundEvent(() =>
+        {
+            appliedAt = console.Output.Length;
+            new DayStore(data.Path).Save(Shown, Arrived(8));
+            return true;
+        }));
+
+        string output = RunWithEvents(c =>
+        {
+            c.Input.PushTextWithEnter("bogus");
+            c.Input.PushTextWithEnter(" quit");
+        }, events, console: console);
+
+        int clear = output.IndexOf(ClearScreen, appliedAt, StringComparison.Ordinal);
+        Assert.True(clear > appliedAt);
+        List<AnsiWrite> writes = AnsiWrites.Parse(output[appliedAt..clear]);
+        int input = writes.FindIndex(w => w.Row == 23 && w.Column == 5);
+        List<AnsiWrite> redraw = writes.Take(input).ToList();
+
+        // Only the top area's rows, each once, at column 1: the hint row (21) and the input box stay.
+        Assert.Equal(Enumerable.Range(1, TopHeight), redraw.Select(w => w.Row));
+        Assert.All(redraw, w => Assert.Equal(1, w.Column));
+        string top = string.Join('\n', redraw.Select(w => w.Text));
+        Assert.Matches(@"1 +AR +08:00", top);
+        Assert.Contains("Projects", top);
+
+        // The typed key after the event lands on the same screen: no clear in between.
+        Assert.Contains(writes, w => w.Row == 23 && w.Text.StartsWith(" q", StringComparison.Ordinal));
+
+        // The rows match a fresh run that had the entry from the start, and the hint row still holds the hint.
+        using TempFolder plain = new TempFolder();
+        new DayStore(plain.Path).Save(Shown, Arrived(8));
+        string expected = RunPlain(c =>
+        {
+            c.Input.PushTextWithEnter("bogus");
+            c.Input.PushTextWithEnter("quit");
+        }, plain.Path);
+        Assert.Equal(TopScreens(expected, 1)[0], redraw.Select(w => w.Text.TrimEnd()).ToArray());
+        Assert.Contains("Unknown command", AnsiFrames(output)[1][20]);
+    }
+
+    // AC-6
+    [Fact]
+    public void Event_KeepsTheScrollOffset_TheMessage_AndTheHiddenQuicklist()
+    {
+        ScriptedEvents events = new ScriptedEvents();
+        // "help" and Enter take waits 1-5, PageDown wait 6; wait 7 is before the Enter.
+        events.At(7, new BackgroundEvent(() =>
+        {
+            new DayStore(data.Path).Save(Shown, Arrived(8));
+            return true;
+        }));
+        Action<TestConsole> keys = c =>
+        {
+            c.Profile.Height = 12;
+            c.Input.PushTextWithEnter("help");
+            c.Input.PushKey(ConsoleKey.PageDown);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("quit");
+        };
+
+        string output = RunWithEvents(keys, events);
+
+        using TempFolder plain = new TempFolder();
+        new DayStore(plain.Path).Save(Shown, Arrived(8));
+        string expected = RunPlain(keys, plain.Path);
+
+        List<string[]> screens = TopScreens(output, 1, 8);
+        Assert.Equal(3, screens.Count);
+        Assert.StartsWith("↑ 6 more lines above", screens[2][0], StringComparison.Ordinal);
+        Assert.Equal(TopScreens(expected, 1, 8)[1], screens[2]);
+        Assert.DoesNotContain(screens[2], l => l.Contains("Projects", StringComparison.Ordinal));
+    }
+
+    // AC-6
+    [Fact]
+    public void Event_ThatShortensTheContent_ClampsTheOffset()
+    {
+        new DayStore(data.Path).Save(Shown, new DayRecord(
+            [new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)), new DayEntry(EntryKind.BreakStart, new TimeOnly(12, 0)),
+             new DayEntry(EntryKind.BreakEnd, new TimeOnly(12, 30)), new DayEntry(EntryKind.Leaving, new TimeOnly(17, 0))]));
+        ScriptedEvents events = new ScriptedEvents();
+        // "help" and Enter take waits 1-5, the 20 PageDowns waits 6-25; wait 26 is before the Enter.
+        events.At(26, new BackgroundEvent(() =>
+        {
+            new DayStore(data.Path).Save(Shown, new DayRecord());
+            return true;
+        }));
+        Action<TestConsole> keys = c =>
+        {
+            c.Profile.Height = 12;
+            c.Input.PushTextWithEnter("help");
+            PageDown(c, 20);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("quit");
+        };
+
+        string output = RunWithEvents(keys, events);
+
+        using TempFolder plain = new TempFolder();
+        new DayStore(plain.Path).Save(Shown, new DayRecord());
+        string expected = RunPlain(keys, plain.Path);
+
+        List<string[]> screens = TopScreens(output, 1, 8);
+        List<string[]> bottom = TopScreens(expected, 1, 8);
+        // The last rows hold the data folder, which differs between the two runs (same length).
+        Assert.Equal(bottom[^1][..^2], screens[^1][..^2]);
+        Assert.Equal(bottom[^1][^1].Length, screens[^1][^1].Length);
+        Assert.Equal(screens[^2][^1], screens[^1][^1]);
+        Assert.NotEqual(screens[^2][0], screens[^1][0]);
+    }
+
+    // AC-7
+    [Fact]
+    public void Event_ThatChangesNothing_WritesNothing()
+    {
+        ScriptedEvents events = new ScriptedEvents();
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        int before = -1;
+        int after = -1;
+        events.At(2, new BackgroundEvent(() =>
+        {
+            before = console.Output.Length;
+            return false;
+        }));
+        events.OnWait = call =>
+        {
+            if (call == 3)
+            {
+                after = console.Output.Length;
+            }
+        };
+
+        RunWithEvents(c => c.Input.PushTextWithEnter("quit"), events, console: console);
+
+        Assert.True(before > 0);
+        Assert.Equal(before, after);
+    }
+
+    // AC-8
+    [Fact]
+    public void Event_ThatThrows_IsDropped_AndTheNextOneStillRuns()
+    {
+        ScriptedEvents events = new ScriptedEvents();
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        int appliedAt = -1;
+        events.At(3,
+            new BackgroundEvent(() => throw new IOException("broken event")),
+            new BackgroundEvent(() =>
+            {
+                appliedAt = console.Output.Length;
+                new DayStore(data.Path).Save(Shown, Arrived(9));
+                return true;
+            }));
+
+        string output = RunWithEvents(c =>
+        {
+            c.Input.PushText("he");
+            c.Input.PushTextWithEnter("lp");
+            c.Input.PushTextWithEnter("quit");
+        }, events, console: console);
+
+        Assert.True(appliedAt > 0);
+        Assert.Matches(@"1 +AR +09:00", string.Join('\n', AnsiWrites.Parse(output[appliedAt..]).Select(w => w.Text)));
+        Assert.Contains(HelpFirstRow, output[appliedAt..]);
+        Assert.DoesNotContain("broken event", output);
+        Assert.Equal([new DayEntry(EntryKind.Arrival, new TimeOnly(9, 0))], LoadDay().Entries);
+    }
+
+    // AC-9
+    [Fact]
+    public void Events_PostedWhileSettingsAreOpen_AreApplied_InOrder_AtTheNextPrompt()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        HookedInput input = new HookedInput(console.Input);
+        BackgroundEventQueue events = new BackgroundEventQueue();
+        List<string> log = [];
+        int clearsAtPost = -1;
+        List<int> clearsAtApply = [];
+        int appliedAt = -1;
+        // Keys 1-9 are "settings" and Enter; key 10 is the Esc the settings panel reads.
+        input.BeforeKey = key =>
+        {
+            if (key == 10)
+            {
+                clearsAtPost = Count(console.Output, ClearScreen);
+                events.Post(new BackgroundEvent(() =>
+                {
+                    log.Add("e1");
+                    clearsAtApply.Add(Count(console.Output, ClearScreen));
+                    appliedAt = console.Output.Length;
+                    new DayStore(data.Path).Save(Shown, Arrived(8));
+                    return true;
+                }));
+                events.Post(new BackgroundEvent(() =>
+                {
+                    log.Add("e2");
+                    clearsAtApply.Add(Count(console.Output, ClearScreen));
+                    return false;
+                }));
+            }
+        };
+
+        string output = RunWithEvents(c =>
+        {
+            c.Input.PushTextWithEnter("settings");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        }, events, console: console, appConsole: new InputOverrideConsole(console, input));
+
+        Assert.Equal(["e1", "e2"], log);
+        // Not applied in the panel: only after its Esc and the full redraw that follows.
+        Assert.Equal([clearsAtPost + 1, clearsAtPost + 1], clearsAtApply);
+        Assert.Matches(@"1 +AR +08:00", string.Join('\n', AnsiWrites.Parse(output[appliedAt..]).Select(w => w.Text)));
+    }
+
+    // AC-10
+    [Fact]
+    public void WithoutEvents_TheLoopNeverAsksWhetherAKeyIsAvailable_BeforeAKey()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        HookedInput input = new HookedInput(console.Input);
+        console.Input.PushTextWithEnter("help");
+        console.Input.PushTextWithEnter("quit");
+
+        int exitCode = new App(new InputOverrideConsole(console, input), FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(0, input.KeyAvailableCalls);
+    }
 }
