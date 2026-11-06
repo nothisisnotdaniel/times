@@ -9,7 +9,9 @@ public sealed class SettingsRegistryTests
         IReadOnlyList<Setting> all = SettingsRegistry.CreateDefault().Settings;
         Setting setting = all[0];
 
-        Assert.Equal(["daily-target", "alert-target", "alert-limit", "report-rounding", "update-mode", "update-channel"], all.Select(s => s.Name));
+        Assert.Equal(
+            ["daily-target", "alert-target", "alert-limit", "check-breaks", "check-max-work", "check-rest", "report-rounding", "update-mode", "update-channel"],
+            all.Select(s => s.Name));
         Assert.Equal("daily-target", setting.Name);
         Assert.Equal("Daily work target in minutes (480 = 8:00)", setting.Description);
         Assert.Equal(SettingKind.Number, setting.Kind);
@@ -18,12 +20,12 @@ public sealed class SettingsRegistryTests
         Assert.Equal(1440, setting.Max);
     }
 
-    // AC-1 (104); AC-5 (113): after the daily target and the two alerts.
+    // AC-1 (104); AC-5 (113); AC-6 (114): after the daily target, the two alerts and the three checks.
     [Fact]
     public void CreateDefault_RegistersReportRoundingAfterTheDailyTargetAndTheAlerts()
     {
         IReadOnlyList<Setting> all = SettingsRegistry.CreateDefault().Settings;
-        Setting setting = all[3];
+        Setting setting = all[6];
 
         Assert.Equal("daily-target", all[0].Name);
         Assert.Equal("report-rounding", setting.Name);
@@ -233,5 +235,25 @@ public sealed class SettingsRegistryTests
         options[0] = "changed";
 
         Assert.Equal(["a", new string('x', 40)], registry.Settings[0].Options);
+    }
+
+    // AC-6 (114)
+    [Fact]
+    public void CreateDefault_RegistersTheThreeChecksAsOnOff_DefaultOn_RightAfterTheAlerts()
+    {
+        IReadOnlyList<Setting> all = SettingsRegistry.CreateDefault().Settings;
+
+        Assert.Equal(["alert-limit", "check-breaks", "check-max-work", "check-rest", "report-rounding"], all.Skip(2).Take(5).Select(s => s.Name));
+        Assert.Equal(SettingsRegistry.CheckBreaksName, all[3].Name);
+        Assert.Equal(SettingsRegistry.CheckMaxWorkName, all[4].Name);
+        Assert.Equal(SettingsRegistry.CheckRestName, all[5].Name);
+        Assert.Equal("Warn when breaks are shorter than the law requires", all[3].Description);
+        Assert.Equal("Warn when a day has more than 10 hours of work", all[4].Description);
+        Assert.Equal("Warn when the rest between two working days is under 11 hours", all[5].Description);
+        foreach (Setting setting in all.Skip(3).Take(3))
+        {
+            Assert.Equal(SettingKind.OnOff, setting.Kind);
+            Assert.Equal(true, setting.Default);
+        }
     }
 }

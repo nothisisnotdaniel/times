@@ -84,15 +84,30 @@ internal sealed class DayView
     /// <c>SteelBlue1</c> and <c>left</c> with <see cref="DayRecord.TimeLeftAt"/>; the target line's <c>day</c>
     /// part is then <see cref="DayRecord.WorkTimeAt"/> minus <paramref name="target"/>. Otherwise the output
     /// is the same as without <paramref name="now"/>.
+    /// <paramref name="checks"/> holds the day's working-time warnings (see <see cref="WorkingTimeChecks"/>); they
+    /// follow on the break line in the order breaks, work (<c>! Over 10 hours: 10:25 worked</c>), rest
+    /// (<c>! Rest too short: 9:30 since last leaving</c>), each yellow after two spaces. Null applies only the
+    /// break check. <paramref name="weekWarnings"/> are the days of the week with a warning: when there is one,
+    /// the last row is <see cref="WeekLine"/>, indented like the target line (on every kind of day).
     /// </summary>
-    public IRenderable Render(DayRecord day, TimeSpan target, FlexitimeBalance balance, TimeOnly? now = null)
+    public IRenderable Render(
+        DayRecord day,
+        TimeSpan target,
+        FlexitimeBalance balance,
+        TimeOnly? now = null,
+        WorkingTimeChecks? checks = null,
+        IReadOnlyList<DateOnly>? weekWarnings = null)
     {
         if (day.Absence is { } absence)
         {
-            return new Rows(
+            List<IRenderable> absent =
+            [
                 HeadingRule(),
                 new Markup($"[grey]Absence:[/] [steelblue1]{AbsenceLabel(absence)}[/]"),
-                new Markup(TargetLineWith(target, "+0:00", balance)));
+                new Markup(TargetLineWith(target, "+0:00", balance)),
+            ];
+            AddWeekLine(absent, weekWarnings, 0);
+            return new Rows(absent);
         }
 
         if (day.IsEmpty)
@@ -103,6 +118,7 @@ internal sealed class DayView
                 empty.Add(new Markup(TargetLine(target, null, balance)));
             }
 
+            AddWeekLine(empty, weekWarnings, 0);
             return new Rows(empty);
         }
 
@@ -162,9 +178,21 @@ internal sealed class DayView
         TimeSpan required = DayRecord.RequiredBreak(day.WorkTime());
         string summary =
             $"[grey]Breaks[/] [steelblue1]{FormatTimeLeft(taken)}[/] [grey]taken · [/][steelblue1]{FormatTimeLeft(required)}[/] [grey]required[/]";
-        if (taken < required)
+        // Without a checks result only the break check applies, as before the working-time checks.
+        WorkingTimeChecks found = checks ?? WorkingTimeChecks.Check(day, null, BreaksOnly);
+        if (found.BreakMissing is { } missing)
         {
-            summary += $"  [yellow]! Breaks too short: {FormatTimeLeft(required - taken)} missing[/]";
+            summary += $"  [yellow]! Breaks too short: {FormatTimeLeft(missing)} missing[/]";
+        }
+
+        if (found.OverWorked is { } over)
+        {
+            summary += $"  [yellow]! Over 10 hours: {FormatTimeLeft(over)} worked[/]";
+        }
+
+        if (found.ShortRest is { } rest)
+        {
+            summary += $"  [yellow]! Rest too short: {FormatTimeLeft(rest)} since last leaving[/]";
         }
 
         // Indent the summary to the code column: the widest number plus the number column's gap.
@@ -180,7 +208,33 @@ internal sealed class DayView
         ];
         AddHint(rows, "Break not ended", day.UnendedBreaks(), indent);
         AddHint(rows, "Break outside arrival and leaving", day.BreaksOutsideSpans(), indent);
+        AddWeekLine(rows, weekWarnings, indent);
         return new Rows(rows);
+    }
+
+    private static readonly WorkingTimeCheckOptions BreaksOnly = new(true, false, false);
+
+    /// <summary>
+    /// The week line's markup: a yellow <c>! Working-time warnings this week: Mon, Wed</c> naming
+    /// <paramref name="days"/> with three-letter invariant names, Monday first. Null when there is none. It holds no user text.
+    /// </summary>
+    internal static string? WeekLine(IReadOnlyList<DateOnly>? days)
+    {
+        if (days is null || days.Count == 0)
+        {
+            return null;
+        }
+
+        IEnumerable<string> names = days.Distinct().Order().Select(WorkingTimeChecks.ShortName);
+        return $"[yellow]! Working-time warnings this week: {string.Join(", ", names)}[/]";
+    }
+
+    private static void AddWeekLine(List<IRenderable> rows, IReadOnlyList<DateOnly>? days, int indent)
+    {
+        if (WeekLine(days) is { } line)
+        {
+            rows.Add(new Padder(new Markup(line), new Padding(indent, 0, 0, 0)));
+        }
     }
 
     // The live minute to show, or null: only while the day is working and the minute is not before its last entry.

@@ -2241,6 +2241,29 @@ internal sealed class App
         limitOn = !readable || IsOnOrMissing(values, SettingsRegistry.AlertLimitName);
     }
 
+    // The three working-time checks from settings already read; null (a broken file) or a registry without a check
+    // as an OnOff setting leaves that check on.
+    private WorkingTimeCheckOptions CheckOptions(SettingValues? values) =>
+        values is null
+            ? WorkingTimeCheckOptions.All
+            : new WorkingTimeCheckOptions(
+                IsOnOrMissing(values, SettingsRegistry.CheckBreaksName),
+                IsOnOrMissing(values, SettingsRegistry.CheckMaxWorkName),
+                IsOnOrMissing(values, SettingsRegistry.CheckRestName));
+
+    // Loads a day file for the working-time checks, or null if it cannot be read for any reason. Never writes.
+    private DayRecord? TryLoadDayQuietly(DateOnly date)
+    {
+        try
+        {
+            return Store.Load(date);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
     private bool IsOnOrMissing(SettingValues values, string name) =>
         !settings.TryGet(name, out Setting setting) || setting.Kind != SettingKind.OnOff || values.IsOn(name);
 
@@ -2924,13 +2947,20 @@ internal sealed class App
     {
         try
         {
-            DayRecord day = Store.Load(dayView.Current);
-            TimeSpan target = DailyTarget();
+            DateOnly shown = dayView.Current;
+            DayRecord day = Store.Load(shown);
+            bool readable = LoadSettings(out SettingValues values) is null;
+            TimeSpan target = DailyTarget(readable ? values : null);
+            WorkingTimeCheckOptions options = CheckOptions(readable ? values : null);
 
             // Only today is live: one clock read gives both the date and the minute.
             DateTime local = time.GetLocalNow().DateTime;
-            TimeOnly? now = dayView.Current == DateOnly.FromDateTime(local) ? new TimeOnly(local.Hour, local.Minute) : null;
-            return dayView.Render(day, target, FlexitimeBalance.Compute(Store, dayView.Current, target, now), now);
+            TimeOnly? now = shown == DateOnly.FromDateTime(local) ? new TimeOnly(local.Hour, local.Minute) : null;
+            DayRecord? previous = shown == DateOnly.MinValue ? null : TryLoadDayQuietly(shown.AddDays(-1));
+            WorkingTimeChecks checks = WorkingTimeChecks.Check(day, previous, options, now);
+            IReadOnlyList<DateOnly> week = WorkingTimeChecks.WeekWarnings(
+                shown, date => date == shown ? day : TryLoadDayQuietly(date), options, now);
+            return dayView.Render(day, target, FlexitimeBalance.Compute(Store, shown, target, now), now, checks, week);
         }
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
         {
