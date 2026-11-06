@@ -143,3 +143,5 @@ Write one feature per line, in plain language.
 - [?] Public holidays: style only the holiday name in the accent colour, not the whole 'Public holiday · <name>' value (115 review-ui 1) (from 115-public-holidays)
 - [?] review-ux 1: a way to show the hidden lines is out of scope in the spec and would be a new feature that needs its own job. (from 119-import-warning-cap)
 - [?] review-security 1: capping candidates is out of scope by the spec. The reviewer asks for no change. A cap would need its own follow-up job. (from 120-import-scan-cap)
+- [?] Balance corrections: cap how many corrections a day can hold, or check the day file size on save (121 review-security 1) (from 121-balance-corrections)
+- [?] Import: replacing a day through import drops that day's balance corrections; keep them or warn before replacing (121 review-security 2, review-ux 2) (from 121-balance-corrections)
