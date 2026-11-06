@@ -112,7 +112,7 @@ internal sealed class LineEditor
     /// </summary>
     public string? ReadLine(int column, int line, int width, PopupArea? popup = null, string? placeholder = null,
         Func<int, ScrollStep, bool>? scroll = null, Action? pasteCut = null) =>
-        Read(column, line, width, popup, placeholder, scroll, pasteCut, value: false, out _);
+        Read(column, line, width, popup, placeholder, scroll, pasteCut, value: false, out _, masked: false);
 
     /// <summary>
     /// Reads a value (not a command) at the same place as <see cref="ReadLine"/>: no popup, no
@@ -120,10 +120,16 @@ internal sealed class LineEditor
     /// Esc cancels: <paramref name="cancelled"/> is set and an empty string is returned. Mouse and
     /// paste sequences behave as in <see cref="ReadLine"/>, including the
     /// <see cref="MaxPasteLength"/> cap and the <paramref name="pasteCut"/> callback. Returns
-    /// <c>null</c> if the input has no more keys.
+    /// <c>null</c> if the input has no more keys. With <paramref name="masked"/>, every
+    /// character of the value (typed or pasted) is drawn as <see cref="MaskCharacter"/>,
+    /// never as itself, for a secret such as a token.
     /// </summary>
-    public string? ReadValue(int column, int line, int width, string? placeholder, out bool cancelled, Action? pasteCut = null) =>
-        Read(column, line, width, null, placeholder, null, pasteCut, value: true, out cancelled);
+    public string? ReadValue(int column, int line, int width, string? placeholder, out bool cancelled, Action? pasteCut = null,
+        bool masked = false) =>
+        Read(column, line, width, null, placeholder, null, pasteCut, value: true, out cancelled, masked);
+
+    /// <summary>What a masked value shows for each of its characters.</summary>
+    public const char MaskCharacter = '\u2022';
 
     /// <summary>
     /// Reads one key for a dialog such as the settings panel. A mouse sequence (an Esc with a
@@ -177,7 +183,7 @@ internal sealed class LineEditor
     }
 
     private string? Read(int column, int line, int width, PopupArea? popup, string? placeholder,
-        Func<int, ScrollStep, bool>? scroll, Action? pasteCut, bool value, out bool cancelled)
+        Func<int, ScrollStep, bool>? scroll, Action? pasteCut, bool value, out bool cancelled, bool masked)
     {
         cancelled = false;
         string buffer = string.Empty;
@@ -257,7 +263,7 @@ internal sealed class LineEditor
                         popupRows = DrawPopup(popup!, buffer, popupRows, tabList);
                     }
 
-                    drawn = Redraw(buffer, column, line, width, drawn, placeholder);
+                    drawn = Redraw(masked ? new string(MaskCharacter, buffer.Length) : buffer, column, line, width, drawn, placeholder);
                 }
 
                 continue;
@@ -374,7 +380,7 @@ internal sealed class LineEditor
 
             bool showPopup = popup is not null && OpensPopup(buffer) && !popupDismissed;
             popupRows = showPopup ? DrawPopup(popup!, buffer, popupRows, tabList) : ClosePopup(popup, popupRows);
-            drawn = Redraw(buffer, column, line, width, drawn, placeholder);
+            drawn = Redraw(masked ? new string(MaskCharacter, buffer.Length) : buffer, column, line, width, drawn, placeholder);
         }
     }
 

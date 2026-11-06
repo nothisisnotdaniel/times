@@ -2418,4 +2418,71 @@ public class LineEditorTests
         Assert.False(cancelled);
         Assert.Equal(1, cuts);
     }
+
+    // Job 101, AC-1 --------------------------------------------------------------------------
+
+    private const string Secret = "PAT-MARKER-77x";
+
+    [Fact]
+    public void ReadValue_Masked_DrawsEveryCharacterAsADot_AndReturnsTheValue()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        console.Input.PushText(Secret);
+        console.Input.PushKey(ConsoleKey.Backspace);
+        console.Input.PushTextWithEnter("x");
+
+        string? value = editor.ReadValue(5, 23, 70, "token", out bool cancelled, masked: true);
+
+        Assert.Equal(Secret[..^1] + "x", value);
+        Assert.False(cancelled);
+        Assert.Contains(new string(LineEditor.MaskCharacter, Secret.Length), console.Output);
+        Assert.DoesNotContain("PAT", console.Output);
+        Assert.DoesNotContain("MARKER", console.Output);
+        Assert.Empty(editor.History);
+    }
+
+    [Fact]
+    public void ReadValue_Masked_PasteIsAllowed_AndMasked()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        PushSequence(console, "[200~");
+        console.Input.PushText(Secret);
+        PushSequence(console, "[201~");
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        string? value = editor.ReadValue(5, 23, 70, "token", out bool cancelled, masked: true);
+
+        Assert.Equal(Secret, value);
+        Assert.Contains(new string(LineEditor.MaskCharacter, Secret.Length), console.Output);
+        Assert.DoesNotContain("MARKER", console.Output);
+        Assert.Empty(editor.History);
+    }
+
+    [Fact]
+    public void ReadValue_Masked_NeverEntersHistory_EvenAfterACommand()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        console.Input.PushTextWithEnter("help");
+        console.Input.PushTextWithEnter(Secret);
+        console.Input.PushKey(ConsoleKey.UpArrow);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal("help", Read(editor));
+        Assert.Equal(Secret, editor.ReadValue(5, 23, 70, "token", out _, masked: true));
+        Assert.Equal("help", Read(editor));
+        Assert.Equal(["help"], editor.History);
+        Assert.DoesNotContain(editor.History, h => h.Contains(LineEditor.MaskCharacter));
+    }
+
+    [Fact]
+    public void ReadValue_Masked_LongValue_ShowsOnlyDots()
+    {
+        (TestConsole console, LineEditor editor) = Create();
+        string longSecret = "PAT" + new string('z', 150);
+        console.Input.PushTextWithEnter(longSecret);
+
+        Assert.Equal(longSecret, editor.ReadValue(5, 23, 20, "token", out _, masked: true));
+        Assert.DoesNotContain("z", console.Output);
+        Assert.DoesNotContain("PAT", console.Output);
+    }
 }

@@ -126,6 +126,8 @@ required. A booking without a time uses the current time. `remove`, `change`, `b
 | `absence` | `ab` | `vacation`, `sick`, `holiday` or `clear` | Mark this day as vacation, sick or public holiday (it counts as meeting the daily target), or clear it |
 | `report` | `rp` | `<from> <to>` (`yyyy-MM-dd`) | Show the checkpoint hours per work item over a date range (both days included), with a total, to copy into Azure DevOps |
 | `export` | `ex` | `<from> <to> <folder>` (`yyyy-MM-dd`, an existing absolute folder, `~` allowed) | Save the same report rows as `times-report-<from>-to-<to>.csv` (UTF-8, comma-separated, decimal hours) in the folder; an existing file is never overwritten |
+| `sync` | `sy` | `<from> <to> [send]` (`yyyy-MM-dd`) | Preview the unbooked checkpoint hours per work item over a date range; with `send`, add them to each work item's Completed Work in Azure DevOps and mark those checkpoints booked (see [Azure DevOps](#azure-devops)) |
+| `devops` | `dv` | none, `connect <organization>` or `disconnect` | Show the Azure DevOps connection, connect (asks for the token in a masked prompt), or remove the stored token |
 | `prev` | `p` | none | Go to the previous day |
 | `next` | `n` | none | Go to the next day |
 | `today` | `t` | none | Go back to today |
@@ -151,6 +153,37 @@ panel says why, shows the defaults and saves nothing until the file is fixed or 
 | `daily-target` | number, 0 to 1440 | 480 | Your daily work target in minutes (480 = 8:00). The `left` column, the `day` value and the flexitime `balance` use it, for every day. |
 | `update-mode` | `notify only`, `install on quit`, `install and restart` | `notify only` | What Times does when it finds a newer version at start (see [Updates](#updates)). |
 | `update-channel` | `stable`, `beta`, `develop` | `stable` | Which releases count as updates: `stable` takes proper releases only, `beta` also `-beta` versions, `develop` also `-develop` builds. |
+
+### Azure DevOps
+
+`sync` sends the hours of the checkpoints you have not yet booked straight into the **Completed
+Work** field of their work items, so you no longer copy numbers from `report` and run `booked` by
+hand.
+
+1. In Azure DevOps, open *User settings → Personal access tokens* and create a token with the scope
+   **Work Items: Read & write** (nothing else is needed).
+2. In Times, type `devops connect <organization>`, where `<organization>` is the name in
+   `https://dev.azure.com/<organization>`. Times asks for the token in the input box; the prompt is
+   masked (`•`), `Esc` cancels. Times keeps the token only in the **macOS Keychain** (a generic
+   password named `Times Azure DevOps`) or the **Windows Credential Manager** (target
+   `Times/AzureDevOps`); it is never written to a Times file and never shown.
+3. `devops` shows the organization and `token stored`; `devops disconnect` removes the token.
+4. `sync 2026-11-01 2026-11-30` shows what would be sent: one row per work item with its hours and
+   the number of checkpoints. Nothing is sent and nothing is written.
+5. `sync 2026-11-01 2026-11-30 send` adds those hours to each work item's Completed Work and marks
+   the checkpoints booked. A work item that fails (for example a wrong token or a work item someone
+   changed at the same moment) keeps its checkpoints unbooked; the others are still sent. Running
+   `send` again sends nothing twice: only unbooked checkpoints count.
+
+Only checkpoints with a work item, an end (a later checkpoint, break or leaving) and at least one
+minute are sent; a checkpoint that is still running is left for later.
+
+On macOS the Keychain item trusts the `dotnet` host that created it, so after a .NET update macOS
+may ask once for permission to read it. **Linux is not supported** yet: there is no credential
+store Times can use there, so `devops connect` and `sync … send` say so (the preview still works).
+
+To check the stores by hand: connect, look for the item in *Keychain Access* (macOS) or with
+`cmdkey /list:Times/AzureDevOps` (Windows), run `devops`, then `devops disconnect` and check it is gone.
 
 ### Updates
 

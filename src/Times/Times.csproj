@@ -6,6 +6,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <Version>0.1.0</Version>
+    <!-- [LibraryImport] for the OS credential stores (TokenStore.cs). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>tm</ToolCommandName>
     <PackageId>Times</PackageId>

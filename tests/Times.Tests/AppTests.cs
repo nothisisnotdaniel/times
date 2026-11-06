@@ -9,6 +9,12 @@ public sealed class AppTests : IDisposable
 {
     private const string Heading = "Tuesday, 2026-10-27";
 
+    /// <summary>
+    /// The description of the first help row (absence), which is on help's first page at 24 rows
+    /// whatever commands come later in the alphabet.
+    /// </summary>
+    private const string HelpFirstRow = "Mark this day as vacation";
+
     /// <summary>Rows the quicklist panel takes with no projects (border, one line, border): the day heading is on the next row.</summary>
     private const int EmptyPanelRows = 3;
 
@@ -346,20 +352,20 @@ public sealed class AppTests : IDisposable
 
         string[] frames = output.Split(Heading).Skip(1).ToArray();
         Assert.Equal(4, frames.Length);
-        Assert.Contains("List all commands", frames[1]);           // after help
-        Assert.DoesNotContain("List all commands", frames[2]);     // replaced by the hint
+        Assert.Contains(HelpFirstRow, frames[1]);           // after help
+        Assert.DoesNotContain(HelpFirstRow, frames[2]);     // replaced by the hint
         Assert.Contains("Unknown command nope", frames[2]);
         Assert.DoesNotContain("Unknown command", frames[3]);       // cleared by the empty line
 
         // The message sits above the input panel.
-        Assert.True(frames[1].IndexOf("List all commands", StringComparison.Ordinal) < frames[1].IndexOf("│ > ", StringComparison.Ordinal));
+        Assert.True(frames[1].IndexOf(HelpFirstRow, StringComparison.Ordinal) < frames[1].IndexOf("│ > ", StringComparison.Ordinal));
 
         // Job 004: help stays in the top area and the hint row stays blank (AC-6);
         // the hint is on the hint row and gone after the next command (AC-7).
         List<string[]> lines = Frames(output);
         Assert.Equal(4, lines.Count);
         AssertLayout(lines[1]);
-        Assert.Contains(lines[1][..^4], l => l.Contains("List all commands", StringComparison.Ordinal));
+        Assert.Contains(lines[1][..^4], l => l.Contains(HelpFirstRow, StringComparison.Ordinal));
         Assert.True(string.IsNullOrWhiteSpace(lines[1][^4]));
         AssertOnHintRow(lines[2], "Unknown command nope");
         AssertLayout(lines[3]);
@@ -453,7 +459,7 @@ public sealed class AppTests : IDisposable
 
         string[] frame = Frames(output)[2];
         AssertLayout(frame);
-        Assert.Contains(frame[..^4], l => l.Contains("List all commands", StringComparison.Ordinal));
+        Assert.Contains(frame[..^4], l => l.Contains(HelpFirstRow, StringComparison.Ordinal));
         Assert.True(string.IsNullOrWhiteSpace(frame[^4]));
         Assert.DoesNotContain(frame, l => l.Contains("Unknown command", StringComparison.Ordinal));
     }
@@ -542,8 +548,8 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, exitCode);
         string[] frames = output.Split(Heading).Skip(1).ToArray();
         Assert.Equal(3, frames.Length);
-        Assert.Contains("List all commands", frames[1]);
-        Assert.Contains("List all commands", frames[2]);
+        Assert.Contains(HelpFirstRow, frames[1]);
+        Assert.Contains(HelpFirstRow, frames[2]);
     }
 
     // Day navigation (job 002) ------------------------------------------------------------
@@ -846,7 +852,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(
             ["absence", "addproject", "arrive", "booked", "break", "breakend", "change", "…"],
             popup.Select(w => w.Text.Split(' ')[0]));
-        Assert.StartsWith("… 15 more", popup[^1].Text);
+        Assert.StartsWith("… 17 more", popup[^1].Text);
         Assert.Contains("Change the time of an entry", popup[6].Text);
         Assert.Equal(80, popup[0].Text.Length);
     }
@@ -919,9 +925,9 @@ public sealed class AppTests : IDisposable
         List<string> hintRow = TypingWrites(output, 1).Where(w => w.Row == 21).Select(w => w.Text).ToList();
 
         // popup, restored (Backspace), popup, restored (Esc), popup (quit typing), ...
-        Assert.StartsWith("… 15 more", hintRow[0]);
+        Assert.StartsWith("… 17 more", hintRow[0]);
         Assert.Contains("Unknown command nope", hintRow[1]);
-        Assert.StartsWith("… 15 more", hintRow[2]);
+        Assert.StartsWith("… 17 more", hintRow[2]);
         Assert.Contains("Unknown command nope", hintRow[3]);
         Assert.Contains("Unknown command nope", hintRow[^1]);
         Assert.Contains("\u001b[38;5;9mUnknown command", output[output.LastIndexOf("\u001b[21;1H", StringComparison.Ordinal)..]);
@@ -955,7 +961,7 @@ public sealed class AppTests : IDisposable
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
         // 33 commands: 7 shown, the eighth row counts the other 26.
-        Assert.StartsWith("… 27 more", popup[^1].Text);
+        Assert.StartsWith("… 29 more", popup[^1].Text);
         // Nothing is drawn on row 1 while typing (the final clear on quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
@@ -4602,7 +4608,7 @@ public sealed class AppTests : IDisposable
         (int exitCode, string output) = RunCommands("/help", "quit");
 
         Assert.Equal(0, exitCode);
-        Assert.Contains("List all commands", string.Join('\n', Frames(output)[1]));
+        Assert.Contains(HelpFirstRow, string.Join('\n', Frames(output)[1]));
         Assert.DoesNotContain("Unknown command", output);
     }
 
@@ -4789,6 +4795,7 @@ public sealed class AppTests : IDisposable
             ["breakend"] = "be",
             ["change"] = "c",
             ["checkpoint"] = "cp",
+            ["devops"] = "dv",
             ["help"] = "h",
             ["leave"] = "l",
             ["next"] = "n",
@@ -4800,6 +4807,7 @@ public sealed class AppTests : IDisposable
             ["report"] = "rp",
             ["settings"] = "se",
             ["summary"] = "s",
+            ["sync"] = "sy",
             ["today"] = "t",
             ["unbooked"] = "ub",
             ["update"] = "up",
@@ -8913,5 +8921,524 @@ public sealed class AppTests : IDisposable
         string plain = Regex.Replace(console.Output, @"\x1b\[[0-9;?]*[A-Za-z]", string.Empty);
 
         Assert.Matches(@"│ export +│ ex +│ Save the project report for a date range as CSV: <from> <to> <folder> +│", plain);
+    }
+
+    // Job 101 ------------------------------------------------------------------------------
+
+    private const string DevOpsPat = "PAT-MARKER-5e2d";
+
+    private const string NotAvailable =
+        "Azure DevOps needs the macOS Keychain or Windows Credential Manager; not available on this system";
+
+    /// <summary>Runs <paramref name="commands"/> (each with Enter) on a 40×140 console with the fakes and returns the exit code and the output.</summary>
+    private (int ExitCode, string Output) RunDevOps(FakeTokenStore store, FakeDevOpsClient? client, params string[] commands) =>
+        RunDevOps(store, client, c =>
+        {
+            foreach (string command in commands)
+            {
+                c.Input.PushTextWithEnter(command);
+            }
+        });
+
+    private (int ExitCode, string Output) RunDevOps(FakeTokenStore store, FakeDevOpsClient? client, Action<TestConsole> input)
+    {
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Height = 40;
+        console.Profile.Width = 140;
+        input(console);
+        App app = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path),
+            tokenStore: store, devOpsClient: client is null ? null : client.For);
+        int exitCode = app.Run([]);
+        Assert.DoesNotContain(DevOpsPat, console.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain("   at ", console.Output, StringComparison.Ordinal);
+        return (exitCode, console.Output);
+    }
+
+    private static string LastHint(string output) => string.Join(' ', LastLayout(output)[..^3].Reverse().Take(3).Reverse().Select(l => l.Trim()));
+
+    private static string Booked(string time, string name, int workItem) =>
+        $"{{\"kind\":\"checkpoint\",\"time\":\"{time}\",\"name\":\"{name}\",\"workItem\":{workItem},\"booked\":true}}";
+
+    /// <summary>
+    /// 2026-11-02: #12 Review 9:00-10:30 (unbooked), #7 Call 10:30-11:00, #12 Booked 11:00-12:00 (booked), Mail 12:00-13:00 (no work item);
+    /// 2026-11-03: #12 Fix 9:00-9:45, #7 Open 10:00 (never ended); 2026-11-05 outside the range.
+    /// </summary>
+    private void WriteSyncDays()
+    {
+        WriteReportDay("2026-11-02", ReportCp("09:00", "Review", 12), ReportCp("10:30", "Call", 7),
+            Booked("11:00", "Booked", 12), ReportCp("12:00", "Mail"), "{\"kind\":\"leaving\",\"time\":\"13:00\"}");
+        WriteReportDay("2026-11-03", ReportCp("09:00", "Fix", 12), "{\"kind\":\"breakStart\",\"time\":\"09:45\"}",
+            ReportCp("10:00", "Open", 7));
+        WriteReportDay("2026-11-05", ReportCp("09:00", "Outside", 12), ReportLeave);
+    }
+
+    private Dictionary<string, string> DataFiles() =>
+        Directory.GetFiles(data.Path).ToDictionary(f => Path.GetFileName(f), File.ReadAllText);
+
+    // AC-1
+    [Fact]
+    public void DevOpsConnect_AsksForTheTokenMasked_StoresIt_AndConfirms()
+    {
+        FakeTokenStore store = new FakeTokenStore();
+
+        (int exitCode, string output) = RunDevOps(store, null, "devops connect contoso", DevOpsPat, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal([("contoso", DevOpsPat)], store.Writes);
+        Assert.Contains("Personal access token · Esc cancels", output);
+        Assert.Contains(new string('•', DevOpsPat.Length), output);
+        Assert.Contains("Connected to contoso", LastLayout(output)[^4]);
+        Assert.Empty(Directory.GetFiles(data.Path));
+    }
+
+    // AC-1
+    [Fact]
+    public void DevOpsConnect_ReplacesAnEarlierToken()
+    {
+        FakeTokenStore store = new FakeTokenStore(stored: ("old-org", "old-token"));
+
+        RunDevOps(store, null, "dv connect new-org", DevOpsPat, "quit");
+
+        Assert.Equal(("new-org", DevOpsPat), store.Stored);
+    }
+
+    // AC-1: the token never reaches the history; Up recalls the command, not the token.
+    [Fact]
+    public void DevOpsConnect_TokenNeverEntersHistory()
+    {
+        FakeTokenStore store = new FakeTokenStore();
+
+        (_, string output) = RunDevOps(store, null, c =>
+        {
+            c.Input.PushTextWithEnter("devops connect contoso");
+            c.Input.PushTextWithEnter(DevOpsPat);
+            c.Input.PushKey(ConsoleKey.UpArrow);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.UpArrow);
+            c.Input.PushKey(ConsoleKey.UpArrow);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        // Up recalled devops connect contoso both times (the prompt came back), never the token or dots.
+        Assert.Single(store.Writes);
+        Assert.Equal(3, Count(output, "Paste or type the personal access token for contoso."));
+        Assert.DoesNotContain("Unknown command", output);
+        Assert.Contains("Cancelled. Nothing was stored.", LastLayout(output)[^4]);
+    }
+
+    // AC-1
+    [Fact]
+    public void DevOpsConnect_Esc_StoresNothing()
+    {
+        FakeTokenStore store = new FakeTokenStore();
+
+        (_, string output) = RunDevOps(store, null, c =>
+        {
+            c.Input.PushTextWithEnter("devops connect contoso");
+            c.Input.PushText(DevOpsPat);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Empty(store.Writes);
+        Assert.Contains("Cancelled. Nothing was stored.", LastLayout(output)[^4]);
+    }
+
+    // AC-1
+    [Theory]
+    [InlineData(DevOpsPat + " more")]
+    [InlineData("   ")]
+    public void DevOpsConnect_InvalidToken_StoresNothing_AndIsNotEchoed(string typed)
+    {
+        FakeTokenStore store = new FakeTokenStore();
+
+        (_, string output) = RunDevOps(store, null, "devops connect contoso", typed, "quit");
+
+        Assert.Empty(store.Writes);
+        Assert.Contains("devops: that is not a personal access token", LastHint(output));
+        Assert.DoesNotContain("more", output);
+    }
+
+    // AC-1
+    [Theory]
+    [InlineData("devops connect bad/org", "devops: bad/org is not an organization name")]
+    [InlineData("devops connect -x", "devops: -x is not an organization name")]
+    [InlineData("devops connect", "devops: say the organization")]
+    [InlineData("devops frobnicate", "devops: frobnicate is not something devops can do")]
+    [InlineData("devops disconnect now", "devops disconnect takes no arguments.")]
+    public void DevOps_BadInput_ShowsRedHint_WithoutAPrompt(string command, string hint)
+    {
+        FakeTokenStore store = new FakeTokenStore();
+
+        (int exitCode, string output) = RunDevOps(store, null, command, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(hint, LastHint(output));
+        Assert.DoesNotContain("Personal access token", output);
+        Assert.Equal(0, store.Calls);
+    }
+
+    // AC-2
+    [Fact]
+    public void DevOps_ShowsOrganizationAndTokenStored_NeverTheToken()
+    {
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+
+        (_, string output) = RunDevOps(store, null, "devops", "quit");
+
+        Assert.Contains("Azure DevOps: contoso · token stored", LastLayout(output)[^4]);
+    }
+
+    // AC-2, AC-4: a stored item that fails validation counts as not connected.
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("bad org", DevOpsPat)]
+    [InlineData("contoso", "has space")]
+    public void DevOps_NotConnected(string? organization, string? pat)
+    {
+        FakeTokenStore store = new FakeTokenStore(stored: organization is null ? null : (organization, pat!));
+
+        (_, string output) = RunDevOps(store, null, "dv", "quit");
+
+        Assert.Contains("Azure DevOps: not connected.", LastHint(output));
+        Assert.DoesNotContain("has space", output);
+    }
+
+    // AC-2
+    [Fact]
+    public void DevOpsDisconnect_RemovesTheToken_ThenNothingToRemove()
+    {
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+
+        (_, string first) = RunDevOps(store, null, "devops disconnect", "quit");
+        (_, string second) = RunDevOps(store, null, "devops disconnect", "quit");
+
+        Assert.Contains("Disconnected", LastLayout(first)[^4]);
+        Assert.Contains("Nothing to remove", LastLayout(second)[^4]);
+        Assert.Null(store.Stored);
+        Assert.Equal(2, store.Deletes);
+    }
+
+    // AC-3
+    [Theory]
+    [InlineData("devops connect contoso")]
+    [InlineData("devops disconnect")]
+    [InlineData("sync 2026-11-02 2026-11-04 send")]
+    public void Unsupported_ShowsRedHint_AndWritesNothing(string command)
+    {
+        WriteSyncDays();
+        Dictionary<string, string> before = DataFiles();
+        FakeTokenStore store = new FakeTokenStore(supported: false);
+        FakeDevOpsClient client = new FakeDevOpsClient();
+
+        (_, string output) = RunDevOps(store, client, command, "quit");
+
+        Assert.Contains(NotAvailable, LastHint(output));
+        Assert.DoesNotContain("Personal access token", output);
+        Assert.Equal(0, store.Calls);
+        Assert.Empty(client.Credentials);
+        Assert.Equal(before, DataFiles());
+    }
+
+    // AC-3
+    [Fact]
+    public void Unsupported_HintIsRed()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 140;
+        console.Input.PushTextWithEnter("devops connect contoso");
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), tokenStore: new FakeTokenStore(supported: false)).Run([]);
+
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mAzure DevOps needs the macOS Keychain", console.Output);
+    }
+
+    // AC-3: without an injected store (tests, Linux) nothing is supported and no real store is touched.
+    [Fact]
+    public void NoStoreInjected_IsUnsupported()
+    {
+        (_, string output) = Run(c =>
+        {
+            c.Profile.Width = 140;
+            c.Input.PushTextWithEnter("devops connect contoso");
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Contains(NotAvailable, output);
+    }
+
+    // AC-3: the preview still works.
+    [Fact]
+    public void Unsupported_PreviewStillWorks()
+    {
+        WriteSyncDays();
+        FakeTokenStore store = new FakeTokenStore(supported: false);
+
+        (_, string output) = RunDevOps(store, null, "sync 2026-11-02 2026-11-04", "quit");
+
+        Assert.Contains(LastLayout(output), l => Regex.IsMatch(l, @"│ #12 +│"));
+        Assert.Equal(0, store.Calls);
+    }
+
+    // AC-4
+    [Theory]
+    [InlineData("devops")]
+    [InlineData("devops disconnect")]
+    [InlineData("sync 2026-11-02 2026-11-04 send")]
+    public void StoreError_ShowsRedHint_AndLoopKeepsRunning(string command)
+    {
+        WriteSyncDays();
+        FakeTokenStore store = new FakeTokenStore { Throws = true };
+        FakeDevOpsClient client = new FakeDevOpsClient();
+
+        (int exitCode, string output) = RunDevOps(store, client, command, "report 2026-11-02 2026-11-04", command, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(FakeTokenStore.Failure, LastHint(output));
+        Assert.Contains("│ Total", output);
+        Assert.Empty(client.Credentials);
+    }
+
+    // AC-4
+    [Fact]
+    public void StoreError_OnWrite_ShowsRedHint()
+    {
+        FakeTokenStore store = new FakeTokenStore { Throws = true };
+
+        (_, string output) = RunDevOps(store, null, "devops connect contoso", DevOpsPat, "quit");
+
+        Assert.Contains($"devops: {FakeTokenStore.Failure} Nothing was stored.", LastHint(output));
+    }
+
+    // AC-4
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("bad org", DevOpsPat)]
+    [InlineData("contoso", "two words")]
+    public void Send_NotConnected_ShowsRedHint_AndMakesNoRequest(string? organization, string? pat)
+    {
+        WriteSyncDays();
+        Dictionary<string, string> before = DataFiles();
+        FakeTokenStore store = new FakeTokenStore(stored: organization is null ? null : (organization, pat!));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+
+        (_, string output) = RunDevOps(store, client, "sync 2026-11-02 2026-11-04 send", "quit");
+
+        Assert.Contains("sync: not connected to Azure DevOps.", LastHint(output));
+        Assert.Empty(client.Credentials);
+        Assert.Empty(client.Gets);
+        Assert.Equal(before, DataFiles());
+    }
+
+    // AC-5
+    [Theory]
+    [InlineData("sync", "sync: say the first and the last day.")]
+    [InlineData("sync 2026-11-02", "sync: say the first and the last day.")]
+    [InlineData("sync 2026-11-02 2026-11-04 send now", "sync: say the first and the last day.")]
+    [InlineData("sync 2026-02-30 2026-03-01", "sync: 2026-02-30 is not a date.")]
+    [InlineData("sync [red]x 2026-11-04", "sync: [red]x is not a date.")]
+    [InlineData("sync 2026-11-05 2026-11-04", "sync: the first day 2026-11-05 is after the last day 2026-11-04.")]
+    [InlineData("sync 2026-11-02 2026-11-04 Send", "sync: Send is not send.")]
+    public void Sync_BadInput_ShowsRedHint(string command, string hint)
+    {
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+
+        (int exitCode, string output) = RunDevOps(store, client, command, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(hint, LastHint(output));
+        Assert.Equal(0, store.Calls);
+        Assert.Empty(client.Gets);
+    }
+
+    // AC-5, AC-6
+    [Fact]
+    public void SyncPreview_ShowsOneRowPerWorkItem_WithoutStoreNetworkOrWrites()
+    {
+        WriteSyncDays();
+        File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":12,\"title\":\"Times\"}]}");
+        Dictionary<string, string> before = DataFiles();
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+
+        (_, string output) = RunDevOps(store, client, "sy 2026-11-02 2026-11-04", "quit");
+
+        string[] frame = LastLayout(output);
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ Work item +│ Title +│ Time +│ +Hours │ Checkpoints │"));
+        // #7: Call 0:30 (Open on 11-03 never ended); #12: Review 1:30 + Fix 0:45 (booked and outside skipped).
+        int seven = Array.FindIndex(frame, l => Regex.IsMatch(l, @"│ #7 +│ Call +│ 0:30 +│ +0\.50 │ +1 │"));
+        int twelve = Array.FindIndex(frame, l => Regex.IsMatch(l, @"│ #12 +│ Times +│ 2:15 +│ +2\.25 │ +2 │"));
+        Assert.True(seven > 0 && twelve > seven, string.Join("\n", frame));
+        Assert.DoesNotContain(frame, l => l.Contains("Mail", StringComparison.Ordinal));
+        Assert.Contains(frame, l => l.Contains("Type sync 2026-11-02 2026-11-04 send to write these hours to Azure DevOps", StringComparison.Ordinal));
+        Assert.Equal(0, store.Calls);
+        Assert.Empty(client.Credentials);
+        Assert.Equal(before, DataFiles());
+    }
+
+    // AC-5: a running checkpoint on today is not sent; an ended one on today is.
+    [Fact]
+    public void SyncPreview_RunningCheckpointToday_IsSkipped()
+    {
+        WriteReportDay("2026-10-27", ReportCp("09:00", "Done", 3), ReportCp("10:00", "Running", 4));
+
+        (_, string output) = RunDevOps(new FakeTokenStore(), null, "sync 2026-10-27 2026-10-27", "quit");
+
+        string[] frame = LastLayout(output);
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ #3 +│ Done +│ 1:00 +│"));
+        Assert.DoesNotContain(frame, l => l.Contains("│ #4 ", StringComparison.Ordinal));
+    }
+
+    // AC-6
+    [Fact]
+    public void SyncPreview_NothingToSend_ShowsGreyNote()
+    {
+        WriteReportDay("2026-11-02", Booked("09:00", "Done", 3), ReportLeave);
+
+        (_, string output) = RunDevOps(new FakeTokenStore(), null, "sync 2026-11-02 2026-11-04", "quit");
+
+        Assert.Contains("Nothing to send: no unbooked, ended checkpoints with a work item between 2026-11-02 and 2026-11-04.", output);
+        Assert.DoesNotContain("send to write these hours", output);
+    }
+
+    // AC-7, AC-8
+    [Fact]
+    public void SyncSend_AddsHoursWithRevTest_MarksBooked_AndASecondSendSendsNothing()
+    {
+        WriteSyncDays();
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+        client.Items[12] = (1.1, 5);
+
+        (_, string output) = RunDevOps(store, client, "sync 2026-11-02 2026-11-04 send", "quit");
+
+        Assert.Equal(1, store.Reads);
+        DevOpsCredential credential = Assert.Single(client.Credentials);
+        Assert.Equal("contoso", credential.Organization);
+        Assert.Equal([7, 12], client.Gets);
+        // #7 has no Completed Work yet (0, rev 1); #12 had 1.1 at rev 5: round(1.1 + 2.25, 2) = 3.35.
+        Assert.Equal([(7, 1, 0.5), (12, 5, 3.35)], client.Sets);
+        string[] frame = LastLayout(output);
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ #7 +│ Call +│ +0\.50 │ sent 0\.00 → 0\.50 +│"));
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ #12 +│ Review, Fix +│ +2\.25 │ sent 1\.10 → 3\.35 +│"));
+        Assert.Contains("Sent 2 work items to Azure DevOps.", LastHint(output));
+
+        DayStore days = new DayStore(data.Path);
+        DayRecord first = days.Load(new DateOnly(2026, 11, 2));
+        Assert.Equal([true, true, true, false], first.Entries.Where(e => e.Kind == EntryKind.Checkpoint).Select(e => e.Booked));
+        DayRecord second = days.Load(new DateOnly(2026, 11, 3));
+        Assert.Equal([true, false], second.Entries.Where(e => e.Kind == EntryKind.Checkpoint).Select(e => e.Booked));
+        Assert.Contains("\"name\":\"Outside\",\"workItem\":12}", ReadDay("2026-11-05"));
+
+        // AC-8: nothing is sent twice.
+        (_, string again) = RunDevOps(store, client, "sync 2026-11-02 2026-11-04 send", "quit");
+
+        Assert.Equal(2, client.Sets.Count);
+        Assert.Contains("Nothing to send", again);
+    }
+
+    // AC-8
+    [Fact]
+    public void SyncSend_OneFailure_LeavesItsCheckpointsUnbooked_AndTheRestStillRun()
+    {
+        WriteSyncDays();
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+        client.SetFailures[7] = DevOpsException.Changed;
+
+        (_, string output) = RunDevOps(store, client, "sync 2026-11-02 2026-11-04 send", "quit");
+
+        string[] frame = LastLayout(output);
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ #7 +│ Call +│ +0\.50 │ failed: the work item changed while syncing; run sync again +│"));
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ #12 +│ Review, Fix +│ +2\.25 │ sent 0\.00 → 2\.25 +│"));
+        Assert.Contains("sync: 1 of 2 work items failed", LastHint(output));
+        DayRecord day = new DayStore(data.Path).Load(new DateOnly(2026, 11, 2));
+        Assert.False(day.Entries.Single(e => e.Name == "Call").Booked);
+        Assert.True(day.Entries.Single(e => e.Name == "Review").Booked);
+
+        // Only #7 is left for the next send.
+        client.SetFailures.Clear();
+        RunDevOps(store, client, "sync 2026-11-02 2026-11-04 send", "quit");
+        Assert.Equal([7, 12, 7], client.Sets.Select(s => s.Id));
+    }
+
+    // AC-8, AC-10: a failed GET never PATCHes.
+    [Fact]
+    public void SyncSend_FailedRead_NeverWrites()
+    {
+        WriteSyncDays();
+        FakeDevOpsClient client = new FakeDevOpsClient();
+        client.GetFailures[7] = DevOpsException.Refused;
+        client.GetFailures[12] = DevOpsException.TimedOut;
+
+        (_, string output) = RunDevOps(new FakeTokenStore(stored: ("contoso", DevOpsPat)), client, "sync 2026-11-02 2026-11-04 send", "quit");
+
+        Assert.Empty(client.Sets);
+        Assert.Contains("failed: Azure DevOps refused the token", output);
+        Assert.Contains("failed: the request timed out", output);
+        Assert.Contains("sync: 2 of 2 work items failed", LastHint(output));
+        Assert.DoesNotContain("\"booked\":true}", ReadDay("2026-11-03"));
+    }
+
+    // AC-9
+    [Fact]
+    public void SyncSend_SaveFailsAfterPatch_NamesWorkItemAndDay_AndSaysToBookByHand()
+    {
+        WriteSyncDays();
+        FakeDevOpsClient client = new FakeDevOpsClient();
+        // After #12 is sent, its 2026-11-03 day file becomes unreadable, so it cannot be marked.
+        client.AfterSet = id =>
+        {
+            if (id == 12)
+            {
+                File.WriteAllText(DayFile("2026-11-03"), "broken");
+            }
+        };
+
+        (_, string output) = RunDevOps(new FakeTokenStore(stored: ("contoso", DevOpsPat)), client, "sync 2026-11-02 2026-11-04 send", "quit");
+
+        Assert.Contains("#12: the hours were sent, but 2026-11-03 could not be saved. Run booked 1 on 2026-11-03 by hand.", output);
+        Assert.Contains("and some days could not be saved", LastHint(output));
+        Assert.Equal("broken", ReadDay("2026-11-03"));
+        // The other day of #12 was still marked.
+        Assert.True(new DayStore(data.Path).Load(new DateOnly(2026, 11, 2)).Entries.Single(e => e.Name == "Review").Booked);
+    }
+
+    // AC-9
+    [Fact]
+    public void Sync_UnreadableDayFiles_AreSkippedCounted_AndNeverWritten()
+    {
+        WriteSyncDays();
+        File.WriteAllText(DayFile("2026-11-04"), "{ broken");
+        FakeDevOpsClient client = new FakeDevOpsClient();
+
+        (_, string preview) = RunDevOps(new FakeTokenStore(stored: ("contoso", DevOpsPat)), client, "sync 2026-11-02 2026-11-04", "quit");
+        (_, string sent) = RunDevOps(new FakeTokenStore(stored: ("contoso", DevOpsPat)), client, "sync 2026-11-02 2026-11-04 send", "quit");
+
+        Assert.Contains("! 1 day file skipped", preview);
+        Assert.Contains("! 1 day file skipped", sent);
+        Assert.Equal("{ broken", ReadDay("2026-11-04"));
+        Assert.Equal(2, client.Sets.Count);
+    }
+
+    // AC-11
+    [Fact]
+    public void Help_ListsDevOpsAndSync_WithAliases()
+    {
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 140;
+        console.Profile.Height = 80;
+        console.Input.PushTextWithEnter("help");
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+
+        Assert.Matches(@"│ devops +│ dv +│ Show or set the Azure DevOps link", console.Output);
+        Assert.Matches(@"│ sync +│ sy +│ Send unbooked hours to Azure DevOps: <from> <to> \[send\]", console.Output);
     }
 }
