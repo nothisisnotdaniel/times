@@ -129,3 +129,6 @@ Write one feature per line, in plain language.
 - [?] Report caption: keep the ' · rounded to <n> min' suffix on one line in narrow report tables (shorten or move it so it never wraps onto a second grey line). (from 104-report-rounding)
 - [?] review-security 1 — wrapping `devOpsClient(credential)` in the `try` would change failure behaviour and should change `sync` the same way; needs its own cleanup job. (from 105-devops-import)
 - [?] review-security 2 — capping the skipped-ids list changes the output format AC-10 defines; needs its own job. (from 105-devops-import)
+- [?] review-security 1 — streaming into the `CreateNew` file, or capping the file count, changes how "nothing to back up" works (the file would have to be created and then deleted) and needs its own job. The reviewer says real data is fine. (from 108-backup-command)
+- [?] review-security 2 — closing the TOCTOU window means opening the folder by handle and creating the file relative to it (openat). That is a design change that needs another review, and the reviewer places it outside the threat model. (from 108-backup-command)
+- [?] review-security 3 — 0600 on the zip would change the file mode, which the spec does not cover, and would make `backup` differ from `export`. Worth its own job if backups should be private. (from 108-backup-command)
