@@ -33,6 +33,8 @@ UpdateService updates = new UpdateService(
     new UpdateApplier(new ProcessLauncher(), OperatingSystem.IsWindows()),
     AppVersion.Current);
 
+// The Azure DevOps token lives only in the OS credential store (Keychain or Credential Manager).
 App app = new App(console, TimeProvider.System, new DayStore(dataFolder.Path),
-    folderFromEnvironment: dataFolder.FromEnvironment, mouse: mouse, updates: updates);
+    folderFromEnvironment: dataFolder.FromEnvironment, mouse: mouse, updates: updates,
+    tokenStore: TokenStore.ForCurrentPlatform(), devOpsClient: credential => new AzureDevOpsClient(credential));
 return app.Run(args);

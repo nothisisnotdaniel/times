@@ -41,6 +41,11 @@ internal sealed class App
     private readonly SettingsRegistry settings;
     private readonly SettingsStore settingsStore;
     private readonly UpdateService? updates;
+    private readonly ITokenStore tokenStore;
+    private readonly Func<DevOpsCredential, IDevOpsClient>? devOpsClient;
+
+    // Set by devops connect to the validated organisation; the loop then asks for the token.
+    private string? connectOrganization;
 
     // The start-up update check (started once in Run), whether its hint was shown, and whether its
     // staged package was taken over. The package staged for quit, from that check or from update.
@@ -76,10 +81,14 @@ internal sealed class App
     /// <param name="mouse">Turned on while the loop runs and off on every way out of it, or <c>null</c> for none.</param>
     /// <param name="settings">The settings the <c>settings</c> panel lists, or <c>null</c> for <see cref="SettingsRegistry.CreateDefault"/>.</param>
     /// <param name="updates">Checks for and installs updates, or <c>null</c> for none (no network at all).</param>
+    /// <param name="tokenStore">Holds the Azure DevOps token, or <c>null</c> for <see cref="UnsupportedTokenStore"/> (no OS store at all).</param>
+    /// <param name="devOpsClient">Makes the Azure DevOps client for a credential, or <c>null</c> for none (sync cannot send).</param>
     public App(IAnsiConsole console, TimeProvider time, DayStore store, CommandRegistry? registry = null,
         bool folderFromEnvironment = false, MouseReporting? mouse = null, SettingsRegistry? settings = null,
-        UpdateService? updates = null)
+        UpdateService? updates = null, ITokenStore? tokenStore = null, Func<DevOpsCredential, IDevOpsClient>? devOpsClient = null)
     {
+        this.tokenStore = tokenStore ?? new UnsupportedTokenStore();
+        this.devOpsClient = devOpsClient;
         this.updates = updates;
         this.settings = settings ?? SettingsRegistry.CreateDefault();
         settingsStore = new SettingsStore(store.Folder);
@@ -100,6 +109,7 @@ internal sealed class App
             return CommandResult.None;
         }));
         this.registry.Register("update", "up", "Check for a newer Times now and install it when you quit", NoArguments("update", Update));
+        RegisterDevOps();
     }
 
     // Runs the check and download now, with the settings as they are, and stages the result for quit
@@ -696,12 +706,15 @@ internal sealed class App
     }
 
     // Adds the yellow skipped line when the report skipped unreadable day files.
-    private static void AddSkipped(List<IRenderable> parts, ProjectReport report)
+    private static void AddSkipped(List<IRenderable> parts, ProjectReport report) => AddSkipped(parts, report.SkippedFiles);
+
+    // Adds the yellow skipped line when skipped unreadable day files were counted.
+    private static void AddSkipped(List<IRenderable> parts, int skippedFiles)
     {
-        if (report.SkippedFiles > 0)
+        if (skippedFiles > 0)
         {
-            string files = report.SkippedFiles == 1 ? "day file" : "day files";
-            parts.Add(new Markup($"[yellow]! {report.SkippedFiles.ToString(CultureInfo.InvariantCulture)} {files} skipped[/]"));
+            string files = skippedFiles == 1 ? "day file" : "day files";
+            parts.Add(new Markup($"[yellow]! {skippedFiles.ToString(CultureInfo.InvariantCulture)} {files} skipped[/]"));
         }
     }
 
@@ -711,6 +724,416 @@ internal sealed class App
         long minutes = value.Ticks / TimeSpan.TicksPerMinute;
         return (minutes / 60m).ToString("0.00", CultureInfo.InvariantCulture);
     }
+
+    /// <summary>The red hint for <c>devops connect</c>, <c>devops disconnect</c> and <c>sync … send</c> without an OS credential store.</summary>
+    internal const string DevOpsUnsupported =
+        "Azure DevOps needs the macOS Keychain or Windows Credential Manager; not available on this system";
+
+    /// <summary>The placeholder of the masked token prompt.</summary>
+    internal const string TokenPlaceholder = "Personal access token · Esc cancels";
+
+    private const string DevOpsUsage =
+        "Use [bold]devops[/], [bold]devops connect <organization>[/] or [bold]devops disconnect[/].";
+
+    private void RegisterDevOps()
+    {
+        registry.Register("devops", "dv", "Show or set the Azure DevOps link: [connect <org> | disconnect]", DevOps);
+        registry.Register("sync", "sy", "Send unbooked hours to Azure DevOps: <from> <to> [send]", Sync);
+    }
+
+    // devops shows the connection, devops connect <org> asks for the token (in the loop, masked), and
+    // devops disconnect removes it. The token is never shown and never taken as an argument.
+    private CommandResult DevOps(string argument)
+    {
+        const string Name = "devops";
+        (string sub, string rest) = SplitToken(argument);
+        rest = rest.Trim();
+        if (sub.Length == 0)
+        {
+            return DevOpsStatus();
+        }
+
+        if (string.Equals(sub, "connect", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!tokenStore.IsSupported)
+            {
+                return Hint(DevOpsUnsupported);
+            }
+
+            // Before the masked prompt, so the user never types a token the store would refuse.
+            if (tokenStore.WriteRefusal is { } refusal)
+            {
+                return Hint($"{Name}: {Markup.Escape(refusal)} Nothing was stored.");
+            }
+
+            if (rest.Length == 0)
+            {
+                return Hint($"{Name}: say the organization, as in dev.azure.com/<organization>. {DevOpsUsage}");
+            }
+
+            if (rest.Any(char.IsWhiteSpace))
+            {
+                // Never echoed: the extra word may be a pasted token.
+                return Hint($"{Name}: connect takes only the organization; the token is asked for next. Nothing was stored.");
+            }
+
+            if (!DevOpsCredential.IsValidOrganization(rest))
+            {
+                return Hint($"{Name}: [bold]{Markup.Escape(rest)}[/] is not an organization name " +
+                    "(letters, digits and hyphens, as in dev.azure.com/<organization>). Nothing was stored.");
+            }
+
+            connectOrganization = rest;
+            return CommandResult.None;
+        }
+
+        if (string.Equals(sub, "disconnect", StringComparison.OrdinalIgnoreCase))
+        {
+            if (rest.Length > 0)
+            {
+                return Hint("[bold]devops disconnect[/] takes no arguments.");
+            }
+
+            if (!tokenStore.IsSupported)
+            {
+                return Hint(DevOpsUnsupported);
+            }
+
+            bool deleted;
+            try
+            {
+                deleted = tokenStore.Delete();
+            }
+            catch (Exception ex) when (IsStoreFailure(ex))
+            {
+                return Hint($"{Name}: {StoreMessage(ex)} Nothing was removed.");
+            }
+
+            return new CommandResult(hint: new Markup(deleted ? "[grey]Disconnected[/]" : "[grey]Nothing to remove[/]"));
+        }
+
+        return Hint($"{Name}: [bold]{Markup.Escape(sub)}[/] is not something devops can do. {DevOpsUsage}");
+    }
+
+    // A devops (dv) line with any argument never enters the in-memory history: connect asks for the
+    // token next, but a user may still type or paste it on the line (devops connect contoso <token>),
+    // and a typo'd sub-command may hold it too. Parsed like Dispatch (one leading '/', name or alias).
+    private bool IsDevOpsLineWithArgument(string line)
+    {
+        string text = line.Trim();
+        int split = text.IndexOfAny([' ', '\t']);
+        if (split < 0)
+        {
+            return false;
+        }
+
+        string token = text[..split];
+        string name = token.StartsWith('/') ? token[1..] : token;
+        return name.Length > 0 && registry.TryGet(name, out Command? command)
+            && string.Equals(command.Name, "devops", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // The organisation and "token stored", or "not connected"; never the token.
+    private CommandResult DevOpsStatus()
+    {
+        if (!tokenStore.IsSupported)
+        {
+            return new CommandResult(hint: new Markup($"[grey]Azure DevOps: not connected. {DevOpsUnsupported}.[/]"));
+        }
+
+        DevOpsCredential? credential;
+        try
+        {
+            credential = ReadCredential();
+        }
+        catch (Exception ex) when (IsStoreFailure(ex))
+        {
+            return Hint($"devops: {StoreMessage(ex)}");
+        }
+
+        return new CommandResult(hint: new Markup(credential is null
+            ? "[grey]Azure DevOps: not connected. Use [bold]devops connect <organization>[/] to connect.[/]"
+            : $"[grey]Azure DevOps: [steelblue1]{Markup.Escape(credential.Organization)}[/] · token stored[/]"));
+    }
+
+    // The stored credential, or null if none is stored or what is stored fails validation.
+    private DevOpsCredential? ReadCredential() =>
+        tokenStore.Read() is { } stored ? DevOpsCredential.TryCreate(stored.Organization, stored.Pat) : null;
+
+    // A store failure: its own fixed message, or a missing OS library (also fixed, never a secret).
+    private static bool IsStoreFailure(Exception ex) =>
+        ex is TokenStoreException or DllNotFoundException or EntryPointNotFoundException;
+
+    private static string StoreMessage(Exception ex) =>
+        ex is TokenStoreException ? Markup.Escape(ex.Message) : "The credential store cannot be reached.";
+
+    // Asks for the token in the input box, masked, after devops connect <organization>. Esc or an
+    // invalid token stores nothing. Returns null if the input ended.
+    private CommandResult? ReadToken(LineEditor editor, string organization)
+    {
+        framePlaceholder = TokenPlaceholder;
+        try
+        {
+            Draw(null, new Markup($"[grey]Paste or type the personal access token for [steelblue1]{Markup.Escape(organization)}[/].[/]"), false);
+            console.Cursor.SetPosition(InputColumn, InputLine);
+            int width = console.Profile.Width;
+            string? typed = editor.ReadValue(InputColumn, InputLine, width - InputColumn - 2, framePlaceholder, out bool cancelled,
+                ShowPasteCut, masked: true);
+            if (typed is null)
+            {
+                return null;
+            }
+
+            if (cancelled)
+            {
+                return new CommandResult(hint: new Markup("[grey]Cancelled. Nothing was stored.[/]"));
+            }
+
+            string pat = typed.Trim();
+            if (!DevOpsCredential.IsValidPat(pat))
+            {
+                return Hint($"devops: that is not a personal access token (1 to {DevOpsCredential.MaxPatLength} " +
+                    "printable ASCII characters, no spaces). Nothing was stored.");
+            }
+
+            try
+            {
+                tokenStore.Write(organization, pat);
+            }
+            catch (Exception ex) when (IsStoreFailure(ex))
+            {
+                return Hint($"devops: {StoreMessage(ex)} Nothing was stored.");
+            }
+
+            return new CommandResult(hint: new Markup($"[grey]Connected to {Markup.Escape(organization)}[/]"));
+        }
+        finally
+        {
+            framePlaceholder = Placeholder;
+        }
+    }
+
+    // sync <from> <to> previews what would be sent, read-only and offline. With send, it reads the
+    // token once, then per work item reads Completed Work, adds the hours with the rev test and,
+    // only after that succeeded, marks the checkpoints booked.
+    private CommandResult Sync(string argument)
+    {
+        const string Name = "sync";
+        const string Usage = "Use [bold]sync <from> <to>[/] to preview and [bold]sync <from> <to> send[/] to send, " +
+            "with dates as [bold]yyyy-MM-dd[/].";
+        string[] parts = argument.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length is not (2 or 3))
+        {
+            return Hint($"{Name}: say the first and the last day. {Usage}");
+        }
+
+        bool send = parts.Length == 3;
+        if (send && !string.Equals(parts[2], "send", StringComparison.Ordinal))
+        {
+            return Hint($"{Name}: [bold]{Markup.Escape(parts[2])}[/] is not [bold]send[/]. {Usage}");
+        }
+
+        if (ParseRange(Name, Usage, parts[0], parts[1], out DateOnly from, out DateOnly to) is { } hint)
+        {
+            return hint;
+        }
+
+        if (send && !tokenStore.IsSupported)
+        {
+            return Hint(DevOpsUnsupported);
+        }
+
+        SyncPlan plan;
+        try
+        {
+            plan = DevOpsSync.Plan(Store, from, to);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{Name}: the data folder cannot be listed: {Markup.Escape(ex.Message)}");
+        }
+
+        ProjectList? projects = LoadProjectsOrNull();
+        if (!send || plan.Items.Count == 0)
+        {
+            return new CommandResult(SyncPreview(from, to, plan, projects), hideQuicklist: true);
+        }
+
+        DevOpsCredential? credential;
+        try
+        {
+            credential = ReadCredential();
+        }
+        catch (Exception ex) when (IsStoreFailure(ex))
+        {
+            return Hint($"{Name}: {StoreMessage(ex)} Nothing was sent.");
+        }
+
+        if (credential is null)
+        {
+            return Hint($"{Name}: not connected to Azure DevOps. Use [bold]devops connect <organization>[/] first. Nothing was sent.");
+        }
+
+        if (devOpsClient is null)
+        {
+            return Hint($"{Name}: this build cannot reach Azure DevOps. Nothing was sent.");
+        }
+
+        IDevOpsClient client = devOpsClient(credential);
+        try
+        {
+            return SendPlan(from, to, plan, projects, client);
+        }
+        finally
+        {
+            (client as IDisposable)?.Dispose();
+        }
+    }
+
+    // Sends each work item in turn; a failure leaves its checkpoints unbooked and the rest still run.
+    private CommandResult SendPlan(DateOnly from, DateOnly to, SyncPlan plan, ProjectList? projects, IDevOpsClient client)
+    {
+        Table table = new Table()
+            .Border(TableBorder.Rounded)
+            .BorderColor(Color.Grey)
+            .AddColumn("[grey]Work item[/]")
+            .AddColumn("[grey]Title[/]")
+            .AddColumn(new TableColumn("[grey]Hours[/]").RightAligned())
+            .AddColumn("[grey]Completed Work[/]")
+            .Caption($"{ReportDate(from)} – {ReportDate(to)}", new Style(Color.Grey));
+        List<IRenderable> notSaved = [];
+        int failed = 0;
+        foreach (SyncItem item in plan.Items)
+        {
+            string result;
+            try
+            {
+                (double? completed, int rev) = client.GetCompletedWorkAsync(item.WorkItem).GetAwaiter().GetResult();
+                double old = completed ?? 0;
+                double updated = Math.Round(old + item.Hours, 2);
+                if (!double.IsFinite(updated))
+                {
+                    throw new DevOpsException(DevOpsException.Unexpected);
+                }
+
+                client.SetCompletedWorkAsync(item.WorkItem, rev, updated).GetAwaiter().GetResult();
+                result = $"[steelblue1]sent[/] {FormatCompleted(old)} → {FormatCompleted(updated)}";
+                notSaved.AddRange(MarkBooked(item));
+            }
+            catch (DevOpsException ex)
+            {
+                failed++;
+                result = $"[red]failed: {Markup.Escape(ex.Message)}[/]";
+            }
+
+            table.AddRow(
+                new Text("#" + item.WorkItem.ToString(CultureInfo.InvariantCulture)),
+                new Markup(Markup.Escape(item.Title(projects))),
+                new Markup($"[steelblue1]{FormatCompleted(item.Hours)}[/]"),
+                new Markup(result));
+        }
+
+        List<IRenderable> parts = [table];
+        parts.AddRange(notSaved);
+        AddSkipped(parts, plan.SkippedFiles);
+
+        int count = plan.Items.Count;
+        string items = count == 1 ? "work item" : "work items";
+        IRenderable hint = failed > 0 || notSaved.Count > 0
+            ? new Markup($"[red]sync: {failed.ToString(CultureInfo.InvariantCulture)} of " +
+                $"{count.ToString(CultureInfo.InvariantCulture)} {items} failed" +
+                (notSaved.Count > 0 ? ", and some days could not be saved" : string.Empty) + "; see the list above.[/]")
+            : new Markup($"[grey]Sent {count.ToString(CultureInfo.InvariantCulture)} {items} to Azure DevOps.[/]");
+        return new CommandResult(new Rows(parts), hint: hint, hideQuicklist: true);
+    }
+
+    // Marks the item's checkpoints booked, one save per day. Each day is loaded again and only an entry
+    // that is still the same unbooked checkpoint is marked. Returns a red line for every day that
+    // could not be saved, naming the work item, the day and the booked commands to run by hand.
+    private List<IRenderable> MarkBooked(SyncItem item)
+    {
+        List<IRenderable> lines = [];
+        foreach (IGrouping<DateOnly, SyncCheckpoint> day in item.Checkpoints.GroupBy(c => c.Day))
+        {
+            try
+            {
+                DayRecord record = Store.Load(day.Key);
+                foreach (SyncCheckpoint checkpoint in day)
+                {
+                    if (checkpoint.Number > record.Entries.Count)
+                    {
+                        throw new InvalidDataException("The day changed.");
+                    }
+
+                    DayEntry entry = record.Entries[checkpoint.Number - 1];
+                    if (entry.Kind != EntryKind.Checkpoint || entry.WorkItem != item.WorkItem || entry.Booked)
+                    {
+                        throw new InvalidDataException("The day changed.");
+                    }
+
+                    record = record.SetBooked(checkpoint.Number, true);
+                }
+
+                Store.Save(day.Key, record);
+            }
+            catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException
+                or InvalidOperationException or ArgumentException)
+            {
+                string date = ReportDate(day.Key);
+                string commands = string.Join(", ", day.Select(c => $"[bold]booked {c.Number.ToString(CultureInfo.InvariantCulture)}[/]"));
+                lines.Add(new Markup($"[red]#{item.WorkItem.ToString(CultureInfo.InvariantCulture)}: the hours were sent, " +
+                    $"but {date} could not be saved. Run {commands} on {date} by hand.[/]"));
+            }
+        }
+
+        return lines;
+    }
+
+    /// <summary>
+    /// What <c>sync</c> would send: one row per work item (ascending) with its title, time, hours and
+    /// checkpoint count, and how to send it; or a grey note when there is nothing to send. Then the
+    /// yellow skipped line when day files could not be read.
+    /// </summary>
+    internal static IRenderable SyncPreview(DateOnly from, DateOnly to, SyncPlan plan, ProjectList? projects)
+    {
+        List<IRenderable> parts = [];
+        if (plan.Items.Count == 0)
+        {
+            parts.Add(new Markup($"[grey]Nothing to send: no unbooked, ended checkpoints with a work item between " +
+                $"{ReportDate(from)} and {ReportDate(to)}.[/]"));
+        }
+        else
+        {
+            Table table = new Table()
+                .Border(TableBorder.Rounded)
+                .BorderColor(Color.Grey)
+                .AddColumn("[grey]Work item[/]")
+                .AddColumn("[grey]Title[/]")
+                .AddColumn("[grey]Time[/]")
+                .AddColumn(new TableColumn("[grey]Hours[/]").RightAligned())
+                .AddColumn(new TableColumn("[grey]Checkpoints[/]").RightAligned())
+                .Caption($"{ReportDate(from)} – {ReportDate(to)}", new Style(Color.Grey));
+            foreach (SyncItem item in plan.Items)
+            {
+                table.AddRow(
+                    new Text("#" + item.WorkItem.ToString(CultureInfo.InvariantCulture)),
+                    new Markup(Markup.Escape(item.Title(projects))),
+                    new Markup($"[steelblue1]{DayView.FormatTimeLeft(TimeSpan.FromMinutes(item.Minutes))}[/]"),
+                    new Markup($"[steelblue1]{FormatCompleted(item.Hours)}[/]"),
+                    new Text(item.Checkpoints.Count.ToString(CultureInfo.InvariantCulture)));
+            }
+
+            parts.Add(table);
+            parts.Add(new Markup($"[grey]Type [bold]sync {ReportDate(from)} {ReportDate(to)} send[/] " +
+                "to write these hours to Azure DevOps[/]"));
+        }
+
+        AddSkipped(parts, plan.SkippedFiles);
+        return parts.Count == 1 ? parts[0] : new Rows(parts);
+    }
+
+    /// <summary>Hours as Azure DevOps holds them, invariant with two decimals, e.g. <c>3.50</c>.</summary>
+    internal static string FormatCompleted(double hours) => hours.ToString("0.00", CultureInfo.InvariantCulture);
 
     private void RegisterProjects()
     {
@@ -1198,7 +1621,7 @@ internal sealed class App
 
     private int Loop(IRenderable? startHint)
     {
-        LineEditor editor = new LineEditor(console, registry);
+        LineEditor editor = new LineEditor(console, registry, IsDevOpsLineWithArgument);
         IRenderable? message = null;
         IRenderable? hint = startHint;
         bool hideQuicklist = false;
@@ -1229,6 +1652,17 @@ internal sealed class App
                 console.Clear(home: true);
                 InstallStaged();
                 return 0;
+            }
+
+            if (connectOrganization is { } organization)
+            {
+                connectOrganization = null;
+                if (ReadToken(editor, organization) is not { } connected)
+                {
+                    return 0;
+                }
+
+                result = connected;
             }
 
             if (openSettings)

@@ -83,16 +83,7 @@ internal sealed class CheckpointSummary
                 group.Names.Add(name);
             }
 
-            DayEntry? end = null;
-            for (int j = i + 1; j < entries.Count; j++)
-            {
-                if (EndsCheckpoint(entries[j].Kind))
-                {
-                    end = entries[j];
-                    break;
-                }
-            }
-
+            DayEntry? end = EndOf(entries, i);
             if (end is not null)
             {
                 // Entries are sorted, so the end is never before the checkpoint.
@@ -112,6 +103,25 @@ internal sealed class CheckpointSummary
         }
 
         return groups.Select(g => new CheckpointGroup(g.WorkItem, g.Names, g.Total, g.Open)).ToList();
+    }
+
+    /// <summary>
+    /// The entry that ends the checkpoint at <paramref name="index"/>: the first later entry (in
+    /// <paramref name="entries"/> order) that is a checkpoint, a break start or a leaving, or
+    /// <c>null</c> if there is none (the checkpoint is still running or open). Arrivals and break
+    /// ends never end a checkpoint. The one rule <see cref="Calculate"/> and <see cref="DevOpsSync"/> share.
+    /// </summary>
+    public static DayEntry? EndOf(IReadOnlyList<DayEntry> entries, int index)
+    {
+        for (int j = index + 1; j < entries.Count; j++)
+        {
+            if (EndsCheckpoint(entries[j].Kind))
+            {
+                return entries[j];
+            }
+        }
+
+        return null;
     }
 
     private static bool EndsCheckpoint(EntryKind kind) =>
