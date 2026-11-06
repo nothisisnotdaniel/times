@@ -138,6 +138,12 @@ Every factory agent reads this file before working on Times. Keep it short and a
   arrival; unreadable files are skipped and counted (yellow `! N day file(s) skipped`, no names).
   An absence day counts with a delta of zero, and `DayView` shows `Absence: Vacation` plus the
   target line with `day +0:00` for it.
+- **Public holidays:** `PublicHolidays` (pure: `Easter` computus, `NameOf(date, country, state)`, English name or `null`)
+  knows Germany's nationwide and per-state holidays (current rules, a few with start years). `App.RenderDay` reads the
+  `Choice` settings `holiday-country` (`none`/`Germany`) and `holiday-state` (`none` or a state code) per redraw (missing,
+  broken or unregistered: `none`) and passes the name to `DayView.Render`: an empty day shows
+  `Absence: Public holiday · <name>` with `day +0:00`, a stored `publicHoliday` names it too, and a booked day gets a grey
+  `Public holiday: <name>` line below the heading. Nothing is written for a holiday; the balance is unchanged.
 - **Working-time checks:** `WorkingTimeChecks.Check` (pure) gives a day's warnings for the `OnOff` settings `check-breaks`
   (the `Breaks too short` rule), `check-max-work` (work over 10:00, `WorkTimeAt(now)` on live today) and `check-rest` (previous
   calendar day's last `Leaving` to the first `Arrival` under 11:00; missing, unreadable, absence or no-leaving previous day: none),

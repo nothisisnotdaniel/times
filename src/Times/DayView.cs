@@ -89,6 +89,10 @@ internal sealed class DayView
     /// (<c>! Rest too short: 9:30 since last leaving</c>), each yellow after two spaces. Null applies only the
     /// break check. <paramref name="weekWarnings"/> are the days of the week with a warning: when there is one,
     /// the last row is <see cref="WeekLine"/>, indented like the target line (on every kind of day).
+    /// <paramref name="holiday"/> is the shown day's public holiday name (see <see cref="PublicHolidays.NameOf"/>), or
+    /// <c>null</c>. An empty day on a holiday shows as an absence day with <c>Absence: Public holiday · Corpus Christi</c>;
+    /// a stored <c>publicHoliday</c> absence names the holiday the same way (other absences are unchanged); a day with
+    /// entries gets one grey <c>Public holiday: Corpus Christi</c> line directly below the heading.
     /// </summary>
     public IRenderable Render(
         DayRecord day,
@@ -96,14 +100,23 @@ internal sealed class DayView
         FlexitimeBalance balance,
         TimeOnly? now = null,
         WorkingTimeChecks? checks = null,
-        IReadOnlyList<DateOnly>? weekWarnings = null)
+        IReadOnlyList<DateOnly>? weekWarnings = null,
+        string? holiday = null)
     {
-        if (day.Absence is { } absence)
+        // A stored absence wins; an empty day on a holiday shows as a public holiday absence (no file is written).
+        AbsenceKind? shownAbsence = day.Absence ?? (day.IsEmpty && holiday is not null ? AbsenceKind.PublicHoliday : null);
+        if (shownAbsence is { } absence)
         {
+            string label = Markup.Escape(AbsenceLabel(absence));
+            if (absence == AbsenceKind.PublicHoliday && holiday is not null)
+            {
+                label += " · " + Markup.Escape(holiday);
+            }
+
             List<IRenderable> absent =
             [
                 HeadingRule(),
-                new Markup($"[grey]Absence:[/] [steelblue1]{AbsenceLabel(absence)}[/]"),
+                new Markup($"[grey]Absence:[/] [steelblue1]{label}[/]"),
                 new Markup(TargetLineWith(target, "+0:00", balance)),
             ];
             AddWeekLine(absent, weekWarnings, 0);
@@ -197,15 +210,20 @@ internal sealed class DayView
 
         // Indent the summary to the code column: the widest number plus the number column's gap.
         int indent = day.Entries.Count.ToString(CultureInfo.InvariantCulture).Length + NumberColumnGap;
-        List<IRenderable> rows =
+        List<IRenderable> rows = [HeadingRule()];
+        if (holiday is not null)
+        {
+            rows.Add(new Markup($"[grey]Public holiday: {Markup.Escape(holiday)}[/]"));
+        }
+
+        rows.AddRange(
         [
-            HeadingRule(),
             Text.Empty,
             grid,
             Text.Empty,
             new Padder(new Markup(summary), new Padding(indent, 0, 0, 0)),
             new Padder(new Markup(TargetLine(target, worked - target, balance)), new Padding(indent, 0, 0, 0)),
-        ];
+        ]);
         AddHint(rows, "Break not ended", day.UnendedBreaks(), indent);
         AddHint(rows, "Break outside arrival and leaving", day.BreaksOutsideSpans(), indent);
         AddWeekLine(rows, weekWarnings, indent);

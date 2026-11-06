@@ -10358,8 +10358,8 @@ public sealed class AppTests : IDisposable
             TestConsole console = new TestConsole().Interactive();
             console.Profile.Width = 120;
             console.Input.PushTextWithEnter("settings");
-            // Past daily-target, alert-target and alert-limit (job 113) and the three checks (job 114).
-            for (int down = 0; down < 6; down++)
+            // Past daily-target, alert-target and alert-limit (job 113), the three checks (job 114) and the two holiday settings (job 115).
+            for (int down = 0; down < 8; down++)
             {
                 console.Input.PushKey(ConsoleKey.DownArrow);
             }
@@ -12822,5 +12822,214 @@ public sealed class AppTests : IDisposable
         RunWide("prev", "prev", "prev", "today", "next", "next", "next", "next", "next", "today", "quit");
 
         Assert.Equal(before, Snapshot());
+    }
+
+    // Job 115 ------------------------------------------------------------------------------
+
+    private const string GermanyBavaria = "{\"settings\":{\"holiday-country\":\"Germany\",\"holiday-state\":\"BY\"}}";
+
+    // 18:30 UTC on the given day, so the shown day starts there.
+    private static FixedTimeProvider HolidayClock(int month, int day) =>
+        new(new DateTimeOffset(2026, month, day, 18, 30, 0, TimeSpan.Zero), TimeZoneInfo.Utc);
+
+    private (int ExitCode, string Output) RunOn(FixedTimeProvider time, params string[] commands) =>
+        Run(c =>
+        {
+            c.Profile.Width = 200;
+            c.Profile.Height = 40;
+            foreach (string command in commands)
+            {
+                c.Input.PushTextWithEnter(command);
+            }
+        }, time: time);
+
+    private string[] DataEntryNames() =>
+        Directory.EnumerateFileSystemEntries(data.Path).Select(Path.GetFileName).Order(StringComparer.Ordinal).ToArray()!;
+
+    // AC-5
+    [Fact]
+    public void Settings_ListsHolidaySettingsAfterCheckRest_AndSavesGermanyBavaria()
+    {
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 160;
+        console.Profile.Height = 40;
+        console.Input.PushTextWithEnter("settings");
+        for (int down = 0; down < 6; down++)
+        {
+            console.Input.PushKey(ConsoleKey.DownArrow);
+        }
+
+        console.Input.PushKey(ConsoleKey.Enter);
+        console.Input.PushKey(ConsoleKey.DownArrow);
+        for (int press = 0; press < 4; press++)
+        {
+            console.Input.PushKey(ConsoleKey.Enter);
+        }
+
+        console.Input.PushKey(ConsoleKey.Escape);
+        console.Input.PushTextWithEnter("quit");
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+
+        Assert.Matches(@"check-rest +on [^\n]*\n[^\n]*holiday-country +none [^\n]*\n[^\n]*holiday-state +none ", console.Output);
+        Assert.Matches(@"holiday-country +Germany ", console.Output);
+        Assert.Matches(@"holiday-state +BY ", console.Output);
+        Assert.Equal(GermanyBavaria, File.ReadAllText(SettingsPath));
+    }
+
+    // AC-6
+    [Fact]
+    public void Holiday_WithGermanyBavaria_ShowsCorpusChristiAbsence_AndWritesNoFile()
+    {
+        File.WriteAllText(SettingsPath, GermanyBavaria);
+
+        (int exitCode, string output) = RunOn(HolidayClock(6, 4), "quit");
+
+        string frame = LastFrame(output);
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Thursday, 2026-06-04", frame);
+        Assert.Contains("Absence: Public holiday · Corpus Christi", frame);
+        Assert.DoesNotContain("No entries yet.", frame);
+        Assert.Matches(@"Target 8:00 · day \+0:00 · balance 0:00", frame);
+        Assert.Equal(["settings.json"], DataEntryNames());
+    }
+
+    // AC-6: navigating onto a holiday shows it too, and browsing leaves no file.
+    [Fact]
+    public void Holiday_NavigatingOntoIt_ShowsIt_AndWritesNoFile()
+    {
+        File.WriteAllText(SettingsPath, GermanyBavaria);
+
+        (_, string output) = RunOn(HolidayClock(6, 5), "prev", "quit");
+
+        Assert.Contains("Absence: Public holiday · Corpus Christi", LastFrame(output));
+        Assert.Equal(["settings.json"], DataEntryNames());
+    }
+
+    // AC-7
+    [Theory]
+    [InlineData(null)]
+    [InlineData("{\"settings\":{}}")]
+    [InlineData("{\"settings\":{\"holiday-country\":\"Germany\"")]
+    [InlineData("{\"settings\":{\"holiday-country\":\"France\",\"holiday-state\":\"BY\"}}")]
+    public void Holiday_DefaultsMissingOrBrokenSettings_ShowUsualEmptyDay(string? settingsJson)
+    {
+        if (settingsJson is not null)
+        {
+            File.WriteAllText(SettingsPath, settingsJson);
+        }
+
+        (_, string output) = RunOn(HolidayClock(6, 4), "quit");
+
+        string frame = LastFrame(output);
+        Assert.Contains("No entries yet.", frame);
+        Assert.DoesNotContain("Public holiday", frame);
+        Assert.Equal(settingsJson is null ? [] : ["settings.json"], DataEntryNames());
+    }
+
+    // AC-7: an unknown option makes settings.json broken, so both settings are none (no holidays at all).
+    [Fact]
+    public void Holiday_UnknownStateInSettings_NoHolidays()
+    {
+        File.WriteAllText(SettingsPath, "{\"settings\":{\"holiday-country\":\"Germany\",\"holiday-state\":\"XX\"}}");
+
+        Assert.Contains("No entries yet.", LastFrame(RunOn(HolidayClock(6, 4), "quit").Output));
+        Assert.Contains("No entries yet.", LastFrame(RunOn(HolidayClock(4, 3), "quit").Output));
+    }
+
+    // AC-4: Germany with state none gives the nationwide holidays only.
+    [Fact]
+    public void Holiday_GermanyWithoutState_NationwideOnly()
+    {
+        File.WriteAllText(SettingsPath, "{\"settings\":{\"holiday-country\":\"Germany\"}}");
+
+        Assert.Contains("No entries yet.", LastFrame(RunOn(HolidayClock(6, 4), "quit").Output));
+        Assert.Contains("Absence: Public holiday · Good Friday", LastFrame(RunOn(HolidayClock(4, 3), "quit").Output));
+    }
+
+    // AC-8
+    [Fact]
+    public void Holiday_DayFileWithEntries_ShowsBooked_WithGreyHolidayLine()
+    {
+        File.WriteAllText(SettingsPath, GermanyBavaria);
+        File.WriteAllText(DayFile("2026-06-04"),
+            "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"},{\"kind\":\"leaving\",\"time\":\"12:00\"}]}");
+
+        (_, string output) = RunOn(HolidayClock(6, 5), "prev", "quit");
+
+        string frame = LastFrame(output);
+        string[] lines = frame.Split('\n').Select(l => l.Trim('│', ' ', '\r')).ToArray();
+        int heading = Array.FindIndex(lines, l => l.Contains("Thursday, 2026-06-04", StringComparison.Ordinal));
+        Assert.Equal("Public holiday: Corpus Christi", lines[heading + 1]);
+        Assert.DoesNotContain("Absence:", frame);
+        Assert.Matches(@"AR +08:00", frame);
+        Assert.Matches(@"Target 8:00 · day -4:00 · balance -4:00", frame);
+    }
+
+    // AC-8
+    [Fact]
+    public void Holiday_ArriveOnHolidayWithoutFile_IsAccepted_AndCreatesTheFile()
+    {
+        File.WriteAllText(SettingsPath, GermanyBavaria);
+
+        (int exitCode, string output) = RunOn(HolidayClock(6, 5), "prev", "arrive 9:00", "quit");
+
+        string frame = LastFrame(output);
+        Assert.Equal(0, exitCode);
+        Assert.True(File.Exists(DayFile("2026-06-04")));
+        Assert.Contains("\"arrival\"", ReadDay("2026-06-04"));
+        Assert.Contains("Public holiday: Corpus Christi", frame);
+        Assert.Matches(@"AR +09:00", frame);
+        Assert.DoesNotContain("Absence:", frame);
+    }
+
+    // AC-9
+    [Theory]
+    [InlineData("vacation", "Absence: Vacation")]
+    [InlineData("sick", "Absence: Sick")]
+    [InlineData("publicHoliday", "Absence: Public holiday · Corpus Christi")]
+    public void Holiday_StoredAbsenceOnHoliday_ShowsTheStoredAbsence(string stored, string expected)
+    {
+        File.WriteAllText(SettingsPath, GermanyBavaria);
+        File.WriteAllText(DayFile("2026-06-04"), "{\"absence\":\"" + stored + "\",\"entries\":[]}");
+
+        string frame = LastFrame(RunOn(HolidayClock(6, 4), "quit").Output);
+
+        Assert.Contains(expected, frame);
+        if (stored != "publicHoliday")
+        {
+            Assert.DoesNotContain("Public holiday", frame);
+        }
+    }
+
+    // AC-9
+    [Fact]
+    public void Holiday_StoredPublicHolidayOnOtherDate_AsBefore()
+    {
+        File.WriteAllText(SettingsPath, GermanyBavaria);
+        File.WriteAllText(DayFile("2026-06-05"), "{\"absence\":\"publicHoliday\",\"entries\":[]}");
+
+        string frame = LastFrame(RunOn(HolidayClock(6, 5), "quit").Output);
+
+        Assert.Contains("Absence: Public holiday", frame);
+        Assert.DoesNotContain("Public holiday ·", frame);
+    }
+
+    // AC-10
+    [Fact]
+    public void Holiday_BalanceIsTheSameWithAndWithoutHolidaySettings()
+    {
+        File.WriteAllText(DayFile("2026-06-02"),
+            "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"},{\"kind\":\"leaving\",\"time\":\"17:30\"}]}");
+        File.WriteAllText(DayFile("2026-06-03"),
+            "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"},{\"kind\":\"leaving\",\"time\":\"15:00\"}]}");
+
+        string without = Regex.Match(LastFrame(RunOn(HolidayClock(6, 5), "quit").Output), @"balance [^ \n]+").Value;
+        File.WriteAllText(SettingsPath, GermanyBavaria);
+        string with = Regex.Match(LastFrame(RunOn(HolidayClock(6, 5), "quit").Output), @"balance [^ \n]+").Value;
+        string onHoliday = Regex.Match(LastFrame(RunOn(HolidayClock(6, 5), "prev", "quit").Output), @"balance [^ \n]+").Value;
+
+        Assert.Equal("balance +0:30", without);
+        Assert.Equal(without, with);
+        Assert.Equal(without, onHoliday);
     }
 }
