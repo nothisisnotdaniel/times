@@ -313,4 +313,32 @@ public sealed class OldDataImportTests : IDisposable
         Assert.Equal("is not a regular file", OldDataImport.Read(directory).Error);
         Assert.Equal(Sample(), OldDataImport.Read(SamplePath).Bytes);
     }
+
+    // AC-3: a FIFO, or a link to one, is refused without blocking (review-security nit 3).
+    [Fact]
+    public void Read_FifoOrLinkToFifo_IsNotARegularFile_AndDoesNotBlock()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        string fifo = Path.Combine(folder.Path, "2026-10-28.json");
+        SpecialFiles.MakeFifo(fifo);
+        string link = Path.Combine(folder.Path, "2026-10-29.json");
+        File.CreateSymbolicLink(link, fifo);
+        ImportRead? direct = null;
+        ImportRead? linked = null;
+
+        Exception? thrown = SpecialFiles.RunWithin(TimeSpan.FromSeconds(10), () =>
+        {
+            direct = OldDataImport.Read(fifo);
+            linked = OldDataImport.Read(link);
+        });
+
+        Assert.Null(thrown);
+        Assert.Equal("is not a regular file", direct!.Error);
+        Assert.Equal("is not a regular file", linked!.Error);
+        Assert.True(SpecialFiles.IsFifo(fifo));
+    }
 }
