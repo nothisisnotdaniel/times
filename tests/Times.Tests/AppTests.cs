@@ -22,7 +22,7 @@ public sealed class AppTests : IDisposable
     private const int TopHeight = 20;
 
     /// <summary>More PageDown presses than help needs to reach the bottom at 24 rows; the extra ones change nothing.</summary>
-    private const int HelpPages = 4;
+    private const int HelpPages = 5;
 
     /// <summary>Pushes <paramref name="count"/> PageDown keys.</summary>
     private static void PageDown(TestConsole console, int count)
@@ -848,11 +848,11 @@ public sealed class AppTests : IDisposable
         Assert.Contains("\u001b[21;1H", output);
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal([14, 15, 16, 17, 18, 19, 20, 21], popup.Select(w => w.Row));
-        // Twenty-one commands: the first seven by name, then a row counting the other fourteen.
+        // Twenty-seven commands: the first seven by name, then a row counting the other twenty.
         Assert.Equal(
             ["absence", "addproject", "arrive", "booked", "break", "breakend", "change", "…"],
             popup.Select(w => w.Text.Split(' ')[0]));
-        Assert.StartsWith("… 17 more", popup[^1].Text);
+        Assert.StartsWith("… 20 more", popup[^1].Text);
         Assert.Contains("Change the time of an entry", popup[6].Text);
         Assert.Equal(80, popup[0].Text.Length);
     }
@@ -925,9 +925,9 @@ public sealed class AppTests : IDisposable
         List<string> hintRow = TypingWrites(output, 1).Where(w => w.Row == 21).Select(w => w.Text).ToList();
 
         // popup, restored (Backspace), popup, restored (Esc), popup (quit typing), ...
-        Assert.StartsWith("… 17 more", hintRow[0]);
+        Assert.StartsWith("… 20 more", hintRow[0]);
         Assert.Contains("Unknown command nope", hintRow[1]);
-        Assert.StartsWith("… 17 more", hintRow[2]);
+        Assert.StartsWith("… 20 more", hintRow[2]);
         Assert.Contains("Unknown command nope", hintRow[3]);
         Assert.Contains("Unknown command nope", hintRow[^1]);
         Assert.Contains("\u001b[38;5;9mUnknown command", output[output.LastIndexOf("\u001b[21;1H", StringComparison.Ordinal)..]);
@@ -960,8 +960,8 @@ public sealed class AppTests : IDisposable
 
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
-        // 33 commands: 7 shown, the eighth row counts the other 26.
-        Assert.StartsWith("… 29 more", popup[^1].Text);
+        // 39 commands: 7 shown, the eighth row counts the other 32.
+        Assert.StartsWith("… 32 more", popup[^1].Text);
         // Nothing is drawn on row 1 while typing (the final clear on quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
@@ -3921,8 +3921,10 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Help_ListsBreakBreakEndAndCheckpoint_WithDescriptions()
     {
+        // Wide enough that no description wraps, now that renameproject widens the name column (job 102).
         (_, string output) = Run(c =>
         {
+            c.Profile.Width = 120;
             c.Input.PushTextWithEnter("help");
             PageDown(c, HelpPages);
             c.Input.PushTextWithEnter("quit");
@@ -4801,6 +4803,9 @@ public sealed class AppTests : IDisposable
             ["next"] = "n",
             ["prev"] = "p",
             ["projects"] = "pr",
+            ["renameproject"] = "rn",
+            ["removeproject"] = "xp",
+            ["moveproject"] = "mp",
             ["quit"] = "q",
             ["remove"] = "r",
             ["export"] = "ex",
@@ -9022,7 +9027,7 @@ public sealed class AppTests : IDisposable
         // One Up skipped the connect line (kept out of history) and recalled help; never the token or dots.
         Assert.Single(store.Writes);
         Assert.Equal(1, Count(output, "Paste or type the personal access token for contoso."));
-        Assert.Contains("Data folder:", string.Join(' ', LastLayout(output)));
+        Assert.Matches(@"arrive +│ a +│", string.Join('\n', LastLayout(output)));
         Assert.DoesNotContain("Unknown command", output);
     }
 
@@ -9101,7 +9106,7 @@ public sealed class AppTests : IDisposable
 
         Assert.Empty(store.Writes);
         Assert.Contains("devops: that is not a personal access token", LastHint(output));
-        Assert.DoesNotContain("more", output);
+        Assert.DoesNotContain(typed.Trim().Length == 0 ? DevOpsPat : typed, output);
     }
 
     // AC-1
@@ -9544,5 +9549,396 @@ public sealed class AppTests : IDisposable
         RunDevOps(new FakeTokenStore(stored: ("contoso", DevOpsPat)), client, "sync 2026-11-02 2026-11-04 send", "quit");
 
         Assert.Equal(1, client.Disposed);
+    }
+
+    // Manage the quicklist (job 102) ------------------------------------------------------------
+
+    private const string RenameFormatHint = "renameproject: the title must not contain invisible formatting or broken characters. Retype it without the hidden characters.";
+
+    private static readonly DateTime LongAgo = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+    // AC-1 (102)
+    [Theory]
+    [InlineData("renameproject 2 New title")]
+    [InlineData("rn 2 New title")]
+    [InlineData("/renameproject   2    New title   ")]
+    public void RenameProject_ReplacesTitle_KeepsWorkItemAndPosition(string command)
+    {
+        WriteProjects(3);
+
+        (int exitCode, string output) = RunCommands(command, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal([new Project(101, "Project 1"), new Project(102, "New title"), new Project(103, "Project 3")], ReadProjects().Projects);
+        string[] frame = LastLayout(output);
+        AssertLayout(frame);
+        Assert.Contains(frame[..^4], l => l.Contains("Renamed project 2: #102 New title", StringComparison.Ordinal));
+        Assert.Equal(string.Empty, frame[^4].Trim());
+    }
+
+    // AC-1 (102)
+    [Fact]
+    public void RenameProject_MarkupTitle_IsEscaped_AndNumberIsSteelBlue()
+    {
+        WriteProjects(2);
+
+        string output = RunAnsi("renameproject 2 [red]Fix[/]");
+
+        Assert.Contains("#102 [red]Fix[/]", output);
+        Assert.Matches(@"Renamed project \x1b\[38;5;75m2\x1b\[0m: #102 \[red\]Fix\[/\]", output);
+        Assert.Equal("[red]Fix[/]", ReadProjects().Projects[1].Title);
+    }
+
+    // AC-2 (102)
+    [Theory]
+    [InlineData("renameproject 2", "renameproject: the title is missing. Use renameproject <number> <title>.")]
+    [InlineData("rn 2   ", "renameproject: the title is missing. Use renameproject <number> <title>.")]
+    [InlineData("renameproject 2 a\\u200Bb", RenameFormatHint)]
+    [InlineData("renameproject 2 a\\u202Eb", RenameFormatHint)]
+    [InlineData("renameproject 2 a\\u3164b", RenameFormatHint)]
+    [InlineData("renameproject 2 a\\uD800b", RenameFormatHint)]
+    public void RenameProject_InvalidTitle_ShowsAddProjectHint_AndWritesNothing(string escaped, string expected)
+    {
+        WriteProjects(2);
+        File.SetLastWriteTimeUtc(ProjectsFile, LongAgo);
+        byte[] before = File.ReadAllBytes(ProjectsFile);
+
+        (int exitCode, string output) = TypeEscaped(escaped);
+
+        Assert.Equal(0, exitCode);
+        AssertOnHintRow(LastLayout(output), expected);
+        Assert.Equal(before, File.ReadAllBytes(ProjectsFile));
+        Assert.Equal(LongAgo, File.GetLastWriteTimeUtc(ProjectsFile));
+    }
+
+    // AC-2 (102)
+    [Fact]
+    public void RenameProject_TitleTooLong_ShowsHint_AndWritesNothing()
+    {
+        WriteProjects(2);
+        byte[] before = File.ReadAllBytes(ProjectsFile);
+
+        (_, string output) = RunWide(200, "renameproject 1 " + new string('x', 201), "quit");
+
+        AssertOnHintRow(LastLayout(output), "renameproject: the title is longer than 200 characters.");
+        Assert.Equal(before, File.ReadAllBytes(ProjectsFile));
+
+        RunCommands("renameproject 1 " + new string('x', 200), "quit");
+        Assert.Equal(200, ReadProjects().Projects[0].Title.Length);
+    }
+
+    // AC-2 (102): the line editor drops C0/C1 controls as they are typed, so a line separator is what reaches the handler.
+    [Fact]
+    public void RenameProject_TitleWithLineSeparator_ShowsHint_AndWritesNothing()
+    {
+        WriteProjects(2);
+        byte[] before = File.ReadAllBytes(ProjectsFile);
+
+        (_, string output) = Run(c =>
+        {
+            c.Profile.Width = 200;
+            c.Input.PushText("renameproject 1 a");
+            c.Input.PushKey(new ConsoleKeyInfo('\u2028', ConsoleKey.NoName, false, false, false));
+            c.Input.PushTextWithEnter("b");
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        AssertOnHintRow(LastLayout(output), "renameproject: the title must not contain control characters. Retype it without the hidden characters.");
+        Assert.Equal(before, File.ReadAllBytes(ProjectsFile));
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mrenameproject: the title is missing", RunAnsi("renameproject 1"));
+    }
+
+    // AC-3 (102)
+    [Theory]
+    [InlineData("removeproject 2")]
+    [InlineData("xp 2")]
+    [InlineData("removeproject  2 ")]
+    public void RemoveProject_DropsProject_AndLaterOnesMoveUp(string command)
+    {
+        WriteProjects(3);
+
+        (int exitCode, string output) = RunCommands(command, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal([new Project(101, "Project 1"), new Project(103, "Project 3")], ReadProjects().Projects);
+        string[] frame = LastLayout(output);
+        AssertLayout(frame);
+        Assert.Contains(frame[..^4], l => l.Contains("Removed project 2: #102 Project 2", StringComparison.Ordinal));
+    }
+
+    // AC-3 (102)
+    [Fact]
+    public void RemoveProject_MarkupTitle_IsEscaped()
+    {
+        File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":7,\"title\":\"[bold]x\"}]}");
+
+        string output = RunAnsi("removeproject 1");
+
+        Assert.Contains("#7 [bold]x", output);
+        Assert.Equal("{\"projects\":[]}", File.ReadAllText(ProjectsFile));
+    }
+
+    // AC-4 (102)
+    [Fact]
+    public void RemoveProject_ChangesNoDayFile_AndDayViewKeepsWorkItem()
+    {
+        WriteProjects(3);
+        RunCommands("checkpoint #2 Work", "quit");
+        string day = DayFile("2026-10-27");
+        File.SetLastWriteTimeUtc(day, LongAgo);
+        byte[] before = File.ReadAllBytes(day);
+        Assert.Contains("\"workItem\":102", ReadDay("2026-10-27"));
+
+        (int exitCode, string output) = RunCommands("removeproject 2", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(before, File.ReadAllBytes(day));
+        Assert.Equal(LongAgo, File.GetLastWriteTimeUtc(day));
+        Assert.Null(ReadProjects().NumberOf(102));
+        Assert.Matches(@"1 +CP +\d\d:\d\d +Work #102", LastFrame(output));
+        Assert.Equal(["2026-10-27.json", "projects.json"], Directory.EnumerateFiles(data.Path).Select(Path.GetFileName).Order(StringComparer.Ordinal));
+    }
+
+    // AC-5 (102)
+    [Theory]
+    [InlineData("moveproject 3 1")]
+    [InlineData("mp 3 1")]
+    [InlineData("moveproject   3   1  ")]
+    public void MoveProject_MovesToNewNumber_AndShiftsOthers(string command)
+    {
+        WriteProjects(4);
+
+        (int exitCode, string output) = RunCommands(command, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(
+            [new Project(103, "Project 3"), new Project(101, "Project 1"), new Project(102, "Project 2"), new Project(104, "Project 4")],
+            ReadProjects().Projects);
+        string[] frame = LastLayout(output);
+        AssertLayout(frame);
+        Assert.Contains(frame[..^4], l => l.Contains("Moved project #103 to number 1", StringComparison.Ordinal));
+    }
+
+    // AC-5 (102)
+    [Fact]
+    public void MoveProject_Down_ShiftsOthersUp()
+    {
+        WriteProjects(3);
+
+        (_, string output) = RunCommands("mp 1 3", "quit");
+
+        Assert.Equal([102, 103, 101], ReadProjects().Projects.Select(p => p.WorkItem));
+        Assert.Contains("Moved project #101 to number 3", output);
+    }
+
+    // AC-6 (102)
+    [Theory]
+    [InlineData("moveproject 2 2")]
+    [InlineData("mp 1 1")]
+    public void MoveProject_SameNumber_ShowsGreyNote_AndDoesNotWrite(string command)
+    {
+        WriteProjects(2);
+        File.SetLastWriteTimeUtc(ProjectsFile, LongAgo);
+        byte[] before = File.ReadAllBytes(ProjectsFile);
+        string number = command[^1..];
+        string workItem = "10" + number;
+
+        (int exitCode, string output) = RunWide(200, command, "quit");
+
+        Assert.Equal(0, exitCode);
+        AssertOnHintRow(LastLayout(output), $"Project #{workItem} is already number {number}. Nothing was moved.");
+        Assert.Equal(before, File.ReadAllBytes(ProjectsFile));
+        Assert.Equal(LongAgo, File.GetLastWriteTimeUtc(ProjectsFile));
+        Assert.Matches(@"\x1b\[(90|38;5;8)mProject #10\d is already number", RunAnsi(command));
+    }
+
+    // AC-7 (102)
+    [Theory]
+    [InlineData("renameproject", "renameproject: say the project number and the new title. Use renameproject <number> <title>.")]
+    [InlineData("rn", "renameproject: say the project number and the new title. Use renameproject <number> <title>.")]
+    [InlineData("renameproject abc New", "renameproject: abc is not a project number. Use renameproject <number> <title>.")]
+    [InlineData("renameproject 0 New", "renameproject: 0 is not a project number. Use renameproject <number> <title>.")]
+    [InlineData("renameproject -1 New", "renameproject: -1 is not a project number.")]
+    [InlineData("renameproject +1 New", "renameproject: +1 is not a project number.")]
+    [InlineData("renameproject 1.0 New", "renameproject: 1.0 is not a project number.")]
+    [InlineData("renameproject 2147483648 New", "renameproject: 2147483648 is not a project number.")]
+    [InlineData("renameproject [red]1[/] New", "renameproject: [red]1[/] is not a project number.")]
+    [InlineData("renameproject 3 New", "renameproject: there is no project 3; the quicklist has 2. Use renameproject <number> <title>.")]
+    [InlineData("removeproject", "removeproject: say which project to remove. Use removeproject <number>. It changes only the quicklist; booked times stay.")]
+    [InlineData("xp", "removeproject: say which project to remove. Use removeproject <number>.")]
+    [InlineData("removeproject x", "removeproject: x is not a project number. Use removeproject <number>.")]
+    [InlineData("removeproject 0", "removeproject: 0 is not a project number.")]
+    [InlineData("removeproject 1 2", "removeproject: 1 2 is not a project number.")]
+    [InlineData("removeproject +1", "removeproject: +1 is not a project number.")]
+    [InlineData("removeproject 3", "removeproject: there is no project 3; the quicklist has 2. Use removeproject <number>.")]
+    [InlineData("removeproject 99999999999", "removeproject: 99999999999 is not a project number.")]
+    [InlineData("moveproject", "moveproject: say the project number and its new number. Use moveproject <number> <new number>.")]
+    [InlineData("mp", "moveproject: say the project number and its new number. Use moveproject <number> <new number>.")]
+    [InlineData("moveproject 1", "moveproject: the new number is missing. Use moveproject <number> <new number>.")]
+    [InlineData("moveproject x 1", "moveproject: x is not a project number. Use moveproject <number> <new number>.")]
+    [InlineData("moveproject 1 x", "moveproject: x is not a project number. Use moveproject <number> <new number>.")]
+    [InlineData("moveproject 1 0", "moveproject: 0 is not a project number.")]
+    [InlineData("moveproject 1 -2", "moveproject: -2 is not a project number.")]
+    [InlineData("moveproject 1 2 3", "moveproject: say only the project number and its new number. Use moveproject <number> <new number>.")]
+    [InlineData("moveproject 3 1", "moveproject: there is no project 3; the quicklist has 2. Use moveproject <number> <new number>.")]
+    [InlineData("moveproject 1 3", "moveproject: there is no project 3; the quicklist has 2. Use moveproject <number> <new number>.")]
+    [InlineData("moveproject 3 3", "moveproject: there is no project 3; the quicklist has 2.")]
+    public void ManageProjects_InvalidArguments_ShowRedHint_AndLeaveFileUnchanged(string command, string expected)
+    {
+        WriteProjects(2);
+        File.SetLastWriteTimeUtc(ProjectsFile, LongAgo);
+        byte[] before = File.ReadAllBytes(ProjectsFile);
+
+        (int exitCode, string output) = RunWide(200, command, "quit");
+
+        Assert.Equal(0, exitCode);
+        AssertOnHintRow(LastLayout(output), expected);
+        Assert.Equal(before, File.ReadAllBytes(ProjectsFile));
+        Assert.Equal(LongAgo, File.GetLastWriteTimeUtc(ProjectsFile));
+        string name = expected[..expected.IndexOf(':')];
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)m" + name + ": ", RunAnsi(command));
+    }
+
+    // AC-7 (102)
+    [Theory]
+    [InlineData("renameproject 1 New", "renameproject: the quicklist is empty, so there is no project 1. Use renameproject <number> <title>.")]
+    [InlineData("removeproject 1", "removeproject: the quicklist is empty, so there is no project 1. Use removeproject <number>.")]
+    [InlineData("moveproject 1 1", "moveproject: the quicklist is empty, so there is no project 1. Use moveproject <number> <new number>.")]
+    public void ManageProjects_EmptyList_ShowsHint_AndCreatesOrChangesNothing(string command, string expected)
+    {
+        (_, string absent) = RunWide(200, command, "quit");
+
+        AssertOnHintRow(LastLayout(absent), expected);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
+
+        File.WriteAllText(ProjectsFile, "{\"projects\":[]}");
+        (_, string empty) = RunWide(200, command, "quit");
+
+        AssertOnHintRow(LastLayout(empty), expected);
+        Assert.Equal("{\"projects\":[]}", File.ReadAllText(ProjectsFile));
+    }
+
+    // AC-8 (102)
+    [Theory]
+    [InlineData("{not json")]
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"A\"},{\"workItem\":1,\"title\":\"B\"}]}")]
+    [InlineData("{\"projects\":[{\"workItem\":1,\"title\":\"abc\\u200bdef\"}]}")]
+    public void ManageProjects_UnreadableFile_ShowsNextStep_AndLeavesBytesUnchanged(string contents)
+    {
+        File.WriteAllText(ProjectsFile, contents);
+        byte[] before = File.ReadAllBytes(ProjectsFile);
+
+        (_, string renamed) = RunWide(200, "renameproject 1 New", "quit");
+        (_, string removed) = RunWide(200, "removeproject 1", "quit");
+        (_, string moved) = RunWide(200, "moveproject 1 1", "quit");
+
+        AssertOnHintRow(LastLayout(renamed), "renameproject: the project list cannot be read: projects.json is not valid. Nothing was renamed. " + App.UnreadableProjectsNextStep);
+        AssertOnHintRow(LastLayout(removed), "removeproject: the project list cannot be read: projects.json is not valid. Nothing was removed. " + App.UnreadableProjectsNextStep);
+        AssertOnHintRow(LastLayout(moved), "moveproject: the project list cannot be read: projects.json is not valid. Nothing was moved. " + App.UnreadableProjectsNextStep);
+        Assert.Equal(before, File.ReadAllBytes(ProjectsFile));
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mremoveproject: the project list cannot be read", RunAnsi("removeproject 1"));
+    }
+
+    // AC-8 (102)
+    [Fact]
+    public void ManageProjects_TooLargeFile_ShowsNextStep_AndLeavesBytesUnchanged()
+    {
+        File.WriteAllText(ProjectsFile, new string(' ', (int)ProjectStore.MaxFileBytes + 1) + "{\"projects\":[]}");
+        byte[] before = File.ReadAllBytes(ProjectsFile);
+
+        (_, string output) = RunWide(200, "renameproject 1 New", "removeproject 1", "moveproject 1 1", "quit");
+
+        Assert.Contains("renameproject: the project list cannot be read: projects.json is too large. Nothing was renamed. " + App.UnreadableProjectsNextStep, output);
+        Assert.Contains("removeproject: the project list cannot be read: projects.json is too large. Nothing was removed. " + App.UnreadableProjectsNextStep, output);
+        AssertOnHintRow(LastLayout(output), "moveproject: the project list cannot be read: projects.json is too large. Nothing was moved. " + App.UnreadableProjectsNextStep);
+        Assert.Equal(before, File.ReadAllBytes(ProjectsFile));
+    }
+
+    // AC-8 (102)
+    [Fact]
+    public void ManageProjects_FifoFile_ShowsNextStep_AndChangesNothing()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        SpecialFiles.MakeFifo(ProjectsFile);
+        string output = string.Empty;
+
+        Assert.Null(SpecialFiles.RunWithin(TimeSpan.FromSeconds(10), () =>
+            (_, output) = RunWide(200, "renameproject 1 New", "removeproject 1", "moveproject 1 2", "quit")));
+
+        Assert.Contains("renameproject: the project list cannot be read: projects.json is not a regular file. Nothing was renamed. " + App.UnreadableProjectsNextStep, output);
+        Assert.Contains("removeproject: the project list cannot be read: projects.json is not a regular file. Nothing was removed. " + App.UnreadableProjectsNextStep, output);
+        AssertOnHintRow(LastLayout(output), "moveproject: the project list cannot be read: projects.json is not a regular file. Nothing was moved. " + App.UnreadableProjectsNextStep);
+        Assert.DoesNotContain("   at ", output);
+        Assert.True(SpecialFiles.IsFifo(ProjectsFile));
+        Assert.Equal([ProjectsFile], Directory.EnumerateFileSystemEntries(data.Path));
+    }
+
+    // AC-9 (102)
+    [Fact]
+    public void ManageProjects_QuicklistPanelShowsNewTitlesAndOrder()
+    {
+        WriteProjects(3);
+
+        (_, string renamed) = RunCommands("rn 1 Alpha", "quit");
+        Assert.Equal("│ 1 #101 Alpha", PanelRows(LastLayout(renamed))[1].TrimEnd('│', ' '));
+
+        (_, string moved) = RunCommands("mp 3 1", "quit");
+        string[] panel = PanelRows(LastLayout(moved));
+        Assert.Equal("│ 1 #103 Project 3", panel[1].TrimEnd('│', ' '));
+        Assert.Equal("│ 2 #101 Alpha", panel[2].TrimEnd('│', ' '));
+        Assert.Equal("│ 3 #102 Project 2", panel[3].TrimEnd('│', ' '));
+
+        (_, string removed) = RunCommands("xp 2", "quit");
+        panel = PanelRows(LastLayout(removed));
+        Assert.Equal(4, panel.Length);
+        Assert.Equal("│ 1 #103 Project 3", panel[1].TrimEnd('│', ' '));
+        Assert.Equal("│ 2 #102 Project 2", panel[2].TrimEnd('│', ' '));
+    }
+
+    // AC-10 (102)
+    [Fact]
+    public void Help_ListsManageProjectCommands_WithAliases()
+    {
+        (_, string output) = Run(c =>
+        {
+            c.Profile.Width = 140;
+            c.Input.PushTextWithEnter("help");
+            PageDown(c, HelpPages);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Matches(@"renameproject +│ rn +│ Rename a project on the quicklist: <number> <title>", output);
+        Assert.Matches(@"removeproject +│ xp +│ Remove a project from the quicklist by its number", output);
+        Assert.Matches(@"moveproject +│ mp +│ Move a project to another number on the quicklist: <number> <new number>", output);
+        Assert.Matches(@"remove +│ r +│ Remove an entry from this day by its number", output);
+    }
+
+    // AC-10 (102)
+    [Theory]
+    [InlineData("remove 1")]
+    [InlineData("r 1")]
+    public void Remove_StillRemovesADayEntry_NotAProject(string command)
+    {
+        WriteProjects(2);
+        byte[] before = File.ReadAllBytes(ProjectsFile);
+        RunCommands("arrive 8:00", "checkpoint 9:00 #1 Work", "quit");
+        Assert.Equal(2, LoadDay().Entries.Count);
+
+        RunCommands(command, "quit");
+
+        Assert.Single(LoadDay().Entries);
+        Assert.Equal(before, File.ReadAllBytes(ProjectsFile));
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+        _ = new App(new TestConsole(), FixedTimeProvider.At20261027(), new DayStore(data.Path), registry);
+        Assert.True(registry.TryGet("r", out Command? remove));
+        Assert.Equal("remove", remove.Name);
+        Assert.True(registry.TryGet("remove", out Command? byName));
+        Assert.Equal("remove", byName.Name);
+        Assert.True(registry.TryGet("xp", out Command? removeProject));
+        Assert.Equal("removeproject", removeProject.Name);
     }
 }

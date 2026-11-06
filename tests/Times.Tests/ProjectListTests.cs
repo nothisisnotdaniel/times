@@ -405,4 +405,106 @@ public class ProjectListTests
 
         Assert.Equal("Love \u2764\uFE0F", list.Projects[0].Title);
     }
+
+    // Manage the quicklist (job 102) ------------------------------------------------------------
+
+    private static ProjectList Three() =>
+        new ProjectList([new Project(11, "A"), new Project(22, "B"), new Project(33, "C")]);
+
+    // AC-11 (102)
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void Rename_ReplacesTitle_KeepsWorkItemAndPosition_AndLeavesOriginal(int number)
+    {
+        ProjectList original = Three();
+
+        ProjectList renamed = original.Rename(number, "New title");
+
+        Assert.Equal(Three(), original);
+        Assert.Equal(3, renamed.Projects.Count);
+        Assert.Equal(new Project(original.Projects[number - 1].WorkItem, "New title"), renamed.Projects[number - 1]);
+        for (int i = 0; i < 3; i++)
+        {
+            if (i != number - 1)
+            {
+                Assert.Equal(original.Projects[i], renamed.Projects[i]);
+            }
+        }
+    }
+
+    // AC-11 (102)
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("a\u200bb")]
+    [InlineData("a\u0007b")]
+    public void Rename_InvalidTitle_Throws(string title)
+    {
+        Assert.Throws<ArgumentException>(() => Three().Rename(1, title));
+    }
+
+    // AC-11 (102)
+    [Theory]
+    [InlineData(1, new[] { 22, 33 })]
+    [InlineData(2, new[] { 11, 33 })]
+    [InlineData(3, new[] { 11, 22 })]
+    public void Remove_DropsProject_LaterOnesMoveUp_AndLeavesOriginal(int number, int[] expected)
+    {
+        ProjectList original = Three();
+
+        ProjectList removed = original.Remove(number);
+
+        Assert.Equal(Three(), original);
+        Assert.Equal(expected, removed.Projects.Select(p => p.WorkItem));
+        Assert.True(new ProjectList([new Project(1, "X")]).Remove(1).IsEmpty);
+    }
+
+    // AC-11 (102)
+    [Theory]
+    [InlineData(3, 1, new[] { 33, 11, 22 })]
+    [InlineData(1, 3, new[] { 22, 33, 11 })]
+    [InlineData(1, 2, new[] { 22, 11, 33 })]
+    [InlineData(2, 1, new[] { 22, 11, 33 })]
+    [InlineData(2, 3, new[] { 11, 33, 22 })]
+    [InlineData(2, 2, new[] { 11, 22, 33 })]
+    public void Move_PutsProjectAtNewNumber_ShiftsOthers_AndLeavesOriginal(int from, int to, int[] expected)
+    {
+        ProjectList original = Three();
+
+        ProjectList moved = original.Move(from, to);
+
+        Assert.Equal(Three(), original);
+        Assert.Equal(expected, moved.Projects.Select(p => p.WorkItem));
+        Assert.Equal(["A", "B", "C"], moved.Projects.OrderBy(p => p.WorkItem).Select(p => p.Title));
+    }
+
+    // AC-11 (102)
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(4)]
+    [InlineData(int.MaxValue)]
+    [InlineData(int.MinValue)]
+    public void OutOfRangeNumbers_Throw(int number)
+    {
+        ProjectList list = Three();
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => list.Rename(number, "X"));
+        Assert.Throws<ArgumentOutOfRangeException>(() => list.Remove(number));
+        Assert.Throws<ArgumentOutOfRangeException>(() => list.Move(number, 1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => list.Move(1, number));
+        Assert.Equal(Three(), list);
+    }
+
+    // AC-11 (102)
+    [Fact]
+    public void EmptyList_AnyNumber_Throws()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => ProjectList.Empty.Rename(1, "X"));
+        Assert.Throws<ArgumentOutOfRangeException>(() => ProjectList.Empty.Remove(1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => ProjectList.Empty.Move(1, 1));
+        Assert.True(ProjectList.Empty.IsEmpty);
+    }
 }
