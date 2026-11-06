@@ -150,6 +150,11 @@ Every factory agent reads this file before working on Times. Keep it short and a
   appended in that order to the `Breaks` line as yellow `! …`. `WeekWarnings` checks Monday to Sunday of the shown day (each
   against its own previous day; unreadable files skipped silently) and `DayView` ends with a yellow
   `! Working-time warnings this week: Mon, Wed`. `App.RenderDay` reads the settings per redraw (missing, broken or unregistered: on).
+- **Vacation:** `vacation` (`va`, `NoArguments`) runs `VacationAllowance.Calculate(store, year, today)` (read-only) for today's year from
+  the `TimeProvider` (never the shown day): each listed day file in the year with `absence` `vacation` counts as one day, **taken** up to
+  today, **planned** after; unreadable files are skipped and counted. `App.VacationView`: table `Allowance`/`Taken`/`Planned`/`Left`
+  (caption `Vacation <year>`), yellow `! N day(s) over your allowance` when `Left` < 0, yellow `! N file(s) skipped`. The allowance is the
+  `Number` setting `vacation-days` (0..366, default 30; missing, broken or out of range: 30; never written).
 - **Report:** `report <from> <to>` (`rp`, dates `yyyy-MM-dd`, inclusive) sums `CheckpointSummary` per day over the
   day files `DayStore.Days()` lists in the range (`ProjectReport.Calculate`, read-only), one row per work item
   (ascending, title from `projects.json` or the names) then per name (ordinal), with `H:mm`, decimal hours

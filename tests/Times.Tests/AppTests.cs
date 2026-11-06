@@ -848,11 +848,11 @@ public sealed class AppTests : IDisposable
         Assert.Contains("\u001b[21;1H", output);
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal([14, 15, 16, 17, 18, 19, 20, 21], popup.Select(w => w.Row));
-        // Thirty commands: the first seven by name, then a row counting the other twenty-three.
+        // Thirty-one commands: the first seven by name, then a row counting the other twenty-four.
         Assert.Equal(
             ["absence", "addproject", "arrive", "backup", "booked", "break", "breakend", "…"],
             popup.Select(w => w.Text.Split(' ')[0]));
-        Assert.StartsWith("… 23 more", popup[^1].Text);
+        Assert.StartsWith("… 24 more", popup[^1].Text);
         Assert.Contains("Book the end of a break", popup[6].Text);
         Assert.Equal(80, popup[0].Text.Length);
     }
@@ -925,9 +925,9 @@ public sealed class AppTests : IDisposable
         List<string> hintRow = TypingWrites(output, 1).Where(w => w.Row == 21).Select(w => w.Text).ToList();
 
         // popup, restored (Backspace), popup, restored (Esc), popup (quit typing), ...
-        Assert.StartsWith("… 23 more", hintRow[0]);
+        Assert.StartsWith("… 24 more", hintRow[0]);
         Assert.Contains("Unknown command nope", hintRow[1]);
-        Assert.StartsWith("… 23 more", hintRow[2]);
+        Assert.StartsWith("… 24 more", hintRow[2]);
         Assert.Contains("Unknown command nope", hintRow[3]);
         Assert.Contains("Unknown command nope", hintRow[^1]);
         Assert.Contains("\u001b[38;5;9mUnknown command", output[output.LastIndexOf("\u001b[21;1H", StringComparison.Ordinal)..]);
@@ -961,7 +961,7 @@ public sealed class AppTests : IDisposable
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
         // 39 commands: 7 shown, the eighth row counts the other 32.
-        Assert.StartsWith("… 35 more", popup[^1].Text);
+        Assert.StartsWith("… 36 more", popup[^1].Text);
         // Nothing is drawn on row 1 while typing (the final clear on quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
@@ -4819,6 +4819,7 @@ public sealed class AppTests : IDisposable
             ["today"] = "t",
             ["unbooked"] = "ub",
             ["update"] = "up",
+            ["vacation"] = "va",
         };
 
         Assert.Equal(expected, registry.Commands.ToDictionary(c => c.Name, c => c.Alias));
@@ -10358,8 +10359,9 @@ public sealed class AppTests : IDisposable
             TestConsole console = new TestConsole().Interactive();
             console.Profile.Width = 120;
             console.Input.PushTextWithEnter("settings");
-            // Past daily-target, alert-target and alert-limit (job 113), the three checks (job 114) and the two holiday settings (job 115).
-            for (int down = 0; down < 8; down++)
+            // Past daily-target, alert-target and alert-limit (job 113), the three checks (job 114), the two holiday settings (job 115)
+            // and vacation-days (job 116).
+            for (int down = 0; down < 9; down++)
             {
                 console.Input.PushKey(ConsoleKey.DownArrow);
             }
@@ -13031,5 +13033,321 @@ public sealed class AppTests : IDisposable
         Assert.Equal("balance +0:30", without);
         Assert.Equal(without, with);
         Assert.Equal(without, onHoliday);
+    }
+
+    // Job 116 ------------------------------------------------------------------------------
+
+    private static FixedTimeProvider VacationClock(int year, int month, int day) =>
+        new FixedTimeProvider(new DateTimeOffset(year, month, day, 12, 0, 0, TimeSpan.Zero), TimeZoneInfo.Utc);
+
+    private void WriteAbsenceDay(string date, string kind) => File.WriteAllText(DayFile(date), $"{{\"absence\":\"{kind}\"}}");
+
+    /// <summary>With the clock on 2026-10-27: taken 2026-01-05 and 2026-10-27, planned 2026-12-21, plus days that never count.</summary>
+    private void WriteVacationDays()
+    {
+        WriteAbsenceDay("2025-12-30", "vacation");
+        WriteAbsenceDay("2026-01-05", "vacation");
+        WriteAbsenceDay("2026-10-27", "vacation");
+        WriteAbsenceDay("2026-12-21", "vacation");
+        WriteAbsenceDay("2026-03-10", "sick");
+        WriteAbsenceDay("2026-10-03", "publicHoliday");
+        WriteDayFile("2026-05-04", "08:00", "16:00");
+        WriteAbsenceDay("2027-01-04", "vacation");
+    }
+
+    private static int RowIndex(string[] frame, string label, string value) =>
+        Array.FindIndex(frame, l => Regex.IsMatch(l, $@"│ {label} +│ +{Regex.Escape(value)} │"));
+
+    // AC-1
+    [Fact]
+    public void Settings_ListsVacationDays_AndChangingItSavesSettingsJson()
+    {
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 120;
+        console.Profile.Height = 40;
+        console.Input.PushTextWithEnter("settings");
+        // Past daily-target, the two alerts, the three checks and the two holiday settings.
+        for (int down = 0; down < 8; down++)
+        {
+            console.Input.PushKey(ConsoleKey.DownArrow);
+        }
+
+        console.Input.PushKey(ConsoleKey.Enter);
+        console.Input.PushTextWithEnter("25");
+        console.Input.PushKey(ConsoleKey.Escape);
+        console.Input.PushTextWithEnter("vacation");
+        console.Input.PushTextWithEnter("quit");
+
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+
+        Assert.Matches(@"vacation-days +30 +Vacation days per year", console.Output);
+        Assert.Matches(@"vacation-days +25 +Vacation days per year", console.Output);
+        Assert.Equal("{\"settings\":{\"vacation-days\":25}}", File.ReadAllText(SettingsPath));
+        string[] frame = LastLayout(console.Output);
+        Assert.True(RowIndex(frame, "Allowance", "25") > 0, string.Join("\n", frame));
+    }
+
+    // AC-1: the panel refuses a value above 366 and keeps the file unchanged.
+    [Fact]
+    public void Settings_VacationDays_RefusesAValueAbove366()
+    {
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 120;
+        console.Profile.Height = 40;
+        console.Input.PushTextWithEnter("settings");
+        for (int down = 0; down < 8; down++)
+        {
+            console.Input.PushKey(ConsoleKey.DownArrow);
+        }
+
+        console.Input.PushKey(ConsoleKey.Enter);
+        console.Input.PushTextWithEnter("367");
+        console.Input.PushKey(ConsoleKey.Escape);
+        console.Input.PushKey(ConsoleKey.Escape);
+        console.Input.PushTextWithEnter("quit");
+
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+
+        Assert.Contains("vacation-days takes a whole number from 0 to 366.", console.Output);
+        Assert.False(File.Exists(SettingsPath));
+    }
+
+    // AC-4
+    [Fact]
+    public void Vacation_ShowsAllowanceTakenPlannedLeft_CaptionAndHidesTheQuicklist()
+    {
+        WriteVacationDays();
+        File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":1234,\"title\":\"Times\"}]}");
+        File.WriteAllText(SettingsPath, "{\"settings\":{\"vacation-days\":25}}");
+
+        (int exitCode, string[] frame) = RunReport("vacation", "quit");
+
+        Assert.Equal(0, exitCode);
+        int allowance = RowIndex(frame, "Allowance", "25");
+        int taken = RowIndex(frame, "Taken", "2");
+        int planned = RowIndex(frame, "Planned", "1");
+        int left = RowIndex(frame, "Left", "22");
+        Assert.True(allowance > 0 && taken > allowance && planned > taken && left > planned, string.Join("\n", frame));
+        Assert.Contains(frame, l => l.Trim() == "Vacation 2026");
+        Assert.DoesNotContain(frame, l => l.Contains("Projects", StringComparison.Ordinal));
+        Assert.DoesNotContain(frame, l => l.Contains("skipped", StringComparison.Ordinal));
+        Assert.DoesNotContain(frame, l => l.Contains("over your allowance", StringComparison.Ordinal));
+    }
+
+    // AC-4
+    [Theory]
+    [InlineData("va")]
+    [InlineData("VA")]
+    [InlineData("/vacation")]
+    [InlineData("/va")]
+    public void Vacation_AliasAndSlash_DoTheSameAsVacation(string typed)
+    {
+        WriteVacationDays();
+
+        (_, string[] full) = RunReport("vacation", "quit");
+        (_, string[] other) = RunReport(typed, "quit");
+
+        Assert.Equal(full, other);
+        Assert.Contains(other, l => l.Trim() == "Vacation 2026");
+    }
+
+    // AC-4
+    [Fact]
+    public void Vacation_ColoursAndGreyFrame()
+    {
+        WriteVacationDays();
+
+        string output = RunAnsiCommands("vacation");
+
+        Assert.Matches(@"\x1b\[(90|38;5;8)m╭─", output);
+        Assert.Matches(@"\x1b\[38;5;75m30\x1b\[0m", output);
+        Assert.Matches(@"\x1b\[1mLeft\x1b\[0m", output);
+        Assert.Matches(@"\x1b\[1;38;5;75m27\x1b\[0m", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)mVacation 2026", output);
+    }
+
+    // AC-4
+    [Theory]
+    [InlineData(1, "! 1 file skipped")]
+    [InlineData(2, "! 2 files skipped")]
+    public void Vacation_SkippedFiles_ShowYellowLineBelowTheTable(int broken, string line)
+    {
+        WriteVacationDays();
+        File.WriteAllText(DayFile("2026-02-02"), "{not json");
+        if (broken > 1)
+        {
+            Directory.CreateDirectory(DayFile("2026-02-03"));
+        }
+
+        File.WriteAllText(DayFile("2025-02-02"), "{not json");
+
+        (_, string[] frame) = RunReport("vacation", "quit");
+
+        int left = RowIndex(frame, "Left", "27");
+        int skipped = Array.FindIndex(frame, l => l.Contains(line, StringComparison.Ordinal));
+        Assert.True(left > 0 && skipped > left, string.Join("\n", frame));
+
+        string ansi = RunAnsiCommands("vacation");
+        Assert.Matches($@"\x1b\[(33|93|38;5;11)m{Regex.Escape(line)}", ansi);
+    }
+
+    // AC-5
+    [Theory]
+    [InlineData(1, "-2", "! 2 days over your allowance")]
+    [InlineData(2, "-1", "! 1 day over your allowance")]
+    public void Vacation_OverTheAllowance_ShowsNegativeLeftAndYellowLine(int days, string left, string line)
+    {
+        WriteVacationDays();
+        File.WriteAllText(SettingsPath, $"{{\"settings\":{{\"vacation-days\":{days}}}}}");
+
+        (int exitCode, string[] frame) = RunReport("vacation", "quit");
+
+        Assert.Equal(0, exitCode);
+        int row = RowIndex(frame, "Left", left);
+        int over = Array.FindIndex(frame, l => l.Contains(line, StringComparison.Ordinal));
+        Assert.True(row > 0 && over > row, string.Join("\n", frame));
+
+        string ansi = RunAnsiCommands("vacation");
+        Assert.Matches($@"\x1b\[(33|93|38;5;11)m{Regex.Escape(line)}", ansi);
+    }
+
+    // AC-5
+    [Theory]
+    [InlineData(3, "0")]
+    [InlineData(0, "0")]
+    public void Vacation_LeftZeroOrMore_ShowsNoOverLine(int days, string left)
+    {
+        if (days == 0)
+        {
+            WriteAbsenceDay("2026-03-10", "sick");
+        }
+        else
+        {
+            WriteVacationDays();
+        }
+
+        File.WriteAllText(SettingsPath, $"{{\"settings\":{{\"vacation-days\":{days}}}}}");
+
+        (_, string[] frame) = RunReport("vacation", "quit");
+
+        Assert.True(RowIndex(frame, "Left", left) > 0, string.Join("\n", frame));
+        Assert.DoesNotContain(frame, l => l.Contains("over your allowance", StringComparison.Ordinal));
+    }
+
+    // AC-6
+    [Theory]
+    [InlineData(null)]
+    [InlineData("{not json")]
+    [InlineData("{\"settings\":{\"vacation-days\":367}}")]
+    [InlineData("{\"settings\":{\"vacation-days\":-1}}")]
+    [InlineData("{\"settings\":{\"vacation-days\":\"25\"}}")]
+    public void Vacation_MissingBrokenOrOutOfRangeSetting_Uses30_AndNeverWritesSettings(string? content)
+    {
+        WriteVacationDays();
+        if (content is not null)
+        {
+            File.WriteAllText(SettingsPath, content);
+        }
+
+        (_, string[] frame) = RunReport("vacation", "va", "quit");
+
+        Assert.True(RowIndex(frame, "Allowance", "30") > 0, string.Join("\n", frame));
+        Assert.True(RowIndex(frame, "Left", "27") > 0, string.Join("\n", frame));
+        if (content is null)
+        {
+            Assert.False(File.Exists(SettingsPath));
+        }
+        else
+        {
+            Assert.Equal(content, File.ReadAllText(SettingsPath));
+        }
+    }
+
+    // AC-4: the command never writes a day file.
+    [Fact]
+    public void Vacation_NeverWritesADayFile()
+    {
+        WriteVacationDays();
+        string[] before = Directory.GetFileSystemEntries(data.Path).Order(StringComparer.Ordinal).ToArray();
+        string bytes = string.Join("|", before.Where(File.Exists).Select(File.ReadAllText));
+
+        RunReport("vacation", "quit");
+
+        string[] after = Directory.GetFileSystemEntries(data.Path).Order(StringComparer.Ordinal).ToArray();
+        Assert.Equal(before, after);
+        Assert.Equal(bytes, string.Join("|", after.Where(File.Exists).Select(File.ReadAllText)));
+    }
+
+    // AC-7
+    [Fact]
+    public void Vacation_UsesTodaysYear_EvenAfterPrevMovedTheShownDayIntoLastYear()
+    {
+        WriteAbsenceDay("2025-12-31", "vacation");
+        WriteAbsenceDay("2025-12-30", "vacation");
+        WriteAbsenceDay("2026-01-01", "vacation");
+        WriteAbsenceDay("2026-01-02", "vacation");
+
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Profile.Height = 40;
+            c.Profile.Width = 100;
+            c.Input.PushTextWithEnter("prev");
+            c.Input.PushTextWithEnter("vacation");
+            c.Input.PushTextWithEnter("quit");
+        }, time: VacationClock(2026, 1, 1));
+
+        Assert.Equal(0, exitCode);
+        string[] frame = LastLayout(output);
+        Assert.Contains(frame, l => l.Trim() == "Vacation 2026");
+        Assert.DoesNotContain(frame, l => l.Contains("Vacation 2025", StringComparison.Ordinal));
+        Assert.True(RowIndex(frame, "Taken", "1") > 0, string.Join("\n", frame));
+        Assert.True(RowIndex(frame, "Planned", "1") > 0, string.Join("\n", frame));
+        Assert.True(RowIndex(frame, "Left", "28") > 0, string.Join("\n", frame));
+    }
+
+    // AC-8
+    [Theory]
+    [InlineData("vacation 2025")]
+    [InlineData("va x")]
+    [InlineData("vacation [red]")]
+    public void Vacation_WithAnArgument_ShowsRedHint_AndLoopKeepsRunning(string command)
+    {
+        WriteVacationDays();
+
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Profile.Width = 200;
+            c.Input.PushTextWithEnter(command);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Equal(0, exitCode);
+        string[] frame = LastLayout(output);
+        AssertOnHintRow(frame, "vacation takes no arguments.");
+        Assert.DoesNotContain(frame, l => l.Contains("Allowance", StringComparison.Ordinal));
+        Assert.DoesNotContain("   at ", output);
+        Assert.False(File.Exists(SettingsPath));
+
+        (_, string[] next) = RunReport(command, "vacation", "quit");
+        Assert.True(RowIndex(next, "Allowance", "30") > 0, string.Join("\n", next));
+
+        string ansi = RunAnsiCommands(command);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)m.*takes no arguments\.", ansi);
+    }
+
+    // AC-9
+    [Fact]
+    public void Help_ListsVacation_WithAliasVa()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 120;
+        console.Input.PushTextWithEnter("help");
+        PageDown(console, HelpPages);
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+        string plain = Regex.Replace(console.Output, @"\x1b\[[0-9;?]*[A-Za-z]", string.Empty);
+
+        Assert.Matches(@"│ vacation +│ va +│ Show vacation days taken and left this year +│", plain);
     }
 }

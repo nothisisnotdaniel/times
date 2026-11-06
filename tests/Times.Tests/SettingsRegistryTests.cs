@@ -10,7 +10,7 @@ public sealed class SettingsRegistryTests
         Setting setting = all[0];
 
         Assert.Equal(
-            ["daily-target", "alert-target", "alert-limit", "check-breaks", "check-max-work", "check-rest", "holiday-country", "holiday-state", "report-rounding", "update-mode", "update-channel"],
+            ["daily-target", "alert-target", "alert-limit", "check-breaks", "check-max-work", "check-rest", "holiday-country", "holiday-state", "vacation-days", "report-rounding", "update-mode", "update-channel"],
             all.Select(s => s.Name));
         Assert.Equal("daily-target", setting.Name);
         Assert.Equal("Daily work target in minutes (480 = 8:00)", setting.Description);
@@ -25,7 +25,7 @@ public sealed class SettingsRegistryTests
     public void CreateDefault_RegistersReportRoundingAfterTheDailyTargetAndTheAlerts()
     {
         IReadOnlyList<Setting> all = SettingsRegistry.CreateDefault().Settings;
-        Setting setting = all[8];
+        Setting setting = all[9];
 
         Assert.Equal("daily-target", all[0].Name);
         Assert.Equal("report-rounding", setting.Name);
@@ -52,6 +52,27 @@ public sealed class SettingsRegistryTests
             Assert.Equal(SettingKind.OnOff, setting.Kind);
             Assert.Equal(true, setting.Default);
         }
+    }
+
+    // AC-1 (116): vacation-days is a Number 0..366, default 30, right after holiday-state.
+    [Fact]
+    public void CreateDefault_RegistersVacationDays_RightAfterHolidayState()
+    {
+        IReadOnlyList<Setting> all = SettingsRegistry.CreateDefault().Settings;
+        int state = all.ToList().FindIndex(s => s.Name == SettingsRegistry.HolidayStateName);
+        Setting setting = all[state + 1];
+
+        Assert.Equal("vacation-days", setting.Name);
+        Assert.Equal(SettingsRegistry.VacationDaysName, setting.Name);
+        Assert.Equal("Vacation days per year", setting.Description);
+        Assert.Equal(SettingKind.Number, setting.Kind);
+        Assert.Equal(30, setting.Default);
+        Assert.Equal(0, setting.Min);
+        Assert.Equal(366, setting.Max);
+        Assert.True(setting.Accepts(0));
+        Assert.True(setting.Accepts(366));
+        Assert.False(setting.Accepts(367));
+        Assert.False(setting.Accepts(-1));
     }
 
     // AC-1 (104)
