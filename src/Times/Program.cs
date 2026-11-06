@@ -20,10 +20,20 @@ if (OperatingSystem.IsWindows())
     }
 }
 
-// Ctrl+C and any other way out also turn mouse reporting off, so the shell is left as it was.
+// One Times per data folder; App takes the lock in Run. Ctrl+C and any other way out also turn mouse
+// reporting off, so the shell is left as it was, and release the lock (Dispose is idempotent).
+InstanceLock instanceLock = new InstanceLock(dataFolder.Path);
 MouseReporting mouse = new MouseReporting(console, inputMode);
-Console.CancelKeyPress += (_, _) => mouse.Disable();
-AppDomain.CurrentDomain.ProcessExit += (_, _) => mouse.Disable();
+Console.CancelKeyPress += (_, _) =>
+{
+    mouse.Disable();
+    instanceLock.Dispose();
+};
+AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+{
+    mouse.Disable();
+    instanceLock.Dispose();
+};
 
 // Updates come from the GitHub releases and are checked against the embedded key; the helper runs after quit.
 UpdateService updates = new UpdateService(
@@ -37,5 +47,5 @@ UpdateService updates = new UpdateService(
 App app = new App(console, TimeProvider.System, new DayStore(dataFolder.Path),
     folderFromEnvironment: dataFolder.FromEnvironment, mouse: mouse, updates: updates,
     tokenStore: TokenStore.ForCurrentPlatform(), devOpsClient: credential => new AzureDevOpsClient(credential),
-    events: new BackgroundEventQueue(), liveClock: true);
+    events: new BackgroundEventQueue(), liveClock: true, instanceLock: instanceLock);
 return app.Run(args);

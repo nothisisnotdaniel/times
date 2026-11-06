@@ -542,4 +542,169 @@ public class DayStoreTests
     {
         Assert.Equal(expected, DayStore.TryParseName(name, out _));
     }
+
+    private const string OneArrival = "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}";
+    private const string OtherArrival = "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"09:30\"}]}";
+
+    private static DayRecord Arrival(int hour) => DayRecord.Empty.Add(new DayEntry(EntryKind.Arrival, new TimeOnly(hour, 0)));
+
+    private static string[] TempFiles(string folder) =>
+        Directory.GetFiles(folder).Where(f => f.EndsWith(".tmp", StringComparison.Ordinal)).ToArray();
+
+    // AC-7 (117)
+    [Fact]
+    public void LoadWithStamp_MissingFile_GivesTheMissingStamp_AndCreatesNothing()
+    {
+        using TempFolder temp = new TempFolder(create: false);
+
+        (DayRecord record, DayStamp stamp) = new DayStore(temp.Path).LoadWithStamp(Day);
+
+        Assert.Empty(record.Entries);
+        Assert.Same(DayStamp.Missing, stamp);
+        Assert.True(stamp.IsMissing);
+        Assert.False(Directory.Exists(temp.Path));
+    }
+
+    // AC-7 (117)
+    [Fact]
+    public void LoadWithStamp_File_GivesTheSha256OfItsBytes()
+    {
+        using TempFolder temp = new TempFolder();
+        DayStore store = new DayStore(temp.Path);
+        File.WriteAllText(store.PathFor(Day), OneArrival);
+
+        (DayRecord record, DayStamp stamp) = store.LoadWithStamp(Day);
+
+        Assert.Single(record.Entries);
+        Assert.Equal(Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(store.PathFor(Day)))), stamp.Hash);
+        Assert.Equal(stamp, store.LoadWithStamp(Day).Stamp);
+        Assert.NotEqual(DayStamp.Missing, stamp);
+    }
+
+    // AC-7 (117)
+    [Fact]
+    public void SaveWithStamp_UnchangedFile_Writes()
+    {
+        using TempFolder temp = new TempFolder();
+        DayStore store = new DayStore(temp.Path);
+        File.WriteAllText(store.PathFor(Day), OneArrival);
+        (_, DayStamp stamp) = store.LoadWithStamp(Day);
+
+        store.Save(Day, Arrival(10), stamp);
+
+        Assert.Equal(new TimeOnly(10, 0), Assert.Single(store.Load(Day).Entries).Time);
+        Assert.Empty(TempFiles(temp.Path));
+    }
+
+    // AC-7 (117): the missing stamp writes when there is still no file, even into a missing folder.
+    [Fact]
+    public void SaveWithStamp_StillMissing_Writes()
+    {
+        using TempFolder temp = new TempFolder(create: false);
+        DayStore store = new DayStore(temp.Path);
+        (_, DayStamp stamp) = store.LoadWithStamp(Day);
+
+        store.Save(Day, Arrival(10), stamp);
+
+        Assert.Single(store.Load(Day).Entries);
+        Assert.Empty(TempFiles(temp.Path));
+    }
+
+    // AC-7 (117)
+    [Fact]
+    public void SaveWithStamp_FileChangedAfterLoad_Throws_AndKeepsItsBytes()
+    {
+        using TempFolder temp = new TempFolder();
+        DayStore store = new DayStore(temp.Path);
+        File.WriteAllText(store.PathFor(Day), OneArrival);
+        (_, DayStamp stamp) = store.LoadWithStamp(Day);
+        File.WriteAllText(store.PathFor(Day), OtherArrival);
+        byte[] changed = File.ReadAllBytes(store.PathFor(Day));
+
+        DayFileChangedException ex = Assert.Throws<DayFileChangedException>(() => store.Save(Day, Arrival(10), stamp));
+
+        Assert.Equal(Day, ex.Day);
+        Assert.IsAssignableFrom<IOException>(ex);
+        Assert.Equal(changed, File.ReadAllBytes(store.PathFor(Day)));
+        Assert.Empty(TempFiles(temp.Path));
+    }
+
+    // AC-7 (117)
+    [Fact]
+    public void SaveWithStamp_FileCreatedAfterLoad_Throws_AndKeepsItsBytes()
+    {
+        using TempFolder temp = new TempFolder();
+        DayStore store = new DayStore(temp.Path);
+        (_, DayStamp stamp) = store.LoadWithStamp(Day);
+        File.WriteAllText(store.PathFor(Day), OtherArrival);
+
+        Assert.Throws<DayFileChangedException>(() => store.Save(Day, Arrival(10), stamp));
+
+        Assert.Equal(OtherArrival, File.ReadAllText(store.PathFor(Day)));
+        Assert.Empty(TempFiles(temp.Path));
+    }
+
+    // AC-7 (117)
+    [Fact]
+    public void SaveWithStamp_FileDeletedAfterLoad_Throws_AndCreatesNoFile()
+    {
+        using TempFolder temp = new TempFolder();
+        DayStore store = new DayStore(temp.Path);
+        File.WriteAllText(store.PathFor(Day), OneArrival);
+        (_, DayStamp stamp) = store.LoadWithStamp(Day);
+        File.Delete(store.PathFor(Day));
+
+        Assert.Throws<DayFileChangedException>(() => store.Save(Day, Arrival(10), stamp));
+
+        Assert.Empty(Directory.GetFileSystemEntries(temp.Path));
+    }
+
+    // AC-7 (117): a file that turned unreadable (here a directory) matches no stamp.
+    [Fact]
+    public void SaveWithStamp_TargetNoLongerReadable_Throws()
+    {
+        using TempFolder temp = new TempFolder();
+        DayStore store = new DayStore(temp.Path);
+        (_, DayStamp stamp) = store.LoadWithStamp(Day);
+        Directory.CreateDirectory(store.PathFor(Day));
+
+        Assert.Throws<DayFileChangedException>(() => store.Save(Day, Arrival(10), stamp));
+
+        Assert.True(Directory.Exists(store.PathFor(Day)));
+        Assert.Empty(TempFiles(temp.Path));
+    }
+
+    // AC-7 (117): the check runs after the temp file is written, right before the move.
+    [Fact]
+    public void SaveWithStamp_ChangeJustBeforeTheMove_Throws_AndKeepsItsBytes()
+    {
+        using TempFolder temp = new TempFolder();
+        DayStore store = new DayStore(temp.Path);
+        File.WriteAllText(store.PathFor(Day), OneArrival);
+        (_, DayStamp stamp) = store.LoadWithStamp(Day);
+        store.BeforeStampCheck = day =>
+        {
+            Assert.Single(TempFiles(temp.Path));
+            File.WriteAllText(store.PathFor(day), OtherArrival);
+        };
+
+        Assert.Throws<DayFileChangedException>(() => store.Save(Day, Arrival(10), stamp));
+
+        Assert.Equal(OtherArrival, File.ReadAllText(store.PathFor(Day)));
+        Assert.Empty(TempFiles(temp.Path));
+    }
+
+    // AC-7 (117): the plain Save never checks.
+    [Fact]
+    public void Save_WithoutStamp_StillWritesOverAChange()
+    {
+        using TempFolder temp = new TempFolder();
+        DayStore store = new DayStore(temp.Path);
+        File.WriteAllText(store.PathFor(Day), OtherArrival);
+        store.BeforeStampCheck = _ => throw new InvalidOperationException("not called");
+
+        store.Save(Day, Arrival(10));
+
+        Assert.Equal(new TimeOnly(10, 0), Assert.Single(store.Load(Day).Entries).Time);
+    }
 }

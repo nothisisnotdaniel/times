@@ -35,13 +35,42 @@ public sealed class AppTests : IDisposable
 
     private readonly TempFolder data = new();
 
-    public void Dispose() => data.Dispose();
+    // Where tests that make the data folder unwritable (or point it at a folder that must not be created)
+    // keep their instance lock, so start-up still succeeds and the test reaches what it is about (117).
+    private readonly TempFolder lockFolder = new();
+
+    // Set by UseSideLock: the lock the helpers pass to App instead of App's own one on the data folder.
+    private InstanceLock? sideLock;
+
+    public void Dispose()
+    {
+        sideLock?.Dispose();
+        data.Dispose();
+        lockFolder.Dispose();
+    }
+
+    /// <summary>Makes the helpers (and <see cref="SideLock"/> users) keep the instance lock outside the data folder.</summary>
+    private void UseSideLock() => sideLock = SideLock();
+
+    /// <summary>A fresh instance lock on a folder of its own, not the data folder.</summary>
+    private InstanceLock SideLock() => new InstanceLock(lockFolder.Path);
+
+    /// <summary>
+    /// Start-up creates a missing data folder for <c>times.lock</c> (117) and removes the lock on exit, so
+    /// after a run that saved nothing the folder is either missing or empty.
+    /// </summary>
+    private static void AssertLeftNothing(string folder)
+    {
+        Assert.True(!Directory.Exists(folder) || !Directory.EnumerateFileSystemEntries(folder).Any(),
+            $"{folder} holds files");
+    }
 
     private (int ExitCode, string Output) Run(Action<TestConsole> input, CommandRegistry? registry = null, TimeProvider? time = null, string? dataFolder = null)
     {
         TestConsole console = new TestConsole().Interactive();
         input(console);
-        int exitCode = new App(console, time ?? FixedTimeProvider.At20261027(), new DayStore(dataFolder ?? data.Path), registry).Run([]);
+        int exitCode = new App(console, time ?? FixedTimeProvider.At20261027(), new DayStore(dataFolder ?? data.Path), registry,
+            instanceLock: sideLock).Run([]);
         return (exitCode, console.Output);
     }
 
@@ -660,7 +689,7 @@ public sealed class AppTests : IDisposable
         }, dataFolder: missing.Path);
 
         Assert.Equal(0, exitCode);
-        Assert.False(Directory.Exists(missing.Path));
+        AssertLeftNothing(missing.Path);
     }
 
     // AC-8
@@ -799,7 +828,7 @@ public sealed class AppTests : IDisposable
     {
         TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
         input(console);
-        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), registry).Run([]));
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), registry, instanceLock: sideLock).Run([]));
         return console.Output;
     }
 
@@ -1406,7 +1435,7 @@ public sealed class AppTests : IDisposable
         }, dataFolder: missing.Path);
 
         Assert.Equal(0, exitCode);
-        Assert.False(Directory.Exists(missing.Path));
+        AssertLeftNothing(missing.Path);
 
         Run(c =>
         {
@@ -1851,7 +1880,7 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(0, exitCode);
         AssertOnHintRow(LastLayout(output), "remove: there is no entry 1.");
-        Assert.False(Directory.Exists(missing.Path));
+        AssertLeftNothing(missing.Path);
 
         (exitCode, output) = RunCommands("remove 1", "quit");
 
@@ -1940,7 +1969,7 @@ public sealed class AppTests : IDisposable
             console.Input.PushTextWithEnter("remove 2");
             console.Input.PushTextWithEnter("quit");
 
-            Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+            Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), instanceLock: SideLock()).Run([]));
             Assert.Matches(@"\x1b\[(31|91|38;5;9)mremove: could not save the day\.", console.Output);
             Assert.DoesNotContain("   at ", console.Output);
             Assert.DoesNotContain("failed:", console.Output);
@@ -2216,7 +2245,7 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(0, exitCode);
         AssertOnHintRow(LastLayout(output), "change: there is no entry 1.");
-        Assert.False(Directory.Exists(missing.Path));
+        AssertLeftNothing(missing.Path);
 
         (exitCode, output) = RunCommands("change 1 8:00", "quit");
 
@@ -2277,7 +2306,7 @@ public sealed class AppTests : IDisposable
             console.Input.PushTextWithEnter("change 2 12:30");
             console.Input.PushTextWithEnter("quit");
 
-            Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+            Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), instanceLock: SideLock()).Run([]));
             Assert.Matches(@"\x1b\[(31|91|38;5;9)mchange: could not save the day\.", console.Output);
             Assert.DoesNotContain("   at ", console.Output);
             Assert.DoesNotContain("failed:", console.Output);
@@ -2437,7 +2466,7 @@ public sealed class AppTests : IDisposable
     private static string StripAnsi(string output) => Regex.Replace(output, @"\x1b\[[0-9;]*m", string.Empty);
 
     /// <summary>Runs <c>help</c>, scrolls to its bottom, then an empty line and <c>quit</c> on a terminal wide enough that the data-folder line never wraps.</summary>
-    private static string RunHelp(string folder, bool folderFromEnvironment, bool ansi = false)
+    private static string RunHelp(string folder, bool folderFromEnvironment, bool ansi = false, InstanceLock? instanceLock = null)
     {
         TestConsole console = new TestConsole().Interactive();
         if (ansi)
@@ -2450,7 +2479,8 @@ public sealed class AppTests : IDisposable
         PageDown(console, HelpPages);
         console.Input.PushKey(ConsoleKey.Enter);
         console.Input.PushTextWithEnter("quit");
-        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(folder), folderFromEnvironment: folderFromEnvironment).Run([]);
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(folder), folderFromEnvironment: folderFromEnvironment,
+            instanceLock: instanceLock).Run([]);
         Assert.Equal(0, exitCode);
         return console.Output;
     }
@@ -2745,7 +2775,7 @@ public sealed class AppTests : IDisposable
         string output = RunHelp(folder, folderFromEnvironment);
 
         Assert.Contains($"Data folder: {folder}", output);
-        Assert.False(Directory.Exists(folder));
+        AssertLeftNothing(folder);
     }
 
     // 085 AC-8
@@ -2834,7 +2864,7 @@ public sealed class AppTests : IDisposable
         console.Profile.Width = 200;
         console.Input.PushTextWithEnter(command);
         console.Input.PushTextWithEnter("quit");
-        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), instanceLock: sideLock).Run([]));
         return console.Output;
     }
 
@@ -2916,7 +2946,7 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(0, exitCode);
         Assert.Contains("No projects yet. Add one with addproject <work item> <title>.", output);
-        Assert.False(Directory.Exists(missing.Path));
+        AssertLeftNothing(missing.Path);
 
         (_, string existing) = RunCommands("projects", "quit");
         Assert.Contains("No projects yet.", existing);
@@ -3149,6 +3179,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void AddProject_SaveFailure_ShowsRedHint_NotStackTrace()
     {
+        UseSideLock();
         if (OperatingSystem.IsWindows())
         {
             return;
@@ -3484,7 +3515,7 @@ public sealed class AppTests : IDisposable
         }, dataFolder: missing.Path);
 
         Assert.Equal(0, exitCode);
-        Assert.False(Directory.Exists(missing.Path));
+        AssertLeftNothing(missing.Path);
     }
 
     // AC-6 (033)
@@ -4212,7 +4243,7 @@ public sealed class AppTests : IDisposable
         console.Input.PushKey(ConsoleKey.Enter);
         console.Input.PushTextWithEnter("quit");
 
-        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(folder)).Run([]));
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(folder), instanceLock: SideLock()).Run([]));
 
         string output = console.Output;
         string[] frame = AnsiFrames(output)[1];
@@ -4963,7 +4994,7 @@ public sealed class AppTests : IDisposable
             c.Input.PushTextWithEnter("quit");
         }, dataFolder: missing.Path);
         Assert.Contains("No checkpoints on this day.", missingOutput);
-        Assert.False(Directory.Exists(missing.Path));
+        AssertLeftNothing(missing.Path);
     }
 
     // AC-7, AC-8
@@ -6010,7 +6041,7 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(0, exitCode);
         AssertOnHintRow(LastLayout(output), expected);
-        Assert.False(Directory.Exists(missing.Path));
+        AssertLeftNothing(missing.Path);
 
         (exitCode, output) = RunCommands(typed, "quit");
 
@@ -6060,7 +6091,7 @@ public sealed class AppTests : IDisposable
             console.Input.PushTextWithEnter(typed);
             console.Input.PushTextWithEnter("quit");
 
-            Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+            Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), instanceLock: SideLock()).Run([]));
             Assert.Matches(@"\x1b\[(31|91|38;5;9)m" + name + @": could not save the day\.", console.Output);
             Assert.DoesNotContain("   at ", console.Output);
             Assert.DoesNotContain("failed:", console.Output);
@@ -6146,7 +6177,8 @@ public sealed class AppTests : IDisposable
         TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
         console.Profile.Height = height;
         input(console);
-        App app = new App(console, FixedTimeProvider.At20261027(), new DayStore(folder ?? data.Path), settings: settings ?? TestSettings());
+        App app = new App(console, FixedTimeProvider.At20261027(), new DayStore(folder ?? data.Path), settings: settings ?? TestSettings(),
+            instanceLock: sideLock);
         int exitCode = app.Run([]);
         return (exitCode, console.Output);
     }
@@ -6613,7 +6645,10 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void OpeningAndClosing_WithoutAChange_WritesNothing_NotEvenTheFolder()
     {
-        string missing = Path.Combine(data.Path, "missing");
+        // Outside the data folder: start-up creates a missing folder for times.lock (117), and the data
+        // folder's listing is checked below.
+        using TempFolder missingFolder = new TempFolder(create: false);
+        string missing = missingFolder.Path;
         RunSettings(c =>
         {
             c.Input.PushTextWithEnter("settings");
@@ -6622,7 +6657,7 @@ public sealed class AppTests : IDisposable
             c.Input.PushTextWithEnter("quit");
         }, folder: missing);
 
-        Assert.False(Directory.Exists(missing));
+        AssertLeftNothing(missing);
 
         File.WriteAllText(SettingsPath, "{ \"settings\" : { \"round\" : true } }");
         DateTime written = File.GetLastWriteTimeUtc(SettingsPath);
@@ -6729,6 +6764,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void SaveFailure_ShowsTheHint_AndThePreviousValue()
     {
+        UseSideLock();
         if (OperatingSystem.IsWindows())
         {
             return;
@@ -7343,7 +7379,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(missing)).Run([]));
 
         Assert.DoesNotContain("Target", LastFrame(console.Output));
-        Assert.False(Directory.Exists(missing));
+        AssertLeftNothing(missing);
     }
 
     // AC-9 (091)
@@ -8399,7 +8435,7 @@ public sealed class AppTests : IDisposable
         }, dataFolder: missing.Path);
 
         Assert.Contains("No checkpoints between 2026-11-02 and 2026-11-04.", output);
-        Assert.False(Directory.Exists(missing.Path));
+        AssertLeftNothing(missing.Path);
     }
 
     // AC-8
@@ -8447,6 +8483,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Report_FolderThatCannotBeListed_ShowsRedHint()
     {
+        UseSideLock();
         if (OperatingSystem.IsWindows())
         {
             return;
@@ -8884,6 +8921,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Export_FolderThatCannotBeListed_ShowsRedHint()
     {
+        UseSideLock();
         if (OperatingSystem.IsWindows())
         {
             return;
@@ -10399,7 +10437,7 @@ public sealed class AppTests : IDisposable
         }
 
         new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path),
-            tokenStore: store, devOpsClient: client is null ? null : client.For).Run([]);
+            tokenStore: store, devOpsClient: client is null ? null : client.For, instanceLock: sideLock).Run([]);
         Assert.DoesNotContain(DevOpsPat, console.Output, StringComparison.Ordinal);
         Assert.DoesNotContain("   at ", console.Output, StringComparison.Ordinal);
         return console.Output;
@@ -10671,6 +10709,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Import_SaveFailure_ShowsCouldNotSave()
     {
+        UseSideLock();
         if (OperatingSystem.IsWindows())
         {
             return;
@@ -10949,6 +10988,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Find_FolderThatCannotBeListed_ShowsRedHint()
     {
+        UseSideLock();
         if (OperatingSystem.IsWindows())
         {
             return;
@@ -11200,6 +11240,7 @@ public sealed class AppTests : IDisposable
     [Fact]
     public void Statistics_FolderThatCannotBeListed_ShowsRedHint()
     {
+        UseSideLock();
         if (OperatingSystem.IsWindows())
         {
             return;
@@ -11657,7 +11698,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, exitCode);
         Assert.Contains("Nothing to back up. No file was written.", output);
         Assert.Empty(Listing(target.Path));
-        Assert.False(Directory.Exists(missing.Path));
+        AssertLeftNothing(missing.Path);
     }
 
     // AC-9
@@ -13349,5 +13390,515 @@ public sealed class AppTests : IDisposable
         string plain = Regex.Replace(console.Output, @"\x1b\[[0-9;?]*[A-Za-z]", string.Empty);
 
         Assert.Matches(@"│ vacation +│ va +│ Show vacation days taken and left this year +│", plain);
+    }
+
+    // ---- 117: second instance guard and stale-save refusal ----
+
+    private string LockPath => Path.Combine(data.Path, InstanceLock.FileName);
+
+    private static string PidLine => "pid=" + Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>Runs the app on the data folder with its own lock, checking at the first key what times.lock holds.</summary>
+    private (int ExitCode, string Output, string? LockAtFirstKey) RunWatchingTheLock(params string[] commands)
+    {
+        TestConsole console = new TestConsole().Interactive();
+        HookedInput input = new HookedInput(console.Input);
+        string? seen = null;
+        input.BeforeKey = key =>
+        {
+            if (key == 1)
+            {
+                seen = File.Exists(LockPath) ? InstanceLockTests.ReadShared(LockPath) : null;
+            }
+        };
+        foreach (string command in commands)
+        {
+            console.Input.PushTextWithEnter(command);
+        }
+
+        int exitCode = new App(new InputOverrideConsole(console, input), FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+        return (exitCode, console.Output, seen);
+    }
+
+    // AC-1 (117)
+    [Fact]
+    public void InstanceLock_NoLockFile_StartsNormally_AndHoldsTheLockWhileRunning()
+    {
+        (int exitCode, string output, string? seen) = RunWatchingTheLock("quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(Heading, output);
+        Assert.Equal(PidLine, seen?.TrimEnd('\n'));
+    }
+
+    // AC-1 (117): a leftover file no handle holds never blocks a start.
+    [Theory]
+    [InlineData("")]
+    [InlineData("pid=99999")]
+    [InlineData("garbage\n\u0001ÿ more\n")]
+    public void InstanceLock_LeftoverFileWithoutLiveLock_StartsNormally(string content)
+    {
+        File.WriteAllText(LockPath, content);
+
+        (int exitCode, string output, string? seen) = RunWatchingTheLock("quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(Heading, output);
+        Assert.Equal(PidLine, seen?.TrimEnd('\n'));
+        Assert.False(File.Exists(LockPath));
+    }
+
+    // AC-2 (117)
+    [Fact]
+    public void InstanceLock_HeldByAnother_RefusesWithExitCode3_OneRedLine_NoLayout_NoData()
+    {
+        using InstanceLock other = new InstanceLock(data.Path);
+        Assert.Equal(InstanceLockStatus.Acquired, other.TryAcquire().Status);
+        string before = InstanceLockTests.ReadShared(LockPath);
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 300;
+        console.Input.PushTextWithEnter("arrive 8:00");
+        console.Input.PushTextWithEnter("quit");
+
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+
+        Assert.Equal(3, exitCode);
+        string plain = Regex.Replace(console.Output, @"\x1b\[[0-9;?]*[A-Za-z]", string.Empty);
+        string line = Assert.Single(plain.Split('\n', StringSplitOptions.RemoveEmptyEntries));
+        Assert.StartsWith("Times is already running with this data folder", line);
+        Assert.Contains(data.Path, line);
+        Assert.Contains("Close the other copy", line);
+        Assert.Matches(@"^\x1b\[(31|91|38;5;9)mTimes is already running", console.Output);
+        Assert.DoesNotContain("╭", console.Output);
+        Assert.DoesNotContain(Heading, console.Output);
+        Assert.Equal([LockPath], Directory.EnumerateFileSystemEntries(data.Path));
+        Assert.Equal(before, InstanceLockTests.ReadShared(LockPath));
+        Assert.Equal(InstanceLockStatus.Held, new InstanceLock(data.Path).TryAcquire().Status);
+    }
+
+    // AC-2 (117): the folder in the line goes through ForDisplay and Markup.Escape.
+    [Fact]
+    public void InstanceLock_HeldByAnother_ShowsTheFolderCleanedAndEscaped()
+    {
+        string folder = Path.Combine(data.Path, "[x]‮y");
+        using InstanceLock other = new InstanceLock(folder);
+        Assert.Equal(InstanceLockStatus.Acquired, other.TryAcquire().Status);
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 300;
+
+        Assert.Equal(3, new App(console, FixedTimeProvider.At20261027(), new DayStore(folder)).Run([]));
+
+        Assert.Contains(Path.Combine(data.Path, "[x]y"), console.Output);
+        Assert.DoesNotContain("‮", console.Output, StringComparison.Ordinal);
+    }
+
+    // AC-3 (117)
+    [Fact]
+    public void InstanceLock_AfterQuit_IsGone_AndASecondRunStarts()
+    {
+        Assert.Equal(0, RunCommands("quit").ExitCode);
+        Assert.False(File.Exists(LockPath));
+
+        (int exitCode, string output) = RunCommands("arrive 8:00", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(Heading, output);
+        Assert.False(File.Exists(LockPath));
+        Assert.Equal([DayFile("2026-10-27")], Directory.EnumerateFileSystemEntries(data.Path));
+    }
+
+    // AC-3 (117): an exception thrown inside the loop (here: the input runs out) still releases the lock.
+    [Fact]
+    public void InstanceLock_ExceptionInsideTheLoop_ReleasesTheLock()
+    {
+        TestConsole console = new TestConsole().Interactive();
+        console.Input.PushTextWithEnter("help");
+
+        Assert.ThrowsAny<Exception>(() => new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+
+        Assert.False(File.Exists(LockPath));
+        Assert.Equal(0, RunCommands("quit").ExitCode);
+    }
+
+    // AC-3 (117): a command handler that throws is caught by the loop; quitting afterwards releases the lock.
+    [Fact]
+    public void InstanceLock_ThrowingCommand_ThenQuit_ReleasesTheLock()
+    {
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+        registry.Register("boom", "bo", "Throws", _ => throw new InvalidOperationException("boom"));
+
+        (int exitCode, _) = Run(c =>
+        {
+            c.Input.PushTextWithEnter("boom");
+            c.Input.PushTextWithEnter("quit");
+        }, registry);
+
+        Assert.Equal(0, exitCode);
+        Assert.False(File.Exists(LockPath));
+    }
+
+    // AC-3 (117): a refused start (the lock cannot be taken) leaves no times.lock behind, and a later start works.
+    [Fact]
+    public void InstanceLock_RefusedStart_LeavesNoLock_AndALaterStartWorks()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        UnixFileMode mode = File.GetUnixFileMode(data.Path);
+        File.SetUnixFileMode(data.Path, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        int exitCode;
+        try
+        {
+            if (WritableAnyway(data.Path))
+            {
+                return;
+            }
+
+            exitCode = RunCommands("quit").ExitCode;
+        }
+        finally
+        {
+            File.SetUnixFileMode(data.Path, mode);
+        }
+
+        Assert.Equal(4, exitCode);
+        Assert.False(File.Exists(LockPath));
+        Assert.Equal(0, RunCommands("quit").ExitCode);
+        Assert.False(File.Exists(LockPath));
+    }
+
+    // AC-3 (117): the exit code 3 refusal leaves the other holder's lock in place.
+    [Fact]
+    public void InstanceLock_HeldRefusal_LeavesTheOthersLock_AndAfterItIsReleasedAStartWorks()
+    {
+        InstanceLock other = new InstanceLock(data.Path);
+        Assert.Equal(InstanceLockStatus.Acquired, other.TryAcquire().Status);
+
+        Assert.Equal(3, RunCommands("quit").ExitCode);
+        Assert.True(File.Exists(LockPath));
+
+        other.Dispose();
+        Assert.Equal(0, RunCommands("quit").ExitCode);
+        Assert.False(File.Exists(LockPath));
+    }
+
+    private static bool WritableAnyway(string folder)
+    {
+        try
+        {
+            string probe = Path.Combine(folder, "probe");
+            File.WriteAllText(probe, "x");
+            File.Delete(probe);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    // AC-4 (117)
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void InstanceLock_SymbolicLink_RefusesWithExitCode4_AndLeavesLinkAndTarget(bool targetExists)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder elsewhere = new TempFolder();
+        string target = Path.Combine(elsewhere.Path, "target");
+        if (targetExists)
+        {
+            File.WriteAllText(target, "keep");
+        }
+
+        File.CreateSymbolicLink(LockPath, target);
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 300;
+        console.Input.PushTextWithEnter("quit");
+
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+
+        Assert.Equal(4, exitCode);
+        Assert.Matches(@"^\x1b\[(31|91|38;5;9)mTimes cannot start: times\.lock is a symbolic link", console.Output);
+        Assert.Single(console.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries));
+        Assert.DoesNotContain("╭", console.Output);
+        Assert.Equal(target, new FileInfo(LockPath).LinkTarget);
+        Assert.Equal(targetExists, File.Exists(target));
+        if (targetExists)
+        {
+            Assert.Equal("keep", File.ReadAllText(target));
+        }
+    }
+
+    // AC-4 (117)
+    [Fact]
+    public void InstanceLock_Directory_RefusesWithExitCode4()
+    {
+        Directory.CreateDirectory(LockPath);
+
+        (int exitCode, string output) = RunCommands("quit");
+
+        Assert.Equal(4, exitCode);
+        Assert.StartsWith("Times cannot start: times.lock is a directory", output.Trim());
+        Assert.True(Directory.Exists(LockPath));
+    }
+
+    // AC-4 (117)
+    [Fact]
+    public void InstanceLock_FolderCannotBeCreated_RefusesWithExitCode4()
+    {
+        string blocker = Path.Combine(data.Path, "file");
+        File.WriteAllText(blocker, "x");
+
+        (int exitCode, string output) = Run(c => c.Input.PushTextWithEnter("quit"), dataFolder: Path.Combine(blocker, "Times"));
+
+        Assert.Equal(4, exitCode);
+        Assert.StartsWith("Times cannot start: the data folder cannot be created", output.Trim());
+        Assert.Equal("x", File.ReadAllText(blocker));
+    }
+
+    // AC-5 (117)
+    [Fact]
+    public void InstanceLock_VersionFlag_CreatesNoFolderAndNoLock()
+    {
+        using TempFolder missing = new TempFolder(create: false);
+        TestConsole console = new TestConsole();
+
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(missing.Path)).Run(["--version"]));
+        Assert.Equal(0, new App(new TestConsole(), FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run(["--version"]));
+
+        Assert.False(Directory.Exists(missing.Path));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
+    }
+
+    // AC-5 (117)
+    [Fact]
+    public void InstanceLock_InvalidFolder_CreatesNoFolderAndNoLock()
+    {
+        string relative = "times-117-" + Guid.NewGuid().ToString("N");
+        string[] before = WorkingDirectoryEntries();
+
+        Assert.Equal(2, new App(new TestConsole(), FixedTimeProvider.At20261027(), new DayStore(relative)).Run([]));
+
+        Assert.False(Directory.Exists(relative));
+        Assert.False(File.Exists(InstanceLock.FileName));
+        Assert.Equal(before, WorkingDirectoryEntries());
+    }
+
+    private const string StaleFile =
+        "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}," +
+        "{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"Task\",\"workItem\":5}," +
+        "{\"kind\":\"checkpoint\",\"time\":\"10:00\",\"name\":\"Done\",\"workItem\":5,\"booked\":true}]}";
+
+    private const string EditedFile =
+        "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}," +
+        "{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"Task\",\"workItem\":5}," +
+        "{\"kind\":\"checkpoint\",\"time\":\"10:00\",\"name\":\"Done\",\"workItem\":5,\"booked\":true}," +
+        "{\"kind\":\"checkpoint\",\"time\":\"11:00\",\"name\":\"Edited outside\"}]}";
+
+    private static string ChangedHint(string name) =>
+        $"{name}: the file for 2026-10-27 changed on disk since it was shown. " +
+        "The day is reloaded; check it and run the command again. Nothing was saved.";
+
+    /// <summary>
+    /// Runs <paramref name="typed"/> twice on a 250-column console. Before the first key (after the first redraw)
+    /// the day file is rewritten to <paramref name="edited"/> (or deleted when null); before the second run of the
+    /// command, what the file holds is recorded.
+    /// </summary>
+    private (string Output, string? BeforeRetry) RunStale(string typed, string? initial, string? edited)
+    {
+        if (initial is not null)
+        {
+            File.WriteAllText(DayFile("2026-10-27"), initial);
+        }
+
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 250;
+        HookedInput input = new HookedInput(console.Input);
+        string? beforeRetry = null;
+        int retryKey = typed.Length + 2;
+        input.BeforeKey = key =>
+        {
+            if (key == 1)
+            {
+                if (edited is null)
+                {
+                    File.Delete(DayFile("2026-10-27"));
+                }
+                else
+                {
+                    File.WriteAllText(DayFile("2026-10-27"), edited);
+                }
+            }
+            else if (key == retryKey)
+            {
+                beforeRetry = File.Exists(DayFile("2026-10-27")) ? ReadDay("2026-10-27") : null;
+            }
+        };
+        console.Input.PushTextWithEnter(typed);
+        console.Input.PushTextWithEnter(typed);
+        console.Input.PushTextWithEnter("quit");
+
+        Assert.Equal(0, new App(new InputOverrideConsole(console, input), FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+        return (console.Output, beforeRetry);
+    }
+
+    // AC-8 (117): every writing command refuses a day changed on disk since the last redraw, then works on the retry.
+    [Theory]
+    [InlineData("arrive 12:00", "arrive")]
+    [InlineData("leave 17:00", "leave")]
+    [InlineData("break 12:00", "break")]
+    [InlineData("breakend 12:30", "breakend")]
+    [InlineData("checkpoint 13:00 Lunch call", "checkpoint")]
+    [InlineData("remove 1", "remove")]
+    [InlineData("change 1 7:30", "change")]
+    [InlineData("booked 2", "booked")]
+    [InlineData("unbooked 3", "unbooked")]
+    [InlineData("a 12:00", "arrive")]
+    [InlineData("cp 13:00 Lunch call", "checkpoint")]
+    public void StaleDay_WritingCommand_IsRefused_ShowsTheNewContent_AndTheRetryWorks(string typed, string name)
+    {
+        (string output, string? beforeRetry) = RunStale(typed, StaleFile, EditedFile);
+
+        List<string[]> frames = Frames(output);
+        Assert.Equal(3, frames.Count);
+        Assert.DoesNotContain(frames[0], l => l.Contains("Edited outside", StringComparison.Ordinal));
+        AssertOnHintRow(frames[1], ChangedHint(name));
+        Assert.Contains(frames[1], l => l.Contains("Edited outside", StringComparison.Ordinal));
+        Assert.Equal(EditedFile, beforeRetry);
+        Assert.DoesNotContain(frames[2], l => l.Contains("changed on disk", StringComparison.Ordinal));
+        Assert.NotEqual(EditedFile, ReadDay("2026-10-27"));
+        Assert.Contains("Edited outside", ReadDay("2026-10-27"));
+    }
+
+    // AC-8 (117): the red colour of the hint.
+    [Fact]
+    public void StaleDay_Hint_IsRed()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), StaleFile);
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 250;
+        HookedInput input = new HookedInput(console.Input);
+        input.BeforeKey = key =>
+        {
+            if (key == 1)
+            {
+                File.WriteAllText(DayFile("2026-10-27"), EditedFile);
+            }
+        };
+        console.Input.PushTextWithEnter("arrive 12:00");
+        console.Input.PushTextWithEnter("quit");
+
+        Assert.Equal(0, new App(new InputOverrideConsole(console, input), FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)marrive: the file for 2026-10-27 changed on disk since it was shown\.", console.Output);
+    }
+
+    // AC-8 (117): absence, with a file created after the redraw that showed none.
+    [Fact]
+    public void StaleDay_Absence_FileCreatedAfterTheRedraw_IsRefused_AndTheRetryWorks()
+    {
+        (string output, string? beforeRetry) = RunStale("absence vacation", null, "{\"absence\":\"sick\"}");
+
+        List<string[]> frames = Frames(output);
+        AssertOnHintRow(frames[1], ChangedHint("absence"));
+        Assert.Contains(frames[1], l => l.Contains("Sick", StringComparison.Ordinal));
+        Assert.Equal("{\"absence\":\"sick\"}", beforeRetry);
+        Assert.Contains("vacation", ReadDay("2026-10-27"));
+    }
+
+    // AC-8 (117): a file deleted after the redraw is not booked over either.
+    [Fact]
+    public void StaleDay_FileDeletedAfterTheRedraw_IsRefused_AndTheRetryWorks()
+    {
+        (string output, string? beforeRetry) = RunStale("arrive 12:00", StaleFile, null);
+
+        List<string[]> frames = Frames(output);
+        AssertOnHintRow(frames[1], ChangedHint("arrive"));
+        Assert.Null(beforeRetry);
+        Assert.Single(new DayStore(data.Path).Load(new DateOnly(2026, 10, 27)).Entries);
+    }
+
+    // AC-8 (117): a change between the command's own load and its save is refused the same way.
+    [Fact]
+    public void StaleDay_ChangeBetweenLoadAndSave_IsRefused_AndKeepsTheFile()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), StaleFile);
+        DayStore store = new DayStore(data.Path);
+        store.BeforeStampCheck = day => File.WriteAllText(store.PathFor(day), EditedFile);
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 250;
+        console.Input.PushTextWithEnter("leave 17:00");
+        console.Input.PushTextWithEnter("quit");
+
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), store).Run([]));
+
+        AssertOnHintRow(LastLayout(console.Output), ChangedHint("leave"));
+        Assert.Equal(EditedFile, ReadDay("2026-10-27"));
+    }
+
+    // AC-9 (117): a day changed and shown again (a full redraw after another command) is written as before.
+    [Fact]
+    public void StaleDay_ChangeShownByARedraw_IsNotRefused()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), StaleFile);
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 250;
+        HookedInput input = new HookedInput(console.Input);
+        input.BeforeKey = key =>
+        {
+            if (key == 1)
+            {
+                File.WriteAllText(DayFile("2026-10-27"), EditedFile);
+            }
+        };
+        console.Input.PushTextWithEnter("help");
+        console.Input.PushTextWithEnter("leave 17:00");
+        console.Input.PushTextWithEnter("quit");
+
+        Assert.Equal(0, new App(new InputOverrideConsole(console, input), FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+
+        Assert.DoesNotContain("changed on disk", console.Output);
+        DayRecord saved = new DayStore(data.Path).Load(new DateOnly(2026, 10, 27));
+        Assert.Equal(5, saved.Entries.Count);
+        Assert.Contains(saved.Entries, e => e.Name == "Edited outside");
+    }
+
+    // AC-10 (117): sync send never writes over a day changed between MarkBooked's load and its save.
+    [Fact]
+    public void SyncSend_DayChangedBeforeTheSave_IsNotWritten_AndReportedLikeADayChange()
+    {
+        WriteSyncDays();
+        DayStore store = new DayStore(data.Path);
+        string edited = ReadDay("2026-11-03").Replace("\"Open\"", "\"Open edited\"", StringComparison.Ordinal);
+        store.BeforeStampCheck = day =>
+        {
+            if (day == new DateOnly(2026, 11, 3))
+            {
+                File.WriteAllText(store.PathFor(day), edited);
+            }
+        };
+        FakeDevOpsClient client = new FakeDevOpsClient();
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Height = 40;
+        console.Profile.Width = 140;
+        console.Input.PushTextWithEnter("sync 2026-11-02 2026-11-04 send");
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, FixedTimeProvider.At20261027(), store,
+            tokenStore: new FakeTokenStore(stored: ("contoso", DevOpsPat)), devOpsClient: client.For).Run([]);
+        string output = console.Output;
+
+        Assert.Contains("#12: the hours were sent, but 2026-11-03 could not be saved. Run booked 1 on 2026-11-03 by hand.", output);
+        Assert.Contains("and some days could not be saved", LastHint(output));
+        Assert.Equal(edited, ReadDay("2026-11-03"));
+        Assert.DoesNotContain("\"booked\":true", ReadDay("2026-11-03"));
+        Assert.True(new DayStore(data.Path).Load(new DateOnly(2026, 11, 2)).Entries.Single(e => e.Name == "Review").Booked);
     }
 }
