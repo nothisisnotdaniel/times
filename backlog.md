@@ -122,3 +122,6 @@ Write one feature per line, in plain language.
 - [?] CSV export failure test: add an injectable stream factory so a test can check that a partial CSV file is deleted after a mid-write failure (from 100 code/security review) (from 100-csv-export)
 - [?] CSV export UNC paths: decide whether export should refuse UNC paths (\\server\share) on Windows (from 100 security review) (from 100-csv-export)
 - [?] CSV export file mode: decide whether exported CSV files are created owner-only (0600) or stay shareable (from 100 security review) (from 100-csv-export)
+- [?] Azure DevOps sync: show a 'Sending ...' progress line per work item during sync send, so a slow network does not look like a hang (from 101-azure-devops-sync)
+- [?] Azure DevOps sync: keep mistyped lines such as '//devops connect x <token>' (rejected as unknown commands) out of the in-memory history too (from 101-azure-devops-sync)
+- [?] Azure DevOps sync: when saving the new Keychain item fails after the old one was deleted, the old token is lost; keep it (for example by updating the item in place) (from 101-azure-devops-sync)
