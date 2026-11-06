@@ -46,6 +46,12 @@ internal sealed class App
     private readonly Func<DevOpsCredential, IDevOpsClient>? devOpsClient;
     private readonly IBackgroundEvents? events;
     private readonly bool liveClock;
+    private readonly InstanceLock instanceLock;
+
+    // The day the last redraw showed and the stamp of its file then (null: it could not be read). A command
+    // that writes the shown day refuses when the file's stamp is no longer this one.
+    private DateOnly? shownDay;
+    private DayStamp? shownStamp;
 
     // Which end-of-day alerts were already given today; checked on every live clock tick.
     private readonly EndOfDayAlerts alerts = new EndOfDayAlerts();
@@ -96,11 +102,13 @@ internal sealed class App
     /// <param name="devOpsClient">Makes the Azure DevOps client for a credential, or <c>null</c> for none (sync cannot send).</param>
     /// <param name="events">Background events applied between keys at the prompt, or <c>null</c> for none.</param>
     /// <param name="liveClock">True to run a <see cref="LiveClock"/> while the loop runs (only with <paramref name="events"/>).</param>
+    /// <param name="instanceLock">Keeps a second Times off the data folder while the loop runs, or <c>null</c> for one on the store's folder.</param>
     public App(IAnsiConsole console, TimeProvider time, DayStore store, CommandRegistry? registry = null,
         bool folderFromEnvironment = false, MouseReporting? mouse = null, SettingsRegistry? settings = null,
         UpdateService? updates = null, ITokenStore? tokenStore = null, Func<DevOpsCredential, IDevOpsClient>? devOpsClient = null,
-        IBackgroundEvents? events = null, bool liveClock = false)
+        IBackgroundEvents? events = null, bool liveClock = false, InstanceLock? instanceLock = null)
     {
+        this.instanceLock = instanceLock ?? new InstanceLock(store.Folder);
         this.events = events;
         this.liveClock = liveClock;
         this.tokenStore = tokenStore ?? new UnsupportedTokenStore();
@@ -313,9 +321,14 @@ internal sealed class App
 
         DateOnly day = dayView.Current;
         DayRecord current;
+        DayStamp stamp;
         try
         {
-            current = Store.Load(day);
+            (current, stamp) = LoadForWrite(day);
+        }
+        catch (DayFileChangedException)
+        {
+            return ChangedOnDisk(Name, day);
         }
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
         {
@@ -334,7 +347,11 @@ internal sealed class App
 
         try
         {
-            Store.Save(day, current.WithAbsence(wanted));
+            Store.Save(day, current.WithAbsence(wanted), stamp);
+        }
+        catch (DayFileChangedException)
+        {
+            return ChangedOnDisk(Name, day);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -1549,7 +1566,7 @@ internal sealed class App
         {
             try
             {
-                DayRecord record = Store.Load(day.Key);
+                (DayRecord record, DayStamp stamp) = Store.LoadWithStamp(day.Key);
                 foreach (SyncCheckpoint checkpoint in day)
                 {
                     if (checkpoint.Number > record.Entries.Count)
@@ -1566,7 +1583,7 @@ internal sealed class App
                     record = record.SetBooked(checkpoint.Number, true);
                 }
 
-                Store.Save(day.Key, record);
+                Store.Save(day.Key, record, stamp);
             }
             catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException
                 or InvalidOperationException or ArgumentException)
@@ -1962,9 +1979,14 @@ internal sealed class App
 
         DateOnly day = dayView.Current;
         DayRecord current;
+        DayStamp stamp;
         try
         {
-            current = Store.Load(day);
+            (current, stamp) = LoadForWrite(day);
+        }
+        catch (DayFileChangedException)
+        {
+            return ChangedOnDisk(Name, day);
         }
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
         {
@@ -1978,7 +2000,11 @@ internal sealed class App
 
         try
         {
-            Store.Save(day, current.RemoveAt(number));
+            Store.Save(day, current.RemoveAt(number), stamp);
+        }
+        catch (DayFileChangedException)
+        {
+            return ChangedOnDisk(Name, day);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -2006,9 +2032,14 @@ internal sealed class App
 
         DateOnly day = dayView.Current;
         DayRecord current;
+        DayStamp stamp;
         try
         {
-            current = Store.Load(day);
+            (current, stamp) = LoadForWrite(day);
+        }
+        catch (DayFileChangedException)
+        {
+            return ChangedOnDisk(name, day);
         }
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
         {
@@ -2034,7 +2065,11 @@ internal sealed class App
 
         try
         {
-            Store.Save(day, current.SetBooked(number, booked));
+            Store.Save(day, current.SetBooked(number, booked), stamp);
+        }
+        catch (DayFileChangedException)
+        {
+            return ChangedOnDisk(name, day);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -2069,9 +2104,14 @@ internal sealed class App
 
         DateOnly day = dayView.Current;
         DayRecord current;
+        DayStamp stamp;
         try
         {
-            current = Store.Load(day);
+            (current, stamp) = LoadForWrite(day);
+        }
+        catch (DayFileChangedException)
+        {
+            return ChangedOnDisk(Name, day);
         }
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
         {
@@ -2085,7 +2125,11 @@ internal sealed class App
 
         try
         {
-            Store.Save(day, current.ChangeTime(number, at));
+            Store.Save(day, current.ChangeTime(number, at), stamp);
+        }
+        catch (DayFileChangedException)
+        {
+            return ChangedOnDisk(Name, day);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -2358,9 +2402,14 @@ internal sealed class App
     {
         DateOnly day = dayView.Current;
         DayRecord current;
+        DayStamp stamp;
         try
         {
-            current = Store.Load(day);
+            (current, stamp) = LoadForWrite(day);
+        }
+        catch (DayFileChangedException)
+        {
+            return ChangedOnDisk(name, day);
         }
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
         {
@@ -2377,7 +2426,11 @@ internal sealed class App
 
         try
         {
-            Store.Save(day, updated);
+            Store.Save(day, updated, stamp);
+        }
+        catch (DayFileChangedException)
+        {
+            return ChangedOnDisk(name, day);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -2386,6 +2439,23 @@ internal sealed class App
 
         return CommandResult.None;
     }
+
+    // Loads the shown day for a command that writes it, with its stamp. Throws DayFileChangedException when the
+    // file is not what the last redraw of that day showed (so the command never writes over a change it did not see).
+    private (DayRecord Record, DayStamp Stamp) LoadForWrite(DateOnly day)
+    {
+        (DayRecord record, DayStamp stamp) = Store.LoadWithStamp(day);
+        if (shownDay == day && shownStamp != stamp)
+        {
+            throw new DayFileChangedException(day);
+        }
+
+        return (record, stamp);
+    }
+
+    private static CommandResult ChangedOnDisk(string name, DateOnly day) =>
+        Hint($"{name}: the file for {ReportDate(day)} changed on disk since it was shown. " +
+            "The day is reloaded; check it and run the command again. Nothing was saved.");
 
     private static Func<string, CommandResult> NoArguments(string name, Func<CommandResult> handler) =>
         argument => argument.Length == 0
@@ -2429,6 +2499,34 @@ internal sealed class App
             return 2;
         }
 
+        // One Times per data folder: taken before anything is read, drawn or started, released on every way out.
+        InstanceLockResult locked = instanceLock.TryAcquire();
+        if (locked.Status == InstanceLockStatus.Held)
+        {
+            console.MarkupLine("[red]Times is already running with this data folder " +
+                $"[bold]{Markup.Escape(DataFolder.ForDisplay(Store.Folder))}[/]. Close the other copy first, then start Times again.[/]");
+            return 3;
+        }
+
+        if (locked.Status == InstanceLockStatus.Failed)
+        {
+            console.MarkupLine($"[red]Times cannot start: {Markup.Escape(DataFolder.ForDisplay(locked.Reason))} " +
+                $"in the data folder [bold]{Markup.Escape(DataFolder.ForDisplay(Store.Folder))}[/]. Nothing was saved.[/]");
+            return 4;
+        }
+
+        try
+        {
+            return RunLocked();
+        }
+        finally
+        {
+            instanceLock.Dispose();
+        }
+    }
+
+    private int RunLocked()
+    {
         // The outcome of an update a previous run started, then the one start-up check, outside the loop.
         string? pending = UpdateApplier.ReadOutcome(Store.Folder, updates?.RunningVersion ?? AppVersion.Current);
         if (updates is not null)
@@ -3031,7 +3129,10 @@ internal sealed class App
         try
         {
             DateOnly shown = dayView.Current;
-            DayRecord day = Store.Load(shown);
+            shownDay = shown;
+            shownStamp = null;
+            (DayRecord day, DayStamp stamp) = Store.LoadWithStamp(shown);
+            shownStamp = stamp;
             SettingValues? loaded = LoadSettings(out SettingValues values) is null ? values : null;
             TimeSpan target = DailyTarget(loaded);
             WorkingTimeCheckOptions options = CheckOptions(loaded);

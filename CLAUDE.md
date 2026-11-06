@@ -118,6 +118,15 @@ Every factory agent reads this file before working on Times. Keep it short and a
   A day file may instead hold `"absence":"vacation"|"sick"|"publicHoliday"` (written before `"entries"`,
   left out when none; never together with entries or the legacy properties, otherwise unreadable), set by
   `absence` (`ab`) on the shown day; booking commands refuse an absence day.
+  - **Single instance:** `App.Run` (after the folder check and `--version`, before anything else) creates the data folder
+    if missing and takes `InstanceLock` on `<folder>/times.lock` (`FileShare.None`: `flock` on Unix, share mode/`DeleteOnClose`
+    on Windows; file holds `pid=<pid>`, deleted then released on every exit, also from `Program.cs`'s Ctrl+C/exit handlers).
+    Another live holder: one red line, exit **3**; a link, directory or other non-regular `times.lock`, or a folder that cannot
+    be created/written: `Times cannot start: …`, exit **4**. A leftover file with no live lock is taken over. Tests that make the
+    data folder unwritable pass `instanceLock:` on another folder (`AppTests.UseSideLock`). `DOTNET_SYSTEM_IO_DISABLEFILELOCKING=1`
+    turns the lock off. Writing commands on the shown day (`arrive` … `absence`) load with `DayStore.LoadWithStamp` and refuse
+    (red hint, nothing saved) when the file's SHA-256 `DayStamp` differs from what the last `RenderDay` showed; they save with
+    `Save(day, record, stamp)`, which re-checks before the move (`DayFileChangedException`, an `IOException`). `MarkBooked` does the same.
 - **Relative times:** every typed time (`arrive`, `leave`, `break`, `breakend`, `checkpoint`, `change`) also takes
   `now`, `-<n>m` or `+<n>m` (1-4 ASCII digits, exact and case-sensitive), worked out by `TimeInput.Parse` from `App.Now()`
   (seconds dropped); a result outside 0:00-23:59 is `CrossesMidnight` (own red hint), never wrapped; files keep plain times.

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -48,20 +49,38 @@ internal sealed partial class DayStore
     /// a FIFO or a device never blocks), and at most <see cref="MaxFileBytes"/> bytes are taken in,
     /// whatever its reported size.
     /// </summary>
-    public DayRecord Load(DateOnly day)
+    public DayRecord Load(DateOnly day) => LoadWithStamp(day).Record;
+
+    /// <summary>
+    /// Like <see cref="Load"/>, and also returns the <see cref="DayStamp"/> of the bytes read (or
+    /// <see cref="DayStamp.Missing"/> when there is no file), for <see cref="Save(DateOnly, DayRecord, DayStamp)"/>.
+    /// </summary>
+    public (DayRecord Record, DayStamp Stamp) LoadWithStamp(DateOnly day)
     {
         EnsureValidFolder();
+        byte[]? bytes = ReadBytes(day);
+        if (bytes is null)
+        {
+            return (DayRecord.Empty, DayStamp.Missing);
+        }
+
+        return (Parse(day, bytes), DayStamp.Of(bytes));
+    }
+
+    // The day file's bytes through CappedFile, or null when there is none.
+    private byte[]? ReadBytes(DateOnly day)
+    {
         string name = Name(day);
-        byte[]? bytes = CappedFile.Read(
+        return CappedFile.Read(
             PathFor(day),
             $"The file for {name}",
             MaxFileBytes,
             $"The file for {name} is too large to be a day file.");
-        if (bytes is null)
-        {
-            return DayRecord.Empty;
-        }
+    }
 
+    private static DayRecord Parse(DateOnly day, byte[] bytes)
+    {
+        string name = Name(day);
         try
         {
             using StreamReader reader = new StreamReader(new MemoryStream(bytes), Encoding.UTF8);
@@ -115,7 +134,21 @@ internal sealed partial class DayStore
     /// missing, writes a temp file next to the target and moves it over the target. Throws
     /// <see cref="InvalidOperationException"/> and writes nothing if <see cref="Folder"/> is not valid.
     /// </summary>
-    public void Save(DateOnly day, DayRecord record)
+    public void Save(DateOnly day, DayRecord record) => Write(day, record, null);
+
+    /// <summary>
+    /// Like <see cref="Save(DateOnly, DayRecord)"/>, but only over the file <paramref name="expected"/> was taken
+    /// from: just before the move the target is read again through <see cref="CappedFile"/>, and if its stamp
+    /// differs (created, changed, deleted or no longer readable since the load) this throws
+    /// <see cref="DayFileChangedException"/>, deletes the temp file and writes nothing. This narrows the window
+    /// but does not close it (check, then move); the <see cref="InstanceLock"/> is the main guard.
+    /// </summary>
+    public void Save(DateOnly day, DayRecord record, DayStamp expected) => Write(day, record, expected);
+
+    /// <summary>Test seam: called with the day right before the stamp check in <see cref="Save(DateOnly, DayRecord, DayStamp)"/>.</summary>
+    internal Action<DateOnly>? BeforeStampCheck { get; set; }
+
+    private void Write(DateOnly day, DayRecord record, DayStamp? expected)
     {
         EnsureValidFolder();
         string target = PathFor(day);
@@ -124,6 +157,15 @@ internal sealed partial class DayStore
         try
         {
             File.WriteAllText(temp, record.ToJson(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            if (expected is not null)
+            {
+                BeforeStampCheck?.Invoke(day);
+                if (CurrentStamp(day) != expected)
+                {
+                    throw new DayFileChangedException(day);
+                }
+            }
+
             File.Move(temp, target, overwrite: true);
         }
         finally
@@ -132,6 +174,24 @@ internal sealed partial class DayStore
             {
                 File.Delete(temp);
             }
+        }
+    }
+
+    // The stamp of the target as it is now; a file that can no longer be read matches no stamp.
+    private DayStamp? CurrentStamp(DateOnly day)
+    {
+        try
+        {
+            byte[]? bytes = ReadBytes(day);
+            return bytes is null ? DayStamp.Missing : DayStamp.Of(bytes);
+        }
+        catch (FileNotFoundException)
+        {
+            return DayStamp.Missing;
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            return null;
         }
     }
 
@@ -148,4 +208,38 @@ internal sealed partial class DayStore
     // \z, not $: a trailing line break is not part of a name.
     [GeneratedRegex(@"^[0-9]{4}-[0-9]{2}-[0-9]{2}\.json\z", RegexOptions.CultureInvariant)]
     private static partial Regex DayFileName();
+}
+
+/// <summary>
+/// What a day file held when it was loaded: the SHA-256 of its bytes, or <see cref="Missing"/> when there was
+/// no file. Two stamps are equal when they stand for the same bytes (or both for no file).
+/// </summary>
+internal sealed record DayStamp
+{
+    private DayStamp(string? hash)
+    {
+        Hash = hash;
+    }
+
+    /// <summary>The stamp for "no file".</summary>
+    public static DayStamp Missing { get; } = new DayStamp((string?)null);
+
+    /// <summary>The lower-case hex SHA-256 of the bytes, or null for <see cref="Missing"/>.</summary>
+    public string? Hash { get; }
+
+    public bool IsMissing => Hash is null;
+
+    public static DayStamp Of(byte[] bytes) => new DayStamp(Convert.ToHexStringLower(SHA256.HashData(bytes)));
+}
+
+/// <summary>A day file changed on disk after it was loaded, so it was not written over.</summary>
+internal sealed class DayFileChangedException : IOException
+{
+    public DayFileChangedException(DateOnly day)
+        : base($"The file for {day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)} changed on disk.")
+    {
+        Day = day;
+    }
+
+    public DateOnly Day { get; }
 }
