@@ -138,6 +138,12 @@ Every factory agent reads this file before working on Times. Keep it short and a
   arrival; unreadable files are skipped and counted (yellow `! N day file(s) skipped`, no names).
   An absence day counts with a delta of zero, and `DayView` shows `Absence: Vacation` plus the
   target line with `day +0:00` for it.
+- **Working-time checks:** `WorkingTimeChecks.Check` (pure) gives a day's warnings for the `OnOff` settings `check-breaks`
+  (the `Breaks too short` rule), `check-max-work` (work over 10:00, `WorkTimeAt(now)` on live today) and `check-rest` (previous
+  calendar day's last `Leaving` to the first `Arrival` under 11:00; missing, unreadable, absence or no-leaving previous day: none),
+  appended in that order to the `Breaks` line as yellow `! …`. `WeekWarnings` checks Monday to Sunday of the shown day (each
+  against its own previous day; unreadable files skipped silently) and `DayView` ends with a yellow
+  `! Working-time warnings this week: Mon, Wed`. `App.RenderDay` reads the settings per redraw (missing, broken or unregistered: on).
 - **Report:** `report <from> <to>` (`rp`, dates `yyyy-MM-dd`, inclusive) sums `CheckpointSummary` per day over the
   day files `DayStore.Days()` lists in the range (`ProjectReport.Calculate`, read-only), one row per work item
   (ascending, title from `projects.json` or the names) then per name (ordinal), with `H:mm`, decimal hours

@@ -1219,4 +1219,133 @@ public class DayViewTests
     {
         Assert.Equal(RenderOld(WorkingDay), RenderLive(WorkingDay, new TimeOnly(12, 0)));
     }
+
+    // Job 114 ------------------------------------------------------------------------------
+
+    private static string[] CheckLines(
+        DayRecord record, WorkingTimeChecks? checks, IReadOnlyList<DateOnly>? week = null, FlexitimeBalance? balance = null, int width = 200)
+    {
+        TestConsole console = new TestConsole();
+        console.Profile.Width = width;
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record, EightHours, balance ?? FlexitimeBalance.None, null, checks, week));
+        return console.Lines.Select(l => l.TrimEnd()).Where(l => l.Trim().Length > 0).ToArray();
+    }
+
+    private static string CheckAnsi(DayRecord record, WorkingTimeChecks checks, IReadOnlyList<DateOnly>? week = null, int width = 200)
+    {
+        TestConsole console = new TestConsole().EmitAnsiSequences();
+        console.Profile.Width = width;
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record, EightHours, FlexitimeBalance.None, null, checks, week));
+        return console.Output;
+    }
+
+    // AC-1: the break warning keeps its text and place, and only shows when the checks result has it.
+    [Fact]
+    public void Render_Checks_BreakWarningOnlyWhenTheCheckIsOn()
+    {
+        DayRecord day = ShortBreakDay();
+
+        string[] on = CheckLines(day, WorkingTimeChecks.Check(day, null, WorkingTimeCheckOptions.All));
+        string[] off = CheckLines(day, WorkingTimeChecks.Check(day, null, new WorkingTimeCheckOptions(false, true, true)));
+
+        Assert.Equal("Breaks 0:20 taken · 0:30 required  ! Breaks too short: 0:10 missing", on[5].Trim());
+        Assert.Equal("Breaks 0:20 taken · 0:30 required", off[5].Trim());
+        Assert.Single(on, l => l.Contains("Break", StringComparison.Ordinal) && l.Contains("short", StringComparison.Ordinal));
+    }
+
+    // AC-2
+    [Fact]
+    public void Render_Checks_OverTenHours_YellowAtTheEndOfTheBreakLine()
+    {
+        DayRecord day = LongBreakDay();
+        WorkingTimeChecks checks = new WorkingTimeChecks(null, new TimeSpan(10, 25, 0), null);
+
+        string[] lines = CheckLines(day, checks);
+
+        Assert.Equal("Breaks 0:40 taken · 0:30 required  ! Over 10 hours: 10:25 worked", lines[5].Trim());
+        Assert.Contains("\u001b[38;5;11m! Over 10 hours: 10:25 worked", CheckAnsi(day, checks));
+    }
+
+    // AC-3
+    [Fact]
+    public void Render_Checks_ShortRest_YellowAtTheEndOfTheBreakLine()
+    {
+        DayRecord day = LongBreakDay();
+        WorkingTimeChecks checks = new WorkingTimeChecks(null, null, new TimeSpan(9, 30, 0));
+
+        string[] lines = CheckLines(day, checks);
+
+        Assert.Equal("Breaks 0:40 taken · 0:30 required  ! Rest too short: 9:30 since last leaving", lines[5].Trim());
+        Assert.Contains("\u001b[38;5;11m! Rest too short: 9:30 since last leaving", CheckAnsi(day, checks));
+    }
+
+    // AC-4
+    [Fact]
+    public void Render_Checks_OrderIsBreaksWorkRest()
+    {
+        DayRecord day = ShortBreakDay();
+        WorkingTimeChecks checks = new WorkingTimeChecks(TimeSpan.FromMinutes(10), new TimeSpan(10, 1, 0), new TimeSpan(10, 59, 0));
+
+        string[] lines = CheckLines(day, checks);
+
+        Assert.Equal(
+            "Breaks 0:20 taken · 0:30 required  ! Breaks too short: 0:10 missing  ! Over 10 hours: 10:01 worked  ! Rest too short: 10:59 since last leaving",
+            lines[5].Trim());
+    }
+
+    // AC-4: nothing failing or every check off leaves the view exactly as before.
+    [Fact]
+    public void Render_Checks_NothingFailingOrAllOff_SameAsBefore()
+    {
+        Assert.Equal(BreakLines(LongBreakDay()), CheckLines(LongBreakDay(), WorkingTimeChecks.None, [], width: 120));
+        Assert.Equal(
+            BreakAnsi(LongBreakDay()),
+            CheckAnsi(LongBreakDay(), WorkingTimeChecks.Check(LongBreakDay(), null, WorkingTimeCheckOptions.All), width: 120));
+        Assert.Equal(
+            "Breaks 0:20 taken · 0:30 required",
+            CheckLines(ShortBreakDay(), WorkingTimeChecks.Check(ShortBreakDay(), null, WorkingTimeCheckOptions.None))[5].Trim());
+    }
+
+    // AC-5
+    [Fact]
+    public void Render_WeekLine_IsTheLastRow_YellowNamesMondayFirst_IndentedLikeTheTargetLine()
+    {
+        DayRecord day = LongBreakDay();
+        IReadOnlyList<DateOnly> week = [new DateOnly(2026, 10, 28), new DateOnly(2026, 10, 26)];
+
+        string[] lines = CheckLines(day, WorkingTimeChecks.None, week);
+        TestConsole raw = new TestConsole();
+        raw.Profile.Width = 200;
+        raw.Write(new DayView(FixedTimeProvider.At20261027()).Render(day, EightHours, FlexitimeBalance.None, null, WorkingTimeChecks.None, week));
+        string[] rawLines = raw.Lines.ToArray();
+        string target = rawLines.Single(l => l.TrimStart().StartsWith("Target", StringComparison.Ordinal));
+        string weekLine = rawLines.Single(l => l.Contains("Working-time", StringComparison.Ordinal));
+
+        Assert.Equal("! Working-time warnings this week: Mon, Wed", lines[^1].Trim());
+        Assert.Equal(target.Length - target.TrimStart().Length, weekLine.Length - weekLine.TrimStart().Length);
+        Assert.Contains("\u001b[38;5;11m! Working-time warnings this week: Mon, Wed", CheckAnsi(day, WorkingTimeChecks.None, week));
+    }
+
+    // AC-5: below the existing rows on an empty and an absence day.
+    [Fact]
+    public void Render_WeekLine_OnEmptyAndAbsenceDay()
+    {
+        IReadOnlyList<DateOnly> week = [new DateOnly(2026, 11, 1)];
+        FlexitimeBalance balance = new FlexitimeBalance(TimeSpan.Zero, 1, 0);
+
+        string[] empty = CheckLines(DayRecord.Empty, null, week, balance);
+        string[] absent = CheckLines(DayRecord.Empty.WithAbsence(AbsenceKind.Vacation), null, week, balance);
+
+        Assert.Equal(["No entries yet.", "Target 8:00 · balance 0:00", "! Working-time warnings this week: Sun"], empty.Skip(1));
+        Assert.Equal(["Absence: Vacation", "Target 8:00 · day +0:00 · balance 0:00", "! Working-time warnings this week: Sun"], absent.Skip(1));
+    }
+
+    // AC-5: no warning in the week, no line.
+    [Fact]
+    public void Render_WeekLine_NoneWithoutWarnings()
+    {
+        Assert.DoesNotContain(CheckLines(DayRecord.Empty, null, []), l => l.Contains("Working-time", StringComparison.Ordinal));
+        Assert.Null(DayView.WeekLine(null));
+        Assert.Null(DayView.WeekLine([]));
+    }
 }

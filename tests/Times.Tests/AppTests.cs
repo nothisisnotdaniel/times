@@ -10358,10 +10358,12 @@ public sealed class AppTests : IDisposable
             TestConsole console = new TestConsole().Interactive();
             console.Profile.Width = 120;
             console.Input.PushTextWithEnter("settings");
-            // Past daily-target, alert-target and alert-limit (job 113).
-            console.Input.PushKey(ConsoleKey.DownArrow);
-            console.Input.PushKey(ConsoleKey.DownArrow);
-            console.Input.PushKey(ConsoleKey.DownArrow);
+            // Past daily-target, alert-target and alert-limit (job 113) and the three checks (job 114).
+            for (int down = 0; down < 6; down++)
+            {
+                console.Input.PushKey(ConsoleKey.DownArrow);
+            }
+
             console.Input.PushKey(i % 2 == 0 ? ConsoleKey.Enter : ConsoleKey.Spacebar);
             console.Input.PushKey(ConsoleKey.Escape);
             console.Input.PushTextWithEnter("quit");
@@ -12650,5 +12652,175 @@ public sealed class AppTests : IDisposable
         Assert.Matches(@"alert-limit +on +Ring and show a hint 15 minutes before 10 hours of work", console.Output);
         Assert.Matches(@"alert-target +off ", console.Output);
         Assert.Equal("{\"settings\":{\"alert-target\":false,\"alert-limit\":false}}", File.ReadAllText(SettingsPath));
+    }
+
+    // Job 114 ------------------------------------------------------------------------------
+
+    /// <summary>
+    /// A week around today (Tuesday 2026-10-27): Monday follows a Sunday leaving at 23:00 (8:00 rest), Wednesday has
+    /// 14 hours of work with no break, today has a plain short day.
+    /// </summary>
+    private void WriteCheckWeek()
+    {
+        WriteDayFile("2026-10-25", "20:00", "23:00");
+        WriteDayFile("2026-10-26", "07:00", "12:00");
+        WriteDayFile("2026-10-27", "13:00", "15:00");
+        WriteDayFile("2026-10-28", "06:00", "20:00");
+    }
+
+    private (int ExitCode, string Output) RunWide(params string[] commands) =>
+        Run(c =>
+        {
+            c.Profile.Width = 200;
+            c.Profile.Height = 40;
+            foreach (string command in commands)
+            {
+                c.Input.PushTextWithEnter(command);
+            }
+        });
+
+    private Dictionary<string, string> Snapshot() =>
+        Directory.EnumerateFileSystemEntries(data.Path).ToDictionary(p => p, p => File.Exists(p) ? File.ReadAllText(p) : "<dir>");
+
+    // AC-5: the week line names the days with a warning, Monday first; each is checked against its own previous day.
+    [Fact]
+    public void WorkingTimeChecks_WeekLine_ListsTheWeeksDaysWithWarnings()
+    {
+        WriteCheckWeek();
+
+        (int exitCode, string output) = RunWide("quit");
+
+        Assert.Equal(0, exitCode);
+        string frame = LastFrame(output);
+        Assert.Contains("! Working-time warnings this week: Mon, Wed", frame);
+        Assert.DoesNotContain("Rest too short", frame);
+        Assert.DoesNotContain("Over 10 hours", frame);
+    }
+
+    // AC-2, AC-3, AC-5: the later day shows the rest warning, the long day the work warning; the earlier day never the rest.
+    [Fact]
+    public void WorkingTimeChecks_BreakLine_ShowsEachDaysOwnWarnings()
+    {
+        WriteCheckWeek();
+
+        string monday = LastFrame(RunWide("prev", "quit").Output);
+        string sunday = LastFrame(RunWide("prev", "prev", "quit").Output);
+        string wednesday = LastFrame(RunWide("next", "quit").Output);
+
+        Assert.Contains("Breaks 0:00 taken · 0:00 required  ! Rest too short: 8:00 since last leaving", monday);
+        Assert.Contains("! Working-time warnings this week: Mon, Wed", monday);
+        Assert.DoesNotContain("Rest too short", sunday);
+        Assert.DoesNotContain("Working-time warnings", sunday);
+        Assert.Contains("! Breaks too short: 0:45 missing  ! Over 10 hours: 14:00 worked", wednesday);
+    }
+
+    // AC-5: an unreadable or absence day in the week adds nothing and does not break the view.
+    [Fact]
+    public void WorkingTimeChecks_UnreadableAndAbsenceDays_AddNoWarning()
+    {
+        WriteDayFile("2026-10-27", "13:00", "15:00");
+        File.WriteAllText(DayFile("2026-10-26"), "{ not json");
+        File.WriteAllText(DayFile("2026-10-28"), "{\"absence\":\"vacation\"}");
+
+        string frame = LastFrame(RunWide("quit").Output);
+
+        Assert.Contains("Target 8:00", frame);
+        Assert.DoesNotContain("Working-time warnings", frame);
+    }
+
+    // AC-6: turning check-rest off and on in settings removes and brings back its warnings on the next redraw.
+    [Fact]
+    public void WorkingTimeChecks_SettingsToggle_RemovesAndRestoresWarnings()
+    {
+        WriteCheckWeek();
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 200;
+        console.Profile.Height = 40;
+        console.Input.PushTextWithEnter("prev");
+        for (int pass = 0; pass < 2; pass++)
+        {
+            console.Input.PushTextWithEnter("settings");
+            for (int down = 0; down < 5; down++)
+            {
+                console.Input.PushKey(ConsoleKey.DownArrow);
+            }
+
+            console.Input.PushKey(ConsoleKey.Enter);
+            console.Input.PushKey(ConsoleKey.Escape);
+            console.Input.PushTextWithEnter(pass == 0 ? "help" : "today");
+            console.Input.PushTextWithEnter("prev");
+        }
+
+        console.Input.PushTextWithEnter("quit");
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+
+        string output = console.Output;
+        Assert.Matches(@"check-breaks +on +Warn when breaks are shorter than the law requires", output);
+        Assert.Matches(@"check-max-work +on +Warn when a day has more than 10 hours of work", output);
+        Assert.Matches(@"check-rest +on +Warn when the rest between two working days is under 11 hours", output);
+        Assert.Matches(@"check-rest +off ", output);
+        Assert.Equal("{\"settings\":{\"check-rest\":true}}", File.ReadAllText(SettingsPath));
+
+        // The Monday frames: before, with check-rest off, and on again.
+        List<string> mondays = Regex.Split(output, "Monday, 2026-10-26").Skip(1).Select(f => f.Split("Tuesday, 2026-10-27")[0]).ToList();
+        Assert.Contains("Rest too short: 8:00", mondays[0]);
+        Assert.Contains("this week: Mon, Wed", mondays[0]);
+        Assert.Contains(mondays, m => !m.Contains("Rest too short", StringComparison.Ordinal) && m.Contains("this week: Wed", StringComparison.Ordinal));
+        Assert.Contains("Rest too short: 8:00", mondays[^1]);
+        Assert.Contains("this week: Mon, Wed", mondays[^1]);
+    }
+
+    // AC-6: settings.json holds the three checks as true/false.
+    [Fact]
+    public void WorkingTimeChecks_AllOffInSettingsJson_NoWarnings()
+    {
+        WriteCheckWeek();
+        File.WriteAllText(SettingsPath, "{\"settings\":{\"check-breaks\":false,\"check-max-work\":false,\"check-rest\":false}}");
+
+        string monday = LastFrame(RunWide("prev", "quit").Output);
+        string wednesday = LastFrame(RunWide("next", "quit").Output);
+
+        Assert.DoesNotContain("!", monday);
+        Assert.DoesNotContain("!", wednesday);
+        Assert.Contains("Breaks 0:00 taken · 0:45 required", wednesday);
+    }
+
+    // AC-7: a broken settings.json leaves every check on and is never written.
+    [Fact]
+    public void WorkingTimeChecks_BrokenSettings_AllOn_FileUnchanged()
+    {
+        WriteCheckWeek();
+        byte[] broken = Encoding.UTF8.GetBytes("{\"settings\":{\"check-rest\":false");
+        File.WriteAllBytes(SettingsPath, broken);
+
+        string monday = LastFrame(RunWide("prev", "quit").Output);
+
+        Assert.Contains("! Rest too short: 8:00 since last leaving", monday);
+        Assert.Contains("! Working-time warnings this week: Mon, Wed", monday);
+        Assert.Equal(broken, File.ReadAllBytes(SettingsPath));
+    }
+
+    // AC-7: a missing settings.json leaves every check on and is not created.
+    [Fact]
+    public void WorkingTimeChecks_MissingSettings_AllOn_NotCreated()
+    {
+        WriteCheckWeek();
+
+        string wednesday = LastFrame(RunWide("next", "quit").Output);
+
+        Assert.Contains("! Over 10 hours: 14:00 worked", wednesday);
+        Assert.False(File.Exists(SettingsPath));
+    }
+
+    // AC-8: rendering only reads: navigating around the week creates and changes no file.
+    [Fact]
+    public void WorkingTimeChecks_Navigation_CreatesAndChangesNoFile()
+    {
+        WriteCheckWeek();
+        Dictionary<string, string> before = Snapshot();
+
+        RunWide("prev", "prev", "prev", "today", "next", "next", "next", "next", "next", "today", "quit");
+
+        Assert.Equal(before, Snapshot());
     }
 }
