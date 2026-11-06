@@ -195,7 +195,8 @@ Every factory agent reads this file before working on Times. Keep it short and a
 - **Import:** `import <folder>` (`im`, whole trimmed argument through `ExpandFolder`, `backup`'s folder hints, data folder refused) reads
   the old tool's day files (format and fixture: `import-samples/`; the test project copies `import-samples/*.json` to its output).
   `OldDataImport` (no output, no writes): `Scan` lists top-level names (`DayStore.TryParseName` candidates by date, the rest skipped,
-  at most 20 shown), `Read` goes through `CappedFile`, `Parse` (strict UTF-8, `JsonDocument` without duplicate properties) gives a
+  at most 20 shown; `Collect` streams the listing once and keeps only the 20 ordinal-smallest skipped names
+  plus `SkippedCount`), `Read` goes through `CappedFile`, `Parse` (strict UTF-8, `JsonDocument` without duplicate properties) gives a
   `DayRecord` plus `UsedTime` warnings, or one fixed reason with the 1-based entry number. A new day is saved with `DayStamp.Missing`, an
   identical one counts as `already there`, a differing one is asked about in the loop (`pendingImport`, like the token prompt; `yes`/`y`
   replaces with the stamp loaded before asking, Esc keeps the rest); unreadable existing files are kept and listed. Never writes the source.

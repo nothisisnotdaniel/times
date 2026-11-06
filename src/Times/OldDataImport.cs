@@ -42,32 +42,63 @@ internal static partial class OldDataImport
         [CheckpointType] = EntryKind.Checkpoint,
     };
 
+    /// <summary>The most skipped names a scan keeps (the ordinal-smallest ones); the rest are only counted.</summary>
+    internal const int MaxSkippedNames = 20;
+
     /// <summary>
-    /// Lists the top-level entries of <paramref name="folder"/> (never recursive, never opens a file): the
-    /// candidates whose names pass <see cref="DayStore.TryParseName"/>, by date, and every other name (folders
-    /// included), in ordinal order. Throws <see cref="IOException"/> or <see cref="UnauthorizedAccessException"/>
-    /// if the folder cannot be listed.
+    /// Lists the top-level entries of <paramref name="folder"/> (never recursive, never opens a file) through
+    /// <see cref="Collect"/>, streaming the listing. Throws <see cref="IOException"/> or
+    /// <see cref="UnauthorizedAccessException"/> if the folder cannot be listed.
     /// </summary>
-    public static ImportScan Scan(string folder)
+    public static ImportScan Scan(string folder) => Collect(Directory.EnumerateFileSystemEntries(folder));
+
+    /// <summary>
+    /// Walks <paramref name="paths"/> once: the candidates whose names pass <see cref="DayStore.TryParseName"/>,
+    /// by date, and the <see cref="MaxSkippedNames"/> ordinal-smallest other names, in ordinal order, plus a
+    /// count of every other name (saturating at <see cref="int.MaxValue"/>). Memory for skipped names stays
+    /// bounded however long the listing is. Exceptions from the enumeration pass through.
+    /// </summary>
+    internal static ImportScan Collect(IEnumerable<string> paths)
     {
         List<ImportCandidate> candidates = [];
-        List<string> skipped = [];
-        foreach (string path in Directory.EnumerateFileSystemEntries(folder))
+        List<string> skipped = new List<string>(MaxSkippedNames + 1);
+        int skippedCount = 0;
+        foreach (string path in paths)
         {
             string name = Path.GetFileName(path);
             if (DayStore.TryParseName(name, out DateOnly day))
             {
                 candidates.Add(new ImportCandidate(day, name, path));
+                continue;
             }
-            else
+
+            if (skippedCount < int.MaxValue)
             {
-                skipped.Add(name);
+                skippedCount++;
             }
+
+            KeepSmallest(skipped, name);
         }
 
         candidates.Sort((a, b) => a.Day.CompareTo(b.Day));
-        skipped.Sort(StringComparer.Ordinal);
-        return new ImportScan(candidates, skipped);
+        return new ImportScan(candidates, skipped, skippedCount);
+    }
+
+    // Inserts name into the ordinal-sorted list, which never grows past MaxSkippedNames: once full, a name
+    // not smaller than the largest kept one is dropped, and a smaller one evicts the largest.
+    private static void KeepSmallest(List<string> kept, string name)
+    {
+        if (kept.Count == MaxSkippedNames && StringComparer.Ordinal.Compare(name, kept[^1]) >= 0)
+        {
+            return;
+        }
+
+        int index = kept.BinarySearch(name, StringComparer.Ordinal);
+        kept.Insert(index < 0 ? ~index : index, name);
+        if (kept.Count > MaxSkippedNames)
+        {
+            kept.RemoveAt(kept.Count - 1);
+        }
     }
 
     /// <summary>
@@ -356,18 +387,36 @@ internal sealed record ImportCandidate
     public string Path { get; }
 }
 
-/// <summary>What <see cref="OldDataImport.Scan"/> found: the candidates by date, and every other name in ordinal order.</summary>
+/// <summary>
+/// What <see cref="OldDataImport.Scan"/> found: the candidates by date, at most
+/// <see cref="OldDataImport.MaxSkippedNames"/> other names in ordinal order, and how many other names there were.
+/// </summary>
 internal sealed record ImportScan
 {
-    public ImportScan(IReadOnlyList<ImportCandidate> candidates, IReadOnlyList<string> skipped)
+    public ImportScan(IReadOnlyList<ImportCandidate> candidates, IReadOnlyList<string> skipped, int skippedCount)
     {
+        if (skipped.Count > OldDataImport.MaxSkippedNames)
+        {
+            throw new ArgumentException($"At most {OldDataImport.MaxSkippedNames} skipped names are kept.", nameof(skipped));
+        }
+
+        if (skippedCount < skipped.Count)
+        {
+            throw new ArgumentException("The skipped count is smaller than the kept names.", nameof(skippedCount));
+        }
+
         Candidates = candidates;
         Skipped = skipped;
+        SkippedCount = skippedCount;
     }
 
     public IReadOnlyList<ImportCandidate> Candidates { get; }
 
+    /// <summary>The ordinal-smallest skipped names, at most <see cref="OldDataImport.MaxSkippedNames"/>, sorted ordinally.</summary>
     public IReadOnlyList<string> Skipped { get; }
+
+    /// <summary>Every top-level name that is not a candidate, kept or not.</summary>
+    public int SkippedCount { get; }
 }
 
 /// <summary>A candidate's bytes, or the fixed reason they could not be read.</summary>
