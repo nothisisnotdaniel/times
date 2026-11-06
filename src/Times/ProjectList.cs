@@ -217,6 +217,59 @@ internal sealed record ProjectList
         return new ProjectList(projects.Append(project));
     }
 
+    /// <summary>
+    /// Returns a new list in which project <paramref name="number"/> (1-based) has
+    /// <paramref name="title"/>, keeping its work item number and position. Throws
+    /// <see cref="ArgumentOutOfRangeException"/> if there is no such project and
+    /// <see cref="ArgumentException"/> if the title is not valid (see <see cref="IsValidTitle"/>).
+    /// </summary>
+    public ProjectList Rename(int number, string title)
+    {
+        CheckNumber(number, nameof(number));
+        if (!IsValidTitle(title))
+        {
+            throw new ArgumentException("The title is not a valid project title.", nameof(title));
+        }
+
+        Project[] renamed = projects.ToArray();
+        renamed[number - 1] = new Project(renamed[number - 1].WorkItem, title);
+        return new ProjectList(renamed);
+    }
+
+    /// <summary>
+    /// Returns a new list without project <paramref name="number"/> (1-based); later projects move up
+    /// one number. Throws <see cref="ArgumentOutOfRangeException"/> if there is no such project.
+    /// </summary>
+    public ProjectList Remove(int number)
+    {
+        CheckNumber(number, nameof(number));
+        return new ProjectList(projects.Where((_, index) => index != number - 1));
+    }
+
+    /// <summary>
+    /// Returns a new list in which project <paramref name="from"/> (1-based) has number
+    /// <paramref name="to"/>; the projects in between shift by one. Throws
+    /// <see cref="ArgumentOutOfRangeException"/> if either number is not on the list.
+    /// </summary>
+    public ProjectList Move(int from, int to)
+    {
+        CheckNumber(from, nameof(from));
+        CheckNumber(to, nameof(to));
+        List<Project> moved = projects.ToList();
+        Project project = moved[from - 1];
+        moved.RemoveAt(from - 1);
+        moved.Insert(to - 1, project);
+        return new ProjectList(moved);
+    }
+
+    private void CheckNumber(int number, string paramName)
+    {
+        if (number < 1 || number > projects.Length)
+        {
+            throw new ArgumentOutOfRangeException(paramName, number, "There is no project with this number.");
+        }
+    }
+
     public bool Equals(ProjectList? other) =>
         other is not null && projects.SequenceEqual(other.projects);
 

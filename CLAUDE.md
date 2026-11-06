@@ -76,6 +76,8 @@ Every factory agent reads this file before working on Times. Keep it short and a
   so tests use a temp folder and never touch the real app data. Use `System.Text.Json`.
   The project quicklist lives next to the day files in `projects.json` (`ProjectStore`), as
   `{"projects":[{"workItem":1234,"title":"…"}]}`; a project's number is its 1-based position.
+  `renameproject` (`rn`), `removeproject` (`xp`) and `moveproject` (`mp`) change a project by its number
+  (`ProjectList.Rename/Remove/Move`) and write only `projects.json`, never a day file.
   Day files and `projects.json` must be regular files (the final link target) of at most 64 KiB, read
   through `CappedFile`: `FileKind` checks the path first, then on Unix the file is opened with
   `O_NONBLOCK | O_CLOEXEC` and the opened descriptor is checked with `fstat` before a capped read, so a

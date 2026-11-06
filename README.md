@@ -133,6 +133,9 @@ required. A booking without a time uses the current time. `remove`, `change`, `b
 | `today` | `t` | none | Go back to today |
 | `addproject` | `ap` | `<work item> <title>` | Add a project to the quicklist |
 | `projects` | `pr` | none | List the projects on the quicklist |
+| `renameproject` | `rn` | `<number> <title>` | Give a project on the quicklist a new title; its work item number and position stay |
+| `removeproject` | `xp` | `<number>` | Remove a project from the quicklist; later projects move up one number, and booked checkpoints keep their work item |
+| `moveproject` | `mp` | `<number> <new number>` | Move a project to another number on the quicklist; the projects in between shift by one |
 | `settings` | `se` | none | Open the settings panel (see [Settings](#settings)) |
 | `update` | `up` | none | Check for a newer Times now and install it when you quit (see [Updates](#updates)) |
 | `help` | `h` | none | List all commands, the running version and the data folder |
@@ -269,6 +272,8 @@ part once any earlier day counts.
 Above the day, the `Projects` panel shows your quicklist: each project's number, its work item and
 its title, at most 5 lines (a longer list ends with `… N more`; `projects` lists them all). It is
 left out while the output of `help` or `projects` is shown.
+`renameproject`, `removeproject` and `moveproject` keep the list tidy; they change only
+`projects.json`, never a day file, so a removed project's booked checkpoints keep their work item.
 
 `prev` and `next` move one day back or forward, and `today` goes back to today. Looking at a day
 never creates a file: a day's file is written only when you book the first entry on it.

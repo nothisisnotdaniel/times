@@ -1139,6 +1139,221 @@ internal sealed class App
     {
         registry.Register("addproject", "ap", "Add a project to the quicklist: <work item> <title>", AddProject);
         registry.Register("projects", "pr", "List the projects on the quicklist", NoArguments("projects", ListProjects));
+        registry.Register("renameproject", "rn", "Rename a project on the quicklist: <number> <title>", RenameProject);
+        registry.Register("removeproject", "xp", "Remove a project from the quicklist by its number", RemoveProject);
+        registry.Register("moveproject", "mp", "Move a project to another number on the quicklist: <number> <new number>", MoveProject);
+    }
+
+    // The hint for a project title that is missing or invalid, or null if the title is fine. Used by
+    // addproject and renameproject, so both refuse the same titles with the same texts.
+    private static CommandResult? ProjectTitleProblem(string name, string title, string usage)
+    {
+        if (title.Length == 0)
+        {
+            return Hint($"{name}: the title is missing. {usage}");
+        }
+
+        if (title.Length > ProjectList.MaxTitleLength)
+        {
+            return Hint($"{name}: the title is longer than {ProjectList.MaxTitleLength.ToString(CultureInfo.InvariantCulture)} characters.");
+        }
+
+        if (ProjectList.HasControlCharacters(title))
+        {
+            return Hint($"{name}: the title must not contain control characters. {RetypeHiddenCharacters}");
+        }
+
+        if (ProjectList.HasInvisibleOrBrokenCharacters(title))
+        {
+            return Hint($"{name}: the title must not contain invisible formatting or broken characters. {RetypeHiddenCharacters}");
+        }
+
+        return null;
+    }
+
+    // Parses a quicklist number: a plain positive integer (no sign, no spaces, no separators).
+    private static bool TryParseProjectNumber(string text, out int number) =>
+        int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out number) && number >= 1;
+
+    // Loads the quicklist for a command that changes it, or returns the hint to show if it cannot be read.
+    private ProjectList? LoadProjectsFor(string name, string nothingDone, out CommandResult? hint)
+    {
+        try
+        {
+            hint = null;
+            return projectStore.Load();
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            hint = Hint($"{name}: {UnreadableProjects(ex)} {nothingDone} {UnreadableProjectsNextStep}");
+            return null;
+        }
+    }
+
+    // The hint for a project number that is not on the list.
+    private static CommandResult NoSuchProject(string name, int number, ProjectList list, string usage) =>
+        list.IsEmpty
+            ? Hint($"{name}: the quicklist is empty, so there is no project {number.ToString(CultureInfo.InvariantCulture)}. {usage}")
+            : Hint($"{name}: there is no project {number.ToString(CultureInfo.InvariantCulture)}; the quicklist has " +
+                $"{list.Projects.Count.ToString(CultureInfo.InvariantCulture)}. {usage}");
+
+    // Saves a changed quicklist, or returns the hint to show if it cannot be saved.
+    private CommandResult? SaveProjectsFor(string name, ProjectList list)
+    {
+        try
+        {
+            projectStore.Save(list);
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{name}: could not save the project list. {Markup.Escape(ex.Message)}");
+        }
+    }
+
+    // Gives project <number> a new title, keeping its work item number and position. Nothing is
+    // written if the number or title is invalid or projects.json cannot be read.
+    private CommandResult RenameProject(string argument)
+    {
+        const string Name = "renameproject";
+        const string Usage = "Use [bold]renameproject <number> <title>[/].";
+        if (argument.Length == 0)
+        {
+            return Hint($"{Name}: say the project number and the new title. {Usage}");
+        }
+
+        int split = argument.IndexOfAny([' ', '\t']);
+        string numberText = split < 0 ? argument : argument[..split];
+        string title = split < 0 ? string.Empty : argument[(split + 1)..].Trim();
+        if (!TryParseProjectNumber(numberText, out int number))
+        {
+            return Hint($"{Name}: [bold]{Markup.Escape(numberText)}[/] is not a project number. {Usage}");
+        }
+
+        if (ProjectTitleProblem(Name, title, Usage) is { } titleHint)
+        {
+            return titleHint;
+        }
+
+        if (LoadProjectsFor(Name, "Nothing was renamed.", out CommandResult? unreadable) is not { } current)
+        {
+            return unreadable!;
+        }
+
+        if (number > current.Projects.Count)
+        {
+            return NoSuchProject(Name, number, current, Usage);
+        }
+
+        ProjectList updated = current.Rename(number, title);
+        if (SaveProjectsFor(Name, updated) is { } saveHint)
+        {
+            return saveHint;
+        }
+
+        return new CommandResult(new Markup(
+            $"Renamed project [steelblue1]{number.ToString(CultureInfo.InvariantCulture)}[/]: " +
+            $"#{updated.Projects[number - 1].WorkItem.ToString(CultureInfo.InvariantCulture)} {Markup.Escape(title)}"));
+    }
+
+    // Drops project <number> from the quicklist; later projects move up one number. Day files are
+    // never read or written: checkpoints store work item numbers, so booked times keep theirs.
+    private CommandResult RemoveProject(string argument)
+    {
+        const string Name = "removeproject";
+        const string Usage = "Use [bold]removeproject <number>[/]. It changes only the quicklist; booked times stay.";
+        if (argument.Length == 0)
+        {
+            return Hint($"{Name}: say which project to remove. {Usage}");
+        }
+
+        if (!TryParseProjectNumber(argument, out int number))
+        {
+            return Hint($"{Name}: [bold]{Markup.Escape(argument)}[/] is not a project number. {Usage}");
+        }
+
+        if (LoadProjectsFor(Name, "Nothing was removed.", out CommandResult? unreadable) is not { } current)
+        {
+            return unreadable!;
+        }
+
+        if (number > current.Projects.Count)
+        {
+            return NoSuchProject(Name, number, current, Usage);
+        }
+
+        Project removed = current.Projects[number - 1];
+        if (SaveProjectsFor(Name, current.Remove(number)) is { } saveHint)
+        {
+            return saveHint;
+        }
+
+        return new CommandResult(new Markup(
+            $"Removed project [steelblue1]{number.ToString(CultureInfo.InvariantCulture)}[/]: " +
+            $"#{removed.WorkItem.ToString(CultureInfo.InvariantCulture)} {Markup.Escape(removed.Title)}"));
+    }
+
+    // Moves project <number> to <new number>; the projects in between shift by one. Nothing is
+    // written if either number is invalid, both are the same, or projects.json cannot be read.
+    private CommandResult MoveProject(string argument)
+    {
+        const string Name = "moveproject";
+        const string Usage = "Use [bold]moveproject <number> <new number>[/].";
+        string[] parts = argument.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0)
+        {
+            return Hint($"{Name}: say the project number and its new number. {Usage}");
+        }
+
+        if (!TryParseProjectNumber(parts[0], out int from))
+        {
+            return Hint($"{Name}: [bold]{Markup.Escape(parts[0])}[/] is not a project number. {Usage}");
+        }
+
+        if (parts.Length == 1)
+        {
+            return Hint($"{Name}: the new number is missing. {Usage}");
+        }
+
+        if (parts.Length > 2)
+        {
+            return Hint($"{Name}: say only the project number and its new number. {Usage}");
+        }
+
+        if (!TryParseProjectNumber(parts[1], out int to))
+        {
+            return Hint($"{Name}: [bold]{Markup.Escape(parts[1])}[/] is not a project number. {Usage}");
+        }
+
+        if (LoadProjectsFor(Name, "Nothing was moved.", out CommandResult? unreadable) is not { } current)
+        {
+            return unreadable!;
+        }
+
+        if (from > current.Projects.Count)
+        {
+            return NoSuchProject(Name, from, current, Usage);
+        }
+
+        if (to > current.Projects.Count)
+        {
+            return NoSuchProject(Name, to, current, Usage);
+        }
+
+        string workItem = current.Projects[from - 1].WorkItem.ToString(CultureInfo.InvariantCulture);
+        if (from == to)
+        {
+            return new CommandResult(hint: new Markup(
+                $"[grey]Project #{workItem} is already number {to.ToString(CultureInfo.InvariantCulture)}. Nothing was moved.[/]"));
+        }
+
+        if (SaveProjectsFor(Name, current.Move(from, to)) is { } saveHint)
+        {
+            return saveHint;
+        }
+
+        return new CommandResult(new Markup(
+            $"Moved project #{workItem} to number [steelblue1]{to.ToString(CultureInfo.InvariantCulture)}[/]"));
     }
 
     // Adds a project to the end of the quicklist. Nothing is written if the work item or title is
@@ -1147,7 +1362,6 @@ internal sealed class App
     {
         const string Name = "addproject";
         const string Usage = "Use [bold]addproject <work item> <title>[/].";
-        const string TitleMissing = "the title is missing.";
         if (argument.Length == 0)
         {
             return Hint($"{Name}: say the work item number and the title. {Usage}");
@@ -1161,24 +1375,9 @@ internal sealed class App
             return Hint($"{Name}: [bold]{Markup.Escape(number)}[/] is not a work item number. {Usage}");
         }
 
-        if (title.Length == 0)
+        if (ProjectTitleProblem(Name, title, Usage) is { } titleHint)
         {
-            return Hint($"{Name}: {TitleMissing} {Usage}");
-        }
-
-        if (title.Length > ProjectList.MaxTitleLength)
-        {
-            return Hint($"{Name}: the title is longer than {ProjectList.MaxTitleLength.ToString(CultureInfo.InvariantCulture)} characters.");
-        }
-
-        if (ProjectList.HasControlCharacters(title))
-        {
-            return Hint($"{Name}: the title must not contain control characters. {RetypeHiddenCharacters}");
-        }
-
-        if (ProjectList.HasInvisibleOrBrokenCharacters(title))
-        {
-            return Hint($"{Name}: the title must not contain invisible formatting or broken characters. {RetypeHiddenCharacters}");
+            return titleHint;
         }
 
         ProjectList current;
