@@ -751,7 +751,7 @@ internal sealed class App
 
     private void RegisterDevOps()
     {
-        registry.Register("devops", "dv", "Show or set the Azure DevOps link, or import assigned work items: [connect <org> | import | disconnect]", DevOps);
+        registry.Register("devops", "dv", "Show or set the Azure DevOps link: [connect <org> | import | disconnect]", DevOps);
         registry.Register("sync", "sy", "Send unbooked hours to Azure DevOps: <from> <to> [send]", Sync);
     }
 

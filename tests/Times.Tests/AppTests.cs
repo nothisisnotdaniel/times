@@ -10724,7 +10724,7 @@ public sealed class AppTests : IDisposable
 
         new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
 
-        string description = Regex.Escape("Show or set the Azure DevOps link, or import assigned work items: [connect <org> | import | disconnect]");
+        string description = Regex.Escape("Show or set the Azure DevOps link: [connect <org> | import | disconnect]");
         Assert.Matches(@"│ devops +│ dv +│ " + description, console.Output);
         Assert.Matches(@"devops +dv +" + description, console.Output);
     }
