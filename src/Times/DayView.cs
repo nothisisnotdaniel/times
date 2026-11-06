@@ -93,6 +93,10 @@ internal sealed class DayView
     /// <c>null</c>. An empty day on a holiday shows as an absence day with <c>Absence: Public holiday · Corpus Christi</c>;
     /// a stored <c>publicHoliday</c> absence names the holiday the same way (other absences are unchanged); a day with
     /// entries gets one grey <c>Public holiday: Corpus Christi</c> line directly below the heading.
+    /// Each of the day's balance corrections (see <see cref="DayRecord.Corrections"/>) adds one row directly above the
+    /// target line, indented like it (see <see cref="CorrectionLine"/>). The <c>day</c> part never includes them. A day
+    /// with corrections but no entries or absence shows <c>No entries yet.</c>, the correction rows and the target line
+    /// without <c>day</c>; on a public holiday it shows as that absence day, with the correction rows above its target line.
     /// </summary>
     public IRenderable Render(
         DayRecord day,
@@ -104,7 +108,8 @@ internal sealed class DayView
         string? holiday = null)
     {
         // A stored absence wins; an empty day on a holiday shows as a public holiday absence (no file is written).
-        AbsenceKind? shownAbsence = day.Absence ?? (day.IsEmpty && holiday is not null ? AbsenceKind.PublicHoliday : null);
+        bool nothingBooked = day.Entries.Count == 0 && day.Absence is null;
+        AbsenceKind? shownAbsence = day.Absence ?? (nothingBooked && holiday is not null ? AbsenceKind.PublicHoliday : null);
         if (shownAbsence is { } absence)
         {
             string label = Markup.Escape(AbsenceLabel(absence));
@@ -117,16 +122,18 @@ internal sealed class DayView
             [
                 HeadingRule(),
                 new Markup($"[grey]Absence:[/] [steelblue1]{label}[/]"),
-                new Markup(TargetLineWith(target, "+0:00", balance)),
             ];
+            AddCorrections(absent, day, 0);
+            absent.Add(new Markup(TargetLineWith(target, "+0:00", balance)));
             AddWeekLine(absent, weekWarnings, 0);
             return new Rows(absent);
         }
 
-        if (day.IsEmpty)
+        if (nothingBooked)
         {
             List<IRenderable> empty = [HeadingRule(), new Markup("[grey]No entries yet.[/]")];
-            if (balance.CountedDays > 0)
+            AddCorrections(empty, day, 0);
+            if (balance.CountedDays > 0 || day.Corrections.Count > 0)
             {
                 empty.Add(new Markup(TargetLine(target, null, balance)));
             }
@@ -222,8 +229,9 @@ internal sealed class DayView
             grid,
             Text.Empty,
             new Padder(new Markup(summary), new Padding(indent, 0, 0, 0)),
-            new Padder(new Markup(TargetLine(target, worked - target, balance)), new Padding(indent, 0, 0, 0)),
         ]);
+        AddCorrections(rows, day, indent);
+        rows.Add(new Padder(new Markup(TargetLine(target, worked - target, balance)), new Padding(indent, 0, 0, 0)));
         AddHint(rows, "Break not ended", day.UnendedBreaks(), indent);
         AddHint(rows, "Break outside arrival and leaving", day.BreaksOutsideSpans(), indent);
         AddWeekLine(rows, weekWarnings, indent);
@@ -231,6 +239,24 @@ internal sealed class DayView
     }
 
     private static readonly WorkingTimeCheckOptions BreaksOnly = new(true, false, false);
+
+    /// <summary>
+    /// One correction row's markup: grey <c>Correction 1</c>, the <c>SteelBlue1</c> signed amount
+    /// (<see cref="FormatSigned"/>), a grey <c>·</c> and the escaped reason.
+    /// </summary>
+    internal static string CorrectionLine(int number, BalanceCorrection correction) =>
+        $"[grey]Correction {number.ToString(CultureInfo.InvariantCulture)}[/] " +
+        $"[steelblue1]{FormatSigned(correction.Amount)}[/] [grey]·[/] {Markup.Escape(correction.Reason)}";
+
+    // One row per correction, in order; nothing for a day without corrections, so such days look as before.
+    private static void AddCorrections(List<IRenderable> rows, DayRecord day, int indent)
+    {
+        for (int i = 0; i < day.Corrections.Count; i++)
+        {
+            IRenderable line = new Markup(CorrectionLine(i + 1, day.Corrections[i]));
+            rows.Add(indent == 0 ? line : new Padder(line, new Padding(indent, 0, 0, 0)));
+        }
+    }
 
     /// <summary>
     /// The week line's markup: a yellow <c>! Working-time warnings this week: Mon, Wed</c> naming

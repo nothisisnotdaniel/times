@@ -1578,4 +1578,192 @@ public class DayRecordTests
         Assert.Equal(record.WorkTime(), record.WorkTimeAt(new TimeOnly(12, 0)));
         Assert.Equal(TimeSpan.FromHours(8), record.TimeLeftAt(TimeSpan.FromHours(8), new TimeOnly(12, 0)));
     }
+
+    // Job 121 ------------------------------------------------------------------------------
+
+    private static BalanceCorrection Correction(int minutes, string reason) => new(minutes, reason);
+
+    // AC-1, AC-2
+    [Theory]
+    [InlineData("+2:30", 150)]
+    [InlineData("-1:05", -65)]
+    [InlineData("+0:01", 1)]
+    [InlineData("-999:59", -59999)]
+    [InlineData("+10:00", 600)]
+    [InlineData("+007:00", 420)]
+    public void TryParseAmount_ValidForms(string text, int expected)
+    {
+        Assert.True(BalanceCorrection.TryParseAmount(text, out int minutes));
+        Assert.Equal(expected, minutes);
+    }
+
+    // AC-2
+    [Theory]
+    [InlineData("")]
+    [InlineData("2:30")]
+    [InlineData("+2")]
+    [InlineData("+2:60")]
+    [InlineData("+1000:00")]
+    [InlineData("+0:00")]
+    [InlineData("-0:00")]
+    [InlineData("+:30")]
+    [InlineData("+2:3")]
+    [InlineData("+2:300")]
+    [InlineData("+2.30")]
+    [InlineData("++2:30")]
+    [InlineData(" +2:30")]
+    [InlineData("+2:30 ")]
+    [InlineData("+\u0662:30")]
+    [InlineData("+2:\u0663\u0660")]
+    [InlineData("\u22122:30")]
+    public void TryParseAmount_RefusesOtherForms(string text)
+    {
+        Assert.False(BalanceCorrection.TryParseAmount(text, out int minutes));
+        Assert.Equal(0, minutes);
+    }
+
+    // AC-1, AC-2
+    [Fact]
+    public void BalanceCorrection_Constructor_RefusesBadValues()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => Correction(0, "x"));
+        Assert.Throws<ArgumentOutOfRangeException>(() => Correction(60000, "x"));
+        Assert.Throws<ArgumentOutOfRangeException>(() => Correction(-60000, "x"));
+        Assert.Throws<ArgumentException>(() => Correction(5, " "));
+        Assert.Throws<ArgumentException>(() => Correction(5, new string('a', 201)));
+        Assert.Throws<ArgumentException>(() => Correction(5, "a\u200Bb"));
+        Assert.Throws<ArgumentException>(() => Correction(5, "a\nb"));
+        Assert.Equal(59999, Correction(59999, "Max").Minutes);
+        Assert.Equal(-59999, Correction(-59999, "Min").Minutes);
+    }
+
+    // AC-5
+    [Fact]
+    public void FileWithoutCorrections_LoadsWithNone_AndSavesTheSameBytes()
+    {
+        string json = "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:15\"},{\"kind\":\"leaving\",\"time\":\"12:00\"}]}";
+
+        DayRecord record = DayRecord.FromJson(json);
+
+        Assert.Empty(record.Corrections);
+        Assert.Equal(json, record.ToJson());
+        Assert.Equal("{\"absence\":\"sick\",\"entries\":[]}", DayRecord.FromJson("{\"absence\":\"sick\",\"entries\":[]}").ToJson());
+        Assert.Equal("{\"entries\":[]}", DayRecord.Empty.ToJson());
+    }
+
+    // AC-5
+    [Fact]
+    public void Corrections_AreWrittenAfterEntries_AndRoundTrip()
+    {
+        DayRecord record = DayRecord.Empty.Add(Arrival(8, 0))
+            .AddCorrection(Correction(150, "Starting balance"))
+            .AddCorrection(Correction(-65, "Paid-out \"overtime\" ❤️"));
+
+        string json = record.ToJson();
+
+        Assert.StartsWith(
+            "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}],\"corrections\":[{\"minutes\":150,\"reason\":\"Starting balance\"},{\"minutes\":-65,\"reason\":",
+            json);
+        DayRecord read = DayRecord.FromJson(json);
+        Assert.Equal(record, read);
+        Assert.Equal(new[] { 150, -65 }, read.Corrections.Select(c => c.Minutes));
+        Assert.Equal("Paid-out \"overtime\" ❤️", read.Corrections[1].Reason);
+        Assert.Equal(json, read.ToJson());
+    }
+
+    // AC-4, AC-5
+    [Fact]
+    public void Corrections_SitNextToAnAbsence_AndRoundTrip()
+    {
+        DayRecord record = DayRecord.Empty.AddCorrection(Correction(30, "Fix")).WithAbsence(AbsenceKind.Vacation);
+
+        string json = record.ToJson();
+
+        Assert.Equal("{\"absence\":\"vacation\",\"entries\":[],\"corrections\":[{\"minutes\":30,\"reason\":\"Fix\"}]}", json);
+        Assert.Equal(record, DayRecord.FromJson(json));
+        Assert.Single(record.WithAbsence(null).Corrections);
+    }
+
+    // AC-6
+    [Theory]
+    [InlineData("{\"entries\":[],\"corrections\":{}}")]
+    [InlineData("{\"entries\":[],\"corrections\":null}")]
+    [InlineData("{\"entries\":[],\"corrections\":[1]}")]
+    [InlineData("{\"entries\":[],\"corrections\":[{\"reason\":\"x\"}]}")]
+    [InlineData("{\"entries\":[],\"corrections\":[{\"minutes\":5}]}")]
+    [InlineData("{\"entries\":[],\"corrections\":[{\"minutes\":5,\"minutes\":6,\"reason\":\"x\"}]}")]
+    [InlineData("{\"entries\":[],\"corrections\":[{\"minutes\":5,\"reason\":\"x\",\"reason\":\"y\"}]}")]
+    [InlineData("{\"entries\":[],\"corrections\":[{\"minutes\":5,\"reason\":\"x\",\"note\":1}]}")]
+    [InlineData("{\"entries\":[],\"corrections\":[{\"minutes\":5.5,\"reason\":\"x\"}]}")]
+    [InlineData("{\"entries\":[],\"corrections\":[{\"minutes\":5.0,\"reason\":\"x\"}]}")]
+    [InlineData("{\"entries\":[],\"corrections\":[{\"minutes\":1e2,\"reason\":\"x\"}]}")]
+    [InlineData("{\"entries\":[],\"corrections\":[{\"minutes\":\"5\",\"reason\":\"x\"}]}")]
+    [InlineData("{\"entries\":[],\"corrections\":[{\"minutes\":0,\"reason\":\"x\"}]}")]
+    [InlineData("{\"entries\":[],\"corrections\":[{\"minutes\":60000,\"reason\":\"x\"}]}")]
+    [InlineData("{\"entries\":[],\"corrections\":[{\"minutes\":-60000,\"reason\":\"x\"}]}")]
+    [InlineData("{\"entries\":[],\"corrections\":[{\"minutes\":99999999999,\"reason\":\"x\"}]}")]
+    [InlineData("{\"entries\":[],\"corrections\":[{\"minutes\":5,\"reason\":\" \"}]}")]
+    [InlineData("{\"entries\":[],\"corrections\":[{\"minutes\":5,\"reason\":3}]}")]
+    [InlineData("{\"entries\":[],\"corrections\":[{\"minutes\":5,\"reason\":\"a\\u200bb\"}]}")]
+    [InlineData("{\"entries\":[],\"corrections\":[{\"minutes\":5,\"reason\":\"a\\u0007b\"}]}")]
+    [InlineData("{\"entries\":[],\"corrections\":[{\"minutes\":5,\"reason\":\"\\ud800\"}]}")]
+    [InlineData("{\"entries\":[],\"corrections\":[],\"corrections\":[]}")]
+    public void FromJson_BrokenCorrections_ThrowsJsonException(string json)
+    {
+        Assert.ThrowsAny<JsonException>(() => DayRecord.FromJson(json));
+    }
+
+    // AC-6
+    [Fact]
+    public void FromJson_ReasonOverTwoHundredCharacters_ThrowsJsonException()
+    {
+        string json = "{\"entries\":[],\"corrections\":[{\"minutes\":5,\"reason\":\"" + new string('a', 201) + "\"}]}";
+
+        Assert.ThrowsAny<JsonException>(() => DayRecord.FromJson(json));
+    }
+
+    // AC-3, AC-4
+    [Fact]
+    public void Corrections_AreKeptThroughEveryEntryChange()
+    {
+        BalanceCorrection first = Correction(150, "Start");
+        BalanceCorrection second = Correction(-30, "Paid");
+        DayRecord record = DayRecord.Empty.AddCorrection(first).AddCorrection(second);
+        DayRecord withEntries = record.Add(Arrival(8, 0)).Add(new DayEntry(EntryKind.Checkpoint, new TimeOnly(9, 0), "Task", 5));
+
+        Assert.Equal(new[] { first, second }, withEntries.Corrections);
+        Assert.Equal(new[] { first, second }, withEntries.RemoveAt(1).Corrections);
+        Assert.Equal(new[] { first, second }, withEntries.ChangeTime(1, new TimeOnly(7, 0)).Corrections);
+        Assert.Equal(new[] { first, second }, withEntries.SetBooked(2, true).Corrections);
+        Assert.Equal(new[] { first, second }, record.WithAbsence(AbsenceKind.Sick).Corrections);
+        Assert.Equal(new[] { second }, withEntries.RemoveCorrection(1).Corrections);
+        Assert.Equal(2, withEntries.RemoveCorrection(1).Entries.Count);
+        Assert.Throws<ArgumentOutOfRangeException>(() => record.RemoveCorrection(0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => record.RemoveCorrection(3));
+    }
+
+    // AC-5
+    [Fact]
+    public void Corrections_ArePartOfEqualityAndIsEmpty()
+    {
+        DayRecord one = DayRecord.Empty.AddCorrection(Correction(5, "x"));
+
+        Assert.False(one.IsEmpty);
+        Assert.True(one.RemoveCorrection(1).IsEmpty);
+        Assert.NotEqual(DayRecord.Empty, one);
+        Assert.NotEqual(one, DayRecord.Empty.AddCorrection(Correction(6, "x")));
+        Assert.NotEqual(one, DayRecord.Empty.AddCorrection(Correction(5, "y")));
+        Assert.Equal(one, DayRecord.Empty.AddCorrection(Correction(5, "x")));
+        Assert.Equal(one.GetHashCode(), DayRecord.Empty.AddCorrection(Correction(5, "x")).GetHashCode());
+        Assert.Equal(TimeSpan.FromMinutes(-25), one.AddCorrection(Correction(-30, "y")).CorrectionTotal);
+    }
+
+    // AC-5: corrections leave the work time alone.
+    [Fact]
+    public void Corrections_DoNotChangeWorkTime()
+    {
+        DayRecord record = DayRecord.Empty.Add(Arrival(8, 0)).Add(Leaving(12, 0));
+
+        Assert.Equal(record.WorkTime(), record.AddCorrection(Correction(600, "x")).WorkTime());
+    }
 }

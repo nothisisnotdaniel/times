@@ -881,7 +881,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(
             ["absence", "addproject", "arrive", "backup", "booked", "break", "breakend", "…"],
             popup.Select(w => w.Text.Split(' ')[0]));
-        Assert.StartsWith("… 25 more", popup[^1].Text);
+        Assert.StartsWith("… 26 more", popup[^1].Text);
         Assert.Contains("Book the end of a break", popup[6].Text);
         Assert.Equal(80, popup[0].Text.Length);
     }
@@ -954,9 +954,9 @@ public sealed class AppTests : IDisposable
         List<string> hintRow = TypingWrites(output, 1).Where(w => w.Row == 21).Select(w => w.Text).ToList();
 
         // popup, restored (Backspace), popup, restored (Esc), popup (quit typing), ...
-        Assert.StartsWith("… 25 more", hintRow[0]);
+        Assert.StartsWith("… 26 more", hintRow[0]);
         Assert.Contains("Unknown command nope", hintRow[1]);
-        Assert.StartsWith("… 25 more", hintRow[2]);
+        Assert.StartsWith("… 26 more", hintRow[2]);
         Assert.Contains("Unknown command nope", hintRow[3]);
         Assert.Contains("Unknown command nope", hintRow[^1]);
         Assert.Contains("\u001b[38;5;9mUnknown command", output[output.LastIndexOf("\u001b[21;1H", StringComparison.Ordinal)..]);
@@ -990,7 +990,7 @@ public sealed class AppTests : IDisposable
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
         // 39 commands: 7 shown, the eighth row counts the other 32.
-        Assert.StartsWith("… 37 more", popup[^1].Text);
+        Assert.StartsWith("… 38 more", popup[^1].Text);
         // Nothing is drawn on row 1 while typing (the final clear on quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
@@ -1575,13 +1575,13 @@ public sealed class AppTests : IDisposable
     {
         (_, string output) = Run(c =>
         {
-            c.Profile.Height = 80;
+            c.Profile.Height = 90;
             c.Input.PushTextWithEnter("help");
             c.Input.PushTextWithEnter("quit");
         }, ManyCommands());
 
         string[] frame = Frames(output)[1];
-        Assert.Equal(80, frame.Length);
+        Assert.Equal(90, frame.Length);
         Assert.DoesNotContain(frame, l => l.Contains("more lines", StringComparison.Ordinal));
         string[] top = frame[..^4];
         int last = Array.FindLastIndex(top, l => !string.IsNullOrWhiteSpace(l));
@@ -4851,6 +4851,7 @@ public sealed class AppTests : IDisposable
             ["unbooked"] = "ub",
             ["update"] = "up",
             ["vacation"] = "va",
+            ["correction"] = "co",
             ["import"] = "im",
         };
 
@@ -14687,5 +14688,305 @@ public sealed class AppTests : IDisposable
         Assert.Equal(Enumerable.Range(0, 20).Select(BrokenDate), yellow.Select(l => l.Substring(2, 10)));
         Assert.DoesNotContain(frame, l => l.Contains("changed on disk", StringComparison.Ordinal));
         Assert.Equal(["… and 2 more"], frame.Where(IsMoreLine));
+    }
+
+    // Job 121 ------------------------------------------------------------------------------
+
+    private const string CorrectionUsage = "correction +H:mm|-H:mm <reason>";
+
+    private const string TwoCorrections =
+        "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"},{\"kind\":\"leaving\",\"time\":\"12:00\"}]," +
+        "\"corrections\":[{\"minutes\":150,\"reason\":\"Starting balance\"},{\"minutes\":-65,\"reason\":\"Paid\"}]}";
+
+    // AC-1
+    [Theory]
+    [InlineData("correction +2:30 Starting balance", 150, "Starting balance")]
+    [InlineData("co +2:30 Starting balance", 150, "Starting balance")]
+    [InlineData("/correction +2:30 Starting balance", 150, "Starting balance")]
+    [InlineData("/co +2:30   Starting balance  ", 150, "Starting balance")]
+    [InlineData("correction -1:05 Paid-out overtime", -65, "Paid-out overtime")]
+    [InlineData("correction +999:59 Max", 59999, "Max")]
+    public void Correction_OnEmptyDay_SavesTheCorrection(string command, int minutes, string reason)
+    {
+        (int exitCode, string output) = RunCommands(command, "quit");
+
+        Assert.Equal(0, exitCode);
+        DayRecord saved = DayRecord.FromJson(ReadDay("2026-10-27"));
+        BalanceCorrection correction = Assert.Single(saved.Corrections);
+        Assert.Equal(minutes, correction.Minutes);
+        Assert.Equal(reason, correction.Reason);
+        Assert.Empty(saved.Entries);
+        Assert.Null(saved.Absence);
+        Assert.Contains("Correction 1", LastFrame(output));
+        Assert.Contains(reason, LastFrame(output));
+    }
+
+    // AC-1: the exact file.
+    [Fact]
+    public void Correction_WritesTheCorrectionsProperty()
+    {
+        (int exitCode, _) = RunCommands("correction +2:30 Starting balance", "correction -1:05 Paid", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(
+            "{\"entries\":[],\"corrections\":[{\"minutes\":150,\"reason\":\"Starting balance\"},{\"minutes\":-65,\"reason\":\"Paid\"}]}",
+            ReadDay("2026-10-27"));
+    }
+
+    // AC-1, AC-7, AC-8: the balance on the target line includes the correction, the day part does not.
+    [Fact]
+    public void Correction_ShowsInTheBalance()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), Entries("arrival 08:00", "leaving 16:00"));
+
+        (_, string output) = RunCommands("correction +2:30 Starting balance", "quit");
+
+        Assert.Contains("Target 8:00 · day 0:00 · balance +2:30", LastFrame(output));
+    }
+
+    // AC-2
+    [Theory]
+    [InlineData("correction")]
+    [InlineData("co")]
+    [InlineData("correction Starting balance")]
+    [InlineData("correction 2:30 Starting balance")]
+    [InlineData("correction +2 Starting balance")]
+    [InlineData("correction +2:60 Starting balance")]
+    [InlineData("correction +1000:00 Starting balance")]
+    [InlineData("correction +0:00 Starting balance")]
+    [InlineData("correction -0:00 Starting balance")]
+    [InlineData("correction +2:30")]
+    [InlineData("correction +2:30    ")]
+    public void Correction_BadAmountOrMissingReason_ShowsUsage_AndWritesNothing(string command)
+    {
+        (int exitCode, string output) = RunCommands(command, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.False(File.Exists(DayFile("2026-10-27")));
+        string[] frame = LastLayout(output);
+        AssertLayout(frame);
+        Assert.Contains(CorrectionUsage, HintText(frame, "correction:"));
+    }
+
+    // AC-2: non-ASCII digits are no amount.
+    [Fact]
+    public void Correction_NonAsciiDigit_IsNoAmount_AndWritesNothing()
+    {
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Input.PushText("correction +");
+            c.Input.PushKey(new ConsoleKeyInfo('\u0662', ConsoleKey.NoName, false, false, false));
+            c.Input.PushTextWithEnter(":30 Starting balance");
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Equal(0, exitCode);
+        Assert.False(File.Exists(DayFile("2026-10-27")));
+        Assert.Contains(CorrectionUsage, HintText(LastLayout(output), "correction:"));
+    }
+
+    // AC-2: the reason gets the checkpoint name rules and hints.
+    [Fact]
+    public void Correction_InvisibleReason_ShowsTheNameHint_AndWritesNothing()
+    {
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Input.PushText("correction +1:00 Paid");
+            c.Input.PushKey(new ConsoleKeyInfo('\u200b', ConsoleKey.NoName, false, false, false));
+            c.Input.PushTextWithEnter("x");
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Equal(0, exitCode);
+        Assert.False(File.Exists(DayFile("2026-10-27")));
+        Assert.Equal(
+            "correction: the reason must not contain invisible formatting or broken characters. Retype it without the hidden characters.",
+            HintText(LastLayout(output), "correction:"));
+    }
+
+    // AC-2: the line editor never types a control character, so the handler is called directly.
+    [Fact]
+    public void Correction_ControlCharacterInReason_ShowsTheNameHint_AndWritesNothing()
+    {
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+        (_, _) = Run(c => c.Input.PushTextWithEnter("quit"), registry);
+        Assert.True(registry.TryGet("correction", out Command command));
+
+        CommandResult result = command.Handler("+1:00 Paid\u0007x");
+
+        TestConsole hint = new TestConsole();
+        hint.Profile.Width = 200;
+        hint.Write(Assert.IsAssignableFrom<Spectre.Console.Rendering.IRenderable>(result.Hint));
+        Assert.Contains("correction: the reason must not contain control characters. Retype it without the hidden characters.", hint.Output);
+        Assert.False(File.Exists(DayFile("2026-10-27")));
+    }
+
+    // AC-2
+    [Fact]
+    public void Correction_ReasonOverTwoHundredCharacters_ShowsHint_AndWritesNothing()
+    {
+        (int exitCode, string output) = RunCommands("correction +1:00 " + new string('a', 201), "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.False(File.Exists(DayFile("2026-10-27")));
+        Assert.Equal("correction: the reason is longer than 200 characters.", HintText(LastLayout(output), "correction:"));
+    }
+
+    // AC-2: the hint is red.
+    [Fact]
+    public void Correction_UsageHint_IsRed()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Input.PushTextWithEnter("correction +2");
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), instanceLock: sideLock).Run([]);
+
+        Assert.Matches(@"\x1b\[38;5;9mcorrection: ", console.Output);
+    }
+
+    // AC-3
+    [Fact]
+    public void CorrectionRemove_RemovesOnlyThatCorrection()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), TwoCorrections);
+
+        (int exitCode, _) = RunCommands("correction remove 1", "quit");
+
+        Assert.Equal(0, exitCode);
+        DayRecord saved = DayRecord.FromJson(ReadDay("2026-10-27"));
+        Assert.Equal(2, saved.Entries.Count);
+        BalanceCorrection left = Assert.Single(saved.Corrections);
+        Assert.Equal("Paid", left.Reason);
+    }
+
+    // AC-3
+    [Theory]
+    [InlineData("correction remove", "say which correction to remove")]
+    [InlineData("co remove x", "is not a correction number")]
+    [InlineData("correction remove -1", "is not a correction number")]
+    [InlineData("correction remove 0", "there is no correction 0")]
+    [InlineData("correction remove 3", "there is no correction 3")]
+    public void CorrectionRemove_BadNumber_ShowsHint_AndWritesNothing(string command, string expected)
+    {
+        File.WriteAllText(DayFile("2026-10-27"), TwoCorrections);
+
+        (int exitCode, string output) = RunCommands(command, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(TwoCorrections, ReadDay("2026-10-27"));
+        Assert.Contains(expected, HintText(LastLayout(output), "correction:"));
+    }
+
+    // AC-3
+    [Fact]
+    public void CorrectionRemove_OnDayWithoutFile_WritesNothing()
+    {
+        (_, string output) = RunCommands("correction remove 1", "quit");
+
+        Assert.False(File.Exists(DayFile("2026-10-27")));
+        Assert.Contains("there is no correction 1", HintText(LastLayout(output), "correction:"));
+    }
+
+    // AC-3
+    [Fact]
+    public void Remove_StillRemovesOnlyEntries()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), TwoCorrections);
+
+        (_, _) = RunCommands("remove 1", "quit");
+
+        DayRecord saved = DayRecord.FromJson(ReadDay("2026-10-27"));
+        Assert.Single(saved.Entries);
+        Assert.Equal(2, saved.Corrections.Count);
+    }
+
+    // AC-4
+    [Fact]
+    public void Correction_OnDayWithEntries_KeepsTheEntries()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), Entries("arrival 08:00"));
+
+        (_, _) = RunCommands("correction -0:30 Paid", "quit");
+
+        Assert.Equal(
+            "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}],\"corrections\":[{\"minutes\":-30,\"reason\":\"Paid\"}]}",
+            ReadDay("2026-10-27"));
+    }
+
+    // AC-4
+    [Fact]
+    public void Correction_OnAbsenceDay_IsSaved()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), "{\"absence\":\"vacation\",\"entries\":[]}");
+
+        (_, string output) = RunCommands("correction +1:00 Carry over", "quit");
+
+        Assert.Equal(
+            "{\"absence\":\"vacation\",\"entries\":[],\"corrections\":[{\"minutes\":60,\"reason\":\"Carry over\"}]}",
+            ReadDay("2026-10-27"));
+        Assert.Contains("Absence:", LastFrame(output));
+        Assert.Contains("Correction 1", LastFrame(output));
+    }
+
+    // AC-4
+    [Fact]
+    public void Absence_OnDayWithOnlyCorrections_IsSet_AndBookingStaysRefused()
+    {
+        (_, string output) = RunCommands("correction +1:00 Carry over", "absence sick", "arrive 8:00", "quit");
+
+        Assert.Equal(
+            "{\"absence\":\"sick\",\"entries\":[],\"corrections\":[{\"minutes\":60,\"reason\":\"Carry over\"}]}",
+            ReadDay("2026-10-27"));
+        Assert.Contains("this day is marked as absence", HintText(LastLayout(output), "arrive:"));
+    }
+
+    // AC-4: clearing the absence keeps the corrections.
+    [Fact]
+    public void AbsenceClear_KeepsCorrections()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), "{\"absence\":\"sick\",\"entries\":[],\"corrections\":[{\"minutes\":60,\"reason\":\"x\"}]}");
+
+        (_, _) = RunCommands("absence clear", "quit");
+
+        Assert.Equal("{\"entries\":[],\"corrections\":[{\"minutes\":60,\"reason\":\"x\"}]}", ReadDay("2026-10-27"));
+    }
+
+    // AC-9
+    [Fact]
+    public void Correction_IsRegistered_WithAliasCo_AndListedInHelpAndPopup()
+    {
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+
+        (_, _) = Run(c => c.Input.PushTextWithEnter("quit"), registry);
+
+        Assert.True(registry.TryGet("co", out Command byAlias));
+        Assert.Equal("correction", byAlias.Name);
+        Assert.Equal("co", byAlias.Alias);
+        Assert.False(string.IsNullOrWhiteSpace(byAlias.Description));
+        Assert.Contains(registry.Match("co"), c => c.Name == "correction");
+        TestConsole help = new TestConsole();
+        help.Profile.Width = 200;
+        help.Write(registry.RenderHelp());
+        Assert.Matches(@"correction +│ co +│ Correct the balance", help.Output);
+    }
+
+    // AC-9
+    [Theory]
+    [InlineData("correction +1:00 Paid")]
+    [InlineData("correction remove 1")]
+    public void StaleDay_Correction_IsRefused_AndTheRetryWorks(string typed)
+    {
+        const string Initial = "{\"entries\":[],\"corrections\":[{\"minutes\":30,\"reason\":\"Old\"}]}";
+        const string Edited = "{\"entries\":[],\"corrections\":[{\"minutes\":30,\"reason\":\"Old\"},{\"minutes\":45,\"reason\":\"Edited outside\"}]}";
+
+        (string output, string? beforeRetry) = RunStale(typed, Initial, Edited);
+
+        List<string[]> frames = Frames(output);
+        Assert.Equal(3, frames.Count);
+        AssertOnHintRow(frames[1], ChangedHint("correction"));
+        Assert.Equal(Edited, beforeRetry);
+        Assert.NotEqual(Edited, ReadDay("2026-10-27"));
+        Assert.Contains("Edited outside", ReadDay("2026-10-27"));
     }
 }

@@ -147,6 +147,10 @@ Every factory agent reads this file before working on Times. Keep it short and a
   arrival; unreadable files are skipped and counted (yellow `! N day file(s) skipped`, no names).
   An absence day counts with a delta of zero, and `DayView` shows `Absence: Vacation` plus the
   target line with `day +0:00` for it.
+  `correction` (`co`) books `+H:mm|-H:mm <reason>` (`BalanceCorrection.TryParseAmount`, ASCII, 1-3 hour digits, not zero; reason
+  `IsValidTitle`) or `remove <n>` on the shown day, next to entries or an absence, as a top-level `"corrections"` array after
+  `"entries"` (left out when empty, strict on load). `Compute` adds every readable day's corrections (such a day counts); `DayView`
+  shows one grey `Correction <n>` row per correction above the target line, whose `day` part excludes them.
 - **Public holidays:** `PublicHolidays` (pure: `Easter` computus, `NameOf(date, country, state)`, English name or `null`)
   knows Germany's nationwide and per-state holidays (current rules, a few with start years). `App.RenderDay` reads the
   `Choice` settings `holiday-country` (`none`/`Germany`) and `holiday-state` (`none` or a state code) per redraw (missing,

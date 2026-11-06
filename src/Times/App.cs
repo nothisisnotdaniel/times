@@ -278,6 +278,7 @@ internal sealed class App
             SetBooked("unbooked", argument, false));
         registry.Register("summary", "s", "Show the time taken per work item from this day's checkpoints", NoArguments("summary", Summary));
         registry.Register("absence", "ab", "Mark this day as vacation, sick or holiday, or clear it", Absence);
+        registry.Register("correction", "co", "Correct the balance on this day: +H:mm|-H:mm <reason>, or remove <number>", Correction);
         registry.Register("report", "rp", "Show the hours per project over a date range: <from> <to>", Report);
         registry.Register("export", "ex", "Save the project report for a date range as CSV: <from> <to> <folder>", Export);
         registry.Register("find", "f", "Find days whose checkpoints or projects match: <text>", Find);
@@ -360,6 +361,118 @@ internal sealed class App
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             return Hint($"{Name}: could not save the day. {Markup.Escape(ex.Message)}");
+        }
+
+        return CommandResult.None;
+    }
+
+    private const string CorrectionUsage = "Use [bold]correction +H:mm|-H:mm <reason>[/] or [bold]correction remove <number>[/].";
+
+    // Books a balance correction on the day being viewed (+H:mm|-H:mm <reason>), or removes one (remove <number>).
+    // Works on any day, also one with entries or an absence. Nothing is written if any part is invalid, the day's
+    // file cannot be read, or it changed on disk since it was shown.
+    private CommandResult Correction(string argument)
+    {
+        const string Name = "correction";
+        (string first, string rest) = SplitToken(argument);
+        if (first.Length == 0)
+        {
+            return Hint($"{Name}: say the amount and the reason. {CorrectionUsage}");
+        }
+
+        if (string.Equals(first, "remove", StringComparison.Ordinal))
+        {
+            return RemoveCorrection(rest.Trim());
+        }
+
+        if (!BalanceCorrection.TryParseAmount(first, out int minutes))
+        {
+            return Hint($"{Name}: [bold]{Markup.Escape(first)}[/] is not an amount. {CorrectionUsage}");
+        }
+
+        string reason = rest.Trim();
+        if (reason.Length == 0)
+        {
+            return Hint($"{Name}: say the reason. {CorrectionUsage}");
+        }
+
+        if (reason.Length > ProjectList.MaxTitleLength)
+        {
+            return Hint($"{Name}: the reason is longer than {ProjectList.MaxTitleLength.ToString(CultureInfo.InvariantCulture)} characters.");
+        }
+
+        if (ProjectList.HasControlCharacters(reason))
+        {
+            return Hint($"{Name}: the reason must not contain control characters. {RetypeHiddenCharacters}");
+        }
+
+        if (ProjectList.HasInvisibleOrBrokenCharacters(reason))
+        {
+            return Hint($"{Name}: the reason must not contain invisible formatting or broken characters. {RetypeHiddenCharacters}");
+        }
+
+        BalanceCorrection correction = new BalanceCorrection(minutes, reason);
+        return ChangeCorrections(Name, "Nothing was booked.", current => (current.AddCorrection(correction), null));
+    }
+
+    // Removes correction <number> from the day being viewed; entries are never touched.
+    private CommandResult RemoveCorrection(string text)
+    {
+        const string Name = "correction";
+        if (text.Length == 0)
+        {
+            return Hint($"{Name}: say which correction to remove. {CorrectionUsage}");
+        }
+
+        if (!int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out int number))
+        {
+            return Hint($"{Name}: [bold]{Markup.Escape(text)}[/] is not a correction number. {CorrectionUsage}");
+        }
+
+        return ChangeCorrections(Name, "Nothing was removed.", current =>
+            number < 1 || number > current.Corrections.Count
+                ? (null, Hint($"{Name}: there is no correction [bold]{number.ToString(CultureInfo.InvariantCulture)}[/]."))
+                : (current.RemoveCorrection(number), null));
+    }
+
+    // Loads the shown day for writing, applies change (which gives the new record, or a hint to show instead) and
+    // saves it with the stamp it was loaded with.
+    private CommandResult ChangeCorrections(
+        string name, string nothingDone, Func<DayRecord, (DayRecord? Updated, CommandResult? Refused)> change)
+    {
+        DateOnly day = dayView.Current;
+        DayRecord current;
+        DayStamp stamp;
+        try
+        {
+            (current, stamp) = LoadForWrite(day);
+        }
+        catch (DayFileChangedException)
+        {
+            return ChangedOnDisk(name, day);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{name}: {Markup.Escape(ex.Message)} {nothingDone}");
+        }
+
+        (DayRecord? updated, CommandResult? refused) = change(current);
+        if (updated is null)
+        {
+            return refused ?? CommandResult.None;
+        }
+
+        try
+        {
+            Store.Save(day, updated, stamp);
+        }
+        catch (DayFileChangedException)
+        {
+            return ChangedOnDisk(name, day);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{name}: could not save the day. {Markup.Escape(ex.Message)}");
         }
 
         return CommandResult.None;
