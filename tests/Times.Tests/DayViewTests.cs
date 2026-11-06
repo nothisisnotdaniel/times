@@ -1458,4 +1458,108 @@ public class DayViewTests
 
         Assert.Equal("Absence: Public holiday", lines[1]);
     }
+
+    // Job 121 ------------------------------------------------------------------------------
+
+    private static DayRecord WithCorrections(DayRecord day) => day
+        .AddCorrection(new BalanceCorrection(150, "Starting balance"))
+        .AddCorrection(new BalanceCorrection(-65, "Paid-out overtime"));
+
+    // AC-8
+    [Fact]
+    public void Render_DayWithEntries_ShowsCorrectionRowsDirectlyAboveTheTargetLine()
+    {
+        FlexitimeBalance balance = new FlexitimeBalance(TimeSpan.FromMinutes(85), 1, 0);
+
+        string[] lines = PlainLines(WithCorrections(MorningDay()), EightHours, balance);
+        string[] without = PlainLines(MorningDay(), EightHours, balance);
+
+        Assert.Equal(without.Length + 2, lines.Length);
+        Assert.StartsWith("   Breaks", lines[^4]);
+        Assert.Equal("   Correction 1 +2:30 · Starting balance", lines[^3]);
+        Assert.Equal("   Correction 2 -1:05 · Paid-out overtime", lines[^2]);
+        // day excludes the corrections, balance is what Compute gave (with them).
+        Assert.Equal("   Target 8:00 · day -4:00 · balance +1:25", lines[^1]);
+    }
+
+    // AC-8
+    [Fact]
+    public void Render_CorrectionRow_Colours()
+    {
+        string output = AnsiOutput(WithCorrections(MorningDay()), EightHours, FlexitimeBalance.None);
+
+        Assert.Contains(
+            "\u001b[38;5;8mCorrection 1\u001b[0m \u001b[38;5;75m+2:30\u001b[0m \u001b[38;5;8m·\u001b[0m Starting balance",
+            output);
+        Assert.Contains("\u001b[38;5;75m-1:05\u001b[0m", output);
+    }
+
+    // AC-8
+    [Fact]
+    public void Render_DayWithOnlyCorrections_ShowsNoEntriesYet_TheRows_AndTargetWithoutDay()
+    {
+        DayRecord record = WithCorrections(DayRecord.Empty);
+
+        string[] lines = PlainLines(record, EightHours, new FlexitimeBalance(TimeSpan.FromMinutes(85), 1, 0));
+
+        Assert.Equal(5, lines.Length);
+        Assert.Contains("Tuesday, 2026-10-27", lines[0]);
+        Assert.Equal("No entries yet.", lines[1]);
+        Assert.Equal("Correction 1 +2:30 · Starting balance", lines[2]);
+        Assert.Equal("Correction 2 -1:05 · Paid-out overtime", lines[3]);
+        Assert.Equal("Target 8:00 · balance +1:25", lines[4]);
+    }
+
+    // AC-8
+    [Fact]
+    public void Render_AbsenceDay_ShowsCorrectionsBetweenAbsenceAndTarget()
+    {
+        DayRecord record = WithCorrections(DayRecord.Empty).WithAbsence(AbsenceKind.Vacation);
+
+        string[] lines = PlainLines(record, EightHours, new FlexitimeBalance(TimeSpan.FromMinutes(85), 1, 0));
+
+        Assert.Equal(5, lines.Length);
+        Assert.Equal("Absence: Vacation", lines[1]);
+        Assert.Equal("Correction 1 +2:30 · Starting balance", lines[2]);
+        Assert.Equal("Correction 2 -1:05 · Paid-out overtime", lines[3]);
+        Assert.Equal("Target 8:00 · day +0:00 · balance +1:25", lines[4]);
+    }
+
+    // AC-8: a holiday with only corrections still shows as the holiday, with the rows above the target line.
+    [Fact]
+    public void Render_HolidayWithOnlyCorrections_ShowsTheHoliday()
+    {
+        TestConsole console = new TestConsole();
+        console.Profile.Width = 120;
+        DayRecord record = DayRecord.Empty.AddCorrection(new BalanceCorrection(30, "Fix"));
+
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record, EightHours, FlexitimeBalance.None, holiday: "Reformation Day"));
+        string[] lines = console.Lines.Select(l => l.TrimEnd()).Where(l => l.Trim().Length > 0).ToArray();
+
+        Assert.Equal("Absence: Public holiday · Reformation Day", lines[1]);
+        Assert.Equal("Correction 1 +0:30 · Fix", lines[2]);
+        Assert.StartsWith("Target 8:00 · day +0:00", lines[3]);
+    }
+
+    // AC-8: the reason is user text.
+    [Fact]
+    public void Render_CorrectionReason_IsEscaped()
+    {
+        DayRecord record = DayRecord.Empty.AddCorrection(new BalanceCorrection(30, "[red]x[/] [bold"));
+
+        string[] lines = PlainLines(record, EightHours, FlexitimeBalance.None);
+
+        Assert.Equal("Correction 1 +0:30 · [red]x[/] [bold", lines[2]);
+    }
+
+    // AC-8: days without corrections render exactly as before.
+    [Fact]
+    public void Render_WithoutCorrections_IsUnchanged()
+    {
+        DayRecord withEntries = MorningDay();
+        DayRecord removed = WithCorrections(MorningDay()).RemoveCorrection(1).RemoveCorrection(1);
+
+        Assert.Equal(AnsiOutput(withEntries, EightHours, FlexitimeBalance.None), AnsiOutput(removed, EightHours, FlexitimeBalance.None));
+        Assert.Equal(2, PlainLines(DayRecord.Empty, EightHours, FlexitimeBalance.None).Length);
+    }
 }

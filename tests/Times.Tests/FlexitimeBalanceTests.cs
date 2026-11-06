@@ -253,4 +253,70 @@ public sealed class FlexitimeBalanceTests
 
         Assert.Equal(plain.Total, live.Total);
     }
+
+    // Job 121 ------------------------------------------------------------------------------
+
+    private const string Corrections = ",\"corrections\":[{\"minutes\":150,\"reason\":\"Start\"},{\"minutes\":-30,\"reason\":\"Paid\"}]}";
+
+    private static string WithCorrections(string day) => day[..^1] + Corrections;
+
+    // AC-7
+    [Fact]
+    public void Compute_AddsCorrections_OnEveryKindOfDay()
+    {
+        using TempFolder temp = new TempFolder();
+        Write(temp, "2026-10-20.json", WithCorrections(Day("08:00", "17:00")));
+        Write(temp, "2026-10-21.json", WithCorrections("{\"absence\":\"vacation\",\"entries\":[]}"));
+        Write(temp, "2026-10-22.json", WithCorrections("{\"entries\":[]}"));
+        Write(temp, "2026-10-23.json", WithCorrections("{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"Task\"}]}"));
+
+        FlexitimeBalance balance = FlexitimeBalance.Compute(new DayStore(temp.Path), Shown, EightHours);
+
+        // +1:00 worked over target, plus 4 days of +2:00 corrections.
+        Assert.Equal(TimeSpan.FromMinutes(60 + (4 * 120)), balance.Total);
+        Assert.Equal(4, balance.CountedDays);
+        Assert.Equal(0, balance.SkippedFiles);
+    }
+
+    // AC-7
+    [Fact]
+    public void Compute_IgnoresCorrectionsOnLaterDays_AndCountsTheShownDay()
+    {
+        using TempFolder temp = new TempFolder();
+        Write(temp, "2026-10-27.json", "{\"entries\":[],\"corrections\":[{\"minutes\":-65,\"reason\":\"Paid\"}]}");
+        Write(temp, "2026-10-28.json", "{\"entries\":[],\"corrections\":[{\"minutes\":600,\"reason\":\"Later\"}]}");
+
+        FlexitimeBalance balance = FlexitimeBalance.Compute(new DayStore(temp.Path), Shown, EightHours);
+
+        Assert.Equal(TimeSpan.FromMinutes(-65), balance.Total);
+        Assert.Equal(1, balance.CountedDays);
+    }
+
+    // AC-6, AC-7
+    [Fact]
+    public void Compute_BrokenCorrections_SkipTheFile()
+    {
+        using TempFolder temp = new TempFolder();
+        Write(temp, "2026-10-20.json", Day("08:00", "17:00")[..^1] + ",\"corrections\":[{\"minutes\":0,\"reason\":\"x\"}]}");
+        Write(temp, "2026-10-21.json", Day("08:00", "16:30"));
+
+        FlexitimeBalance balance = FlexitimeBalance.Compute(new DayStore(temp.Path), Shown, EightHours);
+
+        Assert.Equal(TimeSpan.FromMinutes(30), balance.Total);
+        Assert.Equal(1, balance.CountedDays);
+        Assert.Equal(1, balance.SkippedFiles);
+    }
+
+    // AC-7: the live minute still only changes the shown day's work time.
+    [Fact]
+    public void Compute_Live_KeepsCorrections()
+    {
+        using TempFolder temp = new TempFolder();
+        Write(temp, "2026-10-27.json", "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}],\"corrections\":[{\"minutes\":60,\"reason\":\"x\"}]}");
+
+        FlexitimeBalance balance = FlexitimeBalance.Compute(new DayStore(temp.Path), Shown, EightHours, new TimeOnly(12, 0));
+
+        Assert.Equal(TimeSpan.FromHours(-3), balance.Total);
+        Assert.Equal(1, balance.CountedDays);
+    }
 }

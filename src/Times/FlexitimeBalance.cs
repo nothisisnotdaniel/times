@@ -5,8 +5,9 @@ namespace Times;
 /// <summary>
 /// The running flexitime balance up to and including a shown day: the sum of
 /// <see cref="DayRecord.WorkTime"/> minus the daily target over every day file dated on or before
-/// that day that holds at least one arrival. An absence day counts too, with a delta of zero. Day
-/// files that cannot be read are skipped and counted.
+/// that day that holds at least one arrival. An absence day counts too, with a delta of zero. Every such
+/// day's balance corrections (<see cref="DayRecord.Corrections"/>) are added as well, and a day that holds
+/// only corrections counts too. Day files that cannot be read are skipped and counted.
 /// Computing it only reads: it never creates or changes a file or folder.
 /// </summary>
 internal sealed class FlexitimeBalance
@@ -21,7 +22,7 @@ internal sealed class FlexitimeBalance
     /// <summary>No day counted and nothing skipped.</summary>
     public static FlexitimeBalance None { get; } = new(TimeSpan.Zero, 0, 0);
 
-    /// <summary>The sum of work time minus target over the counted days.</summary>
+    /// <summary>The sum of work time minus target over the counted days, plus their corrections.</summary>
     public TimeSpan Total { get; }
 
     /// <summary>The number of days that added to <see cref="Total"/>.</summary>
@@ -71,15 +72,22 @@ internal sealed class FlexitimeBalance
                 continue;
             }
 
+            bool counts = record.Corrections.Count > 0;
+            total += record.CorrectionTotal;
             if (record.Absence is not null)
             {
                 // An absence day meets the target exactly: it counts, with a delta of zero.
-                counted++;
+                counts = true;
             }
             else if (record.Entries.Any(e => e.Kind == EntryKind.Arrival))
             {
                 TimeSpan worked = day == shownDay && now is { } live ? record.WorkTimeAt(live) : record.WorkTime();
                 total += worked - target;
+                counts = true;
+            }
+
+            if (counts)
+            {
                 counted++;
             }
         }

@@ -102,6 +102,96 @@ internal sealed record DayEntry
 }
 
 /// <summary>
+/// A manual adjustment to the flexitime balance, booked on a day: signed whole <see cref="Minutes"/> (never zero, at
+/// most <see cref="MaxMinutes"/> either way) and a <see cref="Reason"/> that passes <see cref="ProjectList.IsValidTitle"/>.
+/// It is not an entry: it has no time of day and does not change the day's work time.
+/// </summary>
+internal sealed record BalanceCorrection
+{
+    /// <summary>The largest amount either way: 999:59.</summary>
+    public const int MaxMinutes = 59_999;
+
+    /// <summary>
+    /// Throws <see cref="ArgumentException"/> if <paramref name="minutes"/> is zero or beyond
+    /// <see cref="MaxMinutes"/> either way, or <paramref name="reason"/> is not a valid title.
+    /// </summary>
+    public BalanceCorrection(int minutes, string reason)
+    {
+        if (minutes == 0 || minutes > MaxMinutes || minutes < -MaxMinutes)
+        {
+            throw new ArgumentOutOfRangeException(nameof(minutes), "A correction is 1 to 59999 minutes either way.");
+        }
+
+        if (reason is null || !ProjectList.IsValidTitle(reason))
+        {
+            throw new ArgumentException("A correction needs a valid reason.", nameof(reason));
+        }
+
+        Minutes = minutes;
+        Reason = reason;
+    }
+
+    /// <summary>The signed amount in whole minutes.</summary>
+    public int Minutes { get; }
+
+    /// <summary>Why the balance was corrected (user text: escape it before rendering).</summary>
+    public string Reason { get; }
+
+    /// <summary>The amount as a <see cref="TimeSpan"/>.</summary>
+    public TimeSpan Amount => TimeSpan.FromMinutes(Minutes);
+
+    /// <summary>
+    /// Parses a typed amount: a required <c>+</c> or <c>-</c>, 1 to 3 ASCII digits of hours, <c>:</c>, and exactly
+    /// 2 ASCII digits of minutes from 00 to 59, not zero. No culture, whitespace or other forms. Returns false otherwise.
+    /// </summary>
+    public static bool TryParseAmount(string text, out int minutes)
+    {
+        minutes = 0;
+        if (text.Length < 5 || text.Length > 7 || (text[0] != '+' && text[0] != '-'))
+        {
+            return false;
+        }
+
+        int colon = text.Length - 3;
+        if (text[colon] != ':')
+        {
+            return false;
+        }
+
+        int hours = 0;
+        for (int i = 1; i < colon; i++)
+        {
+            if (!char.IsAsciiDigit(text[i]))
+            {
+                return false;
+            }
+
+            hours = (hours * 10) + (text[i] - '0');
+        }
+
+        if (!char.IsAsciiDigit(text[colon + 1]) || !char.IsAsciiDigit(text[colon + 2]))
+        {
+            return false;
+        }
+
+        int mins = ((text[colon + 1] - '0') * 10) + (text[colon + 2] - '0');
+        if (mins > 59)
+        {
+            return false;
+        }
+
+        int total = (hours * 60) + mins;
+        if (total == 0)
+        {
+            return false;
+        }
+
+        minutes = text[0] == '-' ? -total : total;
+        return true;
+    }
+}
+
+/// <summary>
 /// One day's bookings: every entry, in ascending time order. Entries with the same time keep their
 /// booking order, except that an arrival or break end always comes before a checkpoint at the same
 /// time: every checkpoint booked before the last such opener of its time sits directly after that
@@ -114,7 +204,9 @@ internal sealed record DayEntry
 /// converted to entries and written in the new format on the next save. A day can instead be marked
 /// as an absence (<see cref="Absence"/>), saved as a top-level <c>"absence"</c> (<c>"vacation"</c>,
 /// <c>"sick"</c> or <c>"publicHoliday"</c>) before <c>"entries"</c>; it is left out when there is none.
-/// A record holds an absence or entries, never both.
+/// A record holds an absence or entries, never both. Either way it may also hold balance corrections
+/// (<see cref="Corrections"/>, in booking order), saved as a top-level
+/// <c>"corrections":[{"minutes":150,"reason":"Starting balance"}]</c> after <c>"entries"</c> and left out when empty.
 /// </summary>
 internal sealed record DayRecord
 {
@@ -134,8 +226,12 @@ internal sealed record DayRecord
     private const string VacationName = "vacation";
     private const string SickName = "sick";
     private const string PublicHolidayName = "publicHoliday";
+    private const string CorrectionsProperty = "corrections";
+    private const string MinutesProperty = "minutes";
+    private const string ReasonProperty = "reason";
 
     private readonly DayEntry[] entries;
+    private readonly BalanceCorrection[] corrections;
 
     public DayRecord()
         : this([])
@@ -152,6 +248,15 @@ internal sealed record DayRecord
     /// <see cref="ArgumentException"/> if it would hold both an absence and entries.
     /// </summary>
     public DayRecord(IEnumerable<DayEntry> entries, AbsenceKind? absence)
+        : this(entries, absence, [])
+    {
+    }
+
+    /// <summary>
+    /// A record with <paramref name="entries"/>, <paramref name="absence"/> and <paramref name="corrections"/> (kept
+    /// in the given order). Throws <see cref="ArgumentException"/> if it would hold both an absence and entries.
+    /// </summary>
+    public DayRecord(IEnumerable<DayEntry> entries, AbsenceKind? absence, IEnumerable<BalanceCorrection> corrections)
     {
         DayEntry[] ordered = Order(entries);
         if (absence is not null && ordered.Length > 0)
@@ -160,6 +265,7 @@ internal sealed record DayRecord
         }
 
         this.entries = ordered;
+        this.corrections = corrections.ToArray();
         Absence = absence;
     }
 
@@ -239,8 +345,29 @@ internal sealed record DayRecord
     /// </summary>
     public IReadOnlyList<DayEntry> Entries => entries;
 
-    /// <summary>True if the day has neither entries nor an absence.</summary>
-    public bool IsEmpty => entries.Length == 0 && Absence is null;
+    /// <summary>True if the day has no entries, no absence and no corrections.</summary>
+    public bool IsEmpty => entries.Length == 0 && Absence is null && corrections.Length == 0;
+
+    /// <summary>The balance corrections in booking order. Correction number <c>n</c> is <c>Corrections[n - 1]</c>.</summary>
+    public IReadOnlyList<BalanceCorrection> Corrections => corrections;
+
+    /// <summary>The sum of every correction's amount.</summary>
+    public TimeSpan CorrectionTotal => TimeSpan.FromMinutes(corrections.Sum(c => (long)c.Minutes));
+
+    /// <summary>Returns the same day with <paramref name="correction"/> added after the other corrections.</summary>
+    public DayRecord AddCorrection(BalanceCorrection correction) =>
+        new(entries, Absence, corrections.Append(correction));
+
+    /// <summary>
+    /// Returns the same day without correction <paramref name="number"/> (1-based, the numbering of
+    /// <see cref="Corrections"/>). Throws <see cref="ArgumentOutOfRangeException"/> if there is no such correction.
+    /// </summary>
+    public DayRecord RemoveCorrection(int number)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(number, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(number, corrections.Length);
+        return new DayRecord(entries, Absence, corrections.Where((_, i) => i != number - 1));
+    }
 
     /// <summary>The day's absence, or <c>null</c> if it is not marked as one.</summary>
     public AbsenceKind? Absence { get; }
@@ -249,7 +376,7 @@ internal sealed record DayRecord
     /// Returns the same day with <paramref name="absence"/> as its absence (<c>null</c> clears it). Throws
     /// <see cref="ArgumentException"/> if an absence is set on a day that has entries.
     /// </summary>
-    public DayRecord WithAbsence(AbsenceKind? absence) => new(entries, absence);
+    public DayRecord WithAbsence(AbsenceKind? absence) => new(entries, absence, corrections);
 
     /// <summary>
     /// Returns the work time left at each entry's time, parallel to <see cref="Entries"/>. Walking the
@@ -527,7 +654,7 @@ internal sealed record DayRecord
     /// already at that time (see <see cref="DayRecord"/>). Throws <see cref="ArgumentException"/> on an
     /// absence day.
     /// </summary>
-    public DayRecord Add(DayEntry entry) => new(entries.Append(entry), Absence);
+    public DayRecord Add(DayEntry entry) => new(entries.Append(entry), Absence, corrections);
 
     /// <summary>
     /// Returns a new record without entry <paramref name="number"/> (1-based, the numbering of
@@ -538,7 +665,7 @@ internal sealed record DayRecord
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(number, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(number, entries.Length);
-        return new DayRecord(entries.Where((_, i) => i != number - 1));
+        return new DayRecord(entries.Where((_, i) => i != number - 1), Absence, corrections);
     }
 
     /// <summary>
@@ -574,11 +701,12 @@ internal sealed record DayRecord
 
         DayEntry[] changed = (DayEntry[])entries.Clone();
         changed[number - 1] = entry.WithBooked(booked);
-        return new DayRecord(changed);
+        return new DayRecord(changed, Absence, corrections);
     }
 
     public bool Equals(DayRecord? other) =>
-        other is not null && Absence == other.Absence && entries.SequenceEqual(other.entries);
+        other is not null && Absence == other.Absence && entries.SequenceEqual(other.entries)
+        && corrections.SequenceEqual(other.corrections);
 
     public override int GetHashCode()
     {
@@ -587,6 +715,11 @@ internal sealed record DayRecord
         foreach (DayEntry entry in entries)
         {
             hash.Add(entry);
+        }
+
+        foreach (BalanceCorrection correction in corrections)
+        {
+            hash.Add(correction);
         }
 
         return hash.ToHashCode();
@@ -628,6 +761,20 @@ internal sealed record DayRecord
             }
 
             writer.WriteEndArray();
+            if (corrections.Length > 0)
+            {
+                writer.WriteStartArray(CorrectionsProperty);
+                foreach (BalanceCorrection correction in corrections)
+                {
+                    writer.WriteStartObject();
+                    writer.WriteNumber(MinutesProperty, correction.Minutes);
+                    writer.WriteString(ReasonProperty, correction.Reason);
+                    writer.WriteEndObject();
+                }
+
+                writer.WriteEndArray();
+            }
+
             writer.WriteEndObject();
         }
 
@@ -679,6 +826,7 @@ internal sealed record DayRecord
 
         JsonElement? entriesElement = null;
         AbsenceKind? absence = null;
+        List<BalanceCorrection> corrections = [];
         TimeOnly? arrival = null;
         TimeOnly? leaving = null;
         bool hasLegacy = false;
@@ -698,6 +846,9 @@ internal sealed record DayRecord
                     break;
                 case AbsenceProperty:
                     absence = ReadAbsence(property.Value);
+                    break;
+                case CorrectionsProperty:
+                    corrections = ReadCorrections(property.Value);
                     break;
                 case ArrivalName:
                     hasLegacy = true;
@@ -725,7 +876,7 @@ internal sealed record DayRecord
                 throw new JsonException("The day file mixes an absence with entries.");
             }
 
-            return new DayRecord([], kind);
+            return new DayRecord([], kind, corrections);
         }
 
         if (entriesElement is { } list)
@@ -735,7 +886,7 @@ internal sealed record DayRecord
                 throw new JsonException("The day file mixes entries with a legacy arrival or leaving.");
             }
 
-            return new DayRecord(ReadEntries(list));
+            return new DayRecord(ReadEntries(list), null, corrections);
         }
 
         List<DayEntry> legacy = [];
@@ -749,7 +900,75 @@ internal sealed record DayRecord
             legacy.Add(new DayEntry(EntryKind.Leaving, l));
         }
 
-        return new DayRecord(legacy);
+        return new DayRecord(legacy, null, corrections);
+    }
+
+    private static List<BalanceCorrection> ReadCorrections(JsonElement list)
+    {
+        if (list.ValueKind != JsonValueKind.Array)
+        {
+            throw new JsonException("The day file's corrections are not a list.");
+        }
+
+        List<BalanceCorrection> result = [];
+        foreach (JsonElement item in list.EnumerateArray())
+        {
+            result.Add(ReadCorrection(item));
+        }
+
+        return result;
+    }
+
+    // Strict: exactly "minutes" (a non-zero whole number within the limit) and "reason" (a valid title), nothing else.
+    private static BalanceCorrection ReadCorrection(JsonElement item)
+    {
+        const string Broken = "A correction in the day file is not a valid amount and reason.";
+        if (item.ValueKind != JsonValueKind.Object)
+        {
+            throw new JsonException(Broken);
+        }
+
+        int? minutes = null;
+        string? reason = null;
+        foreach (JsonProperty property in item.EnumerateObject())
+        {
+            switch (ReadPropertyName(property))
+            {
+                case MinutesProperty:
+                    if (minutes is not null
+                        || property.Value.ValueKind != JsonValueKind.Number
+                        || !property.Value.TryGetInt32(out int value)
+                        || value == 0 || value > BalanceCorrection.MaxMinutes || value < -BalanceCorrection.MaxMinutes)
+                    {
+                        throw new JsonException(Broken);
+                    }
+
+                    minutes = value;
+                    break;
+                case ReasonProperty:
+                    if (reason is not null)
+                    {
+                        throw new JsonException(Broken);
+                    }
+
+                    reason = ReadStringOrNull(property.Value, Broken);
+                    if (reason is null || !ProjectList.IsValidTitle(reason))
+                    {
+                        throw new JsonException(Broken);
+                    }
+
+                    break;
+                default:
+                    throw new JsonException(Broken);
+            }
+        }
+
+        if (minutes is not { } m || reason is null)
+        {
+            throw new JsonException(Broken);
+        }
+
+        return new BalanceCorrection(m, reason);
     }
 
     private static List<DayEntry> ReadEntries(JsonElement list)
