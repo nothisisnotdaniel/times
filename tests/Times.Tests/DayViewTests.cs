@@ -1364,4 +1364,98 @@ public class DayViewTests
         Assert.Contains("since last leaving", joined);
         Assert.Contains("Mon", lines[^1]);
     }
+
+    // Job 115 ------------------------------------------------------------------------------
+
+    private static string[] HolidayLines(DayRecord record, string? holiday, FlexitimeBalance? balance = null)
+    {
+        TestConsole console = new TestConsole();
+        console.Profile.Width = 120;
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record, EightHours, balance ?? FlexitimeBalance.None, holiday: holiday));
+        return console.Lines.Select(l => l.TrimEnd()).Where(l => l.Trim().Length > 0).ToArray();
+    }
+
+    private static string HolidayAnsi(DayRecord record, string? holiday)
+    {
+        TestConsole console = new TestConsole().EmitAnsiSequences();
+        console.Profile.Width = 120;
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record, EightHours, FlexitimeBalance.None, holiday: holiday));
+        return console.Output;
+    }
+
+    // AC-6
+    [Fact]
+    public void Render_EmptyDayOnHoliday_ShowsPublicHolidayAbsenceWithName()
+    {
+        string[] lines = HolidayLines(DayRecord.Empty, "Corpus Christi", new FlexitimeBalance(new TimeSpan(1, 15, 0), 3, 0));
+
+        Assert.Equal(3, lines.Length);
+        Assert.Contains("Tuesday, 2026-10-27", lines[0]);
+        Assert.Equal("Absence: Public holiday · Corpus Christi", lines[1]);
+        Assert.Equal("Target 8:00 · day +0:00 · balance +1:15", lines[2]);
+        Assert.DoesNotContain(lines, l => l.Contains("No entries yet.", StringComparison.Ordinal));
+    }
+
+    // AC-6
+    [Fact]
+    public void Render_EmptyDayOnHoliday_GreyLabel_SteelBlueValue()
+    {
+        string output = HolidayAnsi(DayRecord.Empty, "Corpus Christi");
+
+        Assert.Contains("\u001b[38;5;8mAbsence:\u001b[0m \u001b[38;5;75mPublic holiday · Corpus Christi\u001b[0m", output);
+    }
+
+    // AC-6: the name goes through Markup.Escape.
+    [Fact]
+    public void Render_HolidayName_IsEscaped()
+    {
+        string[] lines = HolidayLines(DayRecord.Empty, "[bold]x[/]");
+
+        Assert.Equal("Absence: Public holiday · [bold]x[/]", lines[1]);
+    }
+
+    // AC-7
+    [Fact]
+    public void Render_EmptyDayWithoutHoliday_AsBefore()
+    {
+        Assert.Equal(PlainLines(DayRecord.Empty, EightHours, FlexitimeBalance.None), HolidayLines(DayRecord.Empty, null));
+        Assert.Equal(PlainLines(MorningDay(), EightHours, FlexitimeBalance.None), HolidayLines(MorningDay(), null));
+    }
+
+    // AC-8
+    [Fact]
+    public void Render_BookedDayOnHoliday_ShowsGreyHolidayLineBelowHeading()
+    {
+        string[] plain = PlainLines(MorningDay(), EightHours, FlexitimeBalance.None);
+        string[] lines = HolidayLines(MorningDay(), "Good Friday");
+
+        Assert.Equal("Public holiday: Good Friday", lines[1]);
+        Assert.Equal(plain, lines.Take(1).Concat(lines.Skip(2)));
+        Assert.Contains("Target 8:00 · day -4:00", lines[^1]);
+        Assert.Contains("\u001b[38;5;8mPublic holiday: Good Friday\u001b[0m", HolidayAnsi(MorningDay(), "Good Friday"));
+    }
+
+    // AC-9
+    [Theory]
+    [InlineData("Vacation", "Absence: Vacation")]
+    [InlineData("Sick", "Absence: Sick")]
+    [InlineData("PublicHoliday", "Absence: Public holiday · Whit Monday")]
+    public void Render_StoredAbsenceOnHoliday_ShowsTheStoredAbsence(string kind, string expected)
+    {
+        DayRecord record = DayRecord.Empty.WithAbsence(Enum.Parse<AbsenceKind>(kind));
+
+        string[] lines = HolidayLines(record, "Whit Monday");
+
+        Assert.Equal(expected, lines[1]);
+        Assert.Equal("Target 8:00 · day +0:00 · balance 0:00", lines[2]);
+    }
+
+    // AC-9
+    [Fact]
+    public void Render_StoredPublicHolidayOnOtherDay_AsBefore()
+    {
+        string[] lines = HolidayLines(DayRecord.Empty.WithAbsence(AbsenceKind.PublicHoliday), null);
+
+        Assert.Equal("Absence: Public holiday", lines[1]);
+    }
 }

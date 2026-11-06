@@ -10,7 +10,7 @@ public sealed class SettingsRegistryTests
         Setting setting = all[0];
 
         Assert.Equal(
-            ["daily-target", "alert-target", "alert-limit", "check-breaks", "check-max-work", "check-rest", "report-rounding", "update-mode", "update-channel"],
+            ["daily-target", "alert-target", "alert-limit", "check-breaks", "check-max-work", "check-rest", "holiday-country", "holiday-state", "report-rounding", "update-mode", "update-channel"],
             all.Select(s => s.Name));
         Assert.Equal("daily-target", setting.Name);
         Assert.Equal("Daily work target in minutes (480 = 8:00)", setting.Description);
@@ -20,12 +20,12 @@ public sealed class SettingsRegistryTests
         Assert.Equal(1440, setting.Max);
     }
 
-    // AC-1 (104); AC-5 (113); AC-6 (114): after the daily target, the two alerts and the three checks.
+    // AC-1 (104); AC-5 (113); AC-6 (114); AC-5 (115): after the daily target, the two alerts, the three checks and the two holiday settings.
     [Fact]
     public void CreateDefault_RegistersReportRoundingAfterTheDailyTargetAndTheAlerts()
     {
         IReadOnlyList<Setting> all = SettingsRegistry.CreateDefault().Settings;
-        Setting setting = all[6];
+        Setting setting = all[8];
 
         Assert.Equal("daily-target", all[0].Name);
         Assert.Equal("report-rounding", setting.Name);
@@ -243,7 +243,7 @@ public sealed class SettingsRegistryTests
     {
         IReadOnlyList<Setting> all = SettingsRegistry.CreateDefault().Settings;
 
-        Assert.Equal(["alert-limit", "check-breaks", "check-max-work", "check-rest", "report-rounding"], all.Skip(2).Take(5).Select(s => s.Name));
+        Assert.Equal(["alert-limit", "check-breaks", "check-max-work", "check-rest", "holiday-country"], all.Skip(2).Take(5).Select(s => s.Name));
         Assert.Equal(SettingsRegistry.CheckBreaksName, all[3].Name);
         Assert.Equal(SettingsRegistry.CheckMaxWorkName, all[4].Name);
         Assert.Equal(SettingsRegistry.CheckRestName, all[5].Name);
@@ -255,5 +255,30 @@ public sealed class SettingsRegistryTests
             Assert.Equal(SettingKind.OnOff, setting.Kind);
             Assert.Equal(true, setting.Default);
         }
+    }
+
+    // AC-5 (115)
+    [Fact]
+    public void CreateDefault_RegistersTheHolidayChoicesRightAfterCheckRest()
+    {
+        IReadOnlyList<Setting> all = SettingsRegistry.CreateDefault().Settings;
+        int rest = all.ToList().FindIndex(s => s.Name == SettingsRegistry.CheckRestName);
+        Setting country = all[rest + 1];
+        Setting state = all[rest + 2];
+
+        Assert.Equal(SettingsRegistry.HolidayCountryName, country.Name);
+        Assert.Equal("holiday-country", country.Name);
+        Assert.Equal(SettingKind.Choice, country.Kind);
+        Assert.Equal(["none", "Germany"], country.Options);
+        Assert.Equal("none", country.Default);
+        Assert.Equal(SettingsRegistry.HolidayStateName, state.Name);
+        Assert.Equal("holiday-state", state.Name);
+        Assert.Equal(SettingKind.Choice, state.Kind);
+        Assert.Equal(
+            ["none", "BB", "BE", "BW", "BY", "HB", "HE", "HH", "MV", "NI", "NW", "RP", "SH", "SL", "SN", "ST", "TH"],
+            state.Options);
+        Assert.Equal("none", state.Default);
+        Assert.False(string.IsNullOrWhiteSpace(country.Description));
+        Assert.False(string.IsNullOrWhiteSpace(state.Description));
     }
 }

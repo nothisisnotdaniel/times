@@ -2943,6 +2943,17 @@ internal sealed class App
         return TimeSpan.FromMinutes(minutes);
     }
 
+    // A holiday Choice setting from already loaded values, or none when they are missing, broken or it is not registered.
+    private string HolidaySetting(SettingValues? values, string name)
+    {
+        if (values is not null && settings.TryGet(name, out Setting setting) && setting.Kind == SettingKind.Choice)
+        {
+            return values.Choice(name);
+        }
+
+        return PublicHolidays.None;
+    }
+
     private IRenderable RenderDay()
     {
         try
@@ -2960,7 +2971,10 @@ internal sealed class App
             WorkingTimeChecks checks = WorkingTimeChecks.Check(day, previous, options, now);
             IReadOnlyList<DateOnly> week = WorkingTimeChecks.WeekWarnings(
                 shown, date => date == shown ? day : TryLoadDayQuietly(date), options, now);
-            return dayView.Render(day, target, FlexitimeBalance.Compute(Store, shown, target, now), now, checks, week);
+            string? holiday = PublicHolidays.NameOf(
+                shown, HolidaySetting(readable ? values : null, SettingsRegistry.HolidayCountryName),
+                HolidaySetting(readable ? values : null, SettingsRegistry.HolidayStateName));
+            return dayView.Render(day, target, FlexitimeBalance.Compute(Store, shown, target, now), now, checks, week, holiday);
         }
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
         {

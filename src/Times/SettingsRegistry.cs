@@ -97,6 +97,12 @@ internal sealed partial class SettingsRegistry
     /// <summary>The name of the on/off setting that warns when the rest between two working days is under 11 hours.</summary>
     public const string CheckRestName = "check-rest";
 
+    /// <summary>The name of the setting that picks the country whose public holidays Times works out.</summary>
+    public const string HolidayCountryName = "holiday-country";
+
+    /// <summary>The name of the setting that picks the state whose public holidays are added to the nationwide ones.</summary>
+    public const string HolidayStateName = "holiday-state";
+
     /// <summary>The name of the setting that rounds the durations <c>report</c> and <c>export</c> show.</summary>
     public const string ReportRoundingName = "report-rounding";
 
@@ -149,6 +155,10 @@ internal sealed partial class SettingsRegistry
         registry.RegisterOnOff(CheckBreaksName, "Warn when breaks are shorter than the law requires", true);
         registry.RegisterOnOff(CheckMaxWorkName, "Warn when a day has more than 10 hours of work", true);
         registry.RegisterOnOff(CheckRestName, "Warn when the rest between two working days is under 11 hours", true);
+        registry.RegisterChoice(HolidayCountryName, "Country whose public holidays count as absence days", PublicHolidays.None,
+            [PublicHolidays.None, PublicHolidays.Germany]);
+        registry.RegisterChoice(HolidayStateName, "State whose public holidays are added (none = nationwide only)", PublicHolidays.None,
+            [PublicHolidays.None, .. PublicHolidays.GermanStates]);
         registry.RegisterChoice(ReportRoundingName, "Round report and export times per row and day", ReportRoundingOff,
             [ReportRoundingOff, ReportRounding5, ReportRounding10, ReportRounding15]);
         registry.RegisterChoice(UpdateModeName, "What Times does when a newer version is out", UpdateNotifyOnly,
