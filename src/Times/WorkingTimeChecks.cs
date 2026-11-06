@@ -166,11 +166,7 @@ internal sealed class WorkingTimeChecks
 
         for (int number = first; number < first + 7; number++)
         {
-            if (number < DateOnly.MinValue.DayNumber || number > DateOnly.MaxValue.DayNumber)
-            {
-                continue;
-            }
-
+            // Get gives null outside the DateOnly range, so those days are skipped here too.
             DayRecord? day = Get(number);
             if (day is null || day.Absence is not null || day.Entries.Count == 0)
             {

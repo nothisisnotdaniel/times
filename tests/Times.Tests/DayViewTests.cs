@@ -1348,4 +1348,20 @@ public class DayViewTests
         Assert.Null(DayView.WeekLine(null));
         Assert.Null(DayView.WeekLine([]));
     }
+
+    // UI nit (114): a narrow terminal wraps the long break line onto more rows without losing text or throwing.
+    [Fact]
+    public void Render_Checks_NarrowWidth_WrapsTheBreakLine()
+    {
+        WorkingTimeChecks checks = new WorkingTimeChecks(TimeSpan.FromMinutes(10), new TimeSpan(10, 1, 0), new TimeSpan(10, 59, 0));
+
+        string[] lines = CheckLines(ShortBreakDay(), checks, [new DateOnly(2026, 10, 26)], width: 40);
+        string joined = string.Join(" ", lines.Select(l => l.Trim()));
+
+        Assert.True(lines.Length > CheckLines(ShortBreakDay(), checks, [new DateOnly(2026, 10, 26)]).Length);
+        Assert.All(lines, l => Assert.True(l.Length <= 40));
+        Assert.Contains("Over 10 hours:", joined);
+        Assert.Contains("since last leaving", joined);
+        Assert.Contains("Mon", lines[^1]);
+    }
 }
