@@ -123,6 +123,9 @@ Every factory agent reads this file before working on Times. Keep it short and a
   `times-report-<from>-to-<to>.csv` (`ReportCsv`: UTF-8 BOM, CRLF, `Work item,Title,Hours`, RFC 4180 quoting, a `'`
   before titles starting `=+-@`, no total) into an existing absolute folder (one pair of quotes removed, `~` expanded),
   created with `FileMode.CreateNew` (never overwrites or follows a link; a failed write deletes the file).
+  The `report-rounding` setting (`off`/`5 min`/`10 min`/`15 min`, read at each call, anything else is `off`) rounds
+  each row's time per day to the nearest step (half rounds up) in `report` and `export` only, adding
+  ` · rounded to <n> min` to the caption and the export success line.
 - **Updates:** `UpdateService` (wired in `Program.cs`, `null` in tests unless injected) runs one background
   check at start (`IReleaseSource`, GitHub's release list only, allow-listed asset URLs, capped and timed out) and
   the `update` (`up`) command. Settings `update-mode` (`notify only` / `install on quit` / `install and restart`)

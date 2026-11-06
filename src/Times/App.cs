@@ -403,12 +403,13 @@ internal sealed class App
             return hint;
         }
 
-        if (CalculateReport(Name, from, to, out ProjectReport report) is { } failed)
+        int step = ReportRounding();
+        if (CalculateReport(Name, from, to, step, out ProjectReport report) is { } failed)
         {
             return failed;
         }
 
-        return new CommandResult(ReportView(from, to, report, LoadProjectsOrNull()), hideQuicklist: true);
+        return new CommandResult(ReportView(from, to, report, LoadProjectsOrNull(), step), hideQuicklist: true);
     }
 
     // Parses the two report dates; a red hint (prefixed with name) if either is not a date or from is after to.
@@ -437,11 +438,11 @@ internal sealed class App
     }
 
     // Calculates the report over the range; a red hint (prefixed with name) if the data folder cannot be listed.
-    private CommandResult? CalculateReport(string name, DateOnly from, DateOnly to, out ProjectReport report)
+    private CommandResult? CalculateReport(string name, DateOnly from, DateOnly to, int step, out ProjectReport report)
     {
         try
         {
-            report = ProjectReport.Calculate(Store, from, to, DateOnly.FromDateTime(time.GetLocalNow().DateTime), Now());
+            report = ProjectReport.Calculate(Store, from, to, DateOnly.FromDateTime(time.GetLocalNow().DateTime), Now(), step);
             return null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -450,6 +451,16 @@ internal sealed class App
             return Hint($"{name}: the data folder cannot be listed: {Markup.Escape(ex.Message)}");
         }
     }
+
+    // The report-rounding step in minutes, read from settings.json at each call. A missing or broken
+    // file, a value that is not one of the options, or a registry without the setting gives 0 (off).
+    // Reading never writes the file.
+    private int ReportRounding() =>
+        SettingsRegistry.ReportRoundingMinutes(ChoiceSetting(SettingsRegistry.ReportRoundingName, SettingsRegistry.ReportRoundingOff));
+
+    // The suffix that says the times are rounded, or nothing for exact times. Fixed text, no escaping needed.
+    internal static string RoundingSuffix(int step) =>
+        step > 0 ? " · rounded to " + step.ToString(CultureInfo.InvariantCulture) + " min" : string.Empty;
 
     // Titles are optional: without a readable quicklist every row falls back to its names.
     private ProjectList? LoadProjectsOrNull()
@@ -495,7 +506,8 @@ internal sealed class App
                 : Hint($"{Name}: the folder [bold]{shownFolder}[/] does not exist. Nothing was created.");
         }
 
-        if (CalculateReport(Name, from, to, out ProjectReport report) is { } failed)
+        int step = ReportRounding();
+        if (CalculateReport(Name, from, to, step, out ProjectReport report) is { } failed)
         {
             return failed;
         }
@@ -552,7 +564,7 @@ internal sealed class App
         string rows = report.Rows.Count == 1 ? "row" : "rows";
         List<IRenderable> parts =
         [
-            new Markup($"Exported [steelblue1]{report.Rows.Count.ToString(CultureInfo.InvariantCulture)}[/] {rows} to [steelblue1]{shownPath}[/]"),
+            new Markup($"Exported [steelblue1]{report.Rows.Count.ToString(CultureInfo.InvariantCulture)}[/] {rows} to [steelblue1]{shownPath}[/]{RoundingSuffix(step)}"),
         ];
         if (report.Rows.Any(r => r.Open))
         {
@@ -658,8 +670,9 @@ internal sealed class App
     /// The report table captioned with the range, with a <c>Total</c> row, or a grey note if
     /// <paramref name="report"/> has no rows; then the open footnote and the yellow skipped line when
     /// they apply. Titles come from <paramref name="projects"/> (<c>null</c>: none), otherwise the names.
+    /// A <paramref name="step"/> above 0 adds <c> · rounded to &lt;n&gt; min</c> to the caption.
     /// </summary>
-    internal static IRenderable ReportView(DateOnly from, DateOnly to, ProjectReport report, ProjectList? projects)
+    internal static IRenderable ReportView(DateOnly from, DateOnly to, ProjectReport report, ProjectList? projects, int step = 0)
     {
         List<IRenderable> parts = [];
         if (report.Rows.Count == 0)
@@ -675,7 +688,7 @@ internal sealed class App
                 .AddColumn("[grey]Title[/]")
                 .AddColumn("[grey]Time[/]")
                 .AddColumn(new TableColumn("[grey]Hours[/]").RightAligned())
-                .Caption($"{ReportDate(from)} – {ReportDate(to)}", new Style(Color.Grey));
+                .Caption($"{ReportDate(from)} – {ReportDate(to)}{RoundingSuffix(step)}", new Style(Color.Grey));
 
             foreach (ReportRow row in report.Rows)
             {

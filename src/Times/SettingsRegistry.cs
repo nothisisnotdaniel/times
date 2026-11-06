@@ -82,6 +82,33 @@ internal sealed partial class SettingsRegistry
     /// <summary>The highest daily work target, in minutes (24:00).</summary>
     public const int DailyTargetMax = 1440;
 
+    /// <summary>The name of the setting that rounds the durations <c>report</c> and <c>export</c> show.</summary>
+    public const string ReportRoundingName = "report-rounding";
+
+    /// <summary>No rounding: <c>report</c> and <c>export</c> show the exact times.</summary>
+    public const string ReportRoundingOff = "off";
+
+    /// <summary>Round each row's time per day to the nearest 5 minutes.</summary>
+    public const string ReportRounding5 = "5 min";
+
+    /// <summary>Round each row's time per day to the nearest 10 minutes.</summary>
+    public const string ReportRounding10 = "10 min";
+
+    /// <summary>Round each row's time per day to the nearest 15 minutes.</summary>
+    public const string ReportRounding15 = "15 min";
+
+    /// <summary>
+    /// The rounding step in minutes for a <see cref="ReportRoundingName"/> option: 5, 10 or 15 for
+    /// the exact (ordinal) option texts, 0 (exact) for <see cref="ReportRoundingOff"/> and anything else.
+    /// </summary>
+    public static int ReportRoundingMinutes(string? option) => option switch
+    {
+        ReportRounding5 => 5,
+        ReportRounding10 => 10,
+        ReportRounding15 => 15,
+        _ => 0,
+    };
+
     /// <summary>The name of the setting that says what happens when a newer version is found.</summary>
     public const string UpdateModeName = "update-mode";
 
@@ -102,6 +129,8 @@ internal sealed partial class SettingsRegistry
     {
         SettingsRegistry registry = new SettingsRegistry();
         registry.RegisterNumber(DailyTargetName, "Daily work target in minutes (480 = 8:00)", DailyTargetDefault, 0, DailyTargetMax);
+        registry.RegisterChoice(ReportRoundingName, "Round report and export times per row and day", ReportRoundingOff,
+            [ReportRoundingOff, ReportRounding5, ReportRounding10, ReportRounding15]);
         registry.RegisterChoice(UpdateModeName, "What Times does when a newer version is out", UpdateNotifyOnly,
             [UpdateNotifyOnly, UpdateInstallOnQuit, UpdateInstallAndRestart]);
         registry.RegisterChoice(UpdateChannelName, "Which releases count as updates", UpdateChecker.Stable,
