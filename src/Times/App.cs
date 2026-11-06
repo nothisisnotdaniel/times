@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using Spectre.Console;
 using Spectre.Console.Rendering;
 
@@ -746,11 +747,11 @@ internal sealed class App
     internal const string TokenPlaceholder = "Personal access token · Esc cancels";
 
     private const string DevOpsUsage =
-        "Use [bold]devops[/], [bold]devops connect <organization>[/] or [bold]devops disconnect[/].";
+        "Use [bold]devops[/], [bold]devops connect <organization>[/], [bold]devops import[/] or [bold]devops disconnect[/].";
 
     private void RegisterDevOps()
     {
-        registry.Register("devops", "dv", "Show or set the Azure DevOps link: [connect <org> | disconnect]", DevOps);
+        registry.Register("devops", "dv", "Show or set the Azure DevOps link: [connect <org> | import | disconnect]", DevOps);
         registry.Register("sync", "sy", "Send unbooked hours to Azure DevOps: <from> <to> [send]", Sync);
     }
 
@@ -825,7 +826,146 @@ internal sealed class App
             return new CommandResult(hint: new Markup(deleted ? "[grey]Disconnected[/]" : "[grey]Nothing to remove[/]"));
         }
 
+        if (string.Equals(sub, "import", StringComparison.OrdinalIgnoreCase))
+        {
+            if (rest.Length > 0)
+            {
+                return Hint("[bold]devops import[/] takes no arguments.");
+            }
+
+            return ImportWorkItems();
+        }
+
         return Hint($"{Name}: [bold]{Markup.Escape(sub)}[/] is not something devops can do. {DevOpsUsage}");
+    }
+
+    // devops import: reads the quicklist first, then the token once, fetches the open work items assigned
+    // to the user and appends the new ones in one save. Network titles are untrusted: each is checked like
+    // a typed title, and a skipped one is shown by its work item number only, never by its text.
+    private CommandResult ImportWorkItems()
+    {
+        const string Name = "devops";
+        const string NothingDone = "Nothing was imported.";
+        if (!tokenStore.IsSupported)
+        {
+            return Hint(DevOpsUnsupported);
+        }
+
+        if (LoadProjectsFor(Name, NothingDone, out CommandResult? unreadable) is not { } current)
+        {
+            return unreadable!;
+        }
+
+        DevOpsCredential? credential;
+        try
+        {
+            credential = ReadCredential();
+        }
+        catch (Exception ex) when (IsStoreFailure(ex))
+        {
+            return Hint($"{Name}: {StoreMessage(ex)} {NothingDone}");
+        }
+
+        if (credential is null)
+        {
+            return Hint($"{Name}: not connected to Azure DevOps. Use [bold]devops connect <organization>[/] first. {NothingDone}");
+        }
+
+        if (devOpsClient is null)
+        {
+            return Hint($"{Name}: this build cannot reach Azure DevOps. {NothingDone}");
+        }
+
+        IReadOnlyList<(int Id, string? Title)> fetched;
+        IDevOpsClient client = devOpsClient(credential);
+        try
+        {
+            fetched = client.GetAssignedWorkItemsAsync().GetAwaiter().GetResult();
+        }
+        catch (DevOpsException ex)
+        {
+            return Hint($"{Name}: {Markup.Escape(ex.Message)} {NothingDone}");
+        }
+        finally
+        {
+            (client as IDisposable)?.Dispose();
+        }
+
+        List<Project> added = [];
+        List<int> skipped = [];
+        int already = 0;
+        HashSet<int> seen = [];
+        foreach ((int id, string? title) in fetched.OrderBy(item => item.Id))
+        {
+            if (id < 1 || !seen.Add(id))
+            {
+                continue;
+            }
+
+            if (current.NumberOf(id) is not null)
+            {
+                already++;
+                continue;
+            }
+
+            string? trimmed = title?.Trim();
+            if (trimmed is null || !ProjectList.IsValidTitle(trimmed))
+            {
+                skipped.Add(id);
+                continue;
+            }
+
+            added.Add(new Project(id, trimmed));
+        }
+
+        List<IRenderable> parts = [];
+        if (added.Count > 0)
+        {
+            ProjectList updated = new ProjectList(current.Projects.Concat(added));
+            if (Encoding.UTF8.GetByteCount(updated.ToJson()) > ProjectStore.MaxFileBytes)
+            {
+                return Hint($"{Name}: the quicklist would be too large (over " +
+                    $"{(ProjectStore.MaxFileBytes / 1024).ToString(CultureInfo.InvariantCulture)} KiB) with " +
+                    $"{added.Count.ToString(CultureInfo.InvariantCulture)} more {(added.Count == 1 ? "project" : "projects")}. " +
+                    $"Remove some with [bold]removeproject[/]. {NothingDone}");
+            }
+
+            if (SaveProjectsFor(Name, updated) is { } saveHint)
+            {
+                return saveHint;
+            }
+
+            Table table = new Table()
+                .Border(TableBorder.Rounded)
+                .BorderColor(Color.Grey)
+                .AddColumn("[grey]Work item[/]")
+                .AddColumn("[grey]Title[/]");
+            foreach (Project project in added)
+            {
+                table.AddRow(
+                    new Text("#" + project.WorkItem.ToString(CultureInfo.InvariantCulture)),
+                    new Markup(Markup.Escape(project.Title)));
+            }
+
+            parts.Add(table);
+        }
+
+        if (already > 0)
+        {
+            parts.Add(new Markup($"[grey]{already.ToString(CultureInfo.InvariantCulture)} already on the quicklist[/]"));
+        }
+
+        if (skipped.Count > 0)
+        {
+            parts.Add(new Markup($"[grey]{skipped.Count.ToString(CultureInfo.InvariantCulture)} skipped (title not valid): " +
+                string.Join(", ", skipped.Select(id => "#" + id.ToString(CultureInfo.InvariantCulture))) + "[/]"));
+        }
+
+        string done = added.Count > 0
+            ? $"[grey]Added {added.Count.ToString(CultureInfo.InvariantCulture)} " +
+                $"{(added.Count == 1 ? "work item" : "work items")} to the quicklist.[/]"
+            : "[grey]No new work items to add.[/]";
+        return new CommandResult(parts.Count == 0 ? null : new Rows(parts), hint: new Markup(done));
     }
 
     // A devops (dv) line with any argument never enters the in-memory history: connect asks for the

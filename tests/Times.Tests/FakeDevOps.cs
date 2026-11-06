@@ -85,6 +85,14 @@ internal sealed class FakeDevOpsClient : IDevOpsClient, IDisposable
 
     public int Disposed { get; private set; }
 
+    /// <summary>What <see cref="GetAssignedWorkItemsAsync"/> returns.</summary>
+    public List<(int Id, string? Title)> Assigned { get; } = [];
+
+    /// <summary>Makes <see cref="GetAssignedWorkItemsAsync"/> throw a <see cref="DevOpsException"/> with this reason.</summary>
+    public string? AssignedFailure { get; set; }
+
+    public int AssignedCalls { get; private set; }
+
     public void Dispose() => Disposed++;
 
     public IDevOpsClient For(DevOpsCredential credential)
@@ -115,5 +123,16 @@ internal sealed class FakeDevOpsClient : IDevOpsClient, IDisposable
         Items[id] = (value, rev + 1);
         AfterSet?.Invoke(id);
         return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<(int Id, string? Title)>> GetAssignedWorkItemsAsync()
+    {
+        AssignedCalls++;
+        if (AssignedFailure is { } reason)
+        {
+            throw new DevOpsException(reason);
+        }
+
+        return Task.FromResult<IReadOnlyList<(int Id, string? Title)>>(Assigned.ToList());
     }
 }
