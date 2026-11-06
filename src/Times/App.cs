@@ -234,17 +234,17 @@ internal sealed class App
 
     private void RegisterBookings()
     {
-        registry.Register("arrive", "a", $"Book your arrival: now, or at an optional {TimeInput.Format}", argument =>
+        registry.Register("arrive", "a", $"Book your arrival: now, or at an optional {TimeInput.Format}, -10m or +5m", argument =>
             Book("arrive", argument, EntryKind.Arrival));
-        registry.Register("leave", "l", $"Book your leaving: now, or at an optional {TimeInput.Format}", argument =>
+        registry.Register("leave", "l", $"Book your leaving: now, or at an optional {TimeInput.Format}, -10m or +5m", argument =>
             Book("leave", argument, EntryKind.Leaving));
-        registry.Register("break", "b", $"Book the start of a break: now, or at an optional {TimeInput.Format}", argument =>
+        registry.Register("break", "b", $"Book the start of a break: now, or at an optional {TimeInput.Format}, -10m or +5m", argument =>
             Book("break", argument, EntryKind.BreakStart));
-        registry.Register("breakend", "be", $"Book the end of a break: now, or at an optional {TimeInput.Format}", argument =>
+        registry.Register("breakend", "be", $"Book the end of a break: now, or at an optional {TimeInput.Format}, -10m or +5m", argument =>
             Book("breakend", argument, EntryKind.BreakEnd));
-        registry.Register("checkpoint", "cp", $"Book a checkpoint: [{TimeInput.Format}] [#project] <name>", Checkpoint);
+        registry.Register("checkpoint", "cp", $"Book a checkpoint: [{TimeInput.ShortForms}] [#project] <name>", Checkpoint);
         registry.Register("remove", "r", "Remove an entry from this day by its number", Remove);
-        registry.Register("change", "c", $"Change the time of an entry on this day: <number> <{TimeInput.Format}>", Change);
+        registry.Register("change", "c", $"Change the time of an entry on this day: <number> <{TimeInput.ShortForms}>", Change);
         registry.Register("booked", "bk", "Mark a checkpoint on this day as booked in Azure DevOps by its number", argument =>
             SetBooked("booked", argument, true));
         registry.Register("unbooked", "ub", "Mark a checkpoint on this day as not yet booked by its number", argument =>
@@ -1558,7 +1558,7 @@ internal sealed class App
     private CommandResult Change(string argument)
     {
         const string Name = "change";
-        string usage = $"Use [bold]change <number> <{TimeInput.Format}>[/].";
+        string usage = $"Use [bold]change <number> <{TimeInput.ShortForms}>[/].";
         string[] parts = argument.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length != 2)
         {
@@ -1570,10 +1570,9 @@ internal sealed class App
             return Hint($"{Name}: [bold]{Markup.Escape(parts[0])}[/] is not an entry number. {usage}");
         }
 
-        if (!TimeInput.TryParse(parts[1], out TimeOnly at))
+        if (!TryParseTime(Name, parts[1], out TimeOnly at, out CommandResult refused))
         {
-            return Hint($"{Name}: [bold]{Markup.Escape(parts[1])}[/] is not a time. " +
-                $"Use [bold]{TimeInput.Format}[/], e.g. [bold]8:15[/].");
+            return refused;
         }
 
         DateOnly day = dayView.Current;
@@ -1613,33 +1612,38 @@ internal sealed class App
         {
             at = Now();
         }
-        else if (!TimeInput.TryParse(argument, out at))
+        else if (!TryParseTime(name, argument, out at, out CommandResult refused))
         {
-            return NotATime(name, argument);
+            return refused;
         }
 
         return Save(name, new DayEntry(kind, at));
     }
 
-    // Books a named checkpoint: [H:mm] [#<project>] <name>. Only a token right after the optional time
+    // Books a named checkpoint: [H:mm|now|-<n>m|+<n>m] [#<project>] <name>. Only a token right after the optional time
     // that starts with '#' is a project number; it is looked up in the quicklist and the project's
     // work item is stored. Nothing is written if any part is invalid, and projects.json is read only
     // when a project number is given.
     private CommandResult Checkpoint(string argument)
     {
         const string Name = "checkpoint";
-        string usage = $"Use [bold]{Markup.Escape($"checkpoint [{TimeInput.Format}] [#project] <name>")}[/], " +
+        string usage = $"Use [bold]{Markup.Escape($"checkpoint [{TimeInput.ShortForms}] [#project] <name>")}[/], " +
             "where #project is the project's number on the quicklist.";
 
         string rest = argument;
         TimeOnly at = Now();
         (string first, string afterFirst) = SplitToken(rest);
-        if (TimeInput.TryParse(first, out TimeOnly given))
+        TimeInputResult firstTime = TimeInput.Parse(first, at, out TimeOnly given);
+        if (firstTime == TimeInputResult.Valid)
         {
             at = given;
             rest = afterFirst;
         }
-        else if (first.Contains(':') && first.All(c => c == ':' || char.IsAsciiDigit(c)))
+        else if (firstTime == TimeInputResult.CrossesMidnight)
+        {
+            return CrossesMidnight(Name, first);
+        }
+        else if ((first.Contains(':') && first.All(c => c == ':' || char.IsAsciiDigit(c))) || TimeInput.LooksRelative(first))
         {
             return NotATime(Name, first);
         }
@@ -1719,9 +1723,30 @@ internal sealed class App
         return new TimeOnly(now.Hour, now.Minute);
     }
 
+    // Parses a typed time against the current minute. On failure, refused holds the red hint.
+    private bool TryParseTime(string name, string text, out TimeOnly at, out CommandResult refused)
+    {
+        refused = CommandResult.None;
+        switch (TimeInput.Parse(text, Now(), out at))
+        {
+            case TimeInputResult.Valid:
+                return true;
+            case TimeInputResult.CrossesMidnight:
+                refused = CrossesMidnight(name, text);
+                return false;
+            default:
+                refused = NotATime(name, text);
+                return false;
+        }
+    }
+
     private static CommandResult NotATime(string name, string text) =>
         Hint($"{name}: [bold]{Markup.Escape(text)}[/] is not a time. " +
-            $"Use [bold]{TimeInput.Format}[/], e.g. [bold]8:15[/].");
+            $"Use [bold]{Markup.Escape(TimeInput.Forms)}[/].");
+
+    private static CommandResult CrossesMidnight(string name, string text) =>
+        Hint($"{name}: [bold]{Markup.Escape(text)}[/] crosses midnight. " +
+            $"Use a time on this day, from [bold]0:00[/] to [bold]23:59[/].");
 
     // Adds entry to the day being viewed. Nothing is written if the day's file cannot be read.
     private CommandResult Save(string name, DayEntry entry)
