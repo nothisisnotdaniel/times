@@ -734,7 +734,7 @@ internal sealed class App
     internal const string ImportPlaceholder = "yes replaces · anything else keeps · Esc keeps the rest";
 
     /// <summary>The most skipped names import lists before <c>… and N more</c>.</summary>
-    internal const int MaxSkippedNames = 20;
+    internal const int MaxSkippedNames = OldDataImport.MaxSkippedNames;
 
     /// <summary>
     /// The most yellow problem and warning lines import shows (problems first, then warnings) before <c>… and N more</c>.
@@ -931,13 +931,15 @@ internal sealed class App
         }
 
         IReadOnlyList<string> skipped = run.Scan.Skipped;
-        if (skipped.Count > 0)
+        int skippedCount = run.Scan.SkippedCount;
+        if (skippedCount > 0)
         {
             string names = string.Join(", ", skipped.Take(MaxSkippedNames).Select(Shown));
             parts.Add(new Markup($"[grey]Skipped (not a day file): {names}[/]"));
-            if (skipped.Count > MaxSkippedNames)
+            int shown = Math.Min(skipped.Count, MaxSkippedNames);
+            if (skippedCount > shown)
             {
-                parts.Add(new Markup($"[grey]… and {(skipped.Count - MaxSkippedNames).ToString(CultureInfo.InvariantCulture)} more[/]"));
+                parts.Add(new Markup($"[grey]… and {(skippedCount - shown).ToString(CultureInfo.InvariantCulture)} more[/]"));
             }
         }
 

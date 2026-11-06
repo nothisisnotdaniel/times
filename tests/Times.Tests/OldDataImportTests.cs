@@ -300,6 +300,166 @@ public sealed class OldDataImportTests : IDisposable
         Assert.Equal(["2026-02-30.json", "2026-10-27.JSON", "Archive", "notes.txt", "sub"], scan.Skipped);
     }
 
+    // 120 AC-1: at most 20 other names, so every one is kept and counted.
+    [Fact]
+    public void Scan_AtMost20OtherNames_KeepsThemAll_AndCountsThem()
+    {
+        File.WriteAllText(Path.Combine(folder.Path, "2026-10-28.json"), "{}");
+        for (int i = 0; i < OldDataImport.MaxSkippedNames; i++)
+        {
+            File.WriteAllText(Path.Combine(folder.Path, $"n{i:00}"), "x");
+        }
+
+        ImportScan scan = OldDataImport.Scan(folder.Path);
+
+        Assert.Equal(["2026-10-28.json"], scan.Candidates.Select(c => c.Name));
+        Assert.Equal(Enumerable.Range(0, 20).Select(i => $"n{i:00}"), scan.Skipped);
+        Assert.Equal(scan.Skipped.Count, scan.SkippedCount);
+    }
+
+    public static TheoryData<string> Orders => new TheoryData<string> { "ascending", "descending", "shuffled" };
+
+    // 120 AC-2: the 20 ordinal-smallest names in ordinal order, whatever the input order; case counts ordinally.
+    [Theory]
+    [MemberData(nameof(Orders))]
+    public void Collect_MoreThan20OtherNames_KeepsThe20OrdinalSmallest_AndCountsAll(string order)
+    {
+        List<string> names = [.. Enumerable.Range(0, 30).Select(i => $"n{i:00}"), "B", "a", "Z", "b", "A", "_", "~"];
+        List<string> sorted = [.. names];
+        sorted.Sort(StringComparer.Ordinal);
+        List<string> input = order switch
+        {
+            "ascending" => sorted,
+            "descending" => Enumerable.Reverse(sorted).ToList(),
+            _ => names.OrderBy(n => n.GetHashCode(StringComparison.Ordinal) ^ 0x5bd1e995).ThenBy(n => n, StringComparer.Ordinal).ToList(),
+        };
+
+        ImportScan scan = OldDataImport.Collect(input.Select(n => Path.Combine("/x", n)));
+
+        Assert.Equal(sorted.Take(20), scan.Skipped);
+        Assert.Equal(names.Count, scan.SkippedCount);
+        Assert.True(StringComparer.Ordinal.Compare("B", "a") < 0);
+        Assert.Contains("B", scan.Skipped);
+        Assert.Contains("a", scan.Skipped);
+        Assert.Empty(scan.Candidates);
+    }
+
+    // 120 AC-2: a fixed shuffle, so the eviction path runs on an order that is neither sorted nor reversed.
+    [Fact]
+    public void Collect_RandomOrder_KeepsThe20OrdinalSmallest()
+    {
+        List<string> names = [.. Enumerable.Range(0, 200).Select(i => $"f{i:000}"), "Ä", "é", "a", "B"];
+        Random random = new Random(120);
+        List<string> shuffled = [.. names.OrderBy(_ => random.Next())];
+        List<string> sorted = [.. names];
+        sorted.Sort(StringComparer.Ordinal);
+
+        ImportScan scan = OldDataImport.Collect(shuffled.Select(n => Path.Combine("/x", n)));
+
+        Assert.Equal(sorted.Take(20), scan.Skipped);
+        Assert.Equal(204, scan.SkippedCount);
+    }
+
+    // 120 AC-3: a million names from a lazy generator, enumerated once, keep 20 and count them all.
+    [Fact]
+    public void Collect_AMillionNames_IsBounded_AndEnumeratesOnce()
+    {
+        CountingNames names = new CountingNames(1_000_000);
+
+        ImportScan scan = OldDataImport.Collect(names);
+
+        Assert.Equal(1, names.Enumerations);
+        Assert.Equal(20, scan.Skipped.Count);
+        Assert.Equal(1_000_000, scan.SkippedCount);
+        Assert.Equal(Enumerable.Range(0, 20).Select(i => $"n{i:D7}"), scan.Skipped);
+    }
+
+    // 120 AC-4: candidates among many skipped names are all kept, by date, and never counted as skipped.
+    [Fact]
+    public void Collect_CandidatesAmongManySkippedNames_AreAllReturnedByDate()
+    {
+        List<string> paths = [];
+        for (int i = 0; i < 30; i++)
+        {
+            paths.Add(Path.Combine("/x", $"n{i:00}"));
+            if (i % 10 == 0)
+            {
+                paths.Add(Path.Combine("/x", $"2026-10-{29 - i / 10:00}.json"));
+            }
+        }
+
+        paths.Add(Path.Combine("/x", "0000"));
+        paths.Add(Path.Combine("/x", "2026-01-01.json"));
+
+        ImportScan scan = OldDataImport.Collect(paths);
+
+        Assert.Equal(["2026-01-01.json", "2026-10-27.json", "2026-10-28.json", "2026-10-29.json"], scan.Candidates.Select(c => c.Name));
+        Assert.Equal(Path.Combine("/x", "2026-10-28.json"), scan.Candidates[2].Path);
+        Assert.Equal(31, scan.SkippedCount);
+        Assert.Equal(["0000", .. Enumerable.Range(0, 19).Select(i => $"n{i:00}")], scan.Skipped);
+        Assert.DoesNotContain(scan.Skipped, n => n.EndsWith(".json", StringComparison.Ordinal));
+    }
+
+    // 120 AC-5
+    [Fact]
+    public void ImportScan_RejectsTooManyNames_OrACountBelowThem()
+    {
+        List<string> twentyOne = [.. Enumerable.Range(0, 21).Select(i => $"n{i:00}")];
+        List<string> two = ["a", "b"];
+
+        Assert.Throws<ArgumentException>(() => new ImportScan([], twentyOne, 21));
+        Assert.Throws<ArgumentException>(() => new ImportScan([], two, 1));
+        Assert.Equal(2, new ImportScan([], two, 2).SkippedCount);
+        Assert.Equal(int.MaxValue, new ImportScan([], two, int.MaxValue).SkippedCount);
+    }
+
+    // 120 AC-7: a listing that fails partway through lets the exception through.
+    [Fact]
+    public void Collect_ListingFailsPartway_ThrowsTheSameException()
+    {
+        Assert.Throws<IOException>(() => OldDataImport.Collect(FailingNames(new IOException("gone"))));
+        Assert.Throws<UnauthorizedAccessException>(() => OldDataImport.Collect(FailingNames(new UnauthorizedAccessException("denied"))));
+    }
+
+    private static IEnumerable<string> FailingNames(Exception failure)
+    {
+        for (int i = 0; i < 5; i++)
+        {
+            yield return Path.Combine("/x", $"n{i}");
+        }
+
+        throw failure;
+    }
+
+    /// <summary>Yields <c>/x/nNNNNNNN</c> names in descending order, lazily, and counts its enumerations.</summary>
+    private sealed class CountingNames : IEnumerable<string>
+    {
+        private readonly int count;
+
+        public CountingNames(int count)
+        {
+            this.count = count;
+        }
+
+        public int Enumerations { get; private set; }
+
+        public IEnumerator<string> GetEnumerator()
+        {
+            Enumerations++;
+            return Names();
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+
+        private IEnumerator<string> Names()
+        {
+            for (int i = count - 1; i >= 0; i--)
+            {
+                yield return Path.Combine("/x", $"n{i:D7}");
+            }
+        }
+    }
+
     // AC-3
     [Fact]
     public void Read_TooLargeOrNotARegularFile_GivesAFixedReason()

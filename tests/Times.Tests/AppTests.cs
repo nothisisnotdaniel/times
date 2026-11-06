@@ -14106,6 +14106,64 @@ public sealed class AppTests : IDisposable
         Assert.Equal([ImportDay + ".json"], Listing(data.Path));
     }
 
+    // 120 AC-6: 25 non-day-file entries show the 20 ordinal-smallest names, then a grey "… and 5 more".
+    [Fact]
+    public void Import_25OtherNames_ShowThe20OrdinalSmallest_AndFiveMore()
+    {
+        using TempFolder source = new TempFolder();
+        for (int i = 24; i >= 0; i--)
+        {
+            File.WriteAllText(Path.Combine(source.Path, $"n{i:00}"), "x");
+        }
+
+        string[] frame = TallImportFrame($"import {source.Path}");
+        string output = RunAnsiCommands($"import {source.Path}");
+
+        Assert.Contains("Skipped (not a day file): " + string.Join(", ", Enumerable.Range(0, 20).Select(i => $"n{i:00}")), frame);
+        Assert.Contains("… and 5 more", frame);
+        Assert.DoesNotContain(frame, l => l.Contains("n20", StringComparison.Ordinal));
+        Assert.Matches(@"\x1b\[[0-9;]*38;5;8m… and 5 more", output);
+    }
+
+    // 120 AC-7: a source folder that cannot be listed gives the red hint, never a stack trace.
+    [Fact]
+    public void Import_FolderThatCannotBeListed_ShowsRedHint()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder source = new TempFolder();
+        File.WriteAllText(Path.Combine(source.Path, "notes.txt"), "x");
+        UnixFileMode mode = File.GetUnixFileMode(source.Path);
+        File.SetUnixFileMode(source.Path, UnixFileMode.None);
+        try
+        {
+            try
+            {
+                Directory.EnumerateFileSystemEntries(source.Path).ToList();
+                // Running as root: access can't be denied.
+                return;
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+
+            string[] frame = ImportFrame($"import {source.Path}");
+            string output = RunAnsiCommands($"import {source.Path}");
+
+            Assert.StartsWith($"import: the folder {source.Path} cannot be listed", ImportHint(frame));
+            Assert.Matches(@"\x1b\[[0-9;]*(31|91|38;5;9)mimport: the folder ", output);
+            Assert.DoesNotContain("   at ", output);
+            Assert.Empty(Listing(data.Path));
+        }
+        finally
+        {
+            File.SetUnixFileMode(source.Path, mode);
+        }
+    }
+
     // AC-2, AC-10: markup and control characters in a name show literally.
     [Fact]
     public void Import_MarkupInASkippedName_ShowsLiterally()
