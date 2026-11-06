@@ -27,16 +27,16 @@ internal sealed class BackgroundEvent
 internal interface IBackgroundEvents
 {
     /// <summary>Queues an event. Safe to call from any thread.</summary>
-    void Post(BackgroundEvent e);
+    public void Post(BackgroundEvent e);
 
     /// <summary>Takes the oldest queued event (FIFO). Returns <c>false</c> when the queue is empty.</summary>
-    bool TryTake(out BackgroundEvent? e);
+    public bool TryTake(out BackgroundEvent? e);
 
     /// <summary>
     /// Blocks until an event is queued or <paramref name="keyAvailable"/> says a key is waiting. Never
     /// applies an event and never touches the console itself.
     /// </summary>
-    void WaitForKeyOrEvent(Func<bool> keyAvailable);
+    public void WaitForKeyOrEvent(Func<bool> keyAvailable);
 }
 
 /// <summary>

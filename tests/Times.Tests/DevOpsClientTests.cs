@@ -403,31 +403,34 @@ public class DevOpsClientTests
         Assert.DoesNotContain("secret body", ex.ToString(), StringComparison.Ordinal);
     }
 
-    // AC-4
+    // AC-4. Only the slow answer uses a short timeout; the other cases run with the default
+    // RequestTimeout, so a slow runner cannot turn them into TimedOut.
     [Theory]
     [InlineData(0)]
     [InlineData(1)]
     public async Task Assigned_TimeoutOversizeAndNetworkFailures_FailCleanly(int failingRequest)
     {
-        foreach ((Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> answer, string reason) in new (Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>, string)[]
+        TimeSpan shortTimeout = TimeSpan.FromMilliseconds(50);
+        TimeSpan defaultTimeout = AzureDevOpsClient.RequestTimeout;
+        foreach ((Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> answer, TimeSpan timeout, string reason) in new (Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>, TimeSpan, string)[]
         {
             (async (_, token) =>
             {
                 await Task.Delay(TimeSpan.FromSeconds(30), token);
                 return new HttpResponseMessage(HttpStatusCode.OK);
-            }, DevOpsException.TimedOut),
+            }, shortTimeout, DevOpsException.TimedOut),
             ((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StreamContent(new UnknownLengthStream(AzureDevOpsClient.MaxBodyBytes + 10)),
-            }), DevOpsException.TooLarge),
+            }), defaultTimeout, DevOpsException.TooLarge),
             ((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent(new string('a', (int)AzureDevOpsClient.MaxBodyBytes + 1)),
-            }), DevOpsException.TooLarge),
-            ((_, _) => throw new HttpRequestException("connection refused " + Marker), DevOpsException.Unreachable),
+            }), defaultTimeout, DevOpsException.TooLarge),
+            ((_, _) => throw new HttpRequestException("connection refused " + Marker), defaultTimeout, DevOpsException.Unreachable),
         })
         {
-            (AzureDevOpsClient client, FakeHandler handler) = Create(TimeSpan.FromMilliseconds(50));
+            (AzureDevOpsClient client, FakeHandler handler) = Create(timeout);
             if (failingRequest == 1)
             {
                 handler.Answer(HttpStatusCode.OK, WiqlAnswer(4));
@@ -439,6 +442,7 @@ public class DevOpsClientTests
 
             Assert.Equal(reason, ex.Message);
             Assert.DoesNotContain(Marker, ex.ToString(), StringComparison.Ordinal);
+            Assert.Equal(failingRequest + 1, handler.Requests.Count);
         }
     }
 
