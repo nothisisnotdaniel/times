@@ -10358,6 +10358,9 @@ public sealed class AppTests : IDisposable
             TestConsole console = new TestConsole().Interactive();
             console.Profile.Width = 120;
             console.Input.PushTextWithEnter("settings");
+            // Past daily-target, alert-target and alert-limit (job 113).
+            console.Input.PushKey(ConsoleKey.DownArrow);
+            console.Input.PushKey(ConsoleKey.DownArrow);
             console.Input.PushKey(ConsoleKey.DownArrow);
             console.Input.PushKey(i % 2 == 0 ? ConsoleKey.Enter : ConsoleKey.Spacebar);
             console.Input.PushKey(ConsoleKey.Escape);
@@ -12337,5 +12340,315 @@ public sealed class AppTests : IDisposable
         Assert.Throws<InvalidOperationException>(() => app.Run([]));
 
         Assert.True(Assert.Single(time.Timers).Disposed);
+    }
+
+    // End-of-day alerts (job 113) ------------------------------------------------------------
+
+    private const string Bell = "\a";
+    private const string TargetReached = "Daily target 8:00 reached.";
+    private const string LimitWarning = "! 15 minutes left until 10 hours of work.";
+
+    /// <summary>
+    /// Runs the app on the live clock with today's (2026-10-27) arrival at 8:00, started at
+    /// <paramref name="start"/>, and fires one tick at each wait in <paramref name="ticks"/> (wait number to time).
+    /// Returns the output and the output length right before each applied tick.
+    /// </summary>
+    private (string Output, List<int> AppliedAt, List<bool> Results) RunAlerts(TimeOnly start, Dictionary<int, TimeOnly> ticks,
+        Action<TestConsole> input, DayRecord? today = null, int width = 80)
+    {
+        if (today is not null)
+        {
+            new DayStore(data.Path).Save(Shown, today);
+        }
+
+        SettableTimeProvider time = LiveTime(27, start.Hour, start.Minute, 20);
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = width;
+        ScriptedEvents scripted = new ScriptedEvents();
+        ObservedEvents events = new ObservedEvents(scripted);
+        List<int> appliedAt = [];
+        scripted.OnWait = call =>
+        {
+            if (ticks.TryGetValue(call, out TimeOnly at))
+            {
+                Tick(time, new DateTimeOffset(2026, 10, 27, at.Hour, at.Minute, 5, TimeSpan.Zero));
+            }
+        };
+        events.OnApply = () => appliedAt.Add(console.Output.Length);
+        input(console);
+
+        string output = RunLive(time, events, console);
+        return (output, appliedAt, events.Results);
+    }
+
+    // The ANSI text a [style] markup renders to on a test console, so the colour can be checked.
+    private static string Styled(string markup)
+    {
+        TestConsole console = new TestConsole().EmitAnsiSequences();
+        console.Write(new Markup(markup));
+        return console.Output;
+    }
+
+    // AC-6
+    [Fact]
+    public void Alert_Target_RingsOnce_ShowsTheHintInPlace_AndKeepsTheTypedLineAndCursor()
+    {
+        // "arr" takes waits 1-3; the tick comes at wait 4, before the Enter, with the popup open.
+        (string output, List<int> appliedAt, List<bool> results) = RunAlerts(new TimeOnly(15, 59),
+            new Dictionary<int, TimeOnly> { [4] = new TimeOnly(16, 0) },
+            c =>
+            {
+                c.Input.PushText("arr");
+                c.Input.PushKey(ConsoleKey.Escape);
+                c.Input.PushKey(ConsoleKey.Escape);
+                c.Input.PushTextWithEnter("quit");
+            },
+            Arrived(8));
+
+        Assert.Equal([true], results);
+        Assert.Equal(1, Count(output, Bell));
+        int at = Assert.Single(appliedAt);
+        Assert.True(output.IndexOf(Bell, StringComparison.Ordinal) >= at);
+        Assert.DoesNotContain(TargetReached, output[..at]);
+
+        string typed = output[output.LastIndexOf(ClearScreen, at, StringComparison.Ordinal)..at];
+        // The tick's writes end where the next key (the first Esc) starts writing: the cursor is back in the line.
+        List<AnsiWrite> writes = AnsiWrites.Parse(output[at..]);
+        int hint = writes.FindIndex(w => w.Row == 21 && w.Text.Contains(TargetReached, StringComparison.Ordinal));
+        Assert.True(hint >= 0);
+        int line = writes.FindIndex(hint, w => w.Row == 23 && w.Text.Contains("arr", StringComparison.Ordinal));
+        Assert.True(line > hint);
+        Assert.Contains(writes.Skip(hint + 1).Take(line - hint), w => w.StartsWithCommand && w.Row <= 21);
+        Assert.Equal(LastCursor(typed), (writes[line + 1].Row, writes[line + 1].Column));
+        Assert.Contains(Styled("[steelblue1]" + TargetReached + "[/]").TrimEnd('\n'), output[at..]);
+    }
+
+    // AC-6: later ticks write no more bells.
+    [Fact]
+    public void Alert_Target_FurtherTicks_RingNoMore()
+    {
+        (string output, _, List<bool> results) = RunAlerts(new TimeOnly(15, 59),
+            new Dictionary<int, TimeOnly> { [1] = new TimeOnly(16, 0), [2] = new TimeOnly(16, 1), [3] = new TimeOnly(16, 2) },
+            c => c.Input.PushTextWithEnter("quit"),
+            Arrived(8));
+
+        Assert.Equal([true, true, true], results);
+        Assert.Equal(1, Count(output, Bell));
+        Assert.Contains(TargetReached, output);
+    }
+
+    // AC-7
+    [Fact]
+    public void Alert_Limit_RingsOnce_WithTheYellowHint()
+    {
+        // Started past the target (primed), so only the limit fires.
+        (string output, List<int> appliedAt, _) = RunAlerts(new TimeOnly(17, 44),
+            new Dictionary<int, TimeOnly> { [1] = new TimeOnly(17, 45), [2] = new TimeOnly(17, 46) },
+            c => c.Input.PushTextWithEnter("quit"),
+            Arrived(8));
+
+        Assert.Equal(1, Count(output, Bell));
+        Assert.Contains(Styled("[yellow]" + LimitWarning + "[/]").TrimEnd('\n'), output);
+        Assert.DoesNotContain(TargetReached, output);
+        Assert.Contains(AnsiWrites.Parse(output[appliedAt[0]..]), w => w.Row == 21 && w.Text.Contains(LimitWarning, StringComparison.Ordinal));
+    }
+
+    // AC-7: both on the same tick ring once, and the hint holds both texts, target first.
+    [Fact]
+    public void Alert_BothOnOneTick_OneBell_TargetFirst()
+    {
+        (string output, List<int> appliedAt, _) = RunAlerts(new TimeOnly(15, 0),
+            new Dictionary<int, TimeOnly> { [1] = new TimeOnly(17, 50) },
+            c => c.Input.PushTextWithEnter("quit"),
+            Arrived(8));
+
+        Assert.Equal(1, Count(output, Bell));
+        AnsiWrite row = AnsiWrites.Parse(output[appliedAt[0]..]).First(w => w.Row == 21 && w.Text.Contains(TargetReached, StringComparison.Ordinal));
+        Assert.Contains(TargetReached + " " + LimitWarning, row.Text);
+    }
+
+    // AC-7, AC-10: a hint that needs one more row rewrites every row but the input line, which the editor
+    // then redraws with the typed text and the cursor where it was.
+    [Fact]
+    public void Alert_HintWrappingToTwoRows_RewritesTheOtherRows_AndKeepsTheTypedLine()
+    {
+        (string output, List<int> appliedAt, _) = RunAlerts(new TimeOnly(15, 0),
+            new Dictionary<int, TimeOnly> { [2] = new TimeOnly(17, 50) },
+            c =>
+            {
+                c.Input.PushText("q");
+                c.Input.PushKey(ConsoleKey.Escape);
+                c.Input.PushKey(ConsoleKey.Escape);
+                c.Input.PushTextWithEnter("quit");
+            },
+            Arrived(8), width: 60);
+
+        int at = Assert.Single(appliedAt);
+        string typed = output[output.LastIndexOf(ClearScreen, at, StringComparison.Ordinal)..at];
+        List<AnsiWrite> writes = AnsiWrites.Parse(output[at..]);
+        Assert.Equal(1, Count(output, Bell));
+        int first = writes.FindIndex(w => w.Row == 20 && w.Text.Contains("Daily target", StringComparison.Ordinal));
+        Assert.True(first >= 0);
+        Assert.Contains("10 hours", writes[first].Text);
+        Assert.Contains(writes.Skip(first), w => w.Row == 21 && w.Text.Contains("of work.", StringComparison.Ordinal));
+        // Every row but the input line was rewritten in place by the hint.
+        List<int> hintRows = writes.Take(writes.FindIndex(first, w => w.Row == 24) + 1).Where(w => w.Column == 1).Select(w => w.Row).ToList();
+        Assert.Contains(1, hintRows);
+        Assert.Contains(22, hintRows);
+        Assert.DoesNotContain(23, hintRows);
+        int line = writes.FindIndex(first, w => w.Row == 23 && w.Text.Contains('q'));
+        Assert.True(line > first);
+        Assert.Equal(LastCursor(typed), (writes[line + 1].Row, writes[line + 1].Column));
+    }
+
+    // AC-8: an alert fires from today's file while another day is shown; the shown day stays, and the popup
+    // and the typed line are redrawn after the hint.
+    [Fact]
+    public void Alert_WhileAnotherDayIsShown_FiresFromTodaysFile_AndRedrawsPopupAndLineAfterTheHint()
+    {
+        // "prev" and Enter take waits 1-5, "ar" waits 6-7; the tick comes at wait 8, with the popup open.
+        (string output, List<int> appliedAt, List<bool> results) = RunAlerts(new TimeOnly(15, 59),
+            new Dictionary<int, TimeOnly> { [8] = new TimeOnly(16, 0) },
+            c =>
+            {
+                c.Input.PushTextWithEnter("prev");
+                c.Input.PushText("ar");
+                c.Input.PushKey(ConsoleKey.Escape);
+                c.Input.PushKey(ConsoleKey.Escape);
+                c.Input.PushTextWithEnter("quit");
+            },
+            Arrived(8));
+
+        Assert.Equal([true], results);
+        Assert.Equal(1, Count(output, Bell));
+        int at = Assert.Single(appliedAt);
+        string typed = output[output.LastIndexOf(ClearScreen, at, StringComparison.Ordinal)..at];
+        List<AnsiWrite> writes = AnsiWrites.Parse(output[at..]);
+        int hint = writes.FindIndex(w => w.Row == 21 && w.Text.Contains(TargetReached, StringComparison.Ordinal));
+        Assert.True(hint >= 0);
+        int line = writes.FindIndex(hint, w => w.Row == 23 && w.Text.Contains("ar", StringComparison.Ordinal));
+        Assert.True(line > hint);
+        Assert.Contains(writes.Skip(hint + 1).Take(line - hint), w => w.StartsWithCommand && w.Row <= 21);
+        Assert.Equal(LastCursor(typed), (writes[line + 1].Row, writes[line + 1].Column));
+
+        // The shown day is still the day before, without a now row.
+        string top = string.Join('\n', writes.Take(line).Where(w => w.Column == 1 && w.Row <= TopHeight).Select(w => w.Text));
+        Assert.Contains("2026-10-26", string.Join('\n', AnsiFrames(output)[1]));
+        Assert.DoesNotMatch(@"(?m)^ +now +\d", top);
+        Assert.DoesNotContain("08:00", top);
+    }
+
+    // AC-8: an unreadable or missing day file for today fires nothing and shows no error.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Alert_TodaysFileUnreadableOrMissing_FiresNothing(bool unreadable)
+    {
+        if (unreadable)
+        {
+            File.WriteAllText(Path.Combine(data.Path, "2026-10-27.json"), "{ not json");
+        }
+
+        (string output, List<int> appliedAt, List<bool> results) = RunAlerts(new TimeOnly(15, 59),
+            new Dictionary<int, TimeOnly> { [1] = new TimeOnly(16, 0), [2] = new TimeOnly(18, 0) },
+            c => c.Input.PushTextWithEnter("quit"));
+
+        Assert.Equal([true, true], results);
+        Assert.Equal(0, Count(output, Bell));
+        string after = string.Join('\n', AnsiWrites.Parse(output[appliedAt[0]..]).Select(w => w.Text));
+        Assert.DoesNotContain(TargetReached, after);
+        Assert.DoesNotContain(LimitWarning, after);
+        Assert.DoesNotContain(after, AnsiWrites.Parse(output[appliedAt[0]..]).Where(w => w.Row == 21).Select(w => w.Text.Trim()).Where(t => t.Length > 0));
+    }
+
+    // AC-9
+    [Fact]
+    public void Alert_BothSettingsOff_RingNothing_AndShowNoHint()
+    {
+        File.WriteAllText(SettingsPath, "{\"settings\":{\"alert-target\":false,\"alert-limit\":false}}");
+
+        (string output, _, List<bool> results) = RunAlerts(new TimeOnly(15, 59),
+            new Dictionary<int, TimeOnly> { [1] = new TimeOnly(16, 0), [2] = new TimeOnly(17, 45), [3] = new TimeOnly(18, 0) },
+            c => c.Input.PushTextWithEnter("quit"),
+            Arrived(8));
+
+        Assert.Equal([true, true, true], results);
+        Assert.Equal(0, Count(output, Bell));
+        Assert.DoesNotContain(TargetReached, output);
+        Assert.DoesNotContain(LimitWarning, output);
+    }
+
+    // AC-9: a broken settings.json counts as both on.
+    [Fact]
+    public void Alert_BrokenSettings_CountsAsBothOn()
+    {
+        File.WriteAllText(SettingsPath, "{ broken");
+
+        (string output, List<int> appliedAt, _) = RunAlerts(new TimeOnly(15, 59),
+            new Dictionary<int, TimeOnly> { [1] = new TimeOnly(17, 50) },
+            c => c.Input.PushTextWithEnter("quit"),
+            Arrived(8));
+
+        Assert.Equal(1, Count(output, Bell));
+        Assert.Contains(AnsiWrites.Parse(output[appliedAt[0]..]), w => w.Row == 21 && w.Text.Contains(TargetReached + " " + LimitWarning, StringComparison.Ordinal));
+    }
+
+    // AC-3 end to end: a run started past both thresholds rings nothing.
+    [Fact]
+    public void Alert_StartedPastBothThresholds_RingsNothing()
+    {
+        (string output, _, List<bool> results) = RunAlerts(new TimeOnly(18, 30),
+            new Dictionary<int, TimeOnly> { [1] = new TimeOnly(18, 31), [2] = new TimeOnly(18, 32) },
+            c => c.Input.PushTextWithEnter("quit"),
+            Arrived(8));
+
+        Assert.Equal([true, true], results);
+        Assert.Equal(0, Count(output, Bell));
+        Assert.DoesNotContain(TargetReached, output);
+        Assert.DoesNotContain(LimitWarning, output);
+    }
+
+    // AC-10: the alert hint stays until the next full redraw, which shows that command's hint instead.
+    [Fact]
+    public void Alert_HintStaysUntilTheNextFullRedraw()
+    {
+        // The tick comes at wait 1, before "next" is typed.
+        (string output, List<int> appliedAt, _) = RunAlerts(new TimeOnly(15, 59),
+            new Dictionary<int, TimeOnly> { [1] = new TimeOnly(16, 0) },
+            c =>
+            {
+                c.Input.PushTextWithEnter("next");
+                c.Input.PushTextWithEnter("quit");
+            },
+            Arrived(8));
+
+        int at = Assert.Single(appliedAt);
+        int clear = output.IndexOf(ClearScreen, at, StringComparison.Ordinal);
+        Assert.Contains(TargetReached, output[at..clear]);
+        // While "next" is typed the popup covers it; once the popup closes for Enter, the hint row shows it again.
+        Assert.Contains(TargetReached, AnsiWrites.Parse(output[at..clear]).Last(w => w.Row == 21 && w.Column == 1).Text);
+        Assert.DoesNotContain(AnsiFrames(output)[1], l => l.Contains(TargetReached, StringComparison.Ordinal));
+    }
+
+    // AC-5: the settings panel lists both alerts and toggles alert-target.
+    [Fact]
+    public void Settings_ListsBothAlerts_AndEnterTogglesAlertTarget()
+    {
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 120;
+        console.Input.PushTextWithEnter("settings");
+        console.Input.PushKey(ConsoleKey.DownArrow);
+        console.Input.PushKey(ConsoleKey.Enter);
+        console.Input.PushKey(ConsoleKey.DownArrow);
+        console.Input.PushKey(ConsoleKey.Spacebar);
+        console.Input.PushKey(ConsoleKey.Escape);
+        console.Input.PushTextWithEnter("quit");
+
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+
+        Assert.Matches(@"alert-target +on +Ring and show a hint when today's work reaches the daily target", console.Output);
+        Assert.Matches(@"alert-limit +on +Ring and show a hint 15 minutes before 10 hours of work", console.Output);
+        Assert.Matches(@"alert-target +off ", console.Output);
+        Assert.Equal("{\"settings\":{\"alert-target\":false,\"alert-limit\":false}}", File.ReadAllText(SettingsPath));
     }
 }

@@ -77,6 +77,12 @@ Every factory agent reads this file before working on Times. Keep it short and a
       while `DayRecord.IsWorking` (and the minute is not before the last entry) a `now` row (grey `now`, steelblue1 `HH:mm`,
       `left` from `TimeLeftAt`) follows the last entry, and `day`/`balance` use `WorkTimeAt(now)`; otherwise the view is as
       before. Tests fire timers by hand through `SettableTimeProvider.Timers` (`ManualTimer`).
+    - **End-of-day alerts:** each tick runs `App.Tick()`: `EndOfDayAlerts.Check` against **today's** file (not the shown day;
+      unreadable or missing: nothing) with `daily-target` and the `OnOff` settings `alert-target`/`alert-limit` (read per tick;
+      missing, broken or unregistered: on). While today `IsWorking`, `Target` fires at the target (above 0) and `Limit` at
+      `LimitWarning` (9:45), each at most once per date and session; a fire writes one `ControlCode("\a")` and shows the hint
+      (steelblue1 `Daily target H:mm reached.`, yellow `! 15 minutes left until 10 hours of work.`) through `ShowHintInPlace`
+      (shared with the paste-cut hint). `Run` calls `Prime` before the first draw, so a start past a threshold stays silent.
   - `quit` ends the loop with exit code 0.
   - Tests drive the loop by queuing input on `TestConsole.Input` (`PushTextWithEnter`, `PushKey`)
     and always end with `quit`, so they can't hang.

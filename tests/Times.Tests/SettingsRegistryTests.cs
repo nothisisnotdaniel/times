@@ -9,7 +9,7 @@ public sealed class SettingsRegistryTests
         IReadOnlyList<Setting> all = SettingsRegistry.CreateDefault().Settings;
         Setting setting = all[0];
 
-        Assert.Equal(["daily-target", "report-rounding", "update-mode", "update-channel"], all.Select(s => s.Name));
+        Assert.Equal(["daily-target", "alert-target", "alert-limit", "report-rounding", "update-mode", "update-channel"], all.Select(s => s.Name));
         Assert.Equal("daily-target", setting.Name);
         Assert.Equal("Daily work target in minutes (480 = 8:00)", setting.Description);
         Assert.Equal(SettingKind.Number, setting.Kind);
@@ -18,12 +18,12 @@ public sealed class SettingsRegistryTests
         Assert.Equal(1440, setting.Max);
     }
 
-    // AC-1 (104)
+    // AC-1 (104); AC-5 (113): after the daily target and the two alerts.
     [Fact]
-    public void CreateDefault_RegistersReportRoundingDirectlyAfterTheDailyTarget()
+    public void CreateDefault_RegistersReportRoundingAfterTheDailyTargetAndTheAlerts()
     {
         IReadOnlyList<Setting> all = SettingsRegistry.CreateDefault().Settings;
-        Setting setting = all[1];
+        Setting setting = all[3];
 
         Assert.Equal("daily-target", all[0].Name);
         Assert.Equal("report-rounding", setting.Name);
@@ -32,6 +32,24 @@ public sealed class SettingsRegistryTests
         Assert.Equal(["off", "5 min", "10 min", "15 min"], setting.Options);
         Assert.Equal("off", setting.Default);
         Assert.False(string.IsNullOrWhiteSpace(setting.Description));
+    }
+
+    // AC-5 (113)
+    [Fact]
+    public void CreateDefault_RegistersBothAlertsAsOnOff_DefaultOn_RightAfterTheDailyTarget()
+    {
+        IReadOnlyList<Setting> all = SettingsRegistry.CreateDefault().Settings;
+
+        Assert.Equal(["daily-target", "alert-target", "alert-limit"], all.Take(3).Select(s => s.Name));
+        Assert.Equal(SettingsRegistry.AlertTargetName, all[1].Name);
+        Assert.Equal(SettingsRegistry.AlertLimitName, all[2].Name);
+        Assert.Equal("Ring and show a hint when today's work reaches the daily target", all[1].Description);
+        Assert.Equal("Ring and show a hint 15 minutes before 10 hours of work", all[2].Description);
+        foreach (Setting setting in all.Skip(1).Take(2))
+        {
+            Assert.Equal(SettingKind.OnOff, setting.Kind);
+            Assert.Equal(true, setting.Default);
+        }
     }
 
     // AC-1 (104)

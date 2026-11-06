@@ -47,6 +47,9 @@ internal sealed class App
     private readonly IBackgroundEvents? events;
     private readonly bool liveClock;
 
+    // Which end-of-day alerts were already given today; checked on every live clock tick.
+    private readonly EndOfDayAlerts alerts = new EndOfDayAlerts();
+
     // What the last full redraw showed above the day view's hint rows, so a background event can
     // rebuild the same top area in place (the hint itself stays in frameHint).
     private IRenderable? shownMessage;
@@ -2155,6 +2158,92 @@ internal sealed class App
     // midnight the shown day stays as it was, so it no longer ticks.
     private bool ShowsToday() => dayView.Current == DateOnly.FromDateTime(time.GetLocalNow().DateTime);
 
+    // A live clock tick, on the loop thread: checks the end-of-day alerts against today's file (not the shown
+    // day) and, if any fires, rings once and shows its hint in place. Returns true if the top area must be
+    // redrawn (today is shown) or a hint was shown (so the editor redraws the popup and the line after it).
+    private bool Tick()
+    {
+        bool fired = CheckAlerts();
+        return ShowsToday() || fired;
+    }
+
+    // Today's date and minute, from one clock read.
+    private (DateOnly Date, TimeOnly Minute) Today()
+    {
+        DateTime local = time.GetLocalNow().DateTime;
+        return (DateOnly.FromDateTime(local), new TimeOnly(local.Hour, local.Minute));
+    }
+
+    // Marks the end-of-day alerts already reached today as given, so a start past a threshold stays silent.
+    // An unreadable day file primes nothing.
+    private void PrimeAlerts()
+    {
+        (DateOnly today, TimeOnly now) = Today();
+        if (TryLoadDay(today) is not { } day)
+        {
+            return;
+        }
+
+        AlertSettings(out TimeSpan target, out bool targetOn, out bool limitOn);
+        alerts.Prime(today, day, target, now, targetOn, limitOn);
+    }
+
+    // Checks the end-of-day alerts for today; for any that fire, writes one bell and shows their hint in place.
+    // An unreadable day file fires nothing and shows no error. Returns true if a hint was shown.
+    private bool CheckAlerts()
+    {
+        (DateOnly today, TimeOnly now) = Today();
+        if (TryLoadDay(today) is not { } day)
+        {
+            return false;
+        }
+
+        AlertSettings(out TimeSpan target, out bool targetOn, out bool limitOn);
+        IReadOnlyList<EndOfDayAlert> fired = alerts.Check(today, day, target, now, targetOn, limitOn);
+        if (fired.Count == 0)
+        {
+            return false;
+        }
+
+        List<string> parts = [];
+        foreach (EndOfDayAlert alert in fired)
+        {
+            parts.Add(alert == EndOfDayAlert.Target
+                ? $"[steelblue1]Daily target {DayView.FormatTimeLeft(target)} reached.[/]"
+                : "[yellow]! 15 minutes left until 10 hours of work.[/]");
+        }
+
+        console.Write(new ControlCode("\a"));
+        ShowHintInPlace(new Markup(string.Join(' ', parts)));
+        return true;
+    }
+
+    // Loads a day file for the alerts, or null if it cannot be read. Never writes.
+    private DayRecord? TryLoadDay(DateOnly date)
+    {
+        try
+        {
+            return Store.Load(date);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    // The daily target and both alert settings, from one read of settings.json. A missing or broken file, or a
+    // registry without an alert setting, leaves that alert on.
+    private void AlertSettings(out TimeSpan target, out bool targetOn, out bool limitOn)
+    {
+        bool readable = LoadSettings(out SettingValues values) is null;
+        target = DailyTarget(readable ? values : null);
+        targetOn = !readable || IsOnOrMissing(values, SettingsRegistry.AlertTargetName);
+        limitOn = !readable || IsOnOrMissing(values, SettingsRegistry.AlertLimitName);
+    }
+
+    private bool IsOnOrMissing(SettingValues values, string name) =>
+        !settings.TryGet(name, out Setting setting) || setting.Kind != SettingKind.OnOff || values.IsOn(name);
+
     // The current local minute, seconds dropped.
     private TimeOnly Now()
     {
@@ -2274,9 +2363,14 @@ internal sealed class App
         mouse?.Enable();
 
         // The live clock ticks only through the background events; it is disposed on every way out.
-        LiveClock? clock = events is not null && liveClock ? new LiveClock(time, events, ShowsToday) : null;
+        LiveClock? clock = events is not null && liveClock ? new LiveClock(time, events, Tick) : null;
         try
         {
+            if (clock is not null)
+            {
+                PrimeAlerts();
+            }
+
             clock?.Start();
             return Loop(pending is null ? null : new Markup(pending));
         }
@@ -2808,11 +2902,13 @@ internal sealed class App
 
     // The daily-target setting, read from settings.json on every redraw. A missing or broken file, or
     // a registry without the setting, gives the default (8:00). Reading never writes the file.
-    private TimeSpan DailyTarget()
+    private TimeSpan DailyTarget() => DailyTarget(LoadSettings(out SettingValues values) is null ? values : null);
+
+    // The daily-target setting from values already read, or the default for null (a broken file).
+    private TimeSpan DailyTarget(SettingValues? values)
     {
         int minutes = SettingsRegistry.DailyTargetDefault;
-        if (settings.TryGet(SettingsRegistry.DailyTargetName, out Setting setting) && setting.Kind == SettingKind.Number
-            && LoadSettings(out SettingValues values) is null)
+        if (values is not null && settings.TryGet(SettingsRegistry.DailyTargetName, out Setting setting) && setting.Kind == SettingKind.Number)
         {
             int value = values.Number(SettingsRegistry.DailyTargetName);
             if (value >= 0 && value <= SettingsRegistry.DailyTargetMax)
@@ -2842,14 +2938,17 @@ internal sealed class App
         }
     }
 
-    // Called by the line editor when a paste was cut: shows the hint on the hint rows in place, without
-    // a clear. If the hint keeps the same number of rows, only those are rewritten; otherwise the top
-    // area changes size too, so every row is rewritten except the input line, which holds the typed
-    // text the editor redraws next. The next full redraw shows the hint it is given, as always.
-    private void ShowPasteCut()
+    // Called by the line editor when a paste was cut: shows its hint in place.
+    private void ShowPasteCut() => ShowHintInPlace(new Markup(PasteCutHint));
+
+    // Shows a hint on the hint rows in place, without a clear. If the hint keeps the same number of rows,
+    // only those are rewritten; otherwise the top area changes size too, so every row is rewritten except
+    // the input line, which holds the typed text the editor redraws next (with the popup, if open). The next
+    // full redraw shows the hint it is given, as always.
+    private void ShowHintInPlace(IRenderable hint)
     {
         int before = HintHeight;
-        frameHint = new Markup(PasteCutHint);
+        frameHint = hint;
         int after = HintHeight;
         int bottom = console.Profile.Height - InputHeight;
         if (after == before)
