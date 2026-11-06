@@ -77,6 +77,9 @@ internal sealed class LineEditor
     private readonly CommandRegistry registry;
     private readonly List<string> history = [];
 
+    // Lines this returns true for are never added to the history (a line that may hold a secret).
+    private readonly Func<string, bool>? keepOutOfHistory;
+
     // A key read after a plain Esc in ReadKey, handed to the next read so it is not lost.
     private ConsoleKeyInfo? carried;
 
@@ -87,10 +90,15 @@ internal sealed class LineEditor
     /// </summary>
     public const int MaxPasteLength = 4096;
 
-    public LineEditor(IAnsiConsole console, CommandRegistry registry)
+    /// <param name="keepOutOfHistory">
+    /// Says which submitted lines never enter the history (for example a line that may hold a
+    /// token), or <c>null</c> to keep every non-blank line.
+    /// </param>
+    public LineEditor(IAnsiConsole console, CommandRegistry registry, Func<string, bool>? keepOutOfHistory = null)
     {
         this.console = console;
         this.registry = registry;
+        this.keepOutOfHistory = keepOutOfHistory;
     }
 
     public IReadOnlyList<string> History => history;
@@ -284,7 +292,8 @@ internal sealed class LineEditor
                 switch (info.Key)
                 {
                     case ConsoleKey.Enter:
-                        if (!value && buffer.Trim().Length > 0 && (history.Count == 0 || history[^1] != buffer))
+                        if (!value && buffer.Trim().Length > 0 && (history.Count == 0 || history[^1] != buffer)
+                            && keepOutOfHistory?.Invoke(buffer) != true)
                         {
                             history.Add(buffer);
                         }

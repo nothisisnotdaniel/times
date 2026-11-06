@@ -809,6 +809,24 @@ internal sealed class App
         return Hint($"{Name}: [bold]{Markup.Escape(sub)}[/] is not something devops can do. {DevOpsUsage}");
     }
 
+    // A devops (dv) line with any argument never enters the in-memory history: connect asks for the
+    // token next, but a user may still type or paste it on the line (devops connect contoso <token>),
+    // and a typo'd sub-command may hold it too. Parsed like Dispatch (one leading '/', name or alias).
+    private bool IsDevOpsLineWithArgument(string line)
+    {
+        string text = line.Trim();
+        int split = text.IndexOfAny([' ', '\t']);
+        if (split < 0)
+        {
+            return false;
+        }
+
+        string token = text[..split];
+        string name = token.StartsWith('/') ? token[1..] : token;
+        return name.Length > 0 && registry.TryGet(name, out Command? command)
+            && string.Equals(command.Name, "devops", StringComparison.OrdinalIgnoreCase);
+    }
+
     // The organisation and "token stored", or "not connected"; never the token.
     private CommandResult DevOpsStatus()
     {
@@ -1597,7 +1615,7 @@ internal sealed class App
 
     private int Loop(IRenderable? startHint)
     {
-        LineEditor editor = new LineEditor(console, registry);
+        LineEditor editor = new LineEditor(console, registry, IsDevOpsLineWithArgument);
         IRenderable? message = null;
         IRenderable? hint = startHint;
         bool hideQuicklist = false;

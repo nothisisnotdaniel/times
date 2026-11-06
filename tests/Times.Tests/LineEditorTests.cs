@@ -190,6 +190,23 @@ public class LineEditorTests
         Assert.Equal("help", Read(editor));
     }
 
+    // Rework of job 101: lines the caller marks (a line that may hold a token) never enter the history.
+    [Fact]
+    public void KeepOutOfHistory_SkipsMarkedLines_AndKeepsTheRest()
+    {
+        TestConsole console = new TestConsole().Interactive();
+        LineEditor editor = new LineEditor(console, CommandRegistry.CreateDefault(), line => line.StartsWith("secret", StringComparison.Ordinal));
+        console.Input.PushTextWithEnter("help");
+        console.Input.PushTextWithEnter("secret token");
+        console.Input.PushKey(ConsoleKey.UpArrow);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Read(editor);
+        Assert.Equal("secret token", Read(editor));
+        Assert.Equal("help", Read(editor));
+        Assert.Equal(["help"], editor.History);
+    }
+
     // Command popup (job 006) --------------------------------------------------------------
 
     private const int HintRow = 21;

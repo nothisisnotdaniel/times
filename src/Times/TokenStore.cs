@@ -49,7 +49,7 @@ internal sealed class TokenStore
     {
         if (macOS)
         {
-            return new MacKeychainTokenStore();
+            return new MacKeychainTokenStore(Environment.ProcessPath);
         }
 
         if (windows)
@@ -77,9 +77,12 @@ internal sealed class UnsupportedTokenStore : ITokenStore
 
 /// <summary>
 /// A generic-password item in the default (login) keychain through Security.framework: service
-/// <see cref="Service"/>, account = organisation, password data = PAT. Buffers the framework returns
-/// are freed with <c>SecKeychainItemFreeContent</c>, item references with <c>CFRelease</c>, and
-/// managed byte copies of the token are zeroed after use.
+/// <see cref="Service"/>, account = organisation, password data = PAT. The item is created with its
+/// own access list (<c>SecAccessCreate</c>) that trusts only the Times executable (its own launcher,
+/// <c>tm</c> or the build's apphost), never the shared <c>dotnet</c> host, so other .NET programs
+/// cannot read it without a macOS prompt; when Times itself runs through <c>dotnet</c>, nothing is
+/// stored. Buffers the framework returns are freed with <c>SecKeychainItemFreeContent</c>, references
+/// with <c>CFRelease</c>, and managed byte copies of the token are zeroed after use.
 /// </summary>
 internal sealed partial class MacKeychainTokenStore : ITokenStore
 {
@@ -90,13 +93,46 @@ internal sealed partial class MacKeychainTokenStore : ITokenStore
     private const int ErrSecSuccess = 0;
     private const int ErrSecItemNotFound = -25300;
 
-    // 'acct', the account attribute tag.
+    // 'acct', the account attribute tag; 'svce' the service, 'labl' the label, 'genp' the generic-password class.
     private const uint AccountAttribute = 0x61636374;
+    private const uint ServiceAttribute = 0x73766365;
+    private const uint LabelAttribute = 0x6c61626c;
+    private const uint GenericPasswordClass = 0x67656e70;
+    private const uint CFStringEncodingUtf8 = 0x08000100;
+
+    /// <summary>The fixed message when Times runs through the shared host and so cannot be the only trusted program.</summary>
+    public const string SharedHostRefused =
+        "The token is stored only when Times runs as its own program (tm), not through dotnet.";
 
     // Delete removes duplicates too, but never loops forever.
     private const int MaxItems = 16;
 
+    // The executable the item's access list trusts, or null when Times runs through the shared host.
+    private readonly string? trustedPath;
+
+    /// <param name="processPath">The running executable (<see cref="Environment.ProcessPath"/>).</param>
+    public MacKeychainTokenStore(string? processPath)
+    {
+        trustedPath = TrustedApplicationPath(processPath);
+    }
+
     public bool IsSupported => true;
+
+    /// <summary>
+    /// The path the item's access list may trust: the running executable when it is Times' own
+    /// launcher, or <c>null</c> when it is missing, relative or the shared <c>dotnet</c> host (which
+    /// would let every .NET program read the token).
+    /// </summary>
+    internal static string? TrustedApplicationPath(string? processPath)
+    {
+        if (string.IsNullOrEmpty(processPath) || !Path.IsPathFullyQualified(processPath))
+        {
+            return null;
+        }
+
+        string name = Path.GetFileNameWithoutExtension(processPath);
+        return string.Equals(name, "dotnet", StringComparison.OrdinalIgnoreCase) ? null : processPath;
+    }
 
     public (string Organization, string Pat)? Read()
     {
@@ -127,24 +163,102 @@ internal sealed partial class MacKeychainTokenStore : ITokenStore
 
     public void Write(string organization, string pat)
     {
+        // Checked before the keychain is touched: an item trusting the shared host is never made.
+        if (trustedPath is null)
+        {
+            throw new TokenStoreException(SharedHostRefused);
+        }
+
         DeleteAll();
-        byte[] service = Encoding.UTF8.GetBytes(Service);
-        byte[] account = Encoding.UTF8.GetBytes(organization);
+        IntPtr access = CreateAccess(trustedPath);
         byte[] password = Encoding.UTF8.GetBytes(pat);
         try
         {
-            int status = SecKeychainAddGenericPassword(IntPtr.Zero, (uint)service.Length, service,
-                (uint)account.Length, account, (uint)password.Length, password, out IntPtr item);
+            AddItem(organization, password, access);
+        }
+        finally
+        {
+            Array.Clear(password);
+            CFRelease(access);
+        }
+    }
+
+    // An access object whose access list trusts only the given executable. The caller releases it.
+    private static IntPtr CreateAccess(string path)
+    {
+        const string Failed = "The token could not be saved in the macOS Keychain.";
+        IntPtr application = IntPtr.Zero;
+        IntPtr list = IntPtr.Zero;
+        IntPtr descriptor = IntPtr.Zero;
+        try
+        {
+            if (SecTrustedApplicationCreateFromPath(path, out application) != ErrSecSuccess || application == IntPtr.Zero)
+            {
+                throw new TokenStoreException(Failed);
+            }
+
+            list = CreateArray(application);
+            descriptor = CFStringCreateWithCString(IntPtr.Zero, Service, CFStringEncodingUtf8);
+            if (list == IntPtr.Zero || descriptor == IntPtr.Zero)
+            {
+                throw new TokenStoreException(Failed);
+            }
+
+            if (SecAccessCreate(descriptor, list, out IntPtr access) != ErrSecSuccess || access == IntPtr.Zero)
+            {
+                throw new TokenStoreException(Failed);
+            }
+
+            return access;
+        }
+        finally
+        {
+            ReleaseIfSet(descriptor);
+            ReleaseIfSet(list);
+            ReleaseIfSet(application);
+        }
+    }
+
+    // A one-element CFArray that retains its value (kCFTypeArrayCallBacks).
+    private static unsafe IntPtr CreateArray(IntPtr value)
+    {
+        IntPtr library = NativeLibrary.Load(CoreFoundation);
+        IntPtr callBacks = NativeLibrary.GetExport(library, "kCFTypeArrayCallBacks");
+        IntPtr* values = stackalloc IntPtr[1];
+        values[0] = value;
+        return CFArrayCreate(IntPtr.Zero, (IntPtr)values, 1, callBacks);
+    }
+
+    // The generic-password item (service, account, label) with the given access, in the default keychain.
+    private static unsafe void AddItem(string organization, byte[] password, IntPtr access)
+    {
+        byte[] service = Encoding.UTF8.GetBytes(Service);
+        byte[] account = Encoding.UTF8.GetBytes(organization);
+        fixed (byte* servicePointer = service)
+        fixed (byte* accountPointer = account)
+        fixed (byte* passwordPointer = password)
+        {
+            Attribute* attributes = stackalloc Attribute[3];
+            attributes[0] = new Attribute { Tag = ServiceAttribute, Length = (uint)service.Length, Data = (IntPtr)servicePointer };
+            attributes[1] = new Attribute { Tag = AccountAttribute, Length = (uint)account.Length, Data = (IntPtr)accountPointer };
+            attributes[2] = new Attribute { Tag = LabelAttribute, Length = (uint)service.Length, Data = (IntPtr)servicePointer };
+            AttributeList list = new AttributeList { Count = 3, Attributes = (IntPtr)attributes };
+            int status = SecKeychainItemCreateFromContent(GenericPasswordClass, ref list, (uint)password.Length,
+                (IntPtr)passwordPointer, IntPtr.Zero, access, out IntPtr item);
             if (status != ErrSecSuccess)
             {
                 throw new TokenStoreException("The token could not be saved in the macOS Keychain.");
             }
 
-            CFRelease(item);
+            ReleaseIfSet(item);
         }
-        finally
+    }
+
+    private static void ReleaseIfSet(IntPtr reference)
+    {
+        if (reference != IntPtr.Zero)
         {
-            Array.Clear(password);
+            CFRelease(reference);
         }
     }
 
@@ -254,9 +368,21 @@ internal sealed partial class MacKeychainTokenStore : ITokenStore
         byte[] serviceName, uint accountNameLength, byte[]? accountName, out uint passwordLength,
         IntPtr passwordData, out IntPtr itemRef);
 
+    [LibraryImport(Security, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int SecTrustedApplicationCreateFromPath(string path, out IntPtr application);
+
     [LibraryImport(Security)]
-    private static partial int SecKeychainAddGenericPassword(IntPtr keychain, uint serviceNameLength, byte[] serviceName,
-        uint accountNameLength, byte[] accountName, uint passwordLength, byte[] passwordData, out IntPtr itemRef);
+    private static partial int SecAccessCreate(IntPtr descriptor, IntPtr trustedList, out IntPtr access);
+
+    [LibraryImport(Security)]
+    private static partial int SecKeychainItemCreateFromContent(uint itemClass, ref AttributeList attrList, uint length,
+        IntPtr data, IntPtr keychain, IntPtr initialAccess, out IntPtr itemRef);
+
+    [LibraryImport(CoreFoundation)]
+    private static partial IntPtr CFArrayCreate(IntPtr allocator, IntPtr values, nint count, IntPtr callBacks);
+
+    [LibraryImport(CoreFoundation, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial IntPtr CFStringCreateWithCString(IntPtr allocator, string text, uint encoding);
 
     [LibraryImport(Security)]
     private static partial int SecKeychainItemDelete(IntPtr itemRef);

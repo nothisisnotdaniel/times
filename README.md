@@ -178,9 +178,18 @@ hand.
 Only checkpoints with a work item, an end (a later checkpoint, break or leaving) and at least one
 minute are sent; a checkpoint that is still running is left for later.
 
-On macOS the Keychain item trusts the `dotnet` host that created it, so after a .NET update macOS
-may ask once for permission to read it. Because the item trusts that shared host, other .NET programs
-run through the same `dotnet` can read it without a prompt; revoke the PAT in Azure DevOps if in doubt. **Linux is not supported** yet: there is no credential
+On macOS the Keychain item's access list trusts **only the Times program itself** (the `tm`
+command, or the build's own `Times` executable), never the shared `dotnet` host, so other .NET
+programs cannot read the token without macOS asking you. Because of that, `devops connect` stores
+nothing when Times is started through `dotnet` (for example `dotnet Times.dll`); start it with `tm`.
+After a Times update the program is a new file, so macOS may ask once for permission to read the
+item; choose *Always Allow*, or run `devops connect` again. (The newer data-protection keychain
+would need a signed app with a keychain entitlement, which a .NET tool does not have.)
+
+A `devops` line with anything after it (such as `devops connect contoso`) is never kept in the
+input history, so ↑ cannot bring back a token typed on that line by mistake.
+
+**Linux is not supported** yet: there is no credential
 store Times can use there, so `devops connect` and `sync … send` say so (the preview still works).
 
 To check the stores by hand: connect, look for the item in *Keychain Access* (macOS) or with

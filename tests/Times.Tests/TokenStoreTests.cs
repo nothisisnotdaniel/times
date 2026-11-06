@@ -33,7 +33,7 @@ public class TokenStoreTests
     [Fact]
     public void RealStores_AreSupported()
     {
-        Assert.True(new MacKeychainTokenStore().IsSupported);
+        Assert.True(new MacKeychainTokenStore("/Users/me/.dotnet/tools/tm").IsSupported);
         Assert.True(new WindowsCredentialTokenStore().IsSupported);
     }
 
@@ -49,5 +49,39 @@ public class TokenStoreTests
         Assert.Throws<TokenStoreException>(() => store.Delete());
         Assert.Equal(UnsupportedTokenStore.NotAvailable, read.Message);
         Assert.Equal(UnsupportedTokenStore.NotAvailable, write.Message);
+    }
+
+    // Rework: the Keychain item trusts only Times' own executable, never the shared dotnet host.
+    [Theory]
+    [InlineData("/Users/me/.dotnet/tools/tm")]
+    [InlineData("/Users/me/src/Times/src/Times/bin/Debug/net10.0/Times")]
+    public void TrustedApplicationPath_IsTimesOwnExecutable(string path)
+    {
+        Assert.Equal(path, MacKeychainTokenStore.TrustedApplicationPath(path));
+    }
+
+    [Theory]
+    [InlineData("/usr/local/share/dotnet/dotnet")]
+    [InlineData("/opt/homebrew/Cellar/dotnet/10.0.0/libexec/DOTNET")]
+    [InlineData(@"C:\Program Files\dotnet\dotnet.exe")]
+    [InlineData("dotnet")]
+    [InlineData("bin/Times")]
+    [InlineData("")]
+    [InlineData(null)]
+    public void TrustedApplicationPath_RefusesTheSharedHostAndUnclearPaths(string? path)
+    {
+        Assert.Null(MacKeychainTokenStore.TrustedApplicationPath(path));
+    }
+
+    // Refused before the Keychain is touched, with a fixed message that never holds the token.
+    [Fact]
+    public void MacWrite_ThroughTheSharedHost_StoresNothing_WithAFixedMessage()
+    {
+        MacKeychainTokenStore store = new MacKeychainTokenStore("/usr/local/share/dotnet/dotnet");
+
+        TokenStoreException ex = Assert.Throws<TokenStoreException>(() => store.Write("contoso", "PAT-MARKER-1"));
+
+        Assert.Equal(MacKeychainTokenStore.SharedHostRefused, ex.Message);
+        Assert.DoesNotContain("PAT-MARKER-1", ex.ToString());
     }
 }

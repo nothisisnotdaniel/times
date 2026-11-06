@@ -9010,23 +9010,65 @@ public sealed class AppTests : IDisposable
 
         (_, string output) = RunDevOps(store, null, c =>
         {
+            c.Input.PushTextWithEnter("help");
             c.Input.PushTextWithEnter("devops connect contoso");
             c.Input.PushTextWithEnter(DevOpsPat);
-            c.Input.PushKey(ConsoleKey.UpArrow);
-            c.Input.PushKey(ConsoleKey.Enter);
-            c.Input.PushKey(ConsoleKey.Escape);
-            c.Input.PushKey(ConsoleKey.UpArrow);
             c.Input.PushKey(ConsoleKey.UpArrow);
             c.Input.PushKey(ConsoleKey.Enter);
             c.Input.PushKey(ConsoleKey.Escape);
             c.Input.PushTextWithEnter("quit");
         });
 
-        // Up recalled devops connect contoso both times (the prompt came back), never the token or dots.
+        // One Up skipped the connect line (kept out of history) and recalled help; never the token or dots.
         Assert.Single(store.Writes);
-        Assert.Equal(3, Count(output, "Paste or type the personal access token for contoso."));
+        Assert.Equal(1, Count(output, "Paste or type the personal access token for contoso."));
+        Assert.Contains("Data folder:", string.Join(' ', LastLayout(output)));
         Assert.DoesNotContain("Unknown command", output);
-        Assert.Contains("Cancelled. Nothing was stored.", LastLayout(output)[^4]);
+    }
+
+    // Rework: a devops line with an argument never stays in the in-memory history, so a token typed on it
+    // (by mistake, or after a mistyped sub-command) cannot be brought back with Up.
+    [Theory]
+    [InlineData("devops connect contoso SECRET-ON-THE-LINE")]
+    [InlineData("dv connect contoso SECRET-ON-THE-LINE")]
+    [InlineData("/devops conect SECRET-ON-THE-LINE")]
+    [InlineData("  DV   CONNECT contoso")]
+    public void DevOpsLines_WithAnArgument_NeverEnterHistory(string line)
+    {
+        FakeTokenStore store = new FakeTokenStore();
+
+        (_, string output) = RunDevOps(store, null, c =>
+        {
+            c.Input.PushTextWithEnter("devops");
+            c.Input.PushTextWithEnter(line);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.UpArrow);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        // Up recalled the plain devops line before it, so the last hint is the status again.
+        Assert.Empty(store.Writes);
+        Assert.Contains("Azure DevOps: not connected", LastHint(output));
+    }
+
+    // Other lines still enter history as before.
+    [Fact]
+    public void DevOpsStatusLine_StillEntersHistory()
+    {
+        FakeTokenStore store = new FakeTokenStore();
+
+        (_, string output) = RunDevOps(store, null, c =>
+        {
+            c.Input.PushTextWithEnter("devops");
+            c.Input.PushTextWithEnter("help");
+            c.Input.PushKey(ConsoleKey.UpArrow);
+            c.Input.PushKey(ConsoleKey.UpArrow);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Contains("Azure DevOps: not connected", LastHint(output));
     }
 
     // AC-1
