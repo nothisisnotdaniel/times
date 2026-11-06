@@ -272,6 +272,7 @@ internal sealed class App
         registry.Register("find", "f", "Find days whose checkpoints or projects match: <text>", Find);
         registry.Register("statistics", "st", "Show average arrival, leaving and work time per weekday: <from> <to>", Statistics);
         registry.Register("backup", "bu", "Zip your day files and projects into a folder: <folder>", Backup);
+        registry.Register("vacation", "va", "Show vacation days taken and left this year", NoArguments("vacation", Vacation));
     }
 
     // Marks the day being viewed as an absence (vacation, sick, holiday) or clears it. Nothing is written
@@ -1016,6 +1017,59 @@ internal sealed class App
             parts.Add(new Markup($"[yellow]! {skippedFiles.ToString(CultureInfo.InvariantCulture)} {files} skipped[/]"));
         }
     }
+
+    // Shows this calendar year's vacation allowance, the vacation days taken and planned, and what is left.
+    // The year is today's (from the clock), never the shown day's. Read-only: writes no day file and no settings.json.
+    private CommandResult Vacation()
+    {
+        DateOnly today = DateOnly.FromDateTime(time.GetLocalNow().DateTime);
+        VacationAllowance allowance;
+        try
+        {
+            allowance = VacationAllowance.Calculate(Store, today.Year, today);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Hint($"vacation: the data folder cannot be listed: {Markup.Escape(ex.Message)}");
+        }
+
+        return new CommandResult(VacationView(today.Year, VacationDays(), allowance), hideQuicklist: true);
+    }
+
+    /// <summary>
+    /// The vacation table captioned <c>Vacation &lt;year&gt;</c> with the rows <c>Allowance</c>, <c>Taken</c>,
+    /// <c>Planned</c> and <c>Left</c> (allowance minus taken minus planned, negative when over), then a yellow
+    /// line when the allowance is exceeded and the yellow skipped line when files were skipped.
+    /// </summary>
+    internal static IRenderable VacationView(int year, int days, VacationAllowance allowance)
+    {
+        int left = days - allowance.Taken - allowance.Planned;
+        Table table = new Table()
+            .Border(TableBorder.Rounded)
+            .BorderColor(Color.Grey)
+            .AddColumn("[grey]Vacation[/]")
+            .AddColumn(new TableColumn("[grey]Days[/]").RightAligned())
+            .Caption($"Vacation {year.ToString(CultureInfo.InvariantCulture)}", new Style(Color.Grey));
+        AddVacationRow(table, "Allowance", days, "steelblue1");
+        AddVacationRow(table, "Taken", allowance.Taken, "steelblue1");
+        AddVacationRow(table, "Planned", allowance.Planned, "steelblue1");
+        AddVacationRow(table, "[bold]Left[/]", left, left < 0 ? "bold yellow" : "bold steelblue1");
+
+        List<IRenderable> parts = [table];
+        if (left < 0)
+        {
+            int over = -left;
+            string unit = over == 1 ? "day" : "days";
+            parts.Add(new Markup($"[yellow]! {over.ToString(CultureInfo.InvariantCulture)} {unit} over your allowance[/]"));
+        }
+
+        AddSkippedFiles(parts, allowance.SkippedFiles);
+        return parts.Count == 1 ? parts[0] : new Rows(parts);
+    }
+
+    // One vacation row; label is fixed markup, the value a whole number in invariant culture.
+    private static void AddVacationRow(Table table, string label, int value, string style) =>
+        table.AddRow(new Markup(label), new Markup($"[{style}]{value.ToString(CultureInfo.InvariantCulture)}[/]"));
 
     /// <summary>Whole minutes as decimal hours with two decimals and the invariant culture, e.g. <c>7.50</c>.</summary>
     internal static string FormatHours(TimeSpan value)
@@ -2941,6 +2995,24 @@ internal sealed class App
         }
 
         return TimeSpan.FromMinutes(minutes);
+    }
+
+    // The vacation-days setting, read from settings.json at each call. A missing or broken file, an
+    // out-of-range value or a registry without the setting gives the default (30). Reading never writes the file.
+    private int VacationDays()
+    {
+        int days = SettingsRegistry.VacationDaysDefault;
+        if (LoadSettings(out SettingValues values) is null
+            && settings.TryGet(SettingsRegistry.VacationDaysName, out Setting setting) && setting.Kind == SettingKind.Number)
+        {
+            int value = values.Number(SettingsRegistry.VacationDaysName);
+            if (value >= 0 && value <= SettingsRegistry.VacationDaysMax)
+            {
+                days = value;
+            }
+        }
+
+        return days;
     }
 
     // A holiday Choice setting from already loaded values, or none when they are missing, broken or it is not registered.

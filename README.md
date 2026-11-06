@@ -129,6 +129,7 @@ required. A booking without a time uses the current time. `remove`, `change`, `b
 | `find` | `f` | `<text>` | Find every day whose checkpoint names or quicklist project titles contain the text (ignoring case), with the date and the time taken |
 | `statistics` | `st` | `<from> <to>` (`yyyy-MM-dd`) | Show per weekday (Monday to Sunday) how many days you worked and your average arrival, leaving and work time over a date range (both days included), plus an `All days` row; reads only |
 | `backup` | `bu` | `<folder>` (an existing absolute folder outside the data folder, `~` allowed) | Zip every day file and `projects.json`, unchanged, into `times-backup-yyyy-MM-dd-HHmm.zip` in the folder; an existing file is never overwritten and the data folder is never changed |
+| `vacation` | `va` | none | Show this calendar year's vacation allowance (setting `vacation-days`, default 30) with the vacation days taken (up to today), planned (after today) and left; each day marked `absence vacation` counts as one day; reads only |
 | `sync` | `sy` | `<from> <to> [send]` (`yyyy-MM-dd`) | Preview the unbooked checkpoint hours per work item over a date range; with `send`, add them to each work item's Completed Work in Azure DevOps and mark those checkpoints booked (see [Azure DevOps](#azure-devops)) |
 | `devops` | `dv` | none, `connect <organization>` or `disconnect` | Show the Azure DevOps connection, connect (asks for the token in a masked prompt), or remove the stored token |
 | `prev` | `p` | none | Go to the previous day |
@@ -157,6 +158,7 @@ panel says why, shows the defaults and saves nothing until the file is fixed or 
 | Setting | Kind | Default | What it does |
 |---------|------|---------|--------------|
 | `daily-target` | number, 0 to 1440 | 480 | Your daily work target in minutes (480 = 8:00). The `left` column, the `day` value and the flexitime `balance` use it, for every day. |
+| `vacation-days` | number, 0 to 366 | 30 | Your vacation days per calendar year. `vacation` shows them with the days taken, planned and left. |
 | `update-mode` | `notify only`, `install on quit`, `install and restart` | `notify only` | What Times does when it finds a newer version at start (see [Updates](#updates)). |
 | `update-channel` | `stable`, `beta`, `develop` | `stable` | Which releases count as updates: `stable` takes proper releases only, `beta` also `-beta` versions, `develop` also `-develop` builds. |
 

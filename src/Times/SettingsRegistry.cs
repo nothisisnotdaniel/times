@@ -103,6 +103,15 @@ internal sealed partial class SettingsRegistry
     /// <summary>The name of the setting that picks the state whose public holidays are added to the nationwide ones.</summary>
     public const string HolidayStateName = "holiday-state";
 
+    /// <summary>The name of the setting that holds the yearly vacation allowance, in whole days.</summary>
+    public const string VacationDaysName = "vacation-days";
+
+    /// <summary>The yearly vacation allowance, in days, when none is set.</summary>
+    public const int VacationDaysDefault = 30;
+
+    /// <summary>The highest yearly vacation allowance, in days.</summary>
+    public const int VacationDaysMax = 366;
+
     /// <summary>The name of the setting that rounds the durations <c>report</c> and <c>export</c> show.</summary>
     public const string ReportRoundingName = "report-rounding";
 
@@ -159,6 +168,7 @@ internal sealed partial class SettingsRegistry
             [PublicHolidays.None, PublicHolidays.Germany]);
         registry.RegisterChoice(HolidayStateName, "State whose public holidays are added (none = nationwide only)", PublicHolidays.None,
             [PublicHolidays.None, .. PublicHolidays.GermanStates]);
+        registry.RegisterNumber(VacationDaysName, "Vacation days per year", VacationDaysDefault, 0, VacationDaysMax);
         registry.RegisterChoice(ReportRoundingName, "Round report and export times per row and day", ReportRoundingOff,
             [ReportRoundingOff, ReportRounding5, ReportRounding10, ReportRounding15]);
         registry.RegisterChoice(UpdateModeName, "What Times does when a newer version is out", UpdateNotifyOnly,
