@@ -141,3 +141,4 @@ Write one feature per line, in plain language.
 - [?] End-of-day alert: mention the live clock in the alert setting descriptions (review-ux 1) (from 113-end-of-day-alert)
 - [?] Settings: an unknown state (or other unknown option value) in settings.json should fall back for that one setting (nationwide holidays) instead of making the whole file count as broken (115 review-ux 1) (from 115-public-holidays)
 - [?] Public holidays: style only the holiday name in the accent colour, not the whole 'Public holiday · <name>' value (115 review-ui 1) (from 115-public-holidays)
+- [?] review-ux 1: a way to show the hidden lines is out of scope in the spec and would be a new feature that needs its own job. (from 119-import-warning-cap)
