@@ -852,7 +852,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(
             ["absence", "addproject", "arrive", "booked", "break", "breakend", "change", "…"],
             popup.Select(w => w.Text.Split(' ')[0]));
-        Assert.StartsWith("… 20 more", popup[^1].Text);
+        Assert.StartsWith("… 21 more", popup[^1].Text);
         Assert.Contains("Change the time of an entry", popup[6].Text);
         Assert.Equal(80, popup[0].Text.Length);
     }
@@ -925,9 +925,9 @@ public sealed class AppTests : IDisposable
         List<string> hintRow = TypingWrites(output, 1).Where(w => w.Row == 21).Select(w => w.Text).ToList();
 
         // popup, restored (Backspace), popup, restored (Esc), popup (quit typing), ...
-        Assert.StartsWith("… 20 more", hintRow[0]);
+        Assert.StartsWith("… 21 more", hintRow[0]);
         Assert.Contains("Unknown command nope", hintRow[1]);
-        Assert.StartsWith("… 20 more", hintRow[2]);
+        Assert.StartsWith("… 21 more", hintRow[2]);
         Assert.Contains("Unknown command nope", hintRow[3]);
         Assert.Contains("Unknown command nope", hintRow[^1]);
         Assert.Contains("\u001b[38;5;9mUnknown command", output[output.LastIndexOf("\u001b[21;1H", StringComparison.Ordinal)..]);
@@ -961,7 +961,7 @@ public sealed class AppTests : IDisposable
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
         // 39 commands: 7 shown, the eighth row counts the other 32.
-        Assert.StartsWith("… 32 more", popup[^1].Text);
+        Assert.StartsWith("… 33 more", popup[^1].Text);
         // Nothing is drawn on row 1 while typing (the final clear on quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
@@ -4809,6 +4809,7 @@ public sealed class AppTests : IDisposable
             ["quit"] = "q",
             ["remove"] = "r",
             ["export"] = "ex",
+            ["find"] = "f",
             ["report"] = "rp",
             ["settings"] = "se",
             ["summary"] = "s",
@@ -10736,5 +10737,296 @@ public sealed class AppTests : IDisposable
         (_, string output) = RunDevOps(new FakeTokenStore(), null, "devops frobnicate", "quit");
 
         Assert.Contains("devops import", LastHint(output));
+    }
+
+    // Job 106 ------------------------------------------------------------------------------
+
+    /// <summary>Days for find: deploys on three days (one written out of order), plus a non-matching day.</summary>
+    private void WriteFindDays()
+    {
+        WriteReportDay("2026-11-03", ReportCp("09:00", "predeploy", 1234), ReportCp("10:00", "Mail"), ReportLeave);
+        WriteReportDay("2026-11-01", ReportCp("09:00", "Deploy prod"), ReportCp("09:45", "Lunch"), ReportLeave);
+        WriteReportDay("2026-11-02", ReportCp("09:00", "Mail"), ReportLeave);
+    }
+
+    // AC-1
+    [Fact]
+    public void Help_ListsFind_WithAliasF()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 120;
+        console.Input.PushTextWithEnter("help");
+        PageDown(console, HelpPages);
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+        string plain = Regex.Replace(console.Output, @"\x1b\[[0-9;?]*[A-Za-z]", string.Empty);
+
+        Assert.Matches(@"│ find +│ f +│ Find days whose checkpoints or projects match: <text> +│", plain);
+    }
+
+    // AC-1
+    [Theory]
+    [InlineData("f")]
+    [InlineData("F")]
+    [InlineData("/find")]
+    [InlineData("/f")]
+    public void Find_AliasAndSlash_DoTheSameAsFind(string typed)
+    {
+        WriteFindDays();
+
+        (_, string[] full) = RunReport("find deploy", "quit");
+        (_, string[] other) = RunReport(typed + " deploy", "quit");
+
+        Assert.Equal(full, other);
+        Assert.Contains(other, l => l.Contains("2 matches for \"deploy\"", StringComparison.Ordinal));
+    }
+
+    // AC-2
+    [Theory]
+    [InlineData("find")]
+    [InlineData("find    ")]
+    [InlineData("f")]
+    public void Find_WithoutText_ShowsRedUsageHint_AndNoTable(string command)
+    {
+        WriteFindDays();
+
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Profile.Width = 200;
+            c.Input.PushTextWithEnter(command);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Equal(0, exitCode);
+        string[] frame = LastLayout(output);
+        AssertOnHintRow(frame, "find: say what to look for. Use find <text>.");
+        Assert.DoesNotContain(frame, l => l.Contains("Work item", StringComparison.Ordinal));
+
+        string ansi = RunAnsiCommands(command);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mfind: say what to look for", ansi);
+    }
+
+    // AC-2
+    [Fact]
+    public void Find_TextIsTheWholeTrimmedArgument_InnerSpacesKept()
+    {
+        WriteReportDay("2026-11-02", ReportCp("09:00", "Code review"), ReportCp("10:00", "Code"), ReportCp("11:00", "review"), ReportLeave);
+
+        (_, string[] frame) = RunReport("find   code review  ", "quit");
+
+        Assert.Contains(frame, l => l.Contains("1 match for \"code review\"", StringComparison.Ordinal));
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ 2026-11-02 +│ +│ Code review +│ 1:00 +│"));
+        Assert.DoesNotContain(frame, l => Regex.IsMatch(l, @"│ (Code|review) +│"));
+    }
+
+    // AC-3, AC-5, AC-11
+    [Fact]
+    public void Find_ShowsColumnsRowsByDate_CaptionAndHidesTheQuicklist()
+    {
+        WriteFindDays();
+
+        (int exitCode, string[] frame) = RunReport("find DEPLOY", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ Date +│ Work item +│ Title +│ Time +│"));
+        int first = Array.FindIndex(frame, l => Regex.IsMatch(l, @"│ 2026-11-01 +│ +│ Deploy prod +│ 0:45 +│"));
+        int second = Array.FindIndex(frame, l => Regex.IsMatch(l, @"│ 2026-11-03 +│ #1234 +│ predeploy +│ 1:00 +│"));
+        Assert.True(first > 0 && second > first, string.Join("\n", frame));
+        Assert.Contains(frame, l => l.Trim() == "2 matches for \"DEPLOY\"");
+        Assert.DoesNotContain(frame, l => l.Contains("Mail", StringComparison.Ordinal) || l.Contains("Lunch", StringComparison.Ordinal));
+        Assert.DoesNotContain(frame, l => l.Contains("2026-11-02", StringComparison.Ordinal));
+        Assert.DoesNotContain(frame, l => l.Contains("open", StringComparison.Ordinal));
+        Assert.DoesNotContain(frame, l => l.Contains("Projects", StringComparison.Ordinal));
+        Assert.Equal(string.Empty, frame[^4].Trim());
+    }
+
+    // AC-4, AC-5
+    [Fact]
+    public void Find_MatchesTheQuicklistTitle_AndShowsIt()
+    {
+        WriteFindDays();
+        File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":1234,\"title\":\"Website relaunch\"}]}");
+
+        (_, string[] frame) = RunReport("find RELAUNCH", "quit");
+
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ 2026-11-03 +│ #1234 +│ Website relaunch +│ 1:00 +│"));
+        Assert.Contains(frame, l => l.Trim() == "1 match for \"RELAUNCH\"");
+    }
+
+    // AC-4
+    [Theory]
+    [InlineData("{not json")]
+    [InlineData(null)]
+    public void Find_UnreadableOrMissingProjects_SearchesNamesOnly(string? projects)
+    {
+        WriteFindDays();
+        if (projects is not null)
+        {
+            File.WriteAllText(ProjectsFile, projects);
+        }
+
+        (int exitCode, string[] frame) = RunReport("find predeploy", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ 2026-11-03 +│ #1234 +│ predeploy +│ 1:00 +│"));
+    }
+
+    // AC-5
+    [Fact]
+    public void Find_HeadersAndBorderAreGrey_TimesAreSteelBlue()
+    {
+        WriteFindDays();
+
+        string output = RunAnsiCommands("find deploy");
+
+        Assert.Matches(@"\x1b\[(90|38;5;8)mDate\x1b\[0m", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)m╭─", output);
+        Assert.Matches(@"\x1b\[38;5;75m0:45\x1b\[0m", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)m2 matches for ""deploy""", output);
+    }
+
+    // AC-6
+    [Fact]
+    public void Find_OpenOnAnotherDay_IsMarkedOpenWithFootnote_TodayCountsToNow()
+    {
+        WriteReportDay("2026-10-26", ReportCp("09:00", "Plan", 7));
+        WriteReportDay("2026-10-27", ReportCp("17:00", "Plan", 7));
+
+        (_, string[] frame) = RunReport("find plan", "quit");
+
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ 2026-10-26 +│ #7 +│ Plan +│ 0:00 open +│"));
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ 2026-10-27 +│ #7 +│ Plan +│ 1:30 +│"));
+        Assert.Contains(frame, l => l.Contains(App.OpenFootnote, StringComparison.Ordinal));
+    }
+
+    // AC-7
+    [Fact]
+    public void Find_NoMatches_ShowsGreyNote()
+    {
+        WriteFindDays();
+
+        (int exitCode, string[] frame) = RunReport("find nothing here", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(frame, l => l.Contains("No checkpoints or projects match \"nothing here\".", StringComparison.Ordinal));
+        Assert.DoesNotContain(frame, l => l.Contains("Work item", StringComparison.Ordinal));
+
+        string ansi = RunAnsiCommands("find nothing here");
+        Assert.Matches(@"\x1b\[(90|38;5;8)mNo checkpoints or projects match", ansi);
+    }
+
+    // AC-8
+    [Theory]
+    [InlineData("deploy")]
+    [InlineData("nothing")]
+    public void Find_SkippedFile_ShowsYellowLine_WithOrWithoutMatches(string text)
+    {
+        WriteFindDays();
+        File.WriteAllText(DayFile("2026-11-04"), "{not json");
+
+        (_, string[] frame) = RunReport("find " + text, "quit");
+
+        int skipped = Array.FindIndex(frame, l => l.Contains("! 1 day file skipped", StringComparison.Ordinal));
+        Assert.True(skipped > 0);
+        int above = Array.FindIndex(frame, l => l.Contains("2 matches", StringComparison.Ordinal) || l.Contains("No checkpoints or projects match", StringComparison.Ordinal));
+        Assert.True(above > 0 && skipped > above);
+
+        string ansi = RunAnsiCommands("find " + text);
+        Assert.Matches(@"\x1b\[(33|93|38;5;11)m! 1 day file skipped", ansi);
+    }
+
+    // AC-8
+    [Fact]
+    public void Find_FolderThatCannotBeListed_ShowsRedHint()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        UnixFileMode mode = File.GetUnixFileMode(data.Path);
+        File.SetUnixFileMode(data.Path, UnixFileMode.None);
+        try
+        {
+            try
+            {
+                Directory.EnumerateFileSystemEntries(data.Path).ToList();
+                // Running as root: access can't be denied.
+                return;
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+
+            (int exitCode, string output) = RunCommands("find deploy", "quit");
+
+            Assert.Equal(0, exitCode);
+            Assert.StartsWith("find: the data folder cannot be listed", HintText(LastLayout(output), "find: the data folder"));
+            Assert.DoesNotContain("   at ", output);
+        }
+        finally
+        {
+            File.SetUnixFileMode(data.Path, mode);
+        }
+    }
+
+    // AC-9
+    [Fact]
+    public void Find_MarkupInTextNamesAndTitles_ShowsLiterally()
+    {
+        WriteReportDay("2026-11-02", ReportCp("09:00", "[red]x"), ReportCp("10:00", "[x]"), ReportCp("11:00", "y", 1), ReportLeave);
+        File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":1,\"title\":\"[bold][x][/]\"}]}");
+
+        (int exitCode, string[] frame) = RunReport("find [x]", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ 2026-11-02 +│ +│ \[x\] +│ 1:00 +│"));
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ 2026-11-02 +│ #1 +│ \[bold\]\[x\]\[/\] +│ 7:00 +│"));
+        Assert.Contains(frame, l => l.Trim() == "2 matches for \"[x]\"");
+
+        (exitCode, frame) = RunReport("find [red]", "quit");
+        Assert.Equal(0, exitCode);
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ 2026-11-02 +│ +│ \[red\]x +│ 1:00 +│"));
+        Assert.Contains(frame, l => l.Trim() == "1 match for \"[red]\"");
+
+        (exitCode, frame) = RunReport("find [/red]", "quit");
+        Assert.Equal(0, exitCode);
+        Assert.Contains(frame, l => l.Contains("No checkpoints or projects match \"[/red]\".", StringComparison.Ordinal));
+    }
+
+    // AC-10
+    [Fact]
+    public void Find_WritesNothing_AndKeepsTheShownDay()
+    {
+        WriteFindDays();
+        WriteReportDay("2026-10-26", ReportCp("09:00", "Deploy test"), ReportLeave);
+        File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":1234,\"title\":\"Deploys\"}]}");
+        File.WriteAllText(Path.Combine(data.Path, "settings.json"), "{\"settings\":{\"daily-target\":480}}");
+        File.WriteAllText(DayFile("2026-11-04"), "{not json");
+        DateTime old = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        foreach (string file in Directory.EnumerateFiles(data.Path))
+        {
+            File.SetLastWriteTimeUtc(file, old);
+        }
+
+        Dictionary<string, (DateTime, byte[])> before = Directory.EnumerateFiles(data.Path)
+            .ToDictionary(p => p, p => (File.GetLastWriteTimeUtc(p), File.ReadAllBytes(p)));
+
+        (int exitCode, string[] frame) = RunReport("prev", "find deploy", "summary", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(frame, l => l.Contains("Monday, 2026-10-26", StringComparison.Ordinal));
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ +│ Deploy test +│ 9:00 +│"));
+        Dictionary<string, (DateTime, byte[])> after = Directory.EnumerateFiles(data.Path)
+            .ToDictionary(p => p, p => (File.GetLastWriteTimeUtc(p), File.ReadAllBytes(p)));
+        Assert.Equal(before.Keys.Order(StringComparer.Ordinal), after.Keys.Order(StringComparer.Ordinal));
+        foreach (KeyValuePair<string, (DateTime, byte[])> pair in before)
+        {
+            Assert.Equal(pair.Value.Item1, after[pair.Key].Item1);
+            Assert.Equal(pair.Value.Item2, after[pair.Key].Item2);
+        }
+
+        Assert.Empty(Directory.EnumerateDirectories(data.Path));
     }
 }

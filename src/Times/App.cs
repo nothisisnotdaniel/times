@@ -254,6 +254,7 @@ internal sealed class App
         registry.Register("absence", "ab", "Mark this day as vacation, sick or holiday, or clear it", Absence);
         registry.Register("report", "rp", "Show the hours per project over a date range: <from> <to>", Report);
         registry.Register("export", "ex", "Save the project report for a date range as CSV: <from> <to> <folder>", Export);
+        registry.Register("find", "f", "Find days whose checkpoints or projects match: <text>", Find);
     }
 
     // Marks the day being viewed as an absence (vacation, sick, holiday) or clears it. Nothing is written
@@ -716,6 +717,80 @@ internal sealed class App
         }
 
         AddSkipped(parts, report);
+        return parts.Count == 1 ? parts[0] : new Rows(parts);
+    }
+
+    // Shows every day's checkpoint groups whose names or quicklist title contain the text (ignoring case),
+    // one row per day and group, or a grey note if none match. Read-only.
+    private CommandResult Find(string argument)
+    {
+        const string Name = "find";
+        string text = argument.Trim();
+        if (text.Length == 0)
+        {
+            return Hint($"{Name}: say what to look for. Use [bold]find <text>[/].");
+        }
+
+        ProjectList? projects = LoadProjectsOrNull();
+        CheckpointSearch search;
+        try
+        {
+            search = CheckpointSearch.Calculate(Store, projects, text, DateOnly.FromDateTime(time.GetLocalNow().DateTime), Now());
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{Name}: the data folder cannot be listed: {Markup.Escape(ex.Message)}");
+        }
+
+        return new CommandResult(FindView(text, search, projects), hideQuicklist: true);
+    }
+
+    /// <summary>
+    /// The find table (date, work item, title, time) captioned with the match count and the text, or a
+    /// grey note if <paramref name="search"/> has no matches; then the open footnote and the yellow
+    /// skipped line when they apply. Titles come from <paramref name="projects"/> (<c>null</c>: none),
+    /// otherwise the names.
+    /// </summary>
+    internal static IRenderable FindView(string text, CheckpointSearch search, ProjectList? projects)
+    {
+        List<IRenderable> parts = [];
+        string shown = Markup.Escape(text);
+        if (search.Matches.Count == 0)
+        {
+            parts.Add(new Markup($"[grey]No checkpoints or projects match \"{shown}\".[/]"));
+        }
+        else
+        {
+            string count = search.Matches.Count.ToString(CultureInfo.InvariantCulture);
+            string matches = search.Matches.Count == 1 ? "match" : "matches";
+            Table table = new Table()
+                .Border(TableBorder.Rounded)
+                .BorderColor(Color.Grey)
+                .AddColumn("[grey]Date[/]")
+                .AddColumn("[grey]Work item[/]")
+                .AddColumn("[grey]Title[/]")
+                .AddColumn("[grey]Time[/]")
+                .Caption($"{count} {matches} for \"{shown}\"", new Style(Color.Grey));
+
+            foreach (SearchMatch match in search.Matches)
+            {
+                string workItem = match.WorkItem is { } w ? "#" + w.ToString(CultureInfo.InvariantCulture) : string.Empty;
+                string open = match.Open ? " [grey]open[/]" : string.Empty;
+                table.AddRow(
+                    new Text(ReportDate(match.Date)),
+                    new Text(workItem),
+                    new Markup(Markup.Escape(match.Title(projects))),
+                    new Markup($"[steelblue1]{DayView.FormatTimeLeft(match.Total)}[/]{open}"));
+            }
+
+            parts.Add(table);
+            if (search.Matches.Any(m => m.Open))
+            {
+                parts.Add(new Markup($"[grey]{OpenFootnote}[/]"));
+            }
+        }
+
+        AddSkipped(parts, search.SkippedFiles);
         return parts.Count == 1 ? parts[0] : new Rows(parts);
     }
 

@@ -126,6 +126,10 @@ Every factory agent reads this file before working on Times. Keep it short and a
   The `report-rounding` setting (`off`/`5 min`/`10 min`/`15 min`, read at each call, anything else is `off`) rounds
   each row's time per day to the nearest step (half rounds up) in `report` and `export` only, adding
   ` · rounded to <n> min` to the caption and the export success line.
+- **Search:** `find <text>` (`f`, whole trimmed argument) runs `CheckpointSearch.Calculate` (read-only) over every day file
+  `DayStore.Days()` lists: each day's `CheckpointSummary` group whose names or quicklist title contain the text
+  (`OrdinalIgnoreCase`) is one row (`App.FindView`: `Date`, `Work item`, `Title`, `Time`, by date then group order, caption
+  `N match(es) for "<text>"`, open footnote, yellow skipped line); no text is a red usage hint, no match a grey note.
 - **Updates:** `UpdateService` (wired in `Program.cs`, `null` in tests unless injected) runs one background
   check at start (`IReleaseSource`, GitHub's release list only, allow-listed asset URLs, capped and timed out) and
   the `update` (`up`) command. Settings `update-mode` (`notify only` / `install on quit` / `install and restart`)
