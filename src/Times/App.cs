@@ -44,6 +44,12 @@ internal sealed class App
     private readonly UpdateService? updates;
     private readonly ITokenStore tokenStore;
     private readonly Func<DevOpsCredential, IDevOpsClient>? devOpsClient;
+    private readonly IBackgroundEvents? events;
+
+    // What the last full redraw showed above the day view's hint rows, so a background event can
+    // rebuild the same top area in place (the hint itself stays in frameHint).
+    private IRenderable? shownMessage;
+    private bool shownHideQuicklist;
 
     // Set by devops connect to the validated organisation; the loop then asks for the token.
     private string? connectOrganization;
@@ -84,10 +90,13 @@ internal sealed class App
     /// <param name="updates">Checks for and installs updates, or <c>null</c> for none (no network at all).</param>
     /// <param name="tokenStore">Holds the Azure DevOps token, or <c>null</c> for <see cref="UnsupportedTokenStore"/> (no OS store at all).</param>
     /// <param name="devOpsClient">Makes the Azure DevOps client for a credential, or <c>null</c> for none (sync cannot send).</param>
+    /// <param name="events">Background events applied between keys at the prompt, or <c>null</c> for none.</param>
     public App(IAnsiConsole console, TimeProvider time, DayStore store, CommandRegistry? registry = null,
         bool folderFromEnvironment = false, MouseReporting? mouse = null, SettingsRegistry? settings = null,
-        UpdateService? updates = null, ITokenStore? tokenStore = null, Func<DevOpsCredential, IDevOpsClient>? devOpsClient = null)
+        UpdateService? updates = null, ITokenStore? tokenStore = null, Func<DevOpsCredential, IDevOpsClient>? devOpsClient = null,
+        IBackgroundEvents? events = null)
     {
+        this.events = events;
         this.tokenStore = tokenStore ?? new UnsupportedTokenStore();
         this.devOpsClient = devOpsClient;
         this.updates = updates;
@@ -2287,7 +2296,8 @@ internal sealed class App
 
             // The popup ends on the last hint row (just above the input box) and grows upwards over the others.
             PopupArea popup = new PopupArea(height - InputHeight, width, RestoreRow);
-            string? input = editor.ReadLine(column, line, width - column - 2, popup, Placeholder, Scroll, ShowPasteCut);
+            string? input = editor.ReadLine(column, line, width - column - 2, popup, Placeholder, Scroll, ShowPasteCut,
+                events, ApplyEvent);
             if (input is null)
             {
                 return 0;
@@ -2388,6 +2398,18 @@ internal sealed class App
     // The top area is rendered once here and starts unscrolled.
     private void Draw(IRenderable? message, IRenderable? hint, bool hideQuicklist)
     {
+        shownMessage = message;
+        shownHideQuicklist = hideQuicklist;
+        SetTop(RenderTop(message, hideQuicklist));
+        TakeStartupStaged();
+        frameHint = StartupHint(hint) ?? Text.Empty;
+        offset = 0;
+        DrawFull();
+    }
+
+    // The top area's content: the quicklist (unless hidden), the day view, then the message, if any.
+    private IRenderable RenderTop(IRenderable? message, bool hideQuicklist)
+    {
         List<IRenderable> parts = [];
         if (!hideQuicklist)
         {
@@ -2401,11 +2423,25 @@ internal sealed class App
             parts.Add(message);
         }
 
-        SetTop(new Rows(parts));
-        TakeStartupStaged();
-        frameHint = StartupHint(hint) ?? Text.Empty;
-        offset = 0;
-        DrawFull();
+        return new Rows(parts);
+    }
+
+    // Called by the line editor after a background event changed the view: renders the top area again
+    // (quicklist, day, the same message) and rewrites only its rows in place, like a scroll. The hint
+    // rows, the input box and the scroll offset stay (the offset clamped if the content got shorter);
+    // the editor then draws the popup and the input line on top. Returns true: rows were rewritten.
+    private bool ApplyEvent()
+    {
+        SetTop(RenderTop(shownMessage, shownHideQuicklist));
+        int topHeight = TopHeight;
+        offset = Math.Min(offset, TopArea.MaxOffset(topLines.Count, topHeight));
+        frame = RenderFrame();
+        for (int row = 1; row <= topHeight; row++)
+        {
+            RestoreRow(row);
+        }
+
+        return true;
     }
 
     private void SetTop(IRenderable top) =>

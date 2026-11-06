@@ -2502,4 +2502,334 @@ public class LineEditorTests
         Assert.DoesNotContain("z", console.Output);
         Assert.DoesNotContain("PAT", console.Output);
     }
+
+    // Background events (job 110) -----------------------------------------------------------
+
+    /// <summary>An event that adds <paramref name="name"/> to the log and returns <paramref name="changed"/>.</summary>
+    private static BackgroundEvent Logged(ScriptedEvents events, string name, bool changed) =>
+        new(() =>
+        {
+            events.Log.Add(name);
+            return changed;
+        });
+
+    // AC-3
+    [Fact]
+    public void Events_AreApplied_InOrder_AfterAWait_AndAppliedIsCalledOnlyForChanges()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        ScriptedEvents events = new ScriptedEvents();
+        events.At(3, Logged(events, "e1", true), Logged(events, "e2", false), Logged(events, "e3", true));
+        console.Input.PushTextWithEnter("help");
+
+        string? line = editor.ReadLine(5, 23, 70, events: events, applied: () =>
+        {
+            events.Log.Add("applied");
+            return false;
+        });
+
+        Assert.Equal("help", line);
+        // A wait before each of the 5 keys, plus one more after the round that applied events
+        // (before the third key, 'l').
+        Assert.Equal(
+            ["wait", "wait", "wait", "e1", "applied", "e2", "e3", "applied", "wait", "wait", "wait"],
+            events.Log);
+    }
+
+    // AC-3
+    [Fact]
+    public void Events_PostedDuringARound_AreAppliedBeforeTheNextKey()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        ScriptedEvents events = new ScriptedEvents();
+        events.At(1, Logged(events, "e1", true));
+        events.At(2, Logged(events, "e2", true));
+        console.Input.PushTextWithEnter("x");
+
+        editor.ReadLine(5, 23, 70, events: events, applied: () => false);
+
+        // Waits 1 and 2 both come before the first key; wait 3 finds nothing, so 'x' is read.
+        Assert.Equal(["wait", "e1", "wait", "e2", "wait", "wait"], events.Log);
+    }
+
+    // AC-3
+    [Fact]
+    public void Events_AreNotHandled_InsideAPaste_OrAMouseSequence()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        ScriptedEvents events = new ScriptedEvents();
+        PushSequence(console, "[200~abc");
+        PushSequence(console, "[201~");
+        PushSequence(console, WheelUp);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        string? line = editor.ReadLine(5, 23, 70, scroll: (_, _) => false, events: events, applied: () => false);
+
+        Assert.Equal("abc", line);
+        // Fresh keys: the paste's Esc, the wheel's Esc and Enter.
+        Assert.Equal(3, events.Waits);
+    }
+
+    // AC-3
+    [Fact]
+    public void Events_AreNotHandled_WhileAKeyCarriedFromAPlainEscIsPending()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        ScriptedEvents events = new ScriptedEvents();
+        console.Input.PushText("a");
+        console.Input.PushKey(Esc);
+        console.Input.PushText("b");
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        string? line = editor.ReadLine(5, 23, 70, events: events, applied: () => false);
+
+        // Esc cleared "a"; "b" was read with the Esc and is handled without a wait.
+        Assert.Equal("b", line);
+        Assert.Equal(3, events.Waits);
+    }
+
+    // AC-3: the queue is drained even if nothing changed; the editor writes nothing for it.
+    [Fact]
+    public void Event_ThatChangesNothing_DoesNotCallApplied_AndWritesNothing()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        ScriptedEvents events = new ScriptedEvents();
+        int before = -1;
+        int after = -1;
+        events.At(2, new BackgroundEvent(() =>
+        {
+            before = console.Output.Length;
+            return false;
+        }));
+        events.OnWait = call =>
+        {
+            if (call == 3)
+            {
+                after = console.Output.Length;
+            }
+        };
+        console.Input.PushTextWithEnter("ab");
+        int appliedCalls = 0;
+
+        Assert.Equal("ab", editor.ReadLine(5, 23, 70, events: events, applied: () =>
+        {
+            appliedCalls++;
+            return true;
+        }));
+        Assert.Equal(0, appliedCalls);
+        Assert.Equal(before, after);
+    }
+
+    // AC-4
+    [Fact]
+    public void Applied_ThatRedrew_DrawsTheInputLineAgain_WithTheCursorAfterTheText()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        ScriptedEvents events = new ScriptedEvents();
+        events.At(4, new BackgroundEvent(() => true));
+        console.Input.PushText("abc");
+        int redrawnAt = -1;
+        int nextWait = -1;
+        events.OnWait = call =>
+        {
+            if (call == 5)
+            {
+                nextWait = console.Output.Length;
+            }
+        };
+
+        console.Input.PushKey(ConsoleKey.Enter);
+        string? line = editor.ReadLine(5, 23, 70, events: events, applied: () =>
+        {
+            console.Cursor.SetPosition(1, 1);
+            console.Write(new Spectre.Console.Text("event"));
+            redrawnAt = console.Output.Length;
+            return true;
+        });
+
+        Assert.Equal("abc", line);
+        string after = console.Output[redrawnAt..nextWait];
+        Assert.Equal([new AnsiWrite(23, 5, "abc")], AnsiWrites.Parse(after).Where(w => w.Text.Length > 0));
+        Assert.EndsWith("\u001b[23;8H", after);
+        Assert.DoesNotContain("\u001b[2J", console.Output);
+    }
+
+    // AC-4
+    [Fact]
+    public void Applied_ThatDidNotRedraw_WritesNothing()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        ScriptedEvents events = new ScriptedEvents();
+        events.At(2, new BackgroundEvent(() => true));
+        int appliedAt = -1;
+        int nextWait = -1;
+        events.OnWait = call =>
+        {
+            if (call == 3)
+            {
+                nextWait = console.Output.Length;
+            }
+        };
+        console.Input.PushTextWithEnter("ab");
+
+        editor.ReadLine(5, 23, 70, events: events, applied: () =>
+        {
+            appliedAt = console.Output.Length;
+            return false;
+        });
+
+        Assert.Equal(appliedAt, nextWait);
+    }
+
+    // AC-4
+    [Fact]
+    public void Applied_WithPopupOpen_DrawsThePopupAgain_BeforeTheInputLine()
+    {
+        PopupRun run = new PopupRun();
+        ScriptedEvents events = new ScriptedEvents();
+        events.At(2, new BackgroundEvent(() => true));
+        run.Console.Input.PushText("/");
+        run.Console.Input.PushKey(ConsoleKey.Enter);
+        int redrawnAt = -1;
+
+        run.Editor.ReadLine(5, 23, 70, run.Area, events: events, applied: () =>
+        {
+            for (int row = 1; row <= HintRow; row++)
+            {
+                run.Console.Cursor.SetPosition(1, row);
+                run.Console.Write(new Spectre.Console.Text("event"));
+            }
+
+            redrawnAt = run.Console.Output.Length;
+            return true;
+        });
+
+        List<AnsiWrite> after = AnsiWrites.Parse(run.Console.Output[redrawnAt..]);
+        int input = after.FindIndex(w => w.Row == 23 && w.Column == 5);
+        List<AnsiWrite> popup = after.Take(input).Where(w => w.Column == 1).ToList();
+        Assert.Equal([17, 18, 19, 20, 21], popup.Select(w => w.Row));
+        Assert.StartsWith("help   h  List all commands", popup[0].Text);
+        Assert.StartsWith("today  t  Go back to today", popup[4].Text);
+    }
+
+    // AC-4
+    [Fact]
+    public void Applied_KeepsTheTabList()
+    {
+        PopupRun run = PrefixRun();
+        ScriptedEvents events = new ScriptedEvents();
+        events.At(4, new BackgroundEvent(() => true));
+        run.Console.Input.PushText("pr");
+        run.Console.Input.PushKey(ConsoleKey.Tab);
+        run.Console.Input.PushKey(ConsoleKey.Enter);
+        int redrawnAt = -1;
+
+        string? line = run.Editor.ReadLine(5, 23, 70, run.Area, events: events, applied: () =>
+        {
+            redrawnAt = run.Console.Output.Length;
+            return true;
+        });
+
+        Assert.Equal("pr", line);
+        Dictionary<int, string> screen = [];
+        foreach (AnsiWrite write in AnsiWrites.Parse(run.Console.Output[redrawnAt..]))
+        {
+            if (write.Row == 23 && write.Column == 5)
+            {
+                break;
+            }
+
+            screen[write.Row] = write.Text.TrimEnd();
+        }
+
+        Assert.Equal("3 commands start with pr", screen[HintRow]);
+        Assert.StartsWith("prev", screen[18]);
+    }
+
+    // AC-4
+    [Fact]
+    public void Applied_KeepsThePopupClosed_AfterEsc()
+    {
+        PopupRun run = new PopupRun();
+        ScriptedEvents events = new ScriptedEvents();
+        events.At(4, new BackgroundEvent(() => true));
+        run.Console.Input.PushText("he");
+        run.Console.Input.PushKey(ConsoleKey.Escape);
+        run.Console.Input.PushTextWithEnter("l");
+        int redrawnAt = -1;
+
+        string? line = run.Editor.ReadLine(5, 23, 70, run.Area, events: events, applied: () =>
+        {
+            redrawnAt = run.Console.Output.Length;
+            return true;
+        });
+
+        Assert.Equal("hel", line);
+        Assert.DoesNotContain(AnsiWrites.Parse(run.Console.Output[redrawnAt..]), w => w.Column == 1 && w.StartsWithCommand);
+    }
+
+    // AC-4
+    [Fact]
+    public void Applied_KeepsTheHistoryPosition()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        console.Input.PushTextWithEnter("a");
+        console.Input.PushTextWithEnter("b");
+        editor.ReadLine(5, 23, 70);
+        editor.ReadLine(5, 23, 70);
+
+        ScriptedEvents events = new ScriptedEvents();
+        events.At(2, new BackgroundEvent(() => true));
+        console.Input.PushKey(ConsoleKey.UpArrow);
+        console.Input.PushKey(ConsoleKey.UpArrow);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        // Up, Up after the event still reaches "a": the position was not reset by the redraw.
+        Assert.Equal("a", editor.ReadLine(5, 23, 70, events: events, applied: () => true));
+        Assert.Equal(["a", "b", "a"], editor.History);
+    }
+
+    // AC-5 (editor side)
+    [Fact]
+    public void TypedText_AroundAnEvent_IsOneLine()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        ScriptedEvents events = new ScriptedEvents();
+        events.At(3, new BackgroundEvent(() => true));
+        console.Input.PushText("he");
+        console.Input.PushTextWithEnter("lp");
+
+        Assert.Equal("help", editor.ReadLine(5, 23, 70, events: events, applied: () => true));
+        Assert.Equal(["help"], editor.History);
+    }
+
+    // AC-8 (editor side)
+    [Fact]
+    public void Event_ThatThrows_IsDropped_AndLaterEventsStillRun()
+    {
+        (TestConsole console, LineEditor editor) = CreateAnsi();
+        ScriptedEvents events = new ScriptedEvents();
+        events.At(2, new BackgroundEvent(() => throw new InvalidOperationException("boom")), Logged(events, "good", true));
+        console.Input.PushTextWithEnter("ab");
+
+        Assert.Equal("ab", editor.ReadLine(5, 23, 70, events: events, applied: () => true));
+        Assert.Contains("good", events.Log);
+        Assert.False(events.TryTake(out _));
+    }
+
+    // AC-10
+    [Fact]
+    public void WithoutEvents_ReadLine_NeverAsksWhetherAKeyIsAvailable()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        HookedInput input = new HookedInput(console.Input);
+        LineEditor editor = new LineEditor(new InputOverrideConsole(console, input), CommandRegistry.CreateDefault());
+        console.Input.PushText("help");
+        console.Input.PushKey(ConsoleKey.Backspace);
+        console.Input.PushKey(ConsoleKey.Tab);
+        console.Input.PushKey(ConsoleKey.Enter);
+
+        Assert.Equal("help", editor.ReadLine(5, 23, 70));
+        Assert.Equal(0, input.KeyAvailableCalls);
+    }
 }

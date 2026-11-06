@@ -115,12 +115,21 @@ internal sealed class LineEditor
     /// <paramref name="pasteCut"/> is called once for each paste that was cut to
     /// <see cref="MaxPasteLength"/> characters, after the kept text was added to the line and
     /// before the line is redrawn, or is <c>null</c> for no notice.
+    /// <paramref name="events"/> is the background event queue, or <c>null</c> for none: then
+    /// the editor only ever blocks in <c>ReadKey</c>. With a queue, before each fresh key (not
+    /// inside an escape sequence or a paste, and not while a key carried from a plain Esc is
+    /// pending) the editor waits for a key or an event, applies every queued event in order on
+    /// this thread, and repeats until a round finds none. An event whose <c>Apply()</c> throws is
+    /// dropped. After an event that changed the view, <paramref name="applied"/> is called; when
+    /// it reports that it redrew rows, the editor draws the popup (if open) again on top and then
+    /// the input line. The line, the history position, the popup state and the Tab list stay.
     /// Returns <c>null</c> if the input has no more keys, also in the middle of an escape sequence
     /// or a paste.
     /// </summary>
     public string? ReadLine(int column, int line, int width, PopupArea? popup = null, string? placeholder = null,
-        Func<int, ScrollStep, bool>? scroll = null, Action? pasteCut = null) =>
-        Read(column, line, width, popup, placeholder, scroll, pasteCut, value: false, out _, masked: false);
+        Func<int, ScrollStep, bool>? scroll = null, Action? pasteCut = null, IBackgroundEvents? events = null,
+        Func<bool>? applied = null) =>
+        Read(column, line, width, popup, placeholder, scroll, pasteCut, value: false, out _, masked: false, events, applied);
 
     /// <summary>
     /// Reads a value (not a command) at the same place as <see cref="ReadLine"/>: no popup, no
@@ -134,7 +143,7 @@ internal sealed class LineEditor
     /// </summary>
     public string? ReadValue(int column, int line, int width, string? placeholder, out bool cancelled, Action? pasteCut = null,
         bool masked = false) =>
-        Read(column, line, width, null, placeholder, null, pasteCut, value: true, out cancelled, masked);
+        Read(column, line, width, null, placeholder, null, pasteCut, value: true, out cancelled, masked, null, null);
 
     /// <summary>What a masked value shows for each of its characters.</summary>
     public const char MaskCharacter = '\u2022';
@@ -191,7 +200,8 @@ internal sealed class LineEditor
     }
 
     private string? Read(int column, int line, int width, PopupArea? popup, string? placeholder,
-        Func<int, ScrollStep, bool>? scroll, Action? pasteCut, bool value, out bool cancelled, bool masked)
+        Func<int, ScrollStep, bool>? scroll, Action? pasteCut, bool value, out bool cancelled, bool masked,
+        IBackgroundEvents? events, Func<bool>? applied)
     {
         cancelled = false;
         string buffer = string.Empty;
@@ -205,6 +215,20 @@ internal sealed class LineEditor
 
         while (true)
         {
+            if (pending is null && events is not null)
+            {
+                // Events run here, on the loop thread, between keys; only their redraw touches the screen.
+                ApplyEvents(events, applied, () =>
+                {
+                    if (popupRows > 0)
+                    {
+                        popupRows = DrawPopup(popup!, buffer, popupRows, tabList);
+                    }
+
+                    drawn = Redraw(masked ? new string(MaskCharacter, buffer.Length) : buffer, column, line, width, drawn, placeholder);
+                });
+            }
+
             ConsoleKeyInfo? key = pending ?? console.Input.ReadKey(intercept: true);
             pending = null;
             if (key is null)
@@ -390,6 +414,43 @@ internal sealed class LineEditor
             bool showPopup = popup is not null && OpensPopup(buffer) && !popupDismissed;
             popupRows = showPopup ? DrawPopup(popup!, buffer, popupRows, tabList) : ClosePopup(popup, popupRows);
             drawn = Redraw(masked ? new string(MaskCharacter, buffer.Length) : buffer, column, line, width, drawn, placeholder);
+        }
+    }
+
+    // Waits for a key or an event, then applies every queued event in FIFO order; after each one that
+    // changed the view and whose redraw (applied) wrote rows, redrawOnTop draws the popup and the line
+    // again. An event that throws is dropped and the rest still run. Repeats until a round finds no
+    // event, so a key is waiting (or the read should block).
+    private void ApplyEvents(IBackgroundEvents events, Func<bool>? applied, Action redrawOnTop)
+    {
+        while (true)
+        {
+            events.WaitForKeyOrEvent(console.Input.IsKeyAvailable);
+            bool any = false;
+            while (events.TryTake(out BackgroundEvent? next))
+            {
+                any = true;
+                bool changed;
+                try
+                {
+                    changed = next?.Apply() == true;
+                }
+                catch (Exception)
+                {
+                    // A broken event must never end the session: it is dropped.
+                    changed = false;
+                }
+
+                if (changed && applied?.Invoke() == true)
+                {
+                    redrawOnTop();
+                }
+            }
+
+            if (!any)
+            {
+                return;
+            }
         }
     }
 
