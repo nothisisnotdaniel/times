@@ -848,12 +848,12 @@ public sealed class AppTests : IDisposable
         Assert.Contains("\u001b[21;1H", output);
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal([14, 15, 16, 17, 18, 19, 20, 21], popup.Select(w => w.Row));
-        // Twenty-seven commands: the first seven by name, then a row counting the other twenty.
+        // Thirty commands: the first seven by name, then a row counting the other twenty-three.
         Assert.Equal(
-            ["absence", "addproject", "arrive", "booked", "break", "breakend", "change", "…"],
+            ["absence", "addproject", "arrive", "backup", "booked", "break", "breakend", "…"],
             popup.Select(w => w.Text.Split(' ')[0]));
-        Assert.StartsWith("… 22 more", popup[^1].Text);
-        Assert.Contains("Change the time of an entry", popup[6].Text);
+        Assert.StartsWith("… 23 more", popup[^1].Text);
+        Assert.Contains("Book the end of a break", popup[6].Text);
         Assert.Equal(80, popup[0].Text.Length);
     }
 
@@ -925,9 +925,9 @@ public sealed class AppTests : IDisposable
         List<string> hintRow = TypingWrites(output, 1).Where(w => w.Row == 21).Select(w => w.Text).ToList();
 
         // popup, restored (Backspace), popup, restored (Esc), popup (quit typing), ...
-        Assert.StartsWith("… 22 more", hintRow[0]);
+        Assert.StartsWith("… 23 more", hintRow[0]);
         Assert.Contains("Unknown command nope", hintRow[1]);
-        Assert.StartsWith("… 22 more", hintRow[2]);
+        Assert.StartsWith("… 23 more", hintRow[2]);
         Assert.Contains("Unknown command nope", hintRow[3]);
         Assert.Contains("Unknown command nope", hintRow[^1]);
         Assert.Contains("\u001b[38;5;9mUnknown command", output[output.LastIndexOf("\u001b[21;1H", StringComparison.Ordinal)..]);
@@ -961,7 +961,7 @@ public sealed class AppTests : IDisposable
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
         // 39 commands: 7 shown, the eighth row counts the other 32.
-        Assert.StartsWith("… 34 more", popup[^1].Text);
+        Assert.StartsWith("… 35 more", popup[^1].Text);
         // Nothing is drawn on row 1 while typing (the final clear on quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
@@ -4792,6 +4792,7 @@ public sealed class AppTests : IDisposable
             ["absence"] = "ab",
             ["addproject"] = "ap",
             ["arrive"] = "a",
+            ["backup"] = "bu",
             ["booked"] = "bk",
             ["break"] = "b",
             ["breakend"] = "be",
@@ -11253,5 +11254,459 @@ public sealed class AppTests : IDisposable
         }
 
         Assert.Empty(Directory.EnumerateDirectories(data.Path));
+    }
+
+    // Job 108 ------------------------------------------------------------------------------
+
+    /// <summary>The backup name for <see cref="FixedTimeProvider.At20261027"/> (18:30 UTC).</summary>
+    private const string BackupName = "times-backup-2026-10-27-1830.zip";
+
+    private static string BackupHint(string[] frame) => HintText(frame, "backup:");
+
+    private void WriteBackupData(bool projects = true)
+    {
+        File.WriteAllText(DayFile("2026-11-02"), "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}");
+        File.WriteAllText(DayFile("2026-11-03"), "{not json");
+        File.WriteAllText(Path.Combine(data.Path, "settings.json"), "{\"settings\":{}}");
+        if (projects)
+        {
+            File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":1234,\"title\":\"Times\"}]}");
+        }
+    }
+
+    private Dictionary<string, (DateTime Written, byte[] Bytes)> DataSnapshot() =>
+        Directory.EnumerateFileSystemEntries(data.Path, "*", SearchOption.AllDirectories)
+            .ToDictionary(p => p, p => File.Exists(p) ? (File.GetLastWriteTimeUtc(p), File.ReadAllBytes(p)) : (Directory.GetLastWriteTimeUtc(p), Array.Empty<byte>()));
+
+    private void AssertSameSnapshot(Dictionary<string, (DateTime Written, byte[] Bytes)> before)
+    {
+        Dictionary<string, (DateTime Written, byte[] Bytes)> after = DataSnapshot();
+        Assert.Equal(before.Keys.Order(StringComparer.Ordinal), after.Keys.Order(StringComparer.Ordinal));
+        foreach (KeyValuePair<string, (DateTime Written, byte[] Bytes)> pair in before)
+        {
+            Assert.Equal(pair.Value.Written, after[pair.Key].Written);
+            Assert.Equal(pair.Value.Bytes, after[pair.Key].Bytes);
+        }
+    }
+
+    private static string[] ZipEntryNames(string path)
+    {
+        using System.IO.Compression.ZipArchive zip = System.IO.Compression.ZipFile.OpenRead(path);
+        return zip.Entries.Select(e => e.FullName).ToArray();
+    }
+
+    // AC-1, AC-6, AC-8
+    [Fact]
+    public void Backup_WritesTheZip_AndShowsThePath_AndChangesNoDataFile()
+    {
+        using TempFolder target = new TempFolder();
+        WriteBackupData();
+        Dictionary<string, (DateTime Written, byte[] Bytes)> before = DataSnapshot();
+
+        (int exitCode, string[] frame) = RunExport($"backup {target.Path}");
+
+        Assert.Equal(0, exitCode);
+        string path = Path.Combine(target.Path, BackupName);
+        Assert.Equal([BackupName], Listing(target.Path));
+        Assert.Equal(["2026-11-02.json", "2026-11-03.json", "projects.json"], ZipEntryNames(path));
+        Assert.Contains(frame, l => l.Contains($"Backed up 2 day files and projects.json to {path}", StringComparison.Ordinal));
+        Assert.DoesNotContain(frame, l => l.Contains("skipped", StringComparison.Ordinal));
+        AssertSameSnapshot(before);
+    }
+
+    // AC-6
+    [Fact]
+    public void Backup_WithoutProjects_LeavesOutTheProjectsPart()
+    {
+        using TempFolder target = new TempFolder();
+        File.WriteAllText(DayFile("2026-11-02"), "{}");
+
+        (_, string[] frame) = RunExport($"backup {target.Path}");
+
+        string path = Path.Combine(target.Path, BackupName);
+        Assert.Contains(frame, l => l.Contains($"Backed up 1 day file to {path}", StringComparison.Ordinal));
+        Assert.DoesNotContain(frame, l => l.Contains("projects.json", StringComparison.Ordinal));
+        Assert.Equal(["2026-11-02.json"], ZipEntryNames(path));
+    }
+
+    // AC-6
+    [Fact]
+    public void Backup_Colours_SteelBlueCountAndPath_YellowSkippedLine()
+    {
+        using TempFolder target = new TempFolder();
+        WriteBackupData();
+        File.WriteAllBytes(DayFile("2026-11-04"), new byte[DayStore.MaxFileBytes + 1]);
+
+        string output = RunAnsiCommands($"backup {target.Path}");
+
+        Assert.Matches(@"Backed up \x1b\[[0-9;]*38;5;75m2\x1b\[0m day files and projects\.json to \x1b\[[0-9;]*38;5;75m", output);
+        Assert.Matches(@"\x1b\[(33|93|38;5;11)m! 1 file skipped", output);
+        Assert.Equal(["2026-11-02.json", "2026-11-03.json", "projects.json"], ZipEntryNames(Path.Combine(target.Path, BackupName)));
+    }
+
+    // AC-2, AC-6
+    [Fact]
+    public void Backup_SkippedFiles_AreCountedOnTheYellowLine()
+    {
+        using TempFolder target = new TempFolder();
+        WriteBackupData();
+        File.WriteAllBytes(DayFile("2026-11-04"), new byte[DayStore.MaxFileBytes + 1]);
+        File.WriteAllBytes(DayFile("2026-11-05"), new byte[DayStore.MaxFileBytes + 1]);
+
+        (_, string[] frame) = RunExport($"backup {target.Path}");
+
+        Assert.Contains(frame, l => l.Contains("Backed up 2 day files and projects.json to", StringComparison.Ordinal));
+        Assert.Contains(frame, l => l.Contains("! 2 files skipped", StringComparison.Ordinal));
+    }
+
+    // AC-3
+    [Theory]
+    [InlineData("none", "backup: say the folder. Use backup <folder>.")]
+    [InlineData("relative", "is not an absolute path.")]
+    [InlineData("missing", "does not exist. Nothing was created.")]
+    [InlineData("file", "is a file, not a folder.")]
+    public void Backup_BadFolder_ShowsRedHint_AndCreatesNothing(string kind, string hint)
+    {
+        using TempFolder target = new TempFolder();
+        string file = Path.Combine(target.Path, "plain.txt");
+        File.WriteAllText(file, "x");
+        string folder = kind switch
+        {
+            "none" => "   ",
+            "relative" => "backups" + Guid.NewGuid().ToString("N"),
+            "missing" => Path.Combine(target.Path, "missing"),
+            _ => file,
+        };
+        WriteBackupData();
+        Dictionary<string, (DateTime Written, byte[] Bytes)> before = DataSnapshot();
+        string[] cwdBefore = WorkingDirectoryEntries();
+
+        (int exitCode, string[] frame) = RunExport($"backup {folder}", "report 2026-11-02 2026-11-04");
+        (_, string[] hintFrame) = RunExport($"backup {folder}");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ Total +│|No checkpoints"));
+        string expected = kind switch
+        {
+            "none" => hint,
+            "missing" => $"backup: the folder {folder} {hint}",
+            _ => $"backup: {folder} {hint}",
+        };
+        Assert.Contains(expected, BackupHint(hintFrame));
+        Assert.Equal(["plain.txt"], Listing(target.Path));
+        Assert.Equal("x", File.ReadAllText(file));
+        AssertSameSnapshot(before);
+        Assert.Equal(cwdBefore, WorkingDirectoryEntries());
+    }
+
+    // AC-3
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Backup_FolderWithSpace_QuotedOrNot_IsTheWholeTrimmedArgument(bool quoted)
+    {
+        using TempFolder target = new TempFolder();
+        string folder = Path.Combine(target.Path, "my backups");
+        Directory.CreateDirectory(folder);
+        WriteBackupData();
+        string typed = quoted ? $"\"{folder}\"" : folder;
+
+        (int exitCode, _) = RunExport($"backup   {typed}   ");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal([BackupName], Listing(folder));
+    }
+
+    // AC-3
+    [Fact]
+    public void Backup_TildeFolder_IsExpandedToTheHomeFolder()
+    {
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        string missing = "times-missing-" + Guid.NewGuid().ToString("N");
+
+        (_, string[] frame) = RunExport($"backup ~/{missing}");
+
+        Assert.Contains($"backup: the folder {Path.Combine(home, missing)} does not exist.", BackupHint(frame));
+        Assert.False(Directory.Exists(Path.Combine(home, missing)));
+    }
+
+    // AC-4
+    [Fact]
+    public void Backup_DataFolderOrBelow_IsRefused_AndNothingIsWritten()
+    {
+        WriteBackupData();
+        Directory.CreateDirectory(Path.Combine(data.Path, "sub", "deeper"));
+        Dictionary<string, (DateTime Written, byte[] Bytes)> before = DataSnapshot();
+        const string Refused = "backup: choose a folder outside the data folder.";
+
+        string[] typed =
+        [
+            data.Path,
+            data.Path + Path.DirectorySeparatorChar,
+            Path.Combine(data.Path, "sub"),
+            Path.Combine(data.Path, "sub", "deeper"),
+            Path.Combine(data.Path, "sub", ".."),
+            data.Path.ToUpperInvariant(),
+        ];
+        foreach (string folder in typed)
+        {
+            (int exitCode, string[] frame) = RunExport($"backup {folder}");
+            Assert.Equal(0, exitCode);
+            Assert.Equal(Refused, BackupHint(frame));
+        }
+
+        AssertSameSnapshot(before);
+    }
+
+    // AC-4
+    [Fact]
+    public void Backup_SymlinkIntoTheDataFolder_IsRefused_SiblingIsAllowed()
+    {
+        WriteBackupData();
+        Directory.CreateDirectory(Path.Combine(data.Path, "sub"));
+        string sibling = data.Path + "-old";
+        Directory.CreateDirectory(sibling);
+        try
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                using TempFolder outside = new TempFolder();
+                string link = Path.Combine(outside.Path, "link");
+                Directory.CreateSymbolicLink(link, Path.Combine(data.Path, "sub"));
+                Dictionary<string, (DateTime Written, byte[] Bytes)> before = DataSnapshot();
+
+                (_, string[] refused) = RunExport($"backup {link}");
+
+                Assert.Equal("backup: choose a folder outside the data folder.", BackupHint(refused));
+                AssertSameSnapshot(before);
+            }
+
+            (_, string[] frame) = RunExport($"backup {sibling}");
+
+            Assert.Equal([BackupName], Listing(sibling));
+            Assert.Contains(frame, l => l.Contains("Backed up 2 day files", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(sibling, recursive: true);
+        }
+    }
+
+    // AC-5
+    [Fact]
+    public void Backup_SecondInTheSameMinute_IsRefused_AndTheFirstStaysByteIdentical()
+    {
+        using TempFolder target = new TempFolder();
+        WriteBackupData();
+        string path = Path.Combine(target.Path, BackupName);
+
+        RunExport($"backup {target.Path}");
+        byte[] first = File.ReadAllBytes(path);
+        File.WriteAllText(DayFile("2026-11-06"), "{}");
+        (int exitCode, string[] frame) = RunExport($"backup {target.Path}");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(first, File.ReadAllBytes(path));
+        Assert.Equal([BackupName], Listing(target.Path));
+        Assert.Equal($"backup: {path} already exists. Move or delete it first.", BackupHint(frame));
+        Assert.DoesNotContain(frame, l => l.Contains("Backed up", StringComparison.Ordinal));
+    }
+
+    // AC-5
+    [Fact]
+    public void Backup_DanglingSymlink_IsNotFollowed()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder target = new TempFolder();
+        using TempFolder elsewhere = new TempFolder();
+        string link = Path.Combine(target.Path, BackupName);
+        string pointsTo = Path.Combine(elsewhere.Path, "victim.zip");
+        File.CreateSymbolicLink(link, pointsTo);
+        WriteBackupData();
+
+        (_, string[] frame) = RunExport($"backup {target.Path}");
+
+        Assert.Equal($"backup: {link} already exists. Move or delete it first.", BackupHint(frame));
+        Assert.False(File.Exists(pointsTo));
+        Assert.Empty(Listing(elsewhere.Path));
+    }
+
+    // AC-5
+    [Fact]
+    public void Backup_ReadOnlyFolder_ShowsRedHint_AndLeavesNoFile()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder target = new TempFolder();
+        WriteBackupData();
+        UnixFileMode mode = File.GetUnixFileMode(target.Path);
+        File.SetUnixFileMode(target.Path, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        try
+        {
+            try
+            {
+                File.WriteAllText(Path.Combine(target.Path, "probe"), "x");
+                // Running as root: access can't be denied.
+                return;
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+
+            (int exitCode, string[] frame) = RunExport($"backup {target.Path}");
+
+            Assert.Equal(0, exitCode);
+            Assert.StartsWith($"backup: could not write {Path.Combine(target.Path, BackupName)}.", BackupHint(frame));
+            Assert.Empty(Listing(target.Path));
+        }
+        finally
+        {
+            File.SetUnixFileMode(target.Path, mode);
+        }
+    }
+
+    // AC-7
+    [Fact]
+    public void Backup_NothingToBackUp_ShowsGreyNote_AndWritesNoFile()
+    {
+        using TempFolder target = new TempFolder();
+        File.WriteAllText(Path.Combine(data.Path, "settings.json"), "{}");
+
+        (int exitCode, string[] frame) = RunExport($"backup {target.Path}");
+        string output = RunAnsiCommands($"backup {target.Path}");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(frame, l => l.Contains("Nothing to back up. No file was written.", StringComparison.Ordinal));
+        Assert.Matches(@"\x1b\[[0-9;]*(90|38;5;8)mNothing to back up\. No file was written\.", output);
+        Assert.Empty(Listing(target.Path));
+    }
+
+    // AC-7
+    [Fact]
+    public void Backup_MissingDataFolder_ShowsGreyNote_AndCreatesNoFolder()
+    {
+        using TempFolder target = new TempFolder();
+        using TempFolder missing = new TempFolder(create: false);
+
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Profile.Width = 250;
+            c.Input.PushTextWithEnter($"backup {target.Path}");
+            c.Input.PushTextWithEnter("quit");
+        }, dataFolder: missing.Path);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Nothing to back up. No file was written.", output);
+        Assert.Empty(Listing(target.Path));
+        Assert.False(Directory.Exists(missing.Path));
+    }
+
+    // AC-9
+    [Theory]
+    [InlineData("bu")]
+    [InlineData("/backup")]
+    [InlineData("/bu")]
+    public void Backup_AliasAndSlash_WriteTheSameZip(string typed)
+    {
+        using TempFolder target = new TempFolder();
+        WriteBackupData();
+
+        (int exitCode, string[] frame) = RunExport($"{typed} {target.Path}");
+
+        Assert.Equal(0, exitCode);
+        string path = Path.Combine(target.Path, BackupName);
+        Assert.Equal(["2026-11-02.json", "2026-11-03.json", "projects.json"], ZipEntryNames(path));
+        Assert.Contains(frame, l => l.Contains($"Backed up 2 day files and projects.json to {path}", StringComparison.Ordinal));
+    }
+
+    // AC-9
+    [Fact]
+    public void Help_ListsBackup_WithAliasBu()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 120;
+        console.Input.PushTextWithEnter("help");
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+        string plain = Regex.Replace(console.Output, @"\x1b\[[0-9;?]*[A-Za-z]", string.Empty);
+
+        Assert.Matches(@"│ backup +│ bu +│ Zip your day files and projects into a folder: <folder> +│", plain);
+        Assert.Matches(@"\x1b\[[0-9;]*38;5;75mbu\x1b\[0m", console.Output);
+    }
+
+    // AC-10
+    [Fact]
+    public void Backup_MarkupAndControlCharactersInTheFolder_ShowLiterally()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder target = new TempFolder();
+        string folder = Path.Combine(target.Path, "[red]x‮y");
+        Directory.CreateDirectory(folder);
+        WriteBackupData();
+
+        // The test console types only chars up to U+00FF as text, so the U+202E is pushed as a key.
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Profile.Height = 40;
+            c.Profile.Width = 250;
+            c.Input.PushText($"backup {Path.Combine(target.Path, "[red]x")}");
+            c.Input.PushKey(new ConsoleKeyInfo('‮', ConsoleKey.NoName, false, false, false));
+            c.Input.PushTextWithEnter("y");
+            c.Input.PushText($"backup {Path.Combine(target.Path, "[red]missing")}");
+            c.Input.PushKey(new ConsoleKeyInfo('‮', ConsoleKey.NoName, false, false, false));
+            c.Input.PushTextWithEnter("z");
+            c.Input.PushTextWithEnter("quit");
+        });
+        List<string[]> frames = Frames(output);
+        string[] success = frames[^2];
+        string[] hint = frames[^1];
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal([BackupName], Listing(folder));
+        string shown = Path.Combine(target.Path, "[red]xy", BackupName);
+        Assert.Contains(success, l => l.Contains($"Backed up 2 day files and projects.json to {shown}", StringComparison.Ordinal));
+        Assert.Contains($"backup: the folder {Path.Combine(target.Path, "[red]missingz")} does not exist.", BackupHint(hint));
+        Assert.DoesNotContain(success.Concat(hint), l => l.Contains('‮', StringComparison.Ordinal));
+    }
+
+    // AC-8
+    [Fact]
+    public void Backup_UnreadableFiles_StillChangeNothingInTheDataFolder()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder target = new TempFolder();
+        WriteBackupData();
+        SpecialFiles.MakeFifo(DayFile("2026-11-07"));
+        Dictionary<string, (DateTime Written, byte[] Bytes)> before = Directory.EnumerateFileSystemEntries(data.Path)
+            .Where(p => !SpecialFiles.IsFifo(p))
+            .ToDictionary(p => p, p => (File.GetLastWriteTimeUtc(p), File.ReadAllBytes(p)));
+
+        (_, string[] frame) = RunExport($"backup {target.Path}");
+
+        Assert.Contains(frame, l => l.Contains("! 1 file skipped", StringComparison.Ordinal));
+        Assert.True(SpecialFiles.IsFifo(DayFile("2026-11-07")));
+        foreach (KeyValuePair<string, (DateTime Written, byte[] Bytes)> pair in before)
+        {
+            Assert.Equal(pair.Value.Item1, File.GetLastWriteTimeUtc(pair.Key));
+            Assert.Equal(pair.Value.Item2, File.ReadAllBytes(pair.Key));
+        }
+
+        Assert.Equal(5, Directory.EnumerateFileSystemEntries(data.Path).Count());
     }
 }

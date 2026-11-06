@@ -256,6 +256,7 @@ internal sealed class App
         registry.Register("export", "ex", "Save the project report for a date range as CSV: <from> <to> <folder>", Export);
         registry.Register("find", "f", "Find days whose checkpoints or projects match: <text>", Find);
         registry.Register("statistics", "st", "Show average arrival, leaving and work time per weekday: <from> <to>", Statistics);
+        registry.Register("backup", "bu", "Zip your day files and projects into a folder: <folder>", Backup);
     }
 
     // Marks the day being viewed as an absence (vacation, sick, holiday) or clears it. Nothing is written
@@ -576,6 +577,120 @@ internal sealed class App
 
         AddSkipped(parts, report);
         return new CommandResult(parts.Count == 1 ? parts[0] : new Rows(parts));
+    }
+
+    // Zips every day file and projects.json into a new file in an existing folder outside the data
+    // folder. Never overwrites: the file is created exclusively, and a failed write leaves no file.
+    // Reads the data folder only, and creates nothing but the one file in the target folder.
+    private CommandResult Backup(string argument)
+    {
+        const string Name = "backup";
+        string typedFolder = argument.Trim();
+        if (typedFolder.Length == 0)
+        {
+            return Hint($"{Name}: say the folder. Use [bold]backup <folder>[/].");
+        }
+
+        string folder = ExpandFolder(typedFolder, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+        string shownFolder = Shown(folder);
+        if (!Path.IsPathFullyQualified(folder))
+        {
+            return Hint($"{Name}: [bold]{shownFolder}[/] is not an absolute path.");
+        }
+
+        if (!Directory.Exists(folder))
+        {
+            return File.Exists(folder)
+                ? Hint($"{Name}: [bold]{shownFolder}[/] is a file, not a folder.")
+                : Hint($"{Name}: the folder [bold]{shownFolder}[/] does not exist. Nothing was created.");
+        }
+
+        if (DataBackup.IsInside(folder, Store.Folder))
+        {
+            return Hint($"{Name}: choose a folder outside the data folder.");
+        }
+
+        // The zip is built in memory first, so nothing is created when there is nothing to back up.
+        BackupCounts counts;
+        byte[] bytes;
+        try
+        {
+            using MemoryStream buffer = new MemoryStream();
+            counts = DataBackup.Write(Store, buffer);
+            bytes = buffer.ToArray();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{Name}: the data folder cannot be listed: {Shown(ex.Message)}");
+        }
+
+        if (counts.Written == 0)
+        {
+            List<IRenderable> empty = [new Markup("[grey]Nothing to back up. No file was written.[/]")];
+            AddSkippedFiles(empty, counts.Skipped);
+            return new CommandResult(empty.Count == 1 ? empty[0] : new Rows(empty));
+        }
+
+        // Not GetFullPath: the OS resolves a ".." the same way IsInside did.
+        string path = Path.Combine(folder, DataBackup.FileName(time.GetLocalNow().DateTime));
+        string shownPath = Shown(path);
+        if (TargetExists(path))
+        {
+            return Hint($"{Name}: [bold]{shownPath}[/] already exists. Move or delete it first.");
+        }
+
+        bool created = false;
+        try
+        {
+            // CreateNew is O_CREAT | O_EXCL: it never overwrites a file or follows a link at the name.
+            using (FileStream stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                created = true;
+                stream.Write(bytes);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            if (!created)
+            {
+                if (TargetExists(path))
+                {
+                    return Hint($"{Name}: [bold]{shownPath}[/] already exists. Move or delete it first.");
+                }
+
+                return Hint($"{Name}: could not write [bold]{shownPath}[/]. {Shown(ex.Message)}");
+            }
+
+            try
+            {
+                File.Delete(path);
+            }
+            catch (Exception deleteFailed) when (deleteFailed is IOException or UnauthorizedAccessException)
+            {
+                return Hint($"{Name}: could not write [bold]{shownPath}[/] and could not remove the partial file. {Shown(ex.Message)}");
+            }
+
+            return Hint($"{Name}: could not write [bold]{shownPath}[/]. {Shown(ex.Message)}");
+        }
+
+        string dayFiles = counts.DayFiles == 1 ? "day file" : "day files";
+        string projects = counts.Projects ? " and projects.json" : string.Empty;
+        List<IRenderable> parts =
+        [
+            new Markup($"Backed up [steelblue1]{counts.DayFiles.ToString(CultureInfo.InvariantCulture)}[/] {dayFiles}{projects} to [steelblue1]{shownPath}[/]"),
+        ];
+        AddSkippedFiles(parts, counts.Skipped);
+        return new CommandResult(parts.Count == 1 ? parts[0] : new Rows(parts));
+    }
+
+    // Adds the yellow line when the backup left files out (day files or projects.json).
+    private static void AddSkippedFiles(List<IRenderable> parts, int skipped)
+    {
+        if (skipped > 0)
+        {
+            string files = skipped == 1 ? "file" : "files";
+            parts.Add(new Markup($"[yellow]! {skipped.ToString(CultureInfo.InvariantCulture)} {files} skipped[/]"));
+        }
     }
 
     // The grey note after an export with an open row; a fixed literal, so no escaping is needed.
