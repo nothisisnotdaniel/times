@@ -13,6 +13,9 @@ internal sealed class FakeTokenStore : ITokenStore
 
     public bool IsSupported { get; set; }
 
+    /// <summary>What <see cref="ITokenStore.WriteRefusal"/> returns; null lets writes go ahead.</summary>
+    public string? WriteRefusal { get; set; }
+
     public (string Organization, string Pat)? Stored { get; set; }
 
     /// <summary>Makes <see cref="Read"/>, <see cref="Write"/> and <see cref="Delete"/> throw a <see cref="TokenStoreException"/>.</summary>

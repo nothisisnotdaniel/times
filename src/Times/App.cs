@@ -760,6 +760,12 @@ internal sealed class App
                 return Hint(DevOpsUnsupported);
             }
 
+            // Before the masked prompt, so the user never types a token the store would refuse.
+            if (tokenStore.WriteRefusal is { } refusal)
+            {
+                return Hint($"{Name}: {Markup.Escape(refusal)} Nothing was stored.");
+            }
+
             if (rest.Length == 0)
             {
                 return Hint($"{Name}: say the organization, as in dev.azure.com/<organization>. {DevOpsUsage}");

@@ -24,6 +24,12 @@ internal interface ITokenStore
     /// <summary>False where there is no supported store; then nothing else may be called.</summary>
     public bool IsSupported { get; }
 
+    /// <summary>
+    /// A fixed reason why <see cref="Write"/> refuses in this run (checked before the token is asked
+    /// for, so the user never types it in vain), or <c>null</c> when a write may go ahead.
+    /// </summary>
+    public string? WriteRefusal { get; }
+
     /// <summary>The stored organisation and token, or <c>null</c> if none. Throws <see cref="TokenStoreException"/>.</summary>
     public (string Organization, string Pat)? Read();
 
@@ -68,6 +74,8 @@ internal sealed class UnsupportedTokenStore : ITokenStore
 
     public bool IsSupported => false;
 
+    public string? WriteRefusal => NotAvailable;
+
     public (string Organization, string Pat)? Read() => throw new TokenStoreException(NotAvailable);
 
     public void Write(string organization, string pat) => throw new TokenStoreException(NotAvailable);
@@ -78,10 +86,11 @@ internal sealed class UnsupportedTokenStore : ITokenStore
 /// <summary>
 /// A generic-password item in the default (login) keychain through Security.framework: service
 /// <see cref="Service"/>, account = organisation, password data = PAT. The item is created with its
-/// own access list (<c>SecAccessCreate</c>) that trusts only the Times executable (its own launcher,
-/// <c>tm</c> or the build's apphost), never the shared <c>dotnet</c> host, so other .NET programs
-/// cannot read it without a macOS prompt; when Times itself runs through <c>dotnet</c>, nothing is
-/// stored. Buffers the framework returns are freed with <c>SecKeychainItemFreeContent</c>, references
+/// own access list (<c>SecAccessCreate</c>) that trusts only the running apphost (the <c>tm</c>
+/// launcher or the build's <c>Times</c> executable, symlinks resolved), never the shared
+/// <c>dotnet</c> host (by name, or by the <c>host/fxr</c> folder next to it), so other .NET programs
+/// cannot read it without a macOS prompt; when Times itself runs through such a host, nothing is
+/// stored. The access object is built before the old item is removed, so a failure there keeps it. Buffers the framework returns are freed with <c>SecKeychainItemFreeContent</c>, references
 /// with <c>CFRelease</c>, and managed byte copies of the token are zeroed after use.
 /// </summary>
 internal sealed partial class MacKeychainTokenStore : ITokenStore
@@ -110,17 +119,28 @@ internal sealed partial class MacKeychainTokenStore : ITokenStore
     // The executable the item's access list trusts, or null when Times runs through the shared host.
     private readonly string? trustedPath;
 
+    // The native write steps; tests inject a fake to check their order without a real keychain.
+    private readonly IKeychainWriter writer;
+
     /// <param name="processPath">The running executable (<see cref="Environment.ProcessPath"/>).</param>
     public MacKeychainTokenStore(string? processPath)
+        : this(processPath, new NativeKeychainWriter())
+    {
+    }
+
+    internal MacKeychainTokenStore(string? processPath, IKeychainWriter writer)
     {
         trustedPath = TrustedApplicationPath(processPath);
+        this.writer = writer;
     }
 
     public bool IsSupported => true;
 
+    public string? WriteRefusal => trustedPath is null ? SharedHostRefused : null;
+
     /// <summary>
-    /// The path the item's access list may trust: the running executable when it is Times' own
-    /// launcher, or <c>null</c> when it is missing, relative or the shared <c>dotnet</c> host (which
+    /// The path the item's access list may trust: the running executable with symlinks resolved, or
+    /// <c>null</c> when it is missing, relative, not an existing file, or a shared .NET host (which
     /// would let every .NET program read the token).
     /// </summary>
     internal static string? TrustedApplicationPath(string? processPath)
@@ -130,8 +150,37 @@ internal sealed partial class MacKeychainTokenStore : ITokenStore
             return null;
         }
 
-        string name = Path.GetFileNameWithoutExtension(processPath);
-        return string.Equals(name, "dotnet", StringComparison.OrdinalIgnoreCase) ? null : processPath;
+        string resolved;
+        try
+        {
+            resolved = File.ResolveLinkTarget(processPath, returnFinalTarget: true)?.FullName ?? processPath;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+
+        if (!File.Exists(resolved) || IsSharedHost(processPath) || IsSharedHost(resolved))
+        {
+            return null;
+        }
+
+        return resolved;
+    }
+
+    /// <summary>
+    /// A .NET host that runs any app: named <c>dotnet</c>, or (renamed, as some version managers do)
+    /// sitting next to a <c>host/fxr</c> folder, the layout of a .NET install root. An apphost has neither.
+    /// </summary>
+    internal static bool IsSharedHost(string path)
+    {
+        if (string.Equals(Path.GetFileNameWithoutExtension(path), "dotnet", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        string? folder = Path.GetDirectoryName(path);
+        return folder is not null && Directory.Exists(Path.Combine(folder, "host", "fxr"));
     }
 
     public (string Organization, string Pat)? Read()
@@ -169,18 +218,47 @@ internal sealed partial class MacKeychainTokenStore : ITokenStore
             throw new TokenStoreException(SharedHostRefused);
         }
 
-        DeleteAll();
-        IntPtr access = CreateAccess(trustedPath);
+        // Built first: if it fails, the earlier item is still there.
+        IntPtr access = writer.CreateAccess(trustedPath);
         byte[] password = Encoding.UTF8.GetBytes(pat);
         try
         {
-            AddItem(organization, password, access);
+            writer.DeleteAll();
+            writer.AddItem(organization, password, access);
         }
         finally
         {
             Array.Clear(password);
-            CFRelease(access);
+            writer.Release(access);
         }
+    }
+
+    /// <summary>The native steps of <see cref="Write"/>, in the order it calls them.</summary>
+    internal interface IKeychainWriter
+    {
+        /// <summary>An access object trusting only <paramref name="path"/>; throws <see cref="TokenStoreException"/>.</summary>
+        public IntPtr CreateAccess(string path);
+
+        /// <summary>Removes every Times item; throws <see cref="TokenStoreException"/>.</summary>
+        public bool DeleteAll();
+
+        /// <summary>Adds the item with the given access; throws <see cref="TokenStoreException"/>.</summary>
+        public void AddItem(string organization, byte[] password, IntPtr access);
+
+        /// <summary>Releases a reference from <see cref="CreateAccess"/>.</summary>
+        public void Release(IntPtr reference);
+    }
+
+    private sealed class NativeKeychainWriter : IKeychainWriter
+    {
+        public IntPtr CreateAccess(string path) => MacKeychainTokenStore.CreateAccess(path);
+
+        public bool DeleteAll() => MacKeychainTokenStore.DeleteAll();
+
+        public void AddItem(string organization, byte[] password, IntPtr access) =>
+            MacKeychainTokenStore.AddItem(organization, password, access);
+
+        public void Release(IntPtr reference) => ReleaseIfSet(reference);
     }
 
     // An access object whose access list trusts only the given executable. The caller releases it.
@@ -415,6 +493,8 @@ internal sealed partial class WindowsCredentialTokenStore : ITokenStore
     private const int ErrorNotFound = 1168;
 
     public bool IsSupported => true;
+
+    public string? WriteRefusal => null;
 
     public unsafe (string Organization, string Pat)? Read()
     {

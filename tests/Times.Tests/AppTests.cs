@@ -9199,6 +9199,28 @@ public sealed class AppTests : IDisposable
         Assert.Matches(@"\x1b\[(31|91|38;5;9)mAzure DevOps needs the macOS Keychain", console.Output);
     }
 
+    // Rework round 3: a store that would refuse the write (Times run through the shared dotnet host) says so
+    // before the masked prompt, so the user never types the token; the next line is a command again.
+    [Fact]
+    public void DevOpsConnect_WriteRefused_ShowsRedHint_BeforeTheTokenPrompt()
+    {
+        FakeTokenStore store = new FakeTokenStore { WriteRefusal = MacKeychainTokenStore.SharedHostRefused };
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 140;
+        console.Profile.Height = 40;
+        console.Input.PushTextWithEnter("devops connect contoso");
+        console.Input.PushTextWithEnter("devops");
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), tokenStore: store).Run([]);
+
+        Assert.Empty(store.Writes);
+        Assert.DoesNotContain("Paste or type the personal access token", console.Output);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mdevops: The token is stored only when Times runs as its own program", console.Output);
+        Assert.Contains("Nothing was stored.", console.Output);
+        Assert.Contains("Azure DevOps: not connected", console.Output);
+    }
+
     // AC-3: without an injected store (tests, Linux) nothing is supported and no real store is touched.
     [Fact]
     public void NoStoreInjected_IsUnsupported()

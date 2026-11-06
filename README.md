@@ -178,11 +178,16 @@ hand.
 Only checkpoints with a work item, an end (a later checkpoint, break or leaving) and at least one
 minute are sent; a checkpoint that is still running is left for later.
 
-On macOS the Keychain item's access list trusts **only the Times program itself** (the `tm`
-command, or the build's own `Times` executable), never the shared `dotnet` host, so other .NET
-programs cannot read the token without macOS asking you. Because of that, `devops connect` stores
-nothing when Times is started through `dotnet` (for example `dotnet Times.dll`); start it with `tm`.
-After a Times update the program is a new file, so macOS may ask once for permission to read the
+On macOS the Keychain item's access list trusts **only the launcher that started Times**: the
+`tm` command that `dotnet tool install` puts in `~/.dotnet/tools` (or, for a build, the `Times`
+executable next to `Times.dll`), with symlinks followed. macOS checks that launcher, not the
+`Times.dll` it loads, so a program running as you that replaced the files in Times' tool folder
+could still read the token. The shared `dotnet` host is never trusted (also not under another
+name), so other .NET programs cannot read the token without macOS asking you. When Times runs
+through such a host (for example `dotnet Times.dll`), `devops connect` says so before it asks for
+the token, and stores nothing; start it with `tm`. Connecting again first prepares the new item's
+access list and only then replaces the old token, so a failure there keeps the old one.
+After a Times update the launcher is a new file, so macOS may ask once for permission to read the
 item; choose *Always Allow*, or run `devops connect` again. (The newer data-protection keychain
 would need a signed app with a keychain entitlement, which a .NET tool does not have.)
 
