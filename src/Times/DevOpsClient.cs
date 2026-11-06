@@ -50,6 +50,12 @@ internal interface IDevOpsClient
     /// <paramref name="rev"/>. Returns after a 2xx answer; throws <see cref="DevOpsException"/> otherwise.
     /// </summary>
     public Task SetCompletedWorkAsync(int id, int rev, double value);
+
+    /// <summary>
+    /// The open work items assigned to the token's user (at most <see cref="AzureDevOpsClient.MaxAssigned"/>), each
+    /// with its title (<c>null</c> if it had none). Titles are untrusted text. Throws <see cref="DevOpsException"/> on any failure.
+    /// </summary>
+    public Task<IReadOnlyList<(int Id, string? Title)>> GetAssignedWorkItemsAsync();
 }
 
 /// <summary>
@@ -62,6 +68,15 @@ internal sealed class AzureDevOpsClient : IDevOpsClient, IDisposable
     public const string Host = "https://dev.azure.com/";
 
     public const string CompletedWorkField = "Microsoft.VSTS.Scheduling.CompletedWork";
+
+    public const string TitleField = "System.Title";
+
+    /// <summary>The query for the open work items assigned to the token's user. A constant: no user text ever goes into it.</summary>
+    public const string Wiql =
+        "SELECT [System.Id] FROM WorkItems WHERE [System.AssignedTo] = @Me AND [System.State] NOT IN ('Closed', 'Done', 'Removed') ORDER BY [System.Id]";
+
+    /// <summary>At most this many work items are imported (the WIQL <c>$top</c> and the batch size of the title request).</summary>
+    public const int MaxAssigned = 200;
 
     /// <summary>Response bodies are read up to 1 MiB.</summary>
     public const long MaxBodyBytes = 1024 * 1024;
@@ -109,6 +124,182 @@ internal sealed class AzureDevOpsClient : IDevOpsClient, IDisposable
         content.Headers.ContentType = new MediaTypeHeaderValue("application/json-patch+json");
         request.Content = content;
         await SendAsync(request, readBody: false).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<(int Id, string? Title)>> GetAssignedWorkItemsAsync()
+    {
+        byte[] wiqlBody;
+        using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, WiqlUri()))
+        {
+            ByteArrayContent content = new ByteArrayContent(WiqlBody());
+            content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+            request.Content = content;
+            wiqlBody = await SendAsync(request, readBody: true).ConfigureAwait(false);
+        }
+
+        IReadOnlyList<int> ids = ParseWiqlIds(wiqlBody);
+        if (ids.Count == 0)
+        {
+            return [];
+        }
+
+        int[] requested = ids.Take(MaxAssigned).ToArray();
+        using HttpRequestMessage titles = new HttpRequestMessage(HttpMethod.Get, TitlesUri(requested));
+        byte[] titlesBody = await SendAsync(titles, readBody: true).ConfigureAwait(false);
+        HashSet<int> wanted = [.. requested];
+        List<(int Id, string? Title)> result = [];
+        foreach ((int id, string? title) in ParseTitles(titlesBody))
+        {
+            // Only what was asked for, each work item once.
+            if (wanted.Remove(id))
+            {
+                result.Add((id, title));
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>The WIQL query URL. The organisation was validated, so it cannot change the host or path.</summary>
+    internal Uri WiqlUri() =>
+        new(Host + organization + "/_apis/wit/wiql?$top=" + MaxAssigned.ToString(CultureInfo.InvariantCulture) + "&api-version=7.1");
+
+    /// <summary>The batch URL for the titles, built only from parsed work item numbers.</summary>
+    internal Uri TitlesUri(IEnumerable<int> ids) =>
+        new(Host + organization + "/_apis/wit/workitems?ids="
+            + string.Join(",", ids.Select(id => id.ToString(CultureInfo.InvariantCulture)))
+            + "&fields=" + TitleField + "&errorPolicy=omit&api-version=7.1");
+
+    /// <summary>The WIQL request body: <c>{"query":"<see cref="Wiql"/>"}</c>.</summary>
+    internal static byte[] WiqlBody()
+    {
+        using MemoryStream stream = new MemoryStream();
+        using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("query", Wiql);
+            writer.WriteEndObject();
+        }
+
+        return stream.ToArray();
+    }
+
+    /// <summary>
+    /// The <c>workItems[].id</c> values of a WIQL answer, in order, each once. Anything else (not JSON, no
+    /// <c>workItems</c> array, an entry that is not an object, an id that is not a positive whole Int32) throws
+    /// <see cref="DevOpsException"/>.
+    /// </summary>
+    internal static IReadOnlyList<int> ParseWiqlIds(byte[] body)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(body, new JsonDocumentOptions { MaxDepth = 64 });
+            JsonElement root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("workItems", out JsonElement items)
+                || items.ValueKind != JsonValueKind.Array)
+            {
+                throw new DevOpsException(DevOpsException.Unexpected);
+            }
+
+            List<int> ids = [];
+            HashSet<int> seen = [];
+            foreach (JsonElement item in items.EnumerateArray())
+            {
+                int id = ReadId(item);
+                if (seen.Add(id))
+                {
+                    ids.Add(id);
+                }
+            }
+
+            return ids;
+        }
+        catch (Exception ex) when (ex is JsonException or ArgumentException or InvalidOperationException)
+        {
+            throw new DevOpsException(DevOpsException.Unexpected);
+        }
+    }
+
+    /// <summary>
+    /// <c>(id, title)</c> for each <c>value[]</c> entry of a work item batch. <c>null</c> entries (omitted items) are
+    /// skipped; an entry without a string <c>fields["System.Title"]</c> has a <c>null</c> title. Anything else (not
+    /// JSON, no <c>value</c> array, an entry that is not an object, a bad id, <c>fields</c> that is not an object)
+    /// throws <see cref="DevOpsException"/>.
+    /// </summary>
+    internal static IReadOnlyList<(int Id, string? Title)> ParseTitles(byte[] body)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(body, new JsonDocumentOptions { MaxDepth = 64 });
+            JsonElement root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("value", out JsonElement items)
+                || items.ValueKind != JsonValueKind.Array)
+            {
+                throw new DevOpsException(DevOpsException.Unexpected);
+            }
+
+            List<(int Id, string? Title)> result = [];
+            foreach (JsonElement item in items.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.Null)
+                {
+                    continue;
+                }
+
+                int id = ReadId(item);
+                string? title = null;
+                if (item.TryGetProperty("fields", out JsonElement fields))
+                {
+                    if (fields.ValueKind != JsonValueKind.Object)
+                    {
+                        throw new DevOpsException(DevOpsException.Unexpected);
+                    }
+
+                    if (fields.TryGetProperty(TitleField, out JsonElement field) && field.ValueKind == JsonValueKind.String)
+                    {
+                        title = ReadTitle(field);
+                    }
+                }
+
+                result.Add((id, title));
+            }
+
+            return result;
+        }
+        catch (Exception ex) when (ex is JsonException or ArgumentException or InvalidOperationException)
+        {
+            throw new DevOpsException(DevOpsException.Unexpected);
+        }
+    }
+
+    // A title string, or null when it cannot be decoded (a lone surrogate escape): that item is skipped, not the answer.
+    private static string? ReadTitle(JsonElement field)
+    {
+        try
+        {
+            return field.GetString();
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    // The positive whole Int32 id of an entry object, or DevOpsException.
+    private static int ReadId(JsonElement item)
+    {
+        if (item.ValueKind != JsonValueKind.Object
+            || !item.TryGetProperty("id", out JsonElement idElement)
+            || idElement.ValueKind != JsonValueKind.Number
+            || !idElement.TryGetInt32(out int id)
+            || id < 1)
+        {
+            throw new DevOpsException(DevOpsException.Unexpected);
+        }
+
+        return id;
     }
 
     /// <summary>The JSON patch: a <c>test</c> on <c>/rev</c>, then <c>add</c> on Completed Work.</summary>

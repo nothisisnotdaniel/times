@@ -9508,6 +9508,7 @@ public sealed class AppTests : IDisposable
         new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
 
         Assert.Matches(@"│ devops +│ dv +│ Show or set the Azure DevOps link", console.Output);
+        Assert.Contains("import", console.Output, StringComparison.Ordinal);
         Assert.Matches(@"│ sync +│ sy +│ Send unbooked hours to Azure DevOps: <from> <to> \[send\]", console.Output);
     }
 
@@ -10372,5 +10373,368 @@ public sealed class AppTests : IDisposable
                 "{\"settings\":{\"report-rounding\":\"off\"}}",
             ],
             saved);
+    }
+
+    // Job 105 ------------------------------------------------------------------------------
+
+    /// <summary>Like <see cref="RunDevOps(FakeTokenStore, FakeDevOpsClient?, string[])"/>, with ANSI colours in the output.</summary>
+    private string RunDevOpsAnsi(FakeTokenStore store, FakeDevOpsClient? client, params string[] commands)
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Height = 40;
+        console.Profile.Width = 140;
+        foreach (string command in commands)
+        {
+            console.Input.PushTextWithEnter(command);
+        }
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path),
+            tokenStore: store, devOpsClient: client is null ? null : client.For).Run([]);
+        Assert.DoesNotContain(DevOpsPat, console.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain("   at ", console.Output, StringComparison.Ordinal);
+        return console.Output;
+    }
+
+    private byte[]? ProjectsBytes() => File.Exists(ProjectsFile) ? File.ReadAllBytes(ProjectsFile) : null;
+
+    // AC-5
+    [Theory]
+    [InlineData("devops import now")]
+    [InlineData("dv import 1 2")]
+    [InlineData("/devops IMPORT x")]
+    public void Import_WithArgument_ShowsRedHint_AndDoesNothing(string command)
+    {
+        File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":1,\"title\":\"One\"}]}");
+        byte[]? before = ProjectsBytes();
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+        client.Assigned.Add((2, "Two"));
+
+        string output = RunDevOpsAnsi(store, client, command, "quit");
+
+        Assert.Matches(@"\x1b\[(1;)?(31|91|38;5;9)(;1)?mdevops import\x1b\[0m\x1b\[(31|91|38;5;9)m takes no arguments\.", output);
+        Assert.Equal(0, store.Calls);
+        Assert.Empty(client.Credentials);
+        Assert.Equal(0, client.AssignedCalls);
+        Assert.Equal(before, ProjectsBytes());
+    }
+
+    // AC-6
+    [Fact]
+    public void Import_Unsupported_ShowsDevOpsUnsupported()
+    {
+        FakeTokenStore store = new FakeTokenStore(supported: false);
+        FakeDevOpsClient client = new FakeDevOpsClient();
+        client.Assigned.Add((2, "Two"));
+
+        (_, string output) = RunDevOps(store, client, "devops import", "quit");
+
+        Assert.Contains(NotAvailable, LastHint(output));
+        Assert.Equal(0, store.Calls);
+        Assert.Empty(client.Credentials);
+        Assert.False(File.Exists(ProjectsFile));
+    }
+
+    // AC-6
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("bad org", DevOpsPat)]
+    public void Import_NotConnected_ShowsRedHint(string? organization, string? pat)
+    {
+        File.WriteAllText(ProjectsFile, "{\"projects\":[]}");
+        byte[]? before = ProjectsBytes();
+        FakeTokenStore store = new FakeTokenStore(stored: organization is null ? null : (organization, pat!));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+        client.Assigned.Add((2, "Two"));
+
+        string output = RunDevOpsAnsi(store, client, "devops import", "quit");
+
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mdevops: not connected to Azure DevOps\. Use ", output);
+        Assert.Contains("first. Nothing was imported.", output);
+        Assert.Empty(client.Credentials);
+        Assert.Equal(before, ProjectsBytes());
+    }
+
+    // AC-6
+    [Fact]
+    public void Import_StoreFailure_ShowsStoreMessage()
+    {
+        File.WriteAllText(ProjectsFile, "{\"projects\":[]}");
+        byte[]? before = ProjectsBytes();
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat)) { Throws = true };
+        FakeDevOpsClient client = new FakeDevOpsClient();
+
+        (int exitCode, string output) = RunDevOps(store, client, "devops import", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains($"devops: {FakeTokenStore.Failure} Nothing was imported.", LastHint(output));
+        Assert.Empty(client.Credentials);
+        Assert.Equal(before, ProjectsBytes());
+    }
+
+    // AC-6
+    [Fact]
+    public void Import_NoClientFactory_ShowsCannotReach()
+    {
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+
+        (_, string output) = RunDevOps(store, null, "devops import", "quit");
+
+        Assert.Contains("devops: this build cannot reach Azure DevOps. Nothing was imported.", LastHint(output));
+        Assert.False(File.Exists(ProjectsFile));
+    }
+
+    // AC-7
+    [Fact]
+    public void Import_UnreadableProjects_ShowsHintBeforeStoreOrClient()
+    {
+        File.WriteAllText(ProjectsFile, "{not json");
+        byte[]? before = ProjectsBytes();
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+        client.Assigned.Add((2, "Two"));
+
+        string output = RunDevOpsAnsi(store, client, "devops import", "quit");
+
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mdevops: the project list cannot be read", output);
+        Assert.Contains("Nothing was imported.", output);
+        Assert.Equal(0, store.Reads);
+        Assert.Empty(client.Credentials);
+        Assert.Equal(0, client.AssignedCalls);
+        Assert.Equal(before, ProjectsBytes());
+    }
+
+    // AC-8, AC-9, AC-10
+    [Fact]
+    public void Import_AddsNewValidItemsInOrder_KeepsExisting_AndCountsTheRest()
+    {
+        File.WriteAllText(ProjectsFile,
+            "{\"projects\":[{\"workItem\":50,\"title\":\"Mine\"},{\"workItem\":3,\"title\":\"Local name\"}]}");
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+        client.Assigned.AddRange(
+        [
+            (40, "  Padded [red]title[/]  "),
+            (3, "Remote name"),
+            (7, "Seven"),
+            (9, null),
+            (11, "EVILTITLE\u202Etxt"),
+            (12, new string('x', 201)),
+            (13, "BELLTITLE\u0007"),
+            (14, "   "),
+            (15, "BROKENTITLE\ud800"),
+        ]);
+
+        (int exitCode, string output) = RunDevOps(store, client, "devops import", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(
+            "{\"projects\":[{\"workItem\":50,\"title\":\"Mine\"},{\"workItem\":3,\"title\":\"Local name\"},"
+            + "{\"workItem\":7,\"title\":\"Seven\"},{\"workItem\":40,\"title\":\"Padded [red]title[/]\"}]}",
+            File.ReadAllText(ProjectsFile));
+        Assert.Equal(1, store.Reads);
+        Assert.Equal(1, client.AssignedCalls);
+        Assert.Equal(1, client.Disposed);
+        Assert.Equal("contoso", Assert.Single(client.Credentials).Organization);
+        string[] frame = LastLayout(output);
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ Work item +│ Title +│"));
+        int seven = Array.FindIndex(frame, l => Regex.IsMatch(l, @"│ #7 +│ Seven +│"));
+        int forty = Array.FindIndex(frame, l => Regex.IsMatch(l, @"│ #40 +│ Padded \[red\]title\[/\] +│"));
+        Assert.True(seven > 0 && forty > seven, string.Join("\n", frame));
+        Assert.Contains(frame, l => l.Contains("1 already on the quicklist", StringComparison.Ordinal));
+        Assert.Contains(frame, l => l.Contains("6 skipped (title not valid): #9, #11, #12, #13, #14, #15", StringComparison.Ordinal));
+        Assert.Contains("Added 2 work items to the quicklist.", LastHint(output));
+        Assert.DoesNotContain("Remote name", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("EVILTITLE", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("BELLTITLE", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("BROKENTITLE", output, StringComparison.Ordinal);
+        Assert.DoesNotContain(new string('x', 20), output, StringComparison.Ordinal);
+    }
+
+    // AC-10: the hint and the count lines are grey.
+    [Fact]
+    public void Import_HintAndCountLinesAreGrey()
+    {
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+        client.Assigned.AddRange([(1, "One"), (2, null)]);
+
+        string output = RunDevOpsAnsi(store, client, "devops import", "quit");
+
+        Assert.Matches(@"\x1b\[(90|38;5;8)mAdded 1 work item to the quicklist\.", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)m1 skipped \(title not valid\): #2", output);
+    }
+
+    // AC-10: nothing new, nothing written.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Import_NothingNew_WritesNothing(bool withFile)
+    {
+        if (withFile)
+        {
+            File.WriteAllText(ProjectsFile, "{ \"projects\" : [ {\"workItem\":5,\"title\":\"Five\"} ] }");
+        }
+
+        byte[]? before = ProjectsBytes();
+        DateTime? written = withFile ? File.GetLastWriteTimeUtc(ProjectsFile) : null;
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+        if (withFile)
+        {
+            client.Assigned.AddRange([(5, "Five remote"), (6, "\u200B")]);
+        }
+
+        (_, string output) = RunDevOps(store, client, "devops import", "quit");
+
+        Assert.Contains("No new work items to add.", LastHint(output));
+        Assert.Equal(before, ProjectsBytes());
+        Assert.Equal(written, withFile ? File.GetLastWriteTimeUtc(ProjectsFile) : null);
+        Assert.DoesNotContain(LastLayout(output), l => l.Contains("Work item", StringComparison.Ordinal));
+        Assert.Equal(1, client.Disposed);
+    }
+
+    // AC-11
+    [Fact]
+    public void Import_ClientFailure_ShowsRedReason_AndWritesNothing()
+    {
+        File.WriteAllText(ProjectsFile, "{\"projects\":[]}");
+        byte[]? before = ProjectsBytes();
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+        FakeDevOpsClient client = new FakeDevOpsClient { AssignedFailure = "bad [red]answer" };
+        client.Assigned.Add((1, "One"));
+
+        string output = RunDevOpsAnsi(store, client, "devops import", "report 2026-11-02 2026-11-04", "devops import", "quit");
+
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mdevops: bad \[red\]answer Nothing was imported\.", output);
+        Assert.Equal(2, client.AssignedCalls);
+        Assert.Equal(2, client.Disposed);
+        Assert.Equal(before, ProjectsBytes());
+    }
+
+    // AC-12
+    [Fact]
+    public void Import_TooLargeForProjectsJson_WritesNothing()
+    {
+        File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":1,\"title\":\"One\"}]}");
+        byte[]? before = ProjectsBytes();
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+        for (int i = 0; i < 300; i++)
+        {
+            client.Assigned.Add((1000 + i, new string((char)('a' + (i % 26)), ProjectList.MaxTitleLength)));
+        }
+
+        string output = RunDevOpsAnsi(store, client, "devops import", "quit");
+
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mdevops: the quicklist would be too large", output);
+        Assert.Contains("Nothing was imported.", output);
+        Assert.Equal(before, ProjectsBytes());
+    }
+
+    // AC-12: just under the cap is still written, and stays readable.
+    [Fact]
+    public void Import_JustUnderTheCap_IsWrittenAndReadable()
+    {
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+        List<Project> projects = [];
+        for (int i = 0; ; i++)
+        {
+            Project next = new Project(1000 + i, new string('t', ProjectList.MaxTitleLength));
+            if (Encoding.UTF8.GetByteCount(new ProjectList(projects.Append(next)).ToJson()) > ProjectStore.MaxFileBytes)
+            {
+                break;
+            }
+
+            projects.Add(next);
+            client.Assigned.Add((next.WorkItem, next.Title));
+        }
+
+        (_, string output) = RunDevOps(store, client, "devops import", "quit");
+
+        Assert.Contains($"Added {projects.Count} work items to the quicklist.", LastHint(output));
+        Assert.Equal(projects.Count, new ProjectStore(data.Path).Load().Projects.Count);
+    }
+
+    // AC-12
+    [Fact]
+    public void Import_SaveFailure_ShowsCouldNotSave()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        File.WriteAllText(ProjectsFile, "{\"projects\":[]}");
+        byte[]? before = ProjectsBytes();
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+        client.Assigned.Add((1, "One"));
+        UnixFileMode mode = File.GetUnixFileMode(data.Path);
+        File.SetUnixFileMode(data.Path, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        string output;
+        try
+        {
+            output = RunDevOpsAnsi(store, client, "devops import", "quit");
+        }
+        finally
+        {
+            File.SetUnixFileMode(data.Path, mode);
+        }
+
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mdevops: could not save the project list\.", output);
+        Assert.Equal(before, ProjectsBytes());
+    }
+
+    // AC-13: devops import is not kept in the in-memory history, and the loop keeps running.
+    [Fact]
+    public void Import_NeverEntersHistory()
+    {
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+
+        (int exitCode, string output) = RunDevOps(store, client, c =>
+        {
+            c.Input.PushTextWithEnter("devops");
+            c.Input.PushTextWithEnter("devops import");
+            c.Input.PushKey(ConsoleKey.UpArrow);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Equal(0, exitCode);
+        // Up recalled the plain devops line, so the last hint is the status, and import ran once.
+        Assert.Contains("Azure DevOps: contoso · token stored", LastHint(output));
+        Assert.Equal(1, client.AssignedCalls);
+    }
+
+    // AC-13
+    [Fact]
+    public void Help_ShowsDevOpsImport_InTheDescriptionAndPopup()
+    {
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 200;
+        console.Profile.Height = 80;
+        console.Input.PushTextWithEnter("help");
+        console.Input.PushText("dv");
+        console.Input.PushKey(ConsoleKey.Escape);
+        console.Input.PushKey(ConsoleKey.Escape);
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+
+        string description = Regex.Escape("Show or set the Azure DevOps link, or import assigned work items: [connect <org> | import | disconnect]");
+        Assert.Matches(@"│ devops +│ dv +│ " + description, console.Output);
+        Assert.Matches(@"devops +dv +" + description, console.Output);
+    }
+
+    // AC-13: the usage hint mentions import.
+    [Fact]
+    public void DevOps_UnknownSubcommand_MentionsImport()
+    {
+        (_, string output) = RunDevOps(new FakeTokenStore(), null, "devops frobnicate", "quit");
+
+        Assert.Contains("devops import", LastHint(output));
     }
 }

@@ -225,6 +225,240 @@ public class DevOpsClientTests
         Assert.Equal(2, document.RootElement.GetArrayLength());
     }
 
+    // Job 105 ------------------------------------------------------------------------------
+
+    private const string WiqlUrl = "https://dev.azure.com/contoso/_apis/wit/wiql?$top=200&api-version=7.1";
+
+    private static string TitlesUrl(string ids) =>
+        "https://dev.azure.com/contoso/_apis/wit/workitems?ids=" + ids + "&fields=System.Title&errorPolicy=omit&api-version=7.1";
+
+    private static string WiqlAnswer(params int[] ids) =>
+        "{\"queryType\":\"flat\",\"workItems\":[" + string.Join(",", ids.Select(id => "{\"id\":" + id + ",\"url\":\"x\"}")) + "]}";
+
+    // AC-1
+    [Fact]
+    public async Task Assigned_PostsTheWiql_ThenGetsTheTitlesForThoseIds()
+    {
+        (AzureDevOpsClient client, FakeHandler handler) = Create();
+        handler.Answer(HttpStatusCode.OK, WiqlAnswer(7, 3, 12));
+        handler.Answer(HttpStatusCode.OK,
+            "{\"count\":3,\"value\":[{\"id\":7,\"fields\":{\"System.Title\":\"Seven\"}},{\"id\":3,\"fields\":{\"System.Title\":\"Three\"}},"
+            + "{\"id\":12,\"fields\":{\"System.Title\":\"Twelve\"}}]}");
+
+        IReadOnlyList<(int Id, string? Title)> items = await client.GetAssignedWorkItemsAsync();
+
+        Assert.Equal([(7, "Seven"), (3, "Three"), (12, "Twelve")], items);
+        Assert.Equal(2, handler.Requests.Count);
+        (HttpMethod method, Uri? uri, string? authorization, string? contentType, string body) = handler.Requests[0];
+        Assert.Equal(HttpMethod.Post, method);
+        Assert.Equal(WiqlUrl, uri!.AbsoluteUri);
+        Assert.Equal(Basic, authorization);
+        Assert.Equal("application/json", contentType);
+        using (JsonDocument document = JsonDocument.Parse(body))
+        {
+            Assert.Equal(AzureDevOpsClient.Wiql, document.RootElement.GetProperty("query").GetString());
+            Assert.Single(document.RootElement.EnumerateObject());
+        }
+
+        Assert.Equal(
+            "SELECT [System.Id] FROM WorkItems WHERE [System.AssignedTo] = @Me AND [System.State] NOT IN ('Closed', 'Done', 'Removed') ORDER BY [System.Id]",
+            AzureDevOpsClient.Wiql);
+        (HttpMethod getMethod, Uri? getUri, string? getAuthorization, _, string getBody) = handler.Requests[1];
+        Assert.Equal(HttpMethod.Get, getMethod);
+        Assert.Equal(TitlesUrl("7,3,12"), getUri!.AbsoluteUri);
+        Assert.Equal(Basic, getAuthorization);
+        Assert.Equal(string.Empty, getBody);
+    }
+
+    // AC-1
+    [Fact]
+    public async Task Assigned_NoIds_SendsNoSecondRequest()
+    {
+        (AzureDevOpsClient client, FakeHandler handler) = Create();
+        handler.Answer(HttpStatusCode.OK, WiqlAnswer());
+
+        IReadOnlyList<(int Id, string? Title)> items = await client.GetAssignedWorkItemsAsync();
+
+        Assert.Empty(items);
+        Assert.Single(handler.Requests);
+    }
+
+    // AC-1: at most the first 200 ids, in order.
+    [Fact]
+    public async Task Assigned_AsksForAtMostTheFirst200Ids()
+    {
+        (AzureDevOpsClient client, FakeHandler handler) = Create();
+        int[] ids = Enumerable.Range(1, 250).ToArray();
+        handler.Answer(HttpStatusCode.OK, WiqlAnswer(ids));
+        handler.Answer(HttpStatusCode.OK, "{\"value\":[]}");
+
+        await client.GetAssignedWorkItemsAsync();
+
+        Assert.Equal(TitlesUrl(string.Join(",", ids.Take(200))), handler.Requests[1].Uri!.AbsoluteUri);
+    }
+
+    // AC-2
+    [Fact]
+    public void ParseWiqlIds_ReadsIdsInOrder_EachOnce()
+    {
+        Assert.Equal([5, 2, 9], AzureDevOpsClient.ParseWiqlIds(Encoding.UTF8.GetBytes(WiqlAnswer(5, 2, 5, 9, 2))));
+        Assert.Empty(AzureDevOpsClient.ParseWiqlIds(Encoding.UTF8.GetBytes("{\"workItems\":[]}")));
+    }
+
+    // AC-2
+    [Theory]
+    [InlineData("not json")]
+    [InlineData("[]")]
+    [InlineData("{}")]
+    [InlineData("{\"workItems\":{}}")]
+    [InlineData("{\"workItems\":[1]}")]
+    [InlineData("{\"workItems\":[null]}")]
+    [InlineData("{\"workItems\":[{}]}")]
+    [InlineData("{\"workItems\":[{\"id\":\"7\"}]}")]
+    [InlineData("{\"workItems\":[{\"id\":7.5}]}")]
+    [InlineData("{\"workItems\":[{\"id\":0}]}")]
+    [InlineData("{\"workItems\":[{\"id\":-3}]}")]
+    [InlineData("{\"workItems\":[{\"id\":2147483648}]}")]
+    [InlineData("{\"workItems\":[{\"id\":1e3}]}")]
+    public void ParseWiqlIds_Malformed_ThrowsUnexpected(string body)
+    {
+        DevOpsException ex = Assert.Throws<DevOpsException>(() => AzureDevOpsClient.ParseWiqlIds(Encoding.UTF8.GetBytes(body)));
+
+        Assert.Equal(DevOpsException.Unexpected, ex.Message);
+    }
+
+    // AC-3
+    [Fact]
+    public void ParseTitles_ReadsEntries_SkipsNulls_AndGivesNullForMissingTitles()
+    {
+        string body = "{\"value\":[{\"id\":1,\"fields\":{\"System.Title\":\"One\"}},null,{\"id\":2,\"fields\":{}},{\"id\":3},"
+            + "{\"id\":4,\"fields\":{\"System.Title\":42}},{\"id\":5,\"fields\":{\"System.Title\":null}},"
+            + "{\"id\":6,\"fields\":{\"System.Title\":\"bad \\ud800 half\"}}]}";
+
+        IReadOnlyList<(int Id, string? Title)> items = AzureDevOpsClient.ParseTitles(Encoding.UTF8.GetBytes(body));
+
+        Assert.Equal([(1, "One"), (2, null), (3, null), (4, null), (5, null), (6, null)], items);
+    }
+
+    // AC-3
+    [Theory]
+    [InlineData("not json")]
+    [InlineData("[]")]
+    [InlineData("{}")]
+    [InlineData("{\"value\":{}}")]
+    [InlineData("{\"value\":[7]}")]
+    [InlineData("{\"value\":[{\"fields\":{}}]}")]
+    [InlineData("{\"value\":[{\"id\":-1}]}")]
+    [InlineData("{\"value\":[{\"id\":1,\"fields\":[]}]}")]
+    public void ParseTitles_Malformed_ThrowsUnexpected(string body)
+    {
+        DevOpsException ex = Assert.Throws<DevOpsException>(() => AzureDevOpsClient.ParseTitles(Encoding.UTF8.GetBytes(body)));
+
+        Assert.Equal(DevOpsException.Unexpected, ex.Message);
+    }
+
+    // AC-3: entries that were not asked for are dropped, and each work item comes back once.
+    [Fact]
+    public async Task Assigned_DropsUnrequestedAndRepeatedEntries()
+    {
+        (AzureDevOpsClient client, FakeHandler handler) = Create();
+        handler.Answer(HttpStatusCode.OK, WiqlAnswer(1, 2));
+        handler.Answer(HttpStatusCode.OK,
+            "{\"value\":[{\"id\":1,\"fields\":{\"System.Title\":\"One\"}},{\"id\":99,\"fields\":{\"System.Title\":\"Sneaky\"}},"
+            + "{\"id\":1,\"fields\":{\"System.Title\":\"Again\"}},null]}");
+
+        IReadOnlyList<(int Id, string? Title)> items = await client.GetAssignedWorkItemsAsync();
+
+        Assert.Equal([(1, "One")], items);
+    }
+
+    // AC-4: either request failing gives the fixed sync reasons, never the token or the body.
+    [Theory]
+    [InlineData(0, HttpStatusCode.Unauthorized, DevOpsException.Refused)]
+    [InlineData(0, HttpStatusCode.Found, DevOpsException.Redirected)]
+    [InlineData(0, HttpStatusCode.InternalServerError, "Azure DevOps answered HTTP 500")]
+    [InlineData(1, HttpStatusCode.Forbidden, DevOpsException.Refused)]
+    [InlineData(1, HttpStatusCode.MovedPermanently, DevOpsException.Redirected)]
+    [InlineData(1, HttpStatusCode.BadGateway, "Azure DevOps answered HTTP 502")]
+    public async Task Assigned_FailingStatus_ThrowsFixedReason(int failingRequest, HttpStatusCode status, string reason)
+    {
+        (AzureDevOpsClient client, FakeHandler handler) = Create();
+        if (failingRequest == 1)
+        {
+            handler.Answer(HttpStatusCode.OK, WiqlAnswer(4));
+        }
+
+        handler.Answer((_, _) =>
+        {
+            HttpResponseMessage response = new HttpResponseMessage(status) { Content = new StringContent("secret body " + Marker) };
+            response.Headers.Location = new Uri("https://evil.example/steal");
+            return Task.FromResult(response);
+        });
+
+        DevOpsException ex = await Assert.ThrowsAsync<DevOpsException>(() => client.GetAssignedWorkItemsAsync());
+
+        Assert.Equal(reason, ex.Message);
+        Assert.Equal(failingRequest + 1, handler.Requests.Count);
+        Assert.DoesNotContain(Marker, ex.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("secret body", ex.ToString(), StringComparison.Ordinal);
+    }
+
+    // AC-4
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public async Task Assigned_TimeoutOversizeAndNetworkFailures_FailCleanly(int failingRequest)
+    {
+        foreach ((Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> answer, string reason) in new (Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>, string)[]
+        {
+            (async (_, token) =>
+            {
+                await Task.Delay(TimeSpan.FromSeconds(30), token);
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            }, DevOpsException.TimedOut),
+            ((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(new UnknownLengthStream(AzureDevOpsClient.MaxBodyBytes + 10)),
+            }), DevOpsException.TooLarge),
+            ((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(new string('a', (int)AzureDevOpsClient.MaxBodyBytes + 1)),
+            }), DevOpsException.TooLarge),
+            ((_, _) => throw new HttpRequestException("connection refused " + Marker), DevOpsException.Unreachable),
+        })
+        {
+            (AzureDevOpsClient client, FakeHandler handler) = Create(TimeSpan.FromMilliseconds(50));
+            if (failingRequest == 1)
+            {
+                handler.Answer(HttpStatusCode.OK, WiqlAnswer(4));
+            }
+
+            handler.Answer(answer);
+
+            DevOpsException ex = await Assert.ThrowsAsync<DevOpsException>(() => client.GetAssignedWorkItemsAsync());
+
+            Assert.Equal(reason, ex.Message);
+            Assert.DoesNotContain(Marker, ex.ToString(), StringComparison.Ordinal);
+        }
+    }
+
+    // AC-4: a malformed answer to either request.
+    [Fact]
+    public async Task Assigned_UnexpectedAnswers_FailCleanly()
+    {
+        (AzureDevOpsClient client, FakeHandler handler) = Create();
+        handler.Answer(HttpStatusCode.OK, "{\"workItems\":[{\"id\":\"1 OR 1=1\"}]}");
+        DevOpsException first = await Assert.ThrowsAsync<DevOpsException>(() => client.GetAssignedWorkItemsAsync());
+
+        handler.Answer(HttpStatusCode.OK, WiqlAnswer(4));
+        handler.Answer(HttpStatusCode.OK, "<html>");
+        DevOpsException second = await Assert.ThrowsAsync<DevOpsException>(() => client.GetAssignedWorkItemsAsync());
+
+        Assert.Equal(DevOpsException.Unexpected, first.Message);
+        Assert.Equal(DevOpsException.Unexpected, second.Message);
+        Assert.Equal(3, handler.Requests.Count);
+    }
+
     /// <summary>A stream of 'a' bytes that reports no length.</summary>
     private sealed class UnknownLengthStream : Stream
     {
