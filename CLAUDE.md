@@ -130,6 +130,12 @@ Every factory agent reads this file before working on Times. Keep it short and a
   `DayStore.Days()` lists: each day's `CheckpointSummary` group whose names or quicklist title contain the text
   (`OrdinalIgnoreCase`) is one row (`App.FindView`: `Date`, `Work item`, `Title`, `Time`, by date then group order, caption
   `N match(es) for "<text>"`, open footnote, yellow skipped line); no text is a red usage hint, no match a grey note.
+- **Statistics:** `statistics <from> <to>` (`st`, dates `yyyy-MM-dd`, inclusive, `ParseRange` hints) runs `WeekdayStatistics.Calculate`
+  (read-only) over the day files `DayStore.Days()` lists in the range: a day counts if it holds an arrival (absence days do not); its
+  arrival is the first `Arrival`, its leaving the last `Leaving`, and only a day with a leaving has one and a work time (`WorkTime()`).
+  Averages are whole-minute means, half rounding up (`WeekdayStatistics.RoundedMean`). `App.StatisticsView`: `Weekday`, `Days`, `Arrival`,
+  `Leaving`, `Work time`, Monday to Sunday (only weekdays with a counted day), a bold `All days` row over every counted day, a grey `–`
+  where no day has a leaving, caption `<from> – <to>`; no counted day is a grey note; unreadable files give the yellow skipped line.
 - **Updates:** `UpdateService` (wired in `Program.cs`, `null` in tests unless injected) runs one background
   check at start (`IReleaseSource`, GitHub's release list only, allow-listed asset URLs, capped and timed out) and
   the `update` (`up`) command. Settings `update-mode` (`notify only` / `install on quit` / `install and restart`)

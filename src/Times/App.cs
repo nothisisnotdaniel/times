@@ -255,6 +255,7 @@ internal sealed class App
         registry.Register("report", "rp", "Show the hours per project over a date range: <from> <to>", Report);
         registry.Register("export", "ex", "Save the project report for a date range as CSV: <from> <to> <folder>", Export);
         registry.Register("find", "f", "Find days whose checkpoints or projects match: <text>", Find);
+        registry.Register("statistics", "st", "Show average arrival, leaving and work time per weekday: <from> <to>", Statistics);
     }
 
     // Marks the day being viewed as an absence (vacation, sick, holiday) or clears it. Nothing is written
@@ -792,6 +793,85 @@ internal sealed class App
 
         AddSkipped(parts, search.SkippedFiles);
         return parts.Count == 1 ? parts[0] : new Rows(parts);
+    }
+
+    // Shows the average arrival, leaving and work time per weekday over an inclusive date range, with an
+    // All days row, or a grey note if no day in the range holds an arrival. Read-only.
+    private CommandResult Statistics(string argument)
+    {
+        const string Name = "statistics";
+        const string Usage = "Use [bold]statistics <from> <to>[/] with dates as [bold]yyyy-MM-dd[/].";
+        string[] parts = argument.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length != 2)
+        {
+            return Hint($"{Name}: say the first and the last day. {Usage}");
+        }
+
+        if (ParseRange(Name, Usage, parts[0], parts[1], out DateOnly from, out DateOnly to) is { } hint)
+        {
+            return hint;
+        }
+
+        WeekdayStatistics stats;
+        try
+        {
+            stats = WeekdayStatistics.Calculate(Store, from, to);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{Name}: the data folder cannot be listed: {Markup.Escape(ex.Message)}");
+        }
+
+        return new CommandResult(StatisticsView(from, to, stats), hideQuicklist: true);
+    }
+
+    /// <summary>
+    /// The weekday statistics table (weekday, days, arrival, leaving, work time) captioned with the range,
+    /// with a bold <c>All days</c> row, or a grey note if no day counted; then the yellow skipped line
+    /// when files were skipped. A row without a leaving shows a grey <c>–</c> for leaving and work time.
+    /// </summary>
+    internal static IRenderable StatisticsView(DateOnly from, DateOnly to, WeekdayStatistics stats)
+    {
+        List<IRenderable> parts = [];
+        if (stats.All is not { } all)
+        {
+            parts.Add(new Markup($"[grey]No working days between {ReportDate(from)} and {ReportDate(to)}.[/]"));
+        }
+        else
+        {
+            Table table = new Table()
+                .Border(TableBorder.Rounded)
+                .BorderColor(Color.Grey)
+                .AddColumn("[grey]Weekday[/]")
+                .AddColumn(new TableColumn("[grey]Days[/]").RightAligned())
+                .AddColumn(new TableColumn("[grey]Arrival[/]").RightAligned())
+                .AddColumn(new TableColumn("[grey]Leaving[/]").RightAligned())
+                .AddColumn(new TableColumn("[grey]Work time[/]").RightAligned())
+                .Caption($"{ReportDate(from)} – {ReportDate(to)}", new Style(Color.Grey));
+
+            foreach (WeekdayRow row in stats.Rows)
+            {
+                AddStatisticsRow(table, row.Weekday!.Value.ToString(), row, "steelblue1");
+            }
+
+            AddStatisticsRow(table, "[bold]All days[/]", all, "bold steelblue1");
+            parts.Add(table);
+        }
+
+        AddSkipped(parts, stats.SkippedFiles);
+        return parts.Count == 1 ? parts[0] : new Rows(parts);
+    }
+
+    // One statistics row; label is markup (a fixed weekday name or the bold All days label).
+    private static void AddStatisticsRow(Table table, string label, WeekdayRow row, string style)
+    {
+        const string Missing = "[grey]–[/]";
+        table.AddRow(
+            new Markup(label),
+            new Markup($"[{style}]{row.Days.ToString(CultureInfo.InvariantCulture)}[/]"),
+            new Markup($"[{style}]{row.Arrival.ToString("H:mm", CultureInfo.InvariantCulture)}[/]"),
+            new Markup(row.Leaving is { } leaving ? $"[{style}]{leaving.ToString("H:mm", CultureInfo.InvariantCulture)}[/]" : Missing),
+            new Markup(row.WorkTime is { } work ? $"[{style}]{DayView.FormatTimeLeft(work)}[/]" : Missing));
     }
 
     // Adds the yellow skipped line when the report skipped unreadable day files.
