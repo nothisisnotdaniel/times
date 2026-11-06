@@ -199,6 +199,8 @@ Every factory agent reads this file before working on Times. Keep it short and a
   `DayRecord` plus `UsedTime` warnings, or one fixed reason with the 1-based entry number. A new day is saved with `DayStamp.Missing`, an
   identical one counts as `already there`, a differing one is asked about in the loop (`pendingImport`, like the token prompt; `yes`/`y`
   replaces with the stamp loaded before asking, Esc keeps the rest); unreadable existing files are kept and listed. Never writes the source.
+  The yellow `!` lines (problems, then `UsedTime` warnings, including those added while asking) are capped at `MaxImportLines` (20)
+  with a grey `… and N more`, before the skipped names and their own cap.
 - **Updates:** `UpdateService` (wired in `Program.cs`, `null` in tests unless injected) runs one background
   check at start (`IReleaseSource`, GitHub's release list only, allow-listed asset URLs, capped and timed out) and
   the `update` (`up`) command. Settings `update-mode` (`notify only` / `install on quit` / `install and restart`)

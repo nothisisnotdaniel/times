@@ -736,6 +736,11 @@ internal sealed class App
     /// <summary>The most skipped names import lists before <c>… and N more</c>.</summary>
     internal const int MaxSkippedNames = 20;
 
+    /// <summary>
+    /// The most yellow problem and warning lines import shows (problems first, then warnings) before <c>… and N more</c>.
+    /// </summary>
+    internal const int MaxImportLines = 20;
+
     // Reads every old-format day file at the top of a folder outside the data folder and writes each day
     // that has no file yet. A day already there with the same entries is left alone; one that differs is
     // asked about in the loop (AskImportConflicts). The source folder is only listed and read.
@@ -914,9 +919,15 @@ internal sealed class App
                 $"{run.Kept.ToString(CultureInfo.InvariantCulture)} kept[/]"));
         }
 
-        foreach (string line in run.Problems.Concat(run.Warnings))
+        int lineCount = run.Problems.Count + run.Warnings.Count;
+        foreach (string line in run.Problems.Concat(run.Warnings).Take(MaxImportLines))
         {
             parts.Add(new Markup($"[yellow]{line}[/]"));
+        }
+
+        if (lineCount > MaxImportLines)
+        {
+            parts.Add(new Markup($"[grey]… and {(lineCount - MaxImportLines).ToString(CultureInfo.InvariantCulture)} more[/]"));
         }
 
         IReadOnlyList<string> skipped = run.Scan.Skipped;

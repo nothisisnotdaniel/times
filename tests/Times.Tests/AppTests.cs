@@ -13908,10 +13908,15 @@ public sealed class AppTests : IDisposable
     private const string ImportDay = "2026-10-28";
 
     /// <summary>Runs <paramref name="input"/> on a wide 60-row console (the caller ends with quit) and returns the exit code and output.</summary>
-    private (int ExitCode, string Output) RunImport(Action<TestConsole> input, DayStore? store = null)
+    private (int ExitCode, string Output) RunImport(Action<TestConsole> input, DayStore? store = null, int height = 60, bool ansi = false)
     {
         TestConsole console = new TestConsole().Interactive();
-        console.Profile.Height = 60;
+        if (ansi)
+        {
+            console.EmitAnsiSequences();
+        }
+
+        console.Profile.Height = height;
         console.Profile.Width = 250;
         input(console);
         int exitCode = new App(console, FixedTimeProvider.At20261027(), store ?? new DayStore(data.Path), instanceLock: sideLock).Run([]);
@@ -14406,5 +14411,223 @@ public sealed class AppTests : IDisposable
 
         Assert.Matches(@"│ import +│ im +│ Import day files from the old tool: <folder> +│", plain);
         Assert.Matches(@"\x1b\[[0-9;]*38;5;75mim\x1b\[0m", console.Output);
+    }
+
+    // Job 119 ------------------------------------------------------------------------------
+
+    /// <summary>Runs <paramref name="command"/> then quit on a 120-row console and returns the last frame's rows, trimmed.</summary>
+    private string[] TallImportFrame(string command, DayStore? store = null, params string[] answers)
+    {
+        (int exitCode, string output) = RunImport(c =>
+        {
+            c.Input.PushTextWithEnter(command);
+            foreach (string answer in answers)
+            {
+                c.Input.PushTextWithEnter(answer);
+            }
+
+            c.Input.PushTextWithEnter("quit");
+        }, store, height: 120);
+        Assert.Equal(0, exitCode);
+        return LastLayout(output).Select(l => l.Trim()).ToArray();
+    }
+
+    /// <summary>The date of the <paramref name="index"/>-th (0-based) broken file: 2026-01-01 onwards.</summary>
+    private static string BrokenDate(int index) => new DateOnly(2026, 1, 1).AddDays(index).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>Writes <paramref name="count"/> broken day files (<c>{}</c>) from 2026-01-01 on.</summary>
+    private static void WriteBroken(string folder, int count)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            File.WriteAllText(Path.Combine(folder, BrokenDate(i) + ".json"), "{}");
+        }
+    }
+
+    /// <summary>The date of the <paramref name="index"/>-th (0-based) warning day: 2026-03-01 onwards.</summary>
+    private static string WarningDate(int index) => new DateOnly(2026, 3, 1).AddDays(index).ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>Writes <paramref name="count"/> copies of the sample from 2026-03-01 on, each with one <c>UsedTime</c> mismatch.</summary>
+    private static void WriteWarningDays(string folder, int count)
+    {
+        string json = File.ReadAllText(OldDataImportTests.SamplePath)
+            .Replace("\"UsedTime\":\"00:02:00\"", "\"UsedTime\":\"00:05:00\"", StringComparison.Ordinal);
+        for (int i = 0; i < count; i++)
+        {
+            File.WriteAllText(Path.Combine(folder, WarningDate(i) + ".json"), json);
+        }
+    }
+
+    private static string[] YellowLines(string[] frame) => frame.Where(l => l.StartsWith("! ", StringComparison.Ordinal)).ToArray();
+
+    private static bool IsMoreLine(string line) => Regex.IsMatch(line, "^… and [0-9]+ more$");
+
+    // AC-1: 20 or fewer lines are all shown, with no more line.
+    [Theory]
+    [InlineData(3)]
+    [InlineData(20)]
+    public void Import_UpTo20Lines_AreAllShown_WithoutAMoreLine(int count)
+    {
+        Assert.Equal(20, App.MaxImportLines);
+        using TempFolder source = new TempFolder();
+        WriteBroken(source.Path, count);
+
+        string[] frame = TallImportFrame($"import {source.Path}");
+
+        string[] yellow = YellowLines(frame);
+        Assert.Equal(count, yellow.Length);
+        for (int i = 0; i < count; i++)
+        {
+            Assert.StartsWith($"! {BrokenDate(i)}.json: ", yellow[i], StringComparison.Ordinal);
+        }
+
+        Assert.DoesNotContain(frame, IsMoreLine);
+    }
+
+    // AC-2: more than 20 lines show the first 20 in order, then one grey more line.
+    [Fact]
+    public void Import_25BrokenFiles_Show20Lines_AndFiveMore()
+    {
+        using TempFolder source = new TempFolder();
+        WriteBroken(source.Path, 25);
+
+        string[] frame = TallImportFrame($"import {source.Path}");
+
+        string[] yellow = YellowLines(frame);
+        Assert.Equal(20, yellow.Length);
+        for (int i = 0; i < 20; i++)
+        {
+            Assert.StartsWith($"! {BrokenDate(i)}.json: ", yellow[i], StringComparison.Ordinal);
+        }
+
+        for (int i = 20; i < 25; i++)
+        {
+            Assert.DoesNotContain(frame, l => l.Contains(BrokenDate(i), StringComparison.Ordinal));
+        }
+
+        Assert.Equal(["… and 5 more"], frame.Where(IsMoreLine));
+        int more = Array.IndexOf(frame, "… and 5 more");
+        Assert.Equal(yellow[^1], frame[more - 1]);
+        Assert.Matches(@"\x1b\[[0-9;]*38;5;8m… and 5 more", ColouredRun(source.Path));
+    }
+
+    /// <summary>The ANSI output of an import of <paramref name="folder"/> on a tall console.</summary>
+    private string ColouredRun(string folder)
+    {
+        (int exitCode, string output) = RunImport(c =>
+        {
+            c.Input.PushTextWithEnter($"import {folder}");
+            c.Input.PushTextWithEnter("quit");
+        }, height: 120, ansi: true);
+        Assert.Equal(0, exitCode);
+        return output;
+    }
+
+    // AC-3: the cap applies to problems then warnings as one list.
+    [Fact]
+    public void Import_15ProblemsAnd10Warnings_ShowProblemsThenFiveWarnings_AndFiveMore()
+    {
+        using TempFolder source = new TempFolder();
+        WriteBroken(source.Path, 15);
+        WriteWarningDays(source.Path, 10);
+
+        string[] frame = TallImportFrame($"import {source.Path}");
+
+        string[] yellow = YellowLines(frame);
+        Assert.Equal(20, yellow.Length);
+        for (int i = 0; i < 15; i++)
+        {
+            Assert.StartsWith($"! {BrokenDate(i)}.json: ", yellow[i], StringComparison.Ordinal);
+        }
+
+        for (int i = 0; i < 5; i++)
+        {
+            Assert.Equal($"! {WarningDate(i)} 07:22 Post & Rückfragen: UsedTime 0:05 but the entries give 0:02", yellow[15 + i]);
+        }
+
+        Assert.Equal(["… and 5 more"], frame.Where(IsMoreLine));
+        Assert.Contains($"Imported 10 days from {source.Path}", frame);
+    }
+
+    // AC-3: warnings alone are capped too.
+    [Fact]
+    public void Import_23Warnings_ShowTheFirst20_AndThreeMore()
+    {
+        using TempFolder source = new TempFolder();
+        WriteWarningDays(source.Path, 23);
+
+        string[] frame = TallImportFrame($"import {source.Path}");
+
+        string[] yellow = YellowLines(frame);
+        Assert.Equal(Enumerable.Range(0, 20).Select(i => $"! {WarningDate(i)} 07:22 Post & Rückfragen: UsedTime 0:05 but the entries give 0:02"), yellow);
+        Assert.Equal(["… and 3 more"], frame.Where(IsMoreLine));
+    }
+
+    // AC-4: the capped block sits before the skipped names, which keep their own cap and more line.
+    [Fact]
+    public void Import_BothOverflow_ShowTwoSeparateMoreLines_InOrder()
+    {
+        using TempFolder source = new TempFolder();
+        WriteBroken(source.Path, 25);
+        for (int i = 0; i < 22; i++)
+        {
+            File.WriteAllText(Path.Combine(source.Path, $"n{i:00}"), "x");
+        }
+
+        string[] frame = TallImportFrame($"import {source.Path}");
+
+        int counts = Array.FindIndex(frame, l => l.EndsWith(" kept", StringComparison.Ordinal));
+        int firstYellow = Array.FindIndex(frame, l => l.StartsWith("! ", StringComparison.Ordinal));
+        int fiveMore = Array.IndexOf(frame, "… and 5 more");
+        int skipped = Array.FindIndex(frame, l => l.StartsWith("Skipped (not a day file): ", StringComparison.Ordinal));
+        int twoMore = Array.IndexOf(frame, "… and 2 more");
+        Assert.True(counts >= 0 && counts < firstYellow, "counts before the yellow lines");
+        Assert.True(firstYellow < fiveMore, "yellow lines before their more line");
+        Assert.True(fiveMore < skipped, "the line cap before the skipped names");
+        Assert.True(skipped < twoMore, "the skipped names before their own more line");
+        Assert.Equal("Skipped (not a day file): " + string.Join(", ", Enumerable.Range(0, 20).Select(i => $"n{i:00}")), frame[skipped]);
+        Assert.Equal(2, frame.Count(IsMoreLine));
+    }
+
+    // AC-5: the cap changes only the output; counts and written files stay the same.
+    [Fact]
+    public void Import_25BrokenFilesAndTheSample_ImportsOneDay_WrittenAsWithoutTheCap()
+    {
+        using TempFolder single = SampleSource();
+        ImportFrame($"import {single.Path}");
+        string uncapped = ReadDay(ImportDay);
+        File.Delete(DayFile(ImportDay));
+
+        using TempFolder source = SampleSource();
+        WriteBroken(source.Path, 25);
+
+        string[] frame = TallImportFrame($"import {source.Path}");
+
+        Assert.Contains($"Imported 1 day from {source.Path}", frame);
+        Assert.Contains("0 already there · 0 kept", frame);
+        Assert.Equal(uncapped, ReadDay(ImportDay));
+        Assert.Equal([ImportDay + ".json"], Listing(data.Path));
+        Assert.Contains("… and 5 more", frame);
+    }
+
+    // AC-6: lines added while asking about conflicts count toward the same cap.
+    [Fact]
+    public void Import_ConflictLines_CountTowardTheCap()
+    {
+        using TempFolder source = SampleSource();
+        WriteBroken(source.Path, 21);
+        File.WriteAllText(DayFile(ImportDay), OtherDay);
+        const string Edited = "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"06:30\"}]}";
+        DayStore store = new DayStore(data.Path);
+        store.BeforeStampCheck = day => File.WriteAllText(store.PathFor(day), Edited);
+
+        string[] frame = TallImportFrame($"import {source.Path}", store, "yes");
+
+        Assert.Equal(Edited, ReadDay(ImportDay));
+        string[] yellow = YellowLines(frame);
+        Assert.Equal(20, yellow.Length);
+        Assert.Equal(Enumerable.Range(0, 20).Select(BrokenDate), yellow.Select(l => l.Substring(2, 10)));
+        Assert.DoesNotContain(frame, l => l.Contains("changed on disk", StringComparison.Ordinal));
+        Assert.Equal(["… and 2 more"], frame.Where(IsMoreLine));
     }
 }
