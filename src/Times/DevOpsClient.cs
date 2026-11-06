@@ -57,7 +57,7 @@ internal interface IDevOpsClient
 /// Basic auth from a PAT. Requests go only to that host over HTTPS, never follow a redirect, time out
 /// after <see cref="RequestTimeout"/> each and read at most <see cref="MaxBodyBytes"/> of a body.
 /// </summary>
-internal sealed class AzureDevOpsClient : IDevOpsClient
+internal sealed class AzureDevOpsClient : IDevOpsClient, IDisposable
 {
     public const string Host = "https://dev.azure.com/";
 
@@ -88,6 +88,8 @@ internal sealed class AzureDevOpsClient : IDevOpsClient
         Array.Clear(raw);
         this.timeout = timeout ?? RequestTimeout;
     }
+
+    public void Dispose() => client.Dispose();
 
     /// <summary>The work item's URL. The organisation was validated, so it cannot change the host or path.</summary>
     internal Uri WorkItemUri(int id) =>

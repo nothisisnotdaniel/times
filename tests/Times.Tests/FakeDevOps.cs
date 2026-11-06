@@ -62,7 +62,7 @@ internal sealed class FakeTokenStore : ITokenStore
 /// An in-memory Azure DevOps: work items with Completed Work and a revision. Records every call;
 /// a work item in <see cref="GetFailures"/> or <see cref="SetFailures"/> throws that reason.
 /// </summary>
-internal sealed class FakeDevOpsClient : IDevOpsClient
+internal sealed class FakeDevOpsClient : IDevOpsClient, IDisposable
 {
     public Dictionary<int, (double? Completed, int Rev)> Items { get; } = [];
 
@@ -79,6 +79,10 @@ internal sealed class FakeDevOpsClient : IDevOpsClient
 
     /// <summary>Runs after a successful set, before the app marks the checkpoints booked.</summary>
     public Action<int>? AfterSet { get; set; }
+
+    public int Disposed { get; private set; }
+
+    public void Dispose() => Disposed++;
 
     public IDevOpsClient For(DevOpsCredential credential)
     {

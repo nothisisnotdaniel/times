@@ -9441,4 +9441,44 @@ public sealed class AppTests : IDisposable
         Assert.Matches(@"│ devops +│ dv +│ Show or set the Azure DevOps link", console.Output);
         Assert.Matches(@"│ sync +│ sy +│ Send unbooked hours to Azure DevOps: <from> <to> \[send\]", console.Output);
     }
+
+    // Nit (review-security 1): a token typed after the organization is never echoed.
+    [Fact]
+    public void DevOpsConnect_ExtraWord_IsNotEchoed()
+    {
+        FakeTokenStore store = new FakeTokenStore();
+
+        // The typed line itself shows the word while typing, so this uses another marker than DevOpsPat.
+        (_, string output) = RunDevOps(store, null, "devops connect contoso typed-token-77", "quit");
+
+        Assert.Contains("connect takes only the organization; the token is asked for next.", LastHint(output));
+        Assert.DoesNotContain(LastLayout(output), l => l.Contains("typed-token-77", StringComparison.Ordinal));
+        Assert.Equal(0, store.Calls);
+    }
+
+    // Nit (review-security 4): a non-finite sum is never sent.
+    [Fact]
+    public void SyncSend_NonFiniteSum_FailsThatItem()
+    {
+        WriteSyncDays();
+        FakeDevOpsClient client = new FakeDevOpsClient();
+        client.Items[12] = (double.PositiveInfinity, 2);
+
+        (_, string output) = RunDevOps(new FakeTokenStore(stored: ("contoso", DevOpsPat)), client, "sync 2026-11-02 2026-11-04 send", "quit");
+
+        Assert.Equal([7], client.Sets.Select(s => s.Id));
+        Assert.Contains("sync: 1 of 2 work items failed", LastHint(output));
+    }
+
+    // Nit (review-security 3): the client is disposed after a send.
+    [Fact]
+    public void SyncSend_DisposesTheClient()
+    {
+        WriteSyncDays();
+        FakeDevOpsClient client = new FakeDevOpsClient();
+
+        RunDevOps(new FakeTokenStore(stored: ("contoso", DevOpsPat)), client, "sync 2026-11-02 2026-11-04 send", "quit");
+
+        Assert.Equal(1, client.Disposed);
+    }
 }

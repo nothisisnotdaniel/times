@@ -765,6 +765,12 @@ internal sealed class App
                 return Hint($"{Name}: say the organization, as in dev.azure.com/<organization>. {DevOpsUsage}");
             }
 
+            if (rest.Any(char.IsWhiteSpace))
+            {
+                // Never echoed: the extra word may be a pasted token.
+                return Hint($"{Name}: connect takes only the organization; the token is asked for next. Nothing was stored.");
+            }
+
             if (!DevOpsCredential.IsValidOrganization(rest))
             {
                 return Hint($"{Name}: [bold]{Markup.Escape(rest)}[/] is not an organization name " +
@@ -949,7 +955,15 @@ internal sealed class App
             return Hint($"{Name}: this build cannot reach Azure DevOps. Nothing was sent.");
         }
 
-        return SendPlan(from, to, plan, projects, devOpsClient(credential));
+        IDevOpsClient client = devOpsClient(credential);
+        try
+        {
+            return SendPlan(from, to, plan, projects, client);
+        }
+        finally
+        {
+            (client as IDisposable)?.Dispose();
+        }
     }
 
     // Sends each work item in turn; a failure leaves its checkpoints unbooked and the rest still run.
@@ -973,6 +987,11 @@ internal sealed class App
                 (double? completed, int rev) = client.GetCompletedWorkAsync(item.WorkItem).GetAwaiter().GetResult();
                 double old = completed ?? 0;
                 double updated = Math.Round(old + item.Hours, 2);
+                if (!double.IsFinite(updated))
+                {
+                    throw new DevOpsException(DevOpsException.Unexpected);
+                }
+
                 client.SetCompletedWorkAsync(item.WorkItem, rev, updated).GetAwaiter().GetResult();
                 result = $"[steelblue1]sent[/] {FormatCompleted(old)} → {FormatCompleted(updated)}";
                 notSaved.AddRange(MarkBooked(item));

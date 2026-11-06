@@ -134,7 +134,7 @@ Every factory agent reads this file before working on Times. Keep it short and a
   and in tests unless injected), never in a file, output or exception. `sync <from> <to>` (`sy`) previews
   `DevOpsSync.Plan` (ended, unbooked checkpoints with a work item, per work item) with no store read or network;
   `sync <from> <to> send` reads the store once, then per work item GETs Completed Work and PATCHes
-  `round(old + hours, 2)` with a `/rev` test (`AzureDevOpsClient`: no redirects, 15 s, 1 MiB cap, fixed error texts),
+  `round(old + hours, 2)` with a rev test (`AzureDevOpsClient`: no redirects, 15 s, 1 MiB cap, fixed error texts),
   then marks those checkpoints booked; failures stay per item. Tests use `FakeTokenStore` and `FakeDevOpsClient`.
 - **Days:** the app always shows one "current" day, starting at today. The user can move to
   the previous or next day or jump to a date. Navigating to a day with no file shows it as an

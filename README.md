@@ -179,7 +179,8 @@ Only checkpoints with a work item, an end (a later checkpoint, break or leaving)
 minute are sent; a checkpoint that is still running is left for later.
 
 On macOS the Keychain item trusts the `dotnet` host that created it, so after a .NET update macOS
-may ask once for permission to read it. **Linux is not supported** yet: there is no credential
+may ask once for permission to read it. Because the item trusts that shared host, other .NET programs
+run through the same `dotnet` can read it without a prompt; revoke the PAT in Azure DevOps if in doubt. **Linux is not supported** yet: there is no credential
 store Times can use there, so `devops connect` and `sync … send` say so (the preview still works).
 
 To check the stores by hand: connect, look for the item in *Keychain Access* (macOS) or with
