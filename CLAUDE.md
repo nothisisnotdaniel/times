@@ -136,6 +136,13 @@ Every factory agent reads this file before working on Times. Keep it short and a
   Averages are whole-minute means, half rounding up (`WeekdayStatistics.RoundedMean`). `App.StatisticsView`: `Weekday`, `Days`, `Arrival`,
   `Leaving`, `Work time`, Monday to Sunday (only weekdays with a counted day), a bold `All days` row over every counted day, a grey `–`
   where no day has a leaving, caption `<from> – <to>`; no counted day is a grey note; unreadable files give the yellow skipped line.
+- **Backup:** `backup <folder>` (`bu`, whole trimmed argument through `ExpandFolder`, same folder hints as `export`) zips every
+  day file `DayStore.Days()` lists plus `projects.json` byte for byte (`DataBackup.Write`: root entries in ordinal name order, each read
+  through `CappedFile` with the 64 KiB cap, never parsed; a file that cannot be read is left out and counted, yellow `! N file(s) skipped`)
+  into `times-backup-yyyy-MM-dd-HHmm.zip` (`DataBackup.FileName`, local time). The zip is built in memory, then written with
+  `FileMode.CreateNew` (an existing name, a link included, is refused; a failed write deletes the file); nothing to back up is a grey note
+  and no file. A target that is the data folder or below it is refused (`DataBackup.IsInside`: every symlink resolved in both paths,
+  `..` after a link goes up from its target, case and trailing separators ignored). The data folder is never written.
 - **Updates:** `UpdateService` (wired in `Program.cs`, `null` in tests unless injected) runs one background
   check at start (`IReleaseSource`, GitHub's release list only, allow-listed asset URLs, capped and timed out) and
   the `update` (`up`) command. Settings `update-mode` (`notify only` / `install on quit` / `install and restart`)
