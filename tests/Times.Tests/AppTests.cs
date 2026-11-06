@@ -1158,7 +1158,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, exitCode);
         string[] frame = LastLayout(output);
         AssertOnHintRow(frame, expected);
-        AssertOnHintRow(frame, "Use H:mm, e.g. 8:15.");
+        AssertOnHintRow(frame, "Use H:mm, now, -<n>m or +<n>m.");
         Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
     }
 
@@ -2154,7 +2154,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, exitCode);
         string[] frame = LastLayout(output);
         AssertOnHintRow(frame, expected);
-        AssertOnHintRow(frame, "Use H:mm, e.g. 8:15.");
+        AssertOnHintRow(frame, "Use H:mm, now, -<n>m or +<n>m.");
         Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
         Assert.DoesNotContain("failed:", output);
     }
@@ -2179,8 +2179,8 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(0, exitCode);
         string[] frame = LastLayout(output);
-        AssertOnHintRow(frame, expected);
-        AssertOnHintRow(frame, "Use change <number> <H:mm>.");
+        AssertLayout(frame);
+        Assert.Equal(expected + " Use change <number> <H:mm|now|-10m|+5m>.", HintText(frame, "change:"));
         Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
         Assert.DoesNotContain("failed:", output);
     }
@@ -2296,7 +2296,7 @@ public sealed class AppTests : IDisposable
     {
         (_, string output) = RunWide(120, "help", "quit");
 
-        Assert.Matches(@"change +│ c +│ Change the time of an entry on this day: <number> <H:mm>", output);
+        Assert.Matches(@"change +│ c +│ Change the time of an entry on this day: <number> <H:mm\|now\|-10m\|\+5m>", output);
     }
 
     // AC-10 (023)
@@ -2344,7 +2344,7 @@ public sealed class AppTests : IDisposable
 
         AnsiWrite row = writes[top];
         Assert.StartsWith("change", row.Text);
-        Assert.Contains("Change the time of an entry on this day: <number> <H:mm>", row.Text);
+        Assert.Contains("Change the time of an entry on this day: <number> <H:mm|now|-10m", row.Text);
     }
 
     private static (int ExitCode, string Output) RunWithArgs(string folder, params string[] args)
@@ -3608,7 +3608,7 @@ public sealed class AppTests : IDisposable
 
     // Breaks and checkpoints (job 036) -------------------------------------------------------
 
-    private const string CheckpointUsage = "Use checkpoint [H:mm] [#project] <name>, where #project is the project's number on the quicklist.";
+    private const string CheckpointUsage = "Use checkpoint [H:mm|now|-10m|+5m] [#project] <name>, where #project is the project's number on the quicklist.";
 
     private void WriteTwoProjects() =>
         File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":1234,\"title\":\"Website\"},{\"workItem\":5678,\"title\":\"Controlling\"}]}");
@@ -3658,7 +3658,7 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(0, exitCode);
         AssertOnHintRow(LastLayout(output), expected);
-        AssertOnHintRow(LastLayout(output), "Use H:mm, e.g. 8:15.");
+        AssertOnHintRow(LastLayout(output), "Use H:mm, now, -<n>m or +<n>m.");
         Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
     }
 
@@ -3754,9 +3754,9 @@ public sealed class AppTests : IDisposable
     [InlineData("checkpoint 9:30", "checkpoint: say the checkpoint's name. " + CheckpointUsage)]
     [InlineData("checkpoint #2", "checkpoint: say the checkpoint's name. " + CheckpointUsage)]
     [InlineData("checkpoint 9:30 #2", "checkpoint: say the checkpoint's name. " + CheckpointUsage)]
-    [InlineData("checkpoint 25:00 Standup", "checkpoint: 25:00 is not a time. Use H:mm, e.g. 8:15.")]
-    [InlineData("checkpoint 9:5 Standup", "checkpoint: 9:5 is not a time. Use H:mm, e.g. 8:15.")]
-    [InlineData("checkpoint 25:00", "checkpoint: 25:00 is not a time. Use H:mm, e.g. 8:15.")]
+    [InlineData("checkpoint 25:00 Standup", "checkpoint: 25:00 is not a time. Use H:mm, now, -<n>m or +<n>m.")]
+    [InlineData("checkpoint 9:5 Standup", "checkpoint: 9:5 is not a time. Use H:mm, now, -<n>m or +<n>m.")]
+    [InlineData("checkpoint 25:00", "checkpoint: 25:00 is not a time. Use H:mm, now, -<n>m or +<n>m.")]
     [InlineData("checkpoint a\u2028b", "checkpoint: the name must not contain control characters. Retype it without the hidden characters.")]
     public void Checkpoint_InvalidInput_ShowsHint_AndWritesNoFile(string typed, string expected)
     {
@@ -3932,14 +3932,14 @@ public sealed class AppTests : IDisposable
 
         Assert.Matches(@"break +│ b +│ Book the start of a break: now, or at an optional H:mm", output);
         Assert.Matches(@"breakend +│ be +│ Book the end of a break: now, or at an optional H:mm", output);
-        Assert.Matches(@"checkpoint +│ cp +│ Book a checkpoint: \[H:mm\] \[#project\] <name> +│", output);
+        Assert.Matches(@"checkpoint +│ cp +│ Book a checkpoint: \[H:mm\|now\|-10m\|\+5m\] \[#project\] <name> +│", output);
     }
 
     // AC-11 (036)
     [Theory]
     [InlineData("brea", "break ", "Book the start of a break")]
     [InlineData("breake", "breakend ", "Book the end of a break")]
-    [InlineData("checkp", "checkpoint ", "Book a checkpoint: [H:mm] [#project] <name>")]
+    [InlineData("checkp", "checkpoint ", "Book a checkpoint: [H:mm|now|-10m|+5m] [#project] <name>")]
     public void Popup_ShowsBreakAndCheckpoint(string typed, string name, string description)
     {
         string output = RunAnsi(c =>
@@ -4658,7 +4658,7 @@ public sealed class AppTests : IDisposable
             Assert.DoesNotMatch(@"(^|[\s\[(])/[a-z]", string.Join('\n', frame));
         }
 
-        Assert.Contains("Use checkpoint [H:mm] [#project] <name>", output);
+        Assert.Contains("Use checkpoint [H:mm|now|-10m|+5m]", output);
         Assert.Contains("Add one with addproject <work item> <title>.", output);
     }
 
@@ -9940,5 +9940,225 @@ public sealed class AppTests : IDisposable
         Assert.Equal("remove", byName.Name);
         Assert.True(registry.TryGet("xp", out Command? removeProject));
         Assert.Equal("removeproject", removeProject.Name);
+    }
+
+    // Relative times (job 103) ---------------------------------------------------------------
+
+    private static FixedTimeProvider At(int hour, int minute, int second = 0) =>
+        new(new DateTimeOffset(2026, 10, 27, hour, minute, second, TimeSpan.Zero), TimeZoneInfo.Utc);
+
+    private const string TimeForms = "Use H:mm, now, -<n>m or +<n>m.";
+
+    // AC-5 (103)
+    [Theory]
+    [InlineData("arrive -10m", "arrival 18:20")]
+    [InlineData("leave now", "leaving 18:30")]
+    [InlineData("break +15m", "breakStart 18:45")]
+    [InlineData("breakend -0m", "breakEnd 18:30")]
+    public void Booking_RelativeTime_BooksFromTheCurrentMinute(string typed, string entry)
+    {
+        (int exitCode, string output) = RunCommands(At(18, 30), typed, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(Entries(entry), ReadDay("2026-10-27"));
+        Assert.DoesNotContain("is not a time", output);
+    }
+
+    // AC-5 (103)
+    [Theory]
+    [InlineData("arrive -1m", "arrival 18:29")]
+    [InlineData("leave now", "leaving 18:30")]
+    [InlineData("break +1m", "breakStart 18:31")]
+    public void Booking_RelativeTime_DropsTheClocksSecondsFirst(string typed, string entry)
+    {
+        (int exitCode, _) = RunCommands(At(18, 30, 59), typed, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(Entries(entry), ReadDay("2026-10-27"));
+    }
+
+    // AC-5 (103)
+    [Fact]
+    public void Booking_RelativeTime_GoesToTheShownDay()
+    {
+        (int exitCode, _) = RunCommands(At(18, 30), "prev", "arrive -10m", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(["2026-10-26.json"], Directory.EnumerateFiles(data.Path).Select(Path.GetFileName));
+        Assert.Equal(Entries("arrival 18:20"), ReadDay("2026-10-26"));
+    }
+
+    // AC-6 (103)
+    [Theory]
+    [InlineData("change 1 -30m", 18, 0)]
+    [InlineData("change 1 now", 18, 30)]
+    [InlineData("change 1 +5m", 18, 35)]
+    public void Change_RelativeTime_SetsTheEntryFromNow(string typed, int hour, int minute)
+    {
+        File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
+
+        (int exitCode, string output) = RunCommands(At(18, 30, 59), typed, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.DoesNotContain("is not a time", output);
+        IReadOnlyList<DayEntry> entries = LoadDay().Entries;
+        Assert.Equal(3, entries.Count);
+        Assert.Contains(new DayEntry(EntryKind.Arrival, new TimeOnly(hour, minute)), entries);
+        Assert.DoesNotContain(new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)), entries);
+    }
+
+    // AC-7 (103)
+    [Fact]
+    public void Checkpoint_RelativeTime_WithProject_BooksFromNow()
+    {
+        WriteTwoProjects();
+
+        (int exitCode, _) = RunCommands(At(18, 30, 59), "checkpoint -15m #1 Standup", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal([Checkpoint(18, 15, "Standup", 1234)], LoadDay().Entries);
+    }
+
+    // AC-7 (103)
+    [Theory]
+    [InlineData("checkpoint now Review", 18, 30, "Review")]
+    [InlineData("checkpoint +5m Review", 18, 35, "Review")]
+    [InlineData("checkpoint now what", 18, 30, "what")]
+    [InlineData("checkpoint nowhere Review", 18, 30, "nowhere Review")]
+    [InlineData("checkpoint -10 Review", 18, 30, "-10 Review")]
+    [InlineData("checkpoint -m Review", 18, 30, "-m Review")]
+    public void Checkpoint_FirstToken_IsATimeOnlyInAnAcceptedForm(string typed, int hour, int minute, string name)
+    {
+        (int exitCode, _) = RunCommands(At(18, 30, 59), typed, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal([Checkpoint(hour, minute, name)], LoadDay().Entries);
+    }
+
+    // AC-7 (103)
+    [Theory]
+    [InlineData("checkpoint -99999m Standup", "checkpoint: -99999m is not a time. " + TimeForms)]
+    [InlineData("checkpoint +12345m", "checkpoint: +12345m is not a time. " + TimeForms)]
+    [InlineData("checkpoint now", "checkpoint: say the checkpoint's name. " + CheckpointUsage)]
+    [InlineData("checkpoint -15m #1", "checkpoint: say the checkpoint's name. " + CheckpointUsage)]
+    public void Checkpoint_BadRelativeTimeOrNoName_ShowsHint_AndWritesNothing(string typed, string expected)
+    {
+        WriteTwoProjects();
+
+        (int exitCode, string output) = RunWide(200, typed, "quit");
+
+        Assert.Equal(0, exitCode);
+        AssertOnHintRow(LastLayout(output), expected);
+        Assert.Equal([ProjectsFile], Directory.EnumerateFileSystemEntries(data.Path));
+    }
+
+    // AC-8 (103)
+    [Theory]
+    [InlineData("arrive -20m", "arrive: -20m crosses midnight.")]
+    [InlineData("leave -11m", "leave: -11m crosses midnight.")]
+    [InlineData("break -0011m", "break: -0011m crosses midnight.")]
+    [InlineData("breakend -9999m", "breakend: -9999m crosses midnight.")]
+    [InlineData("checkpoint -20m Standup", "checkpoint: -20m crosses midnight.")]
+    public void RelativeTime_CrossingMidnight_ShowsHint_AndWritesNothing(string typed, string expected)
+    {
+        (int exitCode, string output) = RunCommands(At(0, 10), typed, "quit");
+
+        Assert.Equal(0, exitCode);
+        string[] frame = LastLayout(output);
+        AssertLayout(frame);
+        string hint = HintText(frame, expected);
+        Assert.StartsWith(expected, hint);
+        Assert.Contains("Use a time on this day, from 0:00 to 23:59.", hint);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
+    }
+
+    // AC-8 (103)
+    [Fact]
+    public void RelativeTime_CrossingMidnight_LateInTheDay_LeavesTheFileUnchanged()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
+        byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
+
+        (int exitCode, string output) = RunCommands(At(23, 58), "leave +2m", "change 1 +5m", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("leave: +2m crosses midnight.", output);
+        Assert.Contains("change: +5m crosses midnight.", output);
+        Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
+    }
+
+    // AC-8 (103)
+    [Theory]
+    [InlineData("arrive +400m", "arrive")]
+    [InlineData("change 1 +400m", "change")]
+    [InlineData("checkpoint +400m Standup", "checkpoint")]
+    public void RelativeTime_CrossingMidnight_HintIsRed(string typed, string name)
+    {
+        File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
+
+        string output = RunAnsi(typed);
+
+        Assert.Matches($@"\x1b\[(31|91|38;5;9)m{name}: ", output);
+        Assert.Contains("crosses midnight", output);
+    }
+
+    // AC-9 (103)
+    [Theory]
+    [InlineData("arrive -10x", "arrive: -10x is not a time. " + TimeForms)]
+    [InlineData("leave -10M", "leave: -10M is not a time. " + TimeForms)]
+    [InlineData("break NOW", "break: NOW is not a time. " + TimeForms)]
+    [InlineData("breakend -12345m", "breakend: -12345m is not a time. " + TimeForms)]
+    [InlineData("arrive -[red]m", "arrive: -[red]m is not a time. " + TimeForms)]
+    public void RelativeTime_Malformed_ShowsTheAcceptedForms_AndWritesNothing(string typed, string expected)
+    {
+        (int exitCode, string output) = RunCommands(typed, "quit");
+
+        Assert.Equal(0, exitCode);
+        AssertOnHintRow(LastLayout(output), expected);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(data.Path));
+    }
+
+    // AC-9 (103)
+    [Fact]
+    public void Change_MalformedRelativeTime_ShowsTheAcceptedForms_AndChangesNothing()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), ThreeEntries);
+        byte[] before = File.ReadAllBytes(DayFile("2026-10-27"));
+
+        (int exitCode, string output) = RunCommands("change 1 -10x", "quit");
+
+        Assert.Equal(0, exitCode);
+        AssertOnHintRow(LastLayout(output), "change: -10x is not a time. " + TimeForms);
+        Assert.Equal(before, File.ReadAllBytes(DayFile("2026-10-27")));
+    }
+
+    // AC-9 (103)
+    [Fact]
+    public void RelativeTime_Malformed_HintIsRed()
+    {
+        string output = RunAnsi("arrive -10x");
+
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)marrive: ", output);
+        Assert.Contains("is not a time", output);
+    }
+
+    // AC-10 (103)
+    [Fact]
+    public void Help_DescribesRelativeTimes_ForTheSixCommands()
+    {
+        (_, string output) = Run(c =>
+        {
+            c.Profile.Width = 160;
+            c.Input.PushTextWithEnter("help");
+            PageDown(c, HelpPages);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Matches(@"arrive +│ a +│ Book your arrival: now, or at an optional H:mm, -10m or \+5m", output);
+        Assert.Matches(@"leave +│ l +│ Book your leaving: now, or at an optional H:mm, -10m or \+5m", output);
+        Assert.Matches(@"break +│ b +│ Book the start of a break: now, or at an optional H:mm, -10m or \+5m", output);
+        Assert.Matches(@"breakend +│ be +│ Book the end of a break: now, or at an optional H:mm, -10m or \+5m", output);
+        Assert.Matches(@"checkpoint +│ cp +│ Book a checkpoint: \[H:mm\|now\|-10m\|\+5m\] \[#project\] <name>", output);
+        Assert.Matches(@"change +│ c +│ Change the time of an entry on this day: <number> <H:mm\|now\|-10m\|\+5m>", output);
     }
 }

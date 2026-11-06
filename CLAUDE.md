@@ -95,6 +95,9 @@ Every factory agent reads this file before working on Times. Keep it short and a
   A day file may instead hold `"absence":"vacation"|"sick"|"publicHoliday"` (written before `"entries"`,
   left out when none; never together with entries or the legacy properties, otherwise unreadable), set by
   `absence` (`ab`) on the shown day; booking commands refuse an absence day.
+- **Relative times:** every typed time (`arrive`, `leave`, `break`, `breakend`, `checkpoint`, `change`) also takes
+  `now`, `-<n>m` or `+<n>m` (1-4 ASCII digits, exact and case-sensitive), worked out by `TimeInput.Parse` from `App.Now()`
+  (seconds dropped); a result outside 0:00-23:59 is `CrossesMidnight` (own red hint), never wrapped; files keep plain times.
 - **Settings:** features register their user preferences in the one `SettingsRegistry` (kinds
   `OnOff`, `Number` with min/max, `Choice` with options; registration order is display order;
   `CreateDefault()` registers `daily-target`, a `Number` 0..1440 with default 480, the daily work target
