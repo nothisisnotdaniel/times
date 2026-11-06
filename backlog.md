@@ -125,3 +125,4 @@ Write one feature per line, in plain language.
 - [?] Azure DevOps sync: show a 'Sending ...' progress line per work item during sync send, so a slow network does not look like a hang (from 101-azure-devops-sync)
 - [?] Azure DevOps sync: keep mistyped lines such as '//devops connect x <token>' (rejected as unknown commands) out of the in-memory history too (from 101-azure-devops-sync)
 - [?] Azure DevOps sync: when saving the new Keychain item fails after the old one was deleted, the old token is lost; keep it (for example by updating the item in place) (from 101-azure-devops-sync)
+- [?] Help text for times: reword the arrive/leave/break/breakend help ("now, or at an optional H:mm, -10m or +5m") so it reads naturally; update the help tests to match. (from 103-relative-times)
