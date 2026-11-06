@@ -11446,7 +11446,6 @@ public sealed class AppTests : IDisposable
             Path.Combine(data.Path, "sub"),
             Path.Combine(data.Path, "sub", "deeper"),
             Path.Combine(data.Path, "sub", ".."),
-            data.Path.ToUpperInvariant(),
         ];
         foreach (string folder in typed)
         {
@@ -11456,6 +11455,52 @@ public sealed class AppTests : IDisposable
         }
 
         AssertSameSnapshot(before);
+    }
+
+    // Job 109, AC-2 to AC-4: case is ignored, so a case variant is refused on either kind of file system.
+    [Fact]
+    public void Backup_CaseVariantOfTheDataFolder_IsRefused_OnEitherFileSystem()
+    {
+        WriteBackupData();
+        Dictionary<string, (DateTime Written, byte[] Bytes)> before = DataSnapshot();
+        const string Refused = "backup: choose a folder outside the data folder.";
+        string parent = Path.GetDirectoryName(data.Path)!;
+        string name = Path.GetFileName(data.Path);
+        string variant = Path.Combine(parent, name.ToUpperInvariant());
+        Assert.NotEqual(name, name.ToUpperInvariant());
+
+        if (Directory.Exists(variant))
+        {
+            // Case-insensitive file system: the variant is the data folder itself.
+            (int exitCode, string[] frame) = RunExport($"backup {variant}");
+
+            Assert.Equal(0, exitCode);
+            Assert.Equal(Refused, BackupHint(frame));
+            AssertSameSnapshot(before);
+            return;
+        }
+
+        // Case-sensitive file system: the variant does not exist yet.
+        (_, string[] missing) = RunExport($"backup {variant}");
+
+        Assert.Equal($"backup: the folder {variant} does not exist. Nothing was created.", BackupHint(missing));
+        Assert.False(Directory.Exists(variant));
+
+        // A real, separate folder that differs only in case is still refused: case is ignored.
+        Directory.CreateDirectory(variant);
+        try
+        {
+            (int exitCode, string[] frame) = RunExport($"backup {variant}");
+
+            Assert.Equal(0, exitCode);
+            Assert.Equal(Refused, BackupHint(frame));
+            Assert.Empty(Directory.GetFileSystemEntries(variant));
+            AssertSameSnapshot(before);
+        }
+        finally
+        {
+            Directory.Delete(variant, recursive: true);
+        }
     }
 
     // AC-4
