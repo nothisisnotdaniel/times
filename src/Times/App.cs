@@ -2960,9 +2960,9 @@ internal sealed class App
         {
             DateOnly shown = dayView.Current;
             DayRecord day = Store.Load(shown);
-            bool readable = LoadSettings(out SettingValues values) is null;
-            TimeSpan target = DailyTarget(readable ? values : null);
-            WorkingTimeCheckOptions options = CheckOptions(readable ? values : null);
+            SettingValues? loaded = LoadSettings(out SettingValues values) is null ? values : null;
+            TimeSpan target = DailyTarget(loaded);
+            WorkingTimeCheckOptions options = CheckOptions(loaded);
 
             // Only today is live: one clock read gives both the date and the minute.
             DateTime local = time.GetLocalNow().DateTime;
@@ -2972,8 +2972,7 @@ internal sealed class App
             IReadOnlyList<DateOnly> week = WorkingTimeChecks.WeekWarnings(
                 shown, date => date == shown ? day : TryLoadDayQuietly(date), options, now);
             string? holiday = PublicHolidays.NameOf(
-                shown, HolidaySetting(readable ? values : null, SettingsRegistry.HolidayCountryName),
-                HolidaySetting(readable ? values : null, SettingsRegistry.HolidayStateName));
+                shown, HolidaySetting(loaded, SettingsRegistry.HolidayCountryName), HolidaySetting(loaded, SettingsRegistry.HolidayStateName));
             return dayView.Render(day, target, FlexitimeBalance.Compute(Store, shown, target, now), now, checks, week, holiday);
         }
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
