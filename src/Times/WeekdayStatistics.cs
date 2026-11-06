@@ -93,7 +93,7 @@ internal sealed class WeekdayStatistics
             }
 
             DayEntry? leaving = record.Entries.LastOrDefault(e => e.Kind == EntryKind.Leaving);
-            long? work = leaving is null ? null : record.WorkTime().Ticks / TimeSpan.TicksPerMinute;
+            TimeSpan? work = leaving is null ? null : record.WorkTime();
             if (!byWeekday.TryGetValue(day.DayOfWeek, out Accumulator? row))
             {
                 row = new Accumulator();
@@ -127,12 +127,12 @@ internal sealed class WeekdayStatistics
     {
         private long arrivalMinutes;
         private long leavingMinutes;
-        private long workMinutes;
+        private long workTicks;
         private int closedDays;
 
         public int Days { get; private set; }
 
-        public void Add(TimeOnly arrival, TimeOnly? leaving, long? work)
+        public void Add(TimeOnly arrival, TimeOnly? leaving, TimeSpan? work)
         {
             Days++;
             arrivalMinutes += Minutes(arrival);
@@ -140,7 +140,7 @@ internal sealed class WeekdayStatistics
             {
                 closedDays++;
                 leavingMinutes += Minutes(left);
-                workMinutes += worked;
+                workTicks += worked.Ticks;
             }
         }
 
@@ -150,7 +150,10 @@ internal sealed class WeekdayStatistics
             TimeOnly? leaving = closedDays == 0
                 ? null
                 : TimeOnly.FromTimeSpan(TimeSpan.FromMinutes(RoundedMean(leavingMinutes, closedDays)));
-            TimeSpan? work = closedDays == 0 ? null : TimeSpan.FromMinutes(RoundedMean(workMinutes, closedDays));
+            // Work times are summed exactly and only the mean is rounded to the minute (half up).
+            TimeSpan? work = closedDays == 0
+                ? null
+                : TimeSpan.FromMinutes((2 * workTicks + closedDays * TimeSpan.TicksPerMinute) / (2L * closedDays * TimeSpan.TicksPerMinute));
             return new WeekdayRow(weekday, Days, arrival, leaving, work);
         }
     }
