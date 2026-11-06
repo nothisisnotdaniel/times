@@ -13908,9 +13908,14 @@ public sealed class AppTests : IDisposable
     private const string ImportDay = "2026-10-28";
 
     /// <summary>Runs <paramref name="input"/> on a wide 60-row console (the caller ends with quit) and returns the exit code and output.</summary>
-    private (int ExitCode, string Output) RunImport(Action<TestConsole> input, DayStore? store = null, int height = 60)
+    private (int ExitCode, string Output) RunImport(Action<TestConsole> input, DayStore? store = null, int height = 60, bool ansi = false)
     {
         TestConsole console = new TestConsole().Interactive();
+        if (ansi)
+        {
+            console.EmitAnsiSequences();
+        }
+
         console.Profile.Height = height;
         console.Profile.Width = 250;
         input(console);
@@ -14486,13 +14491,7 @@ public sealed class AppTests : IDisposable
         using TempFolder source = new TempFolder();
         WriteBroken(source.Path, 25);
 
-        (int exitCode, string output) = RunImport(c =>
-        {
-            c.Input.PushTextWithEnter($"import {source.Path}");
-            c.Input.PushTextWithEnter("quit");
-        }, height: 120);
-        Assert.Equal(0, exitCode);
-        string[] frame = LastLayout(output).Select(l => l.Trim()).ToArray();
+        string[] frame = TallImportFrame($"import {source.Path}");
 
         string[] yellow = YellowLines(frame);
         Assert.Equal(20, yellow.Length);
@@ -14515,13 +14514,13 @@ public sealed class AppTests : IDisposable
     /// <summary>The ANSI output of an import of <paramref name="folder"/> on a tall console.</summary>
     private string ColouredRun(string folder)
     {
-        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
-        console.Profile.Height = 120;
-        console.Profile.Width = 250;
-        console.Input.PushTextWithEnter($"import {folder}");
-        console.Input.PushTextWithEnter("quit");
-        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), instanceLock: sideLock).Run([]));
-        return console.Output;
+        (int exitCode, string output) = RunImport(c =>
+        {
+            c.Input.PushTextWithEnter($"import {folder}");
+            c.Input.PushTextWithEnter("quit");
+        }, height: 120, ansi: true);
+        Assert.Equal(0, exitCode);
+        return output;
     }
 
     // AC-3: the cap applies to problems then warnings as one list.
