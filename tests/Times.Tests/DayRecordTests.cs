@@ -1513,4 +1513,69 @@ public class DayRecordTests
         Assert.Equal(vacation, DayRecord.Empty.WithAbsence(AbsenceKind.Vacation));
         Assert.Equal(vacation.GetHashCode(), DayRecord.Empty.WithAbsence(AbsenceKind.Vacation).GetHashCode());
     }
+
+    // Builds a day from "AR 08:00, BS 12:00" style text (AR, LE, BS, BE, CP); empty text is the empty day.
+    private static DayRecord LiveDay(string text)
+    {
+        DayRecord record = DayRecord.Empty;
+        foreach (string part in text.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            string[] pieces = part.Split(' ');
+            TimeOnly at = TimeOnly.Parse(pieces[1], CultureInfo.InvariantCulture);
+            EntryKind kind = pieces[0] switch
+            {
+                "AR" => EntryKind.Arrival,
+                "LE" => EntryKind.Leaving,
+                "BS" => EntryKind.BreakStart,
+                "BE" => EntryKind.BreakEnd,
+                _ => EntryKind.Checkpoint,
+            };
+            record = record.Add(kind == EntryKind.Checkpoint ? new DayEntry(kind, at, "Work", null) : new DayEntry(kind, at));
+        }
+
+        return record;
+    }
+
+    // AC-1
+    [Theory]
+    [InlineData("AR 08:00", "10:30", 150)]
+    [InlineData("AR 08:00, BS 12:00, BE 12:30", "13:00", 270)]
+    [InlineData("AR 08:00, CP 09:00", "09:15", 75)]
+    [InlineData("AR 08:00, BS 12:00", "13:00", 240)]
+    [InlineData("AR 08:00, LE 12:00", "13:00", 240)]
+    [InlineData("", "13:00", 0)]
+    [InlineData("AR 08:00, BS 12:00, BE 12:30", "12:30", 240)]
+    [InlineData("AR 08:00, BS 12:00, BE 12:30", "12:10", 240)]
+    [InlineData("CP 09:00", "10:00", 0)]
+    public void WorkTimeAt_AccruesOnlyWhileWorking_AfterTheLastEntry(string entries, string now, int expectedMinutes)
+    {
+        DayRecord record = LiveDay(entries);
+        TimeOnly at = TimeOnly.Parse(now, CultureInfo.InvariantCulture);
+
+        Assert.Equal(TimeSpan.FromMinutes(expectedMinutes), record.WorkTimeAt(at));
+        Assert.Equal(TimeSpan.FromHours(8) - TimeSpan.FromMinutes(expectedMinutes), record.TimeLeftAt(TimeSpan.FromHours(8), at));
+    }
+
+    // AC-1
+    [Theory]
+    [InlineData("AR 08:00", true)]
+    [InlineData("AR 08:00, BS 12:00, BE 12:30", true)]
+    [InlineData("AR 08:00, BS 12:00", false)]
+    [InlineData("AR 08:00, LE 12:00", false)]
+    [InlineData("", false)]
+    public void IsWorking_IsTheStateAfterTheLastEntry(string entries, bool expected)
+    {
+        Assert.Equal(expected, LiveDay(entries).IsWorking);
+    }
+
+    // AC-1
+    [Fact]
+    public void WorkTimeAt_OnAnAbsenceDay_IsWorkTime()
+    {
+        DayRecord record = DayRecord.Empty.WithAbsence(AbsenceKind.Vacation);
+
+        Assert.False(record.IsWorking);
+        Assert.Equal(record.WorkTime(), record.WorkTimeAt(new TimeOnly(12, 0)));
+        Assert.Equal(TimeSpan.FromHours(8), record.TimeLeftAt(TimeSpan.FromHours(8), new TimeOnly(12, 0)));
+    }
 }

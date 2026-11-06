@@ -45,6 +45,7 @@ internal sealed class App
     private readonly ITokenStore tokenStore;
     private readonly Func<DevOpsCredential, IDevOpsClient>? devOpsClient;
     private readonly IBackgroundEvents? events;
+    private readonly bool liveClock;
 
     // What the last full redraw showed above the day view's hint rows, so a background event can
     // rebuild the same top area in place (the hint itself stays in frameHint).
@@ -91,12 +92,14 @@ internal sealed class App
     /// <param name="tokenStore">Holds the Azure DevOps token, or <c>null</c> for <see cref="UnsupportedTokenStore"/> (no OS store at all).</param>
     /// <param name="devOpsClient">Makes the Azure DevOps client for a credential, or <c>null</c> for none (sync cannot send).</param>
     /// <param name="events">Background events applied between keys at the prompt, or <c>null</c> for none.</param>
+    /// <param name="liveClock">True to run a <see cref="LiveClock"/> while the loop runs (only with <paramref name="events"/>).</param>
     public App(IAnsiConsole console, TimeProvider time, DayStore store, CommandRegistry? registry = null,
         bool folderFromEnvironment = false, MouseReporting? mouse = null, SettingsRegistry? settings = null,
         UpdateService? updates = null, ITokenStore? tokenStore = null, Func<DevOpsCredential, IDevOpsClient>? devOpsClient = null,
-        IBackgroundEvents? events = null)
+        IBackgroundEvents? events = null, bool liveClock = false)
     {
         this.events = events;
+        this.liveClock = liveClock;
         this.tokenStore = tokenStore ?? new UnsupportedTokenStore();
         this.devOpsClient = devOpsClient;
         this.updates = updates;
@@ -2148,6 +2151,10 @@ internal sealed class App
         return split < 0 ? (trimmed, string.Empty) : (trimmed[..split], trimmed[(split + 1)..]);
     }
 
+    // A live clock tick, on the loop thread: the top area is redrawn only while the shown day is today. After
+    // midnight the shown day stays as it was, so it no longer ticks.
+    private bool ShowsToday() => dayView.Current == DateOnly.FromDateTime(time.GetLocalNow().DateTime);
+
     // The current local minute, seconds dropped.
     private TimeOnly Now()
     {
@@ -2265,12 +2272,17 @@ internal sealed class App
 
         // Mouse reporting is on only while the loop runs: off again on every exit, even an exception.
         mouse?.Enable();
+
+        // The live clock ticks only through the background events; it is disposed on every way out.
+        LiveClock? clock = events is not null && liveClock ? new LiveClock(time, events, ShowsToday) : null;
         try
         {
+            clock?.Start();
             return Loop(pending is null ? null : new Markup(pending));
         }
         finally
         {
+            clock?.Dispose();
             mouse?.Disable();
         }
     }
@@ -2818,7 +2830,11 @@ internal sealed class App
         {
             DayRecord day = Store.Load(dayView.Current);
             TimeSpan target = DailyTarget();
-            return dayView.Render(day, target, FlexitimeBalance.Compute(Store, dayView.Current, target));
+
+            // Only today is live: one clock read gives both the date and the minute.
+            DateTime local = time.GetLocalNow().DateTime;
+            TimeOnly? now = dayView.Current == DateOnly.FromDateTime(local) ? new TimeOnly(local.Hour, local.Minute) : null;
+            return dayView.Render(day, target, FlexitimeBalance.Compute(Store, dayView.Current, target, now), now);
         }
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
         {

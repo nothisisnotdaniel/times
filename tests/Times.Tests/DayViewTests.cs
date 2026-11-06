@@ -1128,4 +1128,95 @@ public class DayViewTests
         Assert.Contains("\u001b[38;5;8mAbsence:\u001b[0m \u001b[38;5;75mSick\u001b[0m", output);
         Assert.Contains("\u001b[38;5;75m+0:00\u001b[0m", output);
     }
+
+    private static string RenderLive(DayRecord record, TimeOnly? now, FlexitimeBalance? balance = null)
+    {
+        TestConsole console = new TestConsole();
+        console.Profile.Width = 80;
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record, EightHours, balance ?? FlexitimeBalance.None, now));
+        return console.Output;
+    }
+
+    private static string RenderOld(DayRecord record, FlexitimeBalance? balance = null)
+    {
+        TestConsole console = new TestConsole();
+        console.Profile.Width = 80;
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(record, EightHours, balance ?? FlexitimeBalance.None));
+        return console.Output;
+    }
+
+    private static readonly DayRecord WorkingDay = DayRecord.Empty
+        .Add(new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0)))
+        .Add(new DayEntry(EntryKind.BreakStart, new TimeOnly(12, 0)))
+        .Add(new DayEntry(EntryKind.BreakEnd, new TimeOnly(12, 30)));
+
+    // AC-2
+    [Fact]
+    public void Render_WithLiveMinute_OnAWorkingDay_AddsANowRow_AndTheLiveDayDelta()
+    {
+        string output = RenderLive(WorkingDay, new TimeOnly(18, 30), new FlexitimeBalance(TimeSpan.FromMinutes(30), 2, 0));
+        string[] lines = output.Split('\n');
+
+        int nowRow = Array.FindIndex(lines, l => l.Contains("now", StringComparison.Ordinal));
+        int lastEntry = Array.FindIndex(lines, l => l.Contains("12:30", StringComparison.Ordinal));
+        Assert.Equal(lastEntry + 1, nowRow);
+        // Empty number cell, then now, the time and left: 8:00 - 10:00 worked.
+        Assert.Matches(@"^ +now +18:30 +left -2:00 *$", lines[nowRow]);
+        Assert.Contains("Target 8:00 · day +2:00 · balance +0:30", output);
+    }
+
+    // AC-2
+    [Fact]
+    public void Render_NowRow_UsesGreyLabel_AndSteelBlueTime()
+    {
+        TestConsole console = new TestConsole().EmitAnsiSequences();
+        console.Write(new DayView(FixedTimeProvider.At20261027()).Render(WorkingDay, EightHours, FlexitimeBalance.None, new TimeOnly(18, 30)));
+
+        Assert.Contains("\u001b[38;5;8mnow\u001b[0m", console.Output);
+        Assert.Contains("\u001b[38;5;75m18:30\u001b[0m", console.Output);
+    }
+
+    // AC-2
+    [Fact]
+    public void Render_WithLiveMinute_AndACheckpoint_KeepsTheDetailsColumn()
+    {
+        DayRecord record = WorkingDay.Add(new DayEntry(EntryKind.Checkpoint, new TimeOnly(13, 0), "Review", 42));
+
+        string output = RenderLive(record, new TimeOnly(14, 0));
+
+        Assert.Matches(@"(?m)^ +now +14:00 +left 2:30 *$", output);
+        Assert.Contains("day -2:30", output);
+    }
+
+    // AC-2
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Render_WithoutLiveMinute_OrNotWorking_IsByteIdentical(bool live)
+    {
+        DayRecord[] days =
+        [
+            DayRecord.Empty,
+            DayRecord.Empty.WithAbsence(AbsenceKind.Vacation),
+            DayRecord.Empty.Add(new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0))).Add(new DayEntry(EntryKind.Leaving, new TimeOnly(17, 0))),
+            DayRecord.Empty.Add(new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0))).Add(new DayEntry(EntryKind.BreakStart, new TimeOnly(12, 0))),
+            DayRecord.Empty.Add(new DayEntry(EntryKind.Checkpoint, new TimeOnly(9, 0), "Standup", null)),
+        ];
+        FlexitimeBalance balance = new FlexitimeBalance(TimeSpan.FromMinutes(15), 1, 0);
+        foreach (DayRecord day in days)
+        {
+            Assert.Equal(RenderOld(day, balance), RenderLive(day, live ? new TimeOnly(18, 30) : null, balance));
+        }
+
+        // A working day without a live minute is the old render too.
+        Assert.Equal(RenderOld(WorkingDay, balance), RenderLive(WorkingDay, null, balance));
+        Assert.DoesNotContain("now", RenderLive(WorkingDay, null, balance));
+    }
+
+    // AC-2: a minute before the last entry (a booking ahead of the clock) shows no now row.
+    [Fact]
+    public void Render_WithLiveMinute_BeforeTheLastEntry_IsByteIdentical()
+    {
+        Assert.Equal(RenderOld(WorkingDay), RenderLive(WorkingDay, new TimeOnly(12, 0)));
+    }
 }

@@ -67,7 +67,16 @@ Every factory agent reads this file before working on Times. Keep it short and a
     changed the view, then redraw popup and line. `App.ApplyEvent` re-renders the top area with the last message and
     hidden-quicklist flag and rewrites only its rows in place (offset kept, clamped). `ReadValue`, `ReadKey`, the
     settings panel and the token prompt never apply events. `App` takes an optional `events`; `Program.cs` passes
-    none yet. Tests use `ScriptedEvents` (releases events on the n-th wait, never blocks) and `HookedInput`.
+    a `BackgroundEventQueue` and `liveClock: true`. Tests use `ScriptedEvents` (releases events on the n-th wait, never
+    blocks), `ObservedEvents` (records each applied event's result) and `HookedInput`.
+    - **Live clock:** `LiveClock` (started by `App.Run` only with `events` and `liveClock`, disposed in its `finally`) arms a
+      one-shot `TimeProvider.CreateTimer` due at the next local minute boundary, re-armed from the clock on each fire, and
+      posts one tick per fire; an `Interlocked` pending flag keeps at most one tick queued. A tick returns `true` (so
+      `ApplyEvent` redraws the top area in place) only while `dayView.Current` is today; after midnight the shown day stays
+      and stops ticking. On today, `App.RenderDay` passes the current minute to `DayView.Render` and `FlexitimeBalance.Compute`:
+      while `DayRecord.IsWorking` (and the minute is not before the last entry) a `now` row (grey `now`, steelblue1 `HH:mm`,
+      `left` from `TimeLeftAt`) follows the last entry, and `day`/`balance` use `WorkTimeAt(now)`; otherwise the view is as
+      before. Tests fire timers by hand through `SettableTimeProvider.Timers` (`ManualTimer`).
   - `quit` ends the loop with exit code 0.
   - Tests drive the loop by queuing input on `TestConsole.Input` (`PushTextWithEnter`, `PushKey`)
     and always end with `quit`, so they can't hang.

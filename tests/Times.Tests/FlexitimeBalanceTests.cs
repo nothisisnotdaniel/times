@@ -219,4 +219,38 @@ public sealed class FlexitimeBalanceTests
         Assert.Equal(TimeSpan.Zero, balance.Total);
         Assert.Equal(1, balance.CountedDays);
     }
+
+    private const string Working = "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}";
+
+    // AC-3
+    [Fact]
+    public void Compute_WithLiveMinute_CountsTheShownDayToNow()
+    {
+        using TempFolder temp = new TempFolder();
+        Write(temp, "2026-10-20.json", Working);
+        Write(temp, "2026-10-21.json", Day("08:00", "17:00"));
+        Write(temp, "2026-10-27.json", Working);
+
+        FlexitimeBalance plain = FlexitimeBalance.Compute(new DayStore(temp.Path), Shown, EightHours);
+        FlexitimeBalance live = FlexitimeBalance.Compute(new DayStore(temp.Path), Shown, EightHours, new TimeOnly(17, 30));
+
+        // Without now: -8:00 (20th, nothing accrued) +1:00 -8:00. With now, only the shown day moves: 9:30 worked.
+        Assert.Equal(TimeSpan.FromHours(-15), plain.Total);
+        Assert.Equal(TimeSpan.FromHours(-15) + TimeSpan.FromMinutes(570), live.Total);
+        Assert.Equal(3, live.CountedDays);
+    }
+
+    // AC-3
+    [Fact]
+    public void Compute_WithLiveMinute_ForAShownDayThatIsNotWorking_IsUnchanged()
+    {
+        using TempFolder temp = new TempFolder();
+        Write(temp, "2026-10-20.json", Working);
+        Write(temp, "2026-10-27.json", Day("08:00", "12:00"));
+
+        FlexitimeBalance plain = FlexitimeBalance.Compute(new DayStore(temp.Path), Shown, EightHours);
+        FlexitimeBalance live = FlexitimeBalance.Compute(new DayStore(temp.Path), Shown, EightHours, new TimeOnly(17, 30));
+
+        Assert.Equal(plain.Total, live.Total);
+    }
 }

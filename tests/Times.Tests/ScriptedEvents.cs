@@ -92,3 +92,35 @@ internal sealed class HookedInput : IAnsiConsoleInput
     public Task<ConsoleKeyInfo?> ReadKeyAsync(bool intercept, CancellationToken cancellationToken) =>
         Task.FromResult(ReadKey(intercept));
 }
+
+/// <summary>
+/// Wraps another queue and records, for every posted event, what its apply returned and the output length
+/// at that moment (via <see cref="OnApply"/>), so tests can see what a producer's events did.
+/// </summary>
+internal sealed class ObservedEvents : IBackgroundEvents
+{
+    private readonly IBackgroundEvents inner;
+
+    public ObservedEvents(IBackgroundEvents inner)
+    {
+        this.inner = inner;
+    }
+
+    /// <summary>What each applied event returned, in order (a throwing event adds nothing).</summary>
+    public List<bool> Results { get; } = [];
+
+    /// <summary>Called right before each posted event is applied.</summary>
+    public Action? OnApply { get; set; }
+
+    public void Post(BackgroundEvent e) => inner.Post(new BackgroundEvent(() =>
+    {
+        OnApply?.Invoke();
+        bool changed = e.Apply();
+        Results.Add(changed);
+        return changed;
+    }));
+
+    public bool TryTake(out BackgroundEvent? e) => inner.TryTake(out e);
+
+    public void WaitForKeyOrEvent(Func<bool> keyAvailable) => inner.WaitForKeyOrEvent(keyAvailable);
+}
