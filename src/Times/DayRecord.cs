@@ -286,6 +286,45 @@ internal sealed record DayRecord
     public TimeSpan WorkTime() => Total(WorkState.Working);
 
     /// <summary>
+    /// True when the walk of <see cref="TimeLeft"/> ends in the working state: the user arrived (or ended
+    /// a break) and has neither started a break nor left since. False for an empty or absence day.
+    /// </summary>
+    public bool IsWorking => entries.Length > 0 && FinalState() == WorkState.Working;
+
+    /// <summary>
+    /// Returns the work time accrued up to <paramref name="now"/>: <see cref="WorkTime"/> plus the time since
+    /// the last entry when the day <see cref="IsWorking"/> and <paramref name="now"/> is later than that entry.
+    /// In every other case (on break, off, empty or absence day, <paramref name="now"/> at or before the last
+    /// entry) it equals <see cref="WorkTime"/>.
+    /// </summary>
+    public TimeSpan WorkTimeAt(TimeOnly now)
+    {
+        TimeSpan work = WorkTime();
+        if (!IsWorking)
+        {
+            return work;
+        }
+
+        TimeOnly last = entries[^1].Time;
+        return now > last ? work + (now - last) : work;
+    }
+
+    /// <summary>The work time left at <paramref name="now"/>: <paramref name="target"/> minus <see cref="WorkTimeAt"/>.</summary>
+    public TimeSpan TimeLeftAt(TimeSpan target, TimeOnly now) => target - WorkTimeAt(now);
+
+    // The state the day is in after its last entry.
+    private WorkState FinalState()
+    {
+        WorkState state = WorkState.Off;
+        foreach (DayEntry entry in entries)
+        {
+            state = Next(state, entry.Kind);
+        }
+
+        return state;
+    }
+
+    /// <summary>
     /// Returns the total break time: the time between consecutive entries while on break in the walk
     /// of <see cref="TimeLeft"/> (a break start to the next break end, or to the leaving that closes
     /// an open break), plus every lunch gap. A lunch gap runs from a leaving that ends a span (moves

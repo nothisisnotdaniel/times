@@ -12045,4 +12045,297 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, exitCode);
         Assert.Equal(0, input.KeyAvailableCalls);
     }
+
+    // Live clock (job 112) -------------------------------------------------------------------
+
+    private static SettableTimeProvider LiveTime(int day, int hour, int minute, int second) =>
+        new SettableTimeProvider(new DateTimeOffset(2026, 10, day, hour, minute, second, TimeSpan.Zero));
+
+    /// <summary>Moves the clock to <paramref name="at"/> and fires the live clock's timer, as the timer thread would.</summary>
+    private static void Tick(SettableTimeProvider time, DateTimeOffset at)
+    {
+        time.UtcNow = at;
+        Assert.Single(time.Timers).Fire();
+    }
+
+    /// <summary>Runs the app with the live clock on, on an ANSI console, with <paramref name="events"/>.</summary>
+    private string RunLive(SettableTimeProvider time, IBackgroundEvents events, TestConsole console, IAnsiConsole? appConsole = null,
+        CommandRegistry? registry = null)
+    {
+        App app = new App(appConsole ?? console, time, new DayStore(data.Path), registry, events: events, liveClock: true);
+        Assert.Equal(0, app.Run([]));
+        return console.Output;
+    }
+
+    // The last cursor position (row, column) set in output.
+    private static (int Row, int Column) LastCursor(string output)
+    {
+        AnsiWrite last = AnsiWrites.Parse(output)[^1];
+        return (last.Row, last.Column);
+    }
+
+    // AC-2, AC-3: the first frame on today shows the now row and moves the day and the balance with it.
+    [Fact]
+    public void LiveClock_Today_Working_ShowsTheNowRow_AndTheLiveBalance()
+    {
+        new DayStore(data.Path).Save(Shown, Arrived(8));
+        SettableTimeProvider time = LiveTime(27, 18, 30, 20);
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Input.PushTextWithEnter("quit");
+
+        string output = RunLive(time, new ScriptedEvents(), console);
+
+        string[] frame = AnsiFrames(output)[0];
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"^ +now +18:30 +left -2:30"));
+        Assert.Contains(frame, l => l.Contains("Target 8:00 · day +2:30 · balance +2:30", StringComparison.Ordinal));
+    }
+
+    // AC-6
+    [Fact]
+    public void LiveClock_Tick_RewritesOnlyTheTopArea_KeepingLineCursorAndPopup_AndEnterRunsTheLine()
+    {
+        new DayStore(data.Path).Save(Shown, Arrived(8));
+        SettableTimeProvider time = LiveTime(27, 18, 30, 20);
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        ScriptedEvents scripted = new ScriptedEvents();
+        ObservedEvents events = new ObservedEvents(scripted);
+        int beforeTick = -1;
+        int appliedAt = -1;
+        // "arr" takes waits 1-3; wait 4 comes before the Enter, with the popup open.
+        scripted.OnWait = call =>
+        {
+            if (call == 4)
+            {
+                beforeTick = console.Output.Length;
+                Tick(time, new DateTimeOffset(2026, 10, 27, 18, 31, 5, TimeSpan.Zero));
+            }
+        };
+        events.OnApply = () => appliedAt = console.Output.Length;
+        console.Input.PushTextWithEnter("arr");
+        console.Input.PushTextWithEnter("quit");
+
+        string output = RunLive(time, events, console);
+
+        Assert.Equal([true], events.Results);
+        Assert.Equal(beforeTick, appliedAt);
+        int clear = output.IndexOf(ClearScreen, appliedAt, StringComparison.Ordinal);
+        Assert.True(clear > appliedAt);
+        string typed = output[output.LastIndexOf(ClearScreen, appliedAt, StringComparison.Ordinal)..appliedAt];
+        List<AnsiWrite> before = AnsiWrites.Parse(typed);
+        List<AnsiWrite> writes = AnsiWrites.Parse(output[appliedAt..clear]);
+
+        // First the top-area rows, each once, at column 1.
+        List<AnsiWrite> top = writes.TakeWhile(w => w.Column == 1 && w.Row <= TopHeight).ToList();
+        Assert.Equal(Enumerable.Range(1, TopHeight), top.Select(w => w.Row));
+        string topText = string.Join('\n', top.Select(w => w.Text));
+        Assert.Matches(@"(?m)^ +now +18:31 +left -2:31", topText);
+        Assert.Contains("day +2:31", topText);
+        Assert.DoesNotContain("18:30", topText);
+
+        // Then the popup rows as they were, and the input line with the same text and cursor.
+        List<AnsiWrite> after = writes.Skip(top.Count).ToList();
+        List<string> popupBefore = before.Where(w => w.StartsWithCommand && w.Row <= 21).Select(w => w.Text).ToList();
+        List<string> popupAfter = after.Where(w => w.StartsWithCommand && w.Row <= 21).Select(w => w.Text).ToList();
+        Assert.NotEmpty(popupAfter);
+        Assert.Equal(popupBefore.TakeLast(popupAfter.Count), popupAfter);
+        Assert.Contains(after, w => w.Row == 23 && w.Text.Contains("arr", StringComparison.Ordinal));
+        Assert.Equal(LastCursor(typed), LastCursor(output[appliedAt..clear]));
+
+        // No input-box border and no hint row outside the popup were written.
+        Assert.DoesNotContain(writes, w => w.Row == 22 || w.Row == 24);
+        int popupTop = after.Where(w => w.StartsWithCommand).Min(w => w.Row);
+        Assert.DoesNotContain(after, w => w.Row > TopHeight && w.Row < popupTop);
+
+        // Enter runs "arr" as typed: the same as a run without the clock.
+        using TempFolder plain = new TempFolder();
+        new DayStore(plain.Path).Save(Shown, Arrived(8));
+        TestConsole plainConsole = new TestConsole().Interactive().EmitAnsiSequences();
+        plainConsole.Input.PushTextWithEnter("arr");
+        plainConsole.Input.PushTextWithEnter("quit");
+        Assert.Equal(0, new App(plainConsole, LiveTime(27, 18, 31, 5), new DayStore(plain.Path)).Run([]));
+        Assert.Equal(AnsiFrames(plainConsole.Output)[1][20], AnsiFrames(output)[1][20]);
+        Assert.Equal(new DayStore(plain.Path).Load(Shown), LoadDay());
+    }
+
+    // AC-7
+    [Theory]
+    [InlineData("prev")]
+    [InlineData("next")]
+    public void LiveClock_Tick_OnAnotherDay_ReturnsFalse_AndWritesNothing(string command)
+    {
+        new DayStore(data.Path).Save(Shown, Arrived(8));
+        SettableTimeProvider time = LiveTime(27, 18, 30, 20);
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        ScriptedEvents scripted = new ScriptedEvents();
+        ObservedEvents events = new ObservedEvents(scripted);
+        int fired = -1;
+        int next = -1;
+        // The command and Enter take waits 1 to n; the next wait is before "quit", the one after it ends that round.
+        int at = command.Length + 2;
+        scripted.OnWait = call =>
+        {
+            if (call == at)
+            {
+                Tick(time, new DateTimeOffset(2026, 10, 27, 18, 31, 5, TimeSpan.Zero));
+                fired = console.Output.Length;
+            }
+            else if (call == at + 1)
+            {
+                next = console.Output.Length;
+            }
+        };
+        console.Input.PushTextWithEnter(command);
+        console.Input.PushTextWithEnter("quit");
+
+        string output = RunLive(time, events, console);
+
+        Assert.Equal([false], events.Results);
+        Assert.True(fired > 0);
+        Assert.Equal(fired, next);
+        Assert.DoesNotContain(AnsiFrames(output)[1], l => l.Contains("now", StringComparison.Ordinal));
+    }
+
+    // AC-8
+    [Fact]
+    public void LiveClock_Tick_AfterMidnight_KeepsTheShownDay_ReturnsFalse_AndWritesNothing()
+    {
+        new DayStore(data.Path).Save(Shown, Arrived(8));
+        SettableTimeProvider time = LiveTime(27, 23, 59, 30);
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        ScriptedEvents scripted = new ScriptedEvents();
+        ObservedEvents events = new ObservedEvents(scripted);
+        int fired = -1;
+        int next = -1;
+        scripted.OnWait = call =>
+        {
+            if (call == 1)
+            {
+                Tick(time, new DateTimeOffset(2026, 10, 28, 0, 0, 0, TimeSpan.Zero));
+                fired = console.Output.Length;
+            }
+            else if (call == 2)
+            {
+                next = console.Output.Length;
+            }
+        };
+        console.Input.PushTextWithEnter("quit");
+
+        string output = RunLive(time, events, console);
+
+        Assert.Equal([false], events.Results);
+        Assert.Equal(fired, next);
+        Assert.Contains(AnsiFrames(output)[0], l => Regex.IsMatch(l, @"^ +now +23:59"));
+        // Only the first draw and the quit clear the screen: the tick drew no frame.
+        Assert.Equal(2, Count(output, ClearScreen));
+        Assert.DoesNotContain("2026-10-28", output);
+    }
+
+    // AC-9
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void LiveClock_Tick_WhileSettingsOrAValuePromptIsOpen_WritesNothing_AndIsAppliedAtTheNextPrompt(bool prompt)
+    {
+        new DayStore(data.Path).Save(Shown, Arrived(8));
+        SettableTimeProvider time = LiveTime(27, 18, 30, 20);
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        HookedInput input = new HookedInput(console.Input);
+        ObservedEvents events = new ObservedEvents(new BackgroundEventQueue());
+        int clearsAtTick = -1;
+        int clearsAtApply = -1;
+        int appliedAt = -1;
+        // Keys 1-9 are "settings" and Enter. In the panel, key 10 is the Esc that closes it; with the prompt,
+        // key 10 is the Enter that opens daily-target's value prompt, key 11 a typed "5", 12 and 13 two Esc.
+        int tickKey = prompt ? 11 : 10;
+        input.BeforeKey = key =>
+        {
+            if (key == tickKey)
+            {
+                clearsAtTick = Count(console.Output, ClearScreen);
+                Tick(time, new DateTimeOffset(2026, 10, 27, 18, 31, 5, TimeSpan.Zero));
+            }
+        };
+        events.OnApply = () =>
+        {
+            clearsAtApply = Count(console.Output, ClearScreen);
+            appliedAt = console.Output.Length;
+        };
+        console.Input.PushTextWithEnter("settings");
+        if (prompt)
+        {
+            console.Input.PushKey(ConsoleKey.Enter);
+            console.Input.PushText("5");
+            console.Input.PushKey(ConsoleKey.Escape);
+        }
+
+        console.Input.PushKey(ConsoleKey.Escape);
+        console.Input.PushTextWithEnter("quit");
+
+        string output = RunLive(time, events, console, new InputOverrideConsole(console, input));
+
+        Assert.Equal([true], events.Results);
+        // Not applied in the panel or the prompt: only after the panel closed and the full redraw that follows.
+        Assert.Equal(clearsAtTick + 1, clearsAtApply);
+        Assert.Matches(@"(?m)^ +now +18:31 +left -2:31",
+            string.Join('\n', AnsiWrites.Parse(output[appliedAt..]).Select(w => w.Text)));
+        if (prompt)
+        {
+            Assert.Contains("daily-target: a whole number", output);
+        }
+    }
+
+    // AC-10
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    public void LiveClock_WithoutEventsOrSwitchedOff_NeverCreatesATimer(bool withEvents, bool liveClock)
+    {
+        SettableTimeProvider time = LiveTime(27, 18, 30, 20);
+        TestConsole console = new TestConsole().Interactive();
+        console.Input.PushTextWithEnter("quit");
+
+        App app = new App(console, time, new DayStore(data.Path), events: withEvents ? new ScriptedEvents() : null, liveClock: liveClock);
+
+        Assert.Equal(0, app.Run([]));
+        Assert.Empty(time.Timers);
+    }
+
+    // AC-10
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void LiveClock_TimerIsDisposed_OnQuit_AndAtTheEndOfInput(bool quit)
+    {
+        SettableTimeProvider time = LiveTime(27, 18, 30, 20);
+        TestConsole test = new TestConsole().Interactive();
+        IAnsiConsole console = new InputOverrideConsole(test, new EndingInput(quit ? "quit\r" : "help\r"));
+        ScriptedEvents events = new ScriptedEvents();
+        bool disposedWhileRunning = true;
+        events.OnWait = _ => disposedWhileRunning = time.Timers.Single().Disposed;
+
+        Assert.Equal(0, new App(console, time, new DayStore(data.Path), events: events, liveClock: true).Run([]));
+
+        ManualTimer timer = Assert.Single(time.Timers);
+        Assert.False(disposedWhileRunning);
+        Assert.True(timer.Disposed);
+        Assert.Equal([TimeSpan.FromSeconds(40)], timer.DueTimes);
+    }
+
+    // AC-10: an exception out of the loop disposes the timer too.
+    [Fact]
+    public void LiveClock_TimerIsDisposed_WhenTheLoopThrows()
+    {
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+        registry.Register("boom", "bm", "Throws while drawing", _ => new CommandResult(new ThrowingRenderable()));
+        SettableTimeProvider time = LiveTime(27, 18, 30, 20);
+        TestConsole console = new TestConsole().Interactive();
+        console.Input.PushTextWithEnter("boom");
+        console.Input.PushTextWithEnter("quit");
+        App app = new App(console, time, new DayStore(data.Path), registry, events: new ScriptedEvents(), liveClock: true);
+
+        Assert.Throws<InvalidOperationException>(() => app.Run([]));
+
+        Assert.True(Assert.Single(time.Timers).Disposed);
+    }
 }

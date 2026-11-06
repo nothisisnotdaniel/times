@@ -78,8 +78,14 @@ internal sealed class DayView
     /// counts toward the balance.
     /// An absence day shows the heading, then <c>Absence: Vacation</c> (<c>Sick</c>, <c>Public holiday</c>;
     /// grey label, <c>SteelBlue1</c> value), then the target line with <c>day +0:00</c>.
+    /// <paramref name="now"/> is the live minute when the shown day is today, or <c>null</c>. When it is set,
+    /// the day <see cref="DayRecord.IsWorking"/> and <paramref name="now"/> is not before the last entry, one
+    /// more grid row follows the last entry: an empty number cell, a grey <c>now</c>, the <c>HH:mm</c> time in
+    /// <c>SteelBlue1</c> and <c>left</c> with <see cref="DayRecord.TimeLeftAt"/>; the target line's <c>day</c>
+    /// part is then <see cref="DayRecord.WorkTimeAt"/> minus <paramref name="target"/>. Otherwise the output
+    /// is the same as without <paramref name="now"/>.
     /// </summary>
-    public IRenderable Render(DayRecord day, TimeSpan target, FlexitimeBalance balance)
+    public IRenderable Render(DayRecord day, TimeSpan target, FlexitimeBalance balance, TimeOnly? now = null)
     {
         if (day.Absence is { } absence)
         {
@@ -133,6 +139,25 @@ internal sealed class DayView
             grid.AddRow(cells.ToArray());
         }
 
+        TimeSpan worked = day.WorkTime();
+        if (LiveMinute(day, now) is { } live)
+        {
+            worked = day.WorkTimeAt(live);
+            List<IRenderable> cells =
+            [
+                Text.Empty,
+                new Markup("[grey]now[/]"),
+                new Markup($"[steelblue1]{live.ToString("HH:mm", CultureInfo.InvariantCulture)}[/]"),
+            ];
+            if (details)
+            {
+                cells.Add(Text.Empty);
+            }
+
+            cells.Add(new Markup($"[grey]left[/] {FormatTimeLeft(day.TimeLeftAt(target, live))}"));
+            grid.AddRow(cells.ToArray());
+        }
+
         TimeSpan taken = day.BreakTime();
         TimeSpan required = DayRecord.RequiredBreak(day.WorkTime());
         string summary =
@@ -151,12 +176,16 @@ internal sealed class DayView
             grid,
             Text.Empty,
             new Padder(new Markup(summary), new Padding(indent, 0, 0, 0)),
-            new Padder(new Markup(TargetLine(target, day.WorkTime() - target, balance)), new Padding(indent, 0, 0, 0)),
+            new Padder(new Markup(TargetLine(target, worked - target, balance)), new Padding(indent, 0, 0, 0)),
         ];
         AddHint(rows, "Break not ended", day.UnendedBreaks(), indent);
         AddHint(rows, "Break outside arrival and leaving", day.BreaksOutsideSpans(), indent);
         return new Rows(rows);
     }
+
+    // The live minute to show, or null: only while the day is working and the minute is not before its last entry.
+    private static TimeOnly? LiveMinute(DayRecord day, TimeOnly? now) =>
+        now is { } live && day.IsWorking && live >= day.Entries[^1].Time ? live : null;
 
     /// <summary>
     /// The target line's markup: grey words and <c>·</c>, <c>SteelBlue1</c> values. The target is

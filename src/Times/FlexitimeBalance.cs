@@ -33,9 +33,11 @@ internal sealed class FlexitimeBalance
     /// <summary>
     /// Computes the balance from <paramref name="store"/>'s day files dated on or before
     /// <paramref name="shownDay"/>, with <paramref name="target"/> as every day's target. A missing
-    /// folder, or one that cannot be listed, gives <see cref="None"/>.
+    /// folder, or one that cannot be listed, gives <see cref="None"/>. <paramref name="now"/> is the live
+    /// minute when <paramref name="shownDay"/> is today, or <c>null</c>: then the shown day counts with
+    /// <see cref="DayRecord.WorkTimeAt"/> instead of <see cref="DayRecord.WorkTime"/>. Earlier days never do.
     /// </summary>
-    public static FlexitimeBalance Compute(DayStore store, DateOnly shownDay, TimeSpan target)
+    public static FlexitimeBalance Compute(DayStore store, DateOnly shownDay, TimeSpan target, TimeOnly? now = null)
     {
         IReadOnlyList<DateOnly> days;
         try
@@ -76,7 +78,8 @@ internal sealed class FlexitimeBalance
             }
             else if (record.Entries.Any(e => e.Kind == EntryKind.Arrival))
             {
-                total += record.WorkTime() - target;
+                TimeSpan worked = day == shownDay && now is { } live ? record.WorkTimeAt(live) : record.WorkTime();
+                total += worked - target;
                 counted++;
             }
         }
