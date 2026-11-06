@@ -20,6 +20,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The old tool's sample day files are the import fixtures; they live once, in import-samples/. -->
+    <None Include="..\..\import-samples\*.json" LinkBase="import-samples" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Times\Times.csproj" />
   </ItemGroup>
 
