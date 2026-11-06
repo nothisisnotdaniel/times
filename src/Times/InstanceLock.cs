@@ -58,7 +58,8 @@ internal sealed class InstanceLock : IDisposable
     private const int EWOULDBLOCK_LINUX = 11;
     private const int StatBufferBytes = 256;
 
-    // st_ino is a 64-bit value at offset 8 in struct stat on macOS arm64, Linux x64 and Linux arm64.
+    // st_ino is a 64-bit value at offset 8 in struct stat on macOS arm64, Linux x64 and Linux arm64. This layout is
+    // only trusted where FileKind.CurrentModeOffset knows the platform; SamePath answers true everywhere else.
     private const int InodeOffset = 8;
 
     private readonly object gate = new object();
@@ -173,6 +174,8 @@ internal sealed class InstanceLock : IDisposable
         {
             try
             {
+                // Check, then delete: a file swapped in between the two would be deleted. That window is accepted,
+                // like the check-to-open one, because the data folder is user-owned.
                 if (SamePath(held))
                 {
                     File.Delete(LockPath);
