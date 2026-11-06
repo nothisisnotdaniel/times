@@ -64,6 +64,9 @@ internal sealed class App
     // Set by devops connect to the validated organisation; the loop then asks for the token.
     private string? connectOrganization;
 
+    // Set by import when imported days differ from existing ones; the loop then asks about each of them.
+    private ImportRun? pendingImport;
+
     // The start-up update check (started once in Run), whether its hint was shown, and whether its
     // staged package was taken over. The package staged for quit, from that check or from update.
     private Task<UpdateOutcome>? startupCheck;
@@ -280,6 +283,7 @@ internal sealed class App
         registry.Register("find", "f", "Find days whose checkpoints or projects match: <text>", Find);
         registry.Register("statistics", "st", "Show average arrival, leaving and work time per weekday: <from> <to>", Statistics);
         registry.Register("backup", "bu", "Zip your day files and projects into a folder: <folder>", Backup);
+        registry.Register("import", "im", "Import day files from the old tool: <folder>", Import);
         registry.Register("vacation", "va", "Show vacation days taken and left this year", NoArguments("vacation", Vacation));
     }
 
@@ -724,6 +728,260 @@ internal sealed class App
             string files = skipped == 1 ? "file" : "files";
             parts.Add(new Markup($"[yellow]! {skipped.ToString(CultureInfo.InvariantCulture)} {files} skipped[/]"));
         }
+    }
+
+    /// <summary>The placeholder in the input box while import asks whether to replace a day.</summary>
+    internal const string ImportPlaceholder = "yes replaces · anything else keeps · Esc keeps the rest";
+
+    /// <summary>The most skipped names import lists before <c>… and N more</c>.</summary>
+    internal const int MaxSkippedNames = 20;
+
+    // Reads every old-format day file at the top of a folder outside the data folder and writes each day
+    // that has no file yet. A day already there with the same entries is left alone; one that differs is
+    // asked about in the loop (AskImportConflicts). The source folder is only listed and read.
+    private CommandResult Import(string argument)
+    {
+        const string Name = "import";
+        string typedFolder = argument.Trim();
+        if (typedFolder.Length == 0)
+        {
+            return Hint($"{Name}: say the folder. Use [bold]import <folder>[/].");
+        }
+
+        string folder = ExpandFolder(typedFolder, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+        string shownFolder = Shown(folder);
+        if (!Path.IsPathFullyQualified(folder))
+        {
+            return Hint($"{Name}: [bold]{shownFolder}[/] is not an absolute path.");
+        }
+
+        if (!Directory.Exists(folder))
+        {
+            return File.Exists(folder)
+                ? Hint($"{Name}: [bold]{shownFolder}[/] is a file, not a folder.")
+                : Hint($"{Name}: the folder [bold]{shownFolder}[/] does not exist.");
+        }
+
+        if (DataBackup.IsInside(folder, Store.Folder))
+        {
+            return Hint($"{Name}: choose a folder outside the data folder.");
+        }
+
+        ImportScan scan;
+        try
+        {
+            scan = OldDataImport.Scan(folder);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{Name}: the folder [bold]{shownFolder}[/] cannot be listed: {Shown(ex.Message)}");
+        }
+
+        ImportRun run = new ImportRun(shownFolder, scan);
+        foreach (ImportCandidate candidate in scan.Candidates)
+        {
+            ImportRead read = OldDataImport.Read(candidate.Path);
+            ImportParse? parsed = read.Bytes is { } bytes ? OldDataImport.Parse(candidate.Day, bytes) : null;
+            string? error = read.Error ?? parsed?.Error;
+            if (error is not null || parsed?.Record is not { } record)
+            {
+                run.Problems.Add($"! {Shown(candidate.Name)}: {Markup.Escape(error ?? "cannot be read")}");
+                continue;
+            }
+
+            run.Warnings.AddRange(parsed.Warnings.Select(ImportWarningLine));
+            PlaceImported(run, candidate.Day, record);
+        }
+
+        if (run.Conflicts.Count > 0)
+        {
+            pendingImport = run;
+            return CommandResult.None;
+        }
+
+        return ImportResult(run);
+    }
+
+    // Writes a day that has no file, counts one that is already there, and queues one that differs.
+    private void PlaceImported(ImportRun run, DateOnly day, DayRecord record)
+    {
+        DayRecord existing;
+        DayStamp stamp;
+        try
+        {
+            (existing, stamp) = Store.LoadWithStamp(day);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            run.Kept++;
+            run.Problems.Add($"! {ReportDate(day)}: existing day file cannot be read, kept");
+            return;
+        }
+
+        if (stamp.IsMissing)
+        {
+            SaveImported(run, day, record, stamp, "a day file appeared meanwhile, not written");
+            return;
+        }
+
+        if (existing.Equals(record))
+        {
+            run.AlreadyThere++;
+            return;
+        }
+
+        run.Conflicts.Add(new ImportConflict(day, record, stamp));
+    }
+
+    // Saves over exactly the file the stamp was taken from (or none); a change on disk writes nothing.
+    private void SaveImported(ImportRun run, DateOnly day, DayRecord record, DayStamp stamp, string changed)
+    {
+        try
+        {
+            Store.Save(day, record, stamp);
+            run.Imported++;
+        }
+        catch (DayFileChangedException)
+        {
+            run.Problems.Add($"! {ReportDate(day)}: {changed}");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            run.Problems.Add($"! {ReportDate(day)}: could not be written: {Shown(ex.Message)}");
+        }
+    }
+
+    // Asks about each differing day in date order, in the input box. Only yes or y replaces; Esc keeps this
+    // day and every later one. Returns null if the input ended.
+    private CommandResult? AskImportConflicts(LineEditor editor, ImportRun run)
+    {
+        framePlaceholder = ImportPlaceholder;
+        try
+        {
+            for (int i = 0; i < run.Conflicts.Count; i++)
+            {
+                ImportConflict conflict = run.Conflicts[i];
+                string date = ReportDate(conflict.Day);
+                Draw(null, new Markup($"[grey]{date} already has a different day. Replace it with the imported one? Type yes to replace.[/]"), false);
+                console.Cursor.SetPosition(InputColumn, InputLine);
+                int width = console.Profile.Width;
+                string? typed = editor.ReadValue(InputColumn, InputLine, width - InputColumn - 2, framePlaceholder, out bool cancelled,
+                    ShowPasteCut);
+                if (typed is null)
+                {
+                    return null;
+                }
+
+                if (cancelled)
+                {
+                    run.Kept += run.Conflicts.Count - i;
+                    break;
+                }
+
+                string answer = typed.Trim();
+                if (string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase))
+                {
+                    SaveImported(run, conflict.Day, conflict.Record, conflict.Stamp, "the day file changed on disk, not written");
+                }
+                else
+                {
+                    run.Kept++;
+                }
+            }
+
+            return ImportResult(run);
+        }
+        finally
+        {
+            framePlaceholder = Placeholder;
+        }
+    }
+
+    // The summary: the imported count, the grey counts, the yellow problems and warnings, then the skipped names.
+    private static CommandResult ImportResult(ImportRun run)
+    {
+        List<IRenderable> parts = [];
+        if (run.Scan.Candidates.Count == 0)
+        {
+            parts.Add(new Markup($"[grey]No day files to import in {run.ShownFolder}. Nothing was written.[/]"));
+        }
+        else
+        {
+            string days = run.Imported == 1 ? "day" : "days";
+            parts.Add(new Markup($"Imported [steelblue1]{run.Imported.ToString(CultureInfo.InvariantCulture)}[/] {days} from {run.ShownFolder}"));
+            parts.Add(new Markup($"[grey]{run.AlreadyThere.ToString(CultureInfo.InvariantCulture)} already there · " +
+                $"{run.Kept.ToString(CultureInfo.InvariantCulture)} kept[/]"));
+        }
+
+        foreach (string line in run.Problems.Concat(run.Warnings))
+        {
+            parts.Add(new Markup($"[yellow]{line}[/]"));
+        }
+
+        IReadOnlyList<string> skipped = run.Scan.Skipped;
+        if (skipped.Count > 0)
+        {
+            string names = string.Join(", ", skipped.Take(MaxSkippedNames).Select(Shown));
+            parts.Add(new Markup($"[grey]Skipped (not a day file): {names}[/]"));
+            if (skipped.Count > MaxSkippedNames)
+            {
+                parts.Add(new Markup($"[grey]… and {(skipped.Count - MaxSkippedNames).ToString(CultureInfo.InvariantCulture)} more[/]"));
+            }
+        }
+
+        return new CommandResult(new Rows(parts), hideQuicklist: true);
+    }
+
+    // ! <date> <HH:mm> <title>: UsedTime <h:mm> but the entries give <h:mm> (or: is not a time).
+    private static string ImportWarningLine(ImportWarning warning)
+    {
+        string at = $"! {ReportDate(warning.Day)} {warning.Time.ToString("HH:mm", CultureInfo.InvariantCulture)} {Shown(warning.Title)}";
+        return warning.Stated is { } stated
+            ? $"{at}: UsedTime {OldDataImport.Duration(stated)} but the entries give {OldDataImport.Duration(warning.Actual)}"
+            : $"{at}: UsedTime is not a time";
+    }
+
+    // One import's state between the command and the questions in the loop. Lines are markup, already escaped.
+    private sealed class ImportRun
+    {
+        public ImportRun(string shownFolder, ImportScan scan)
+        {
+            ShownFolder = shownFolder;
+            Scan = scan;
+        }
+
+        public string ShownFolder { get; }
+
+        public ImportScan Scan { get; }
+
+        public int Imported { get; set; }
+
+        public int AlreadyThere { get; set; }
+
+        public int Kept { get; set; }
+
+        public List<string> Problems { get; } = [];
+
+        public List<string> Warnings { get; } = [];
+
+        public List<ImportConflict> Conflicts { get; } = [];
+    }
+
+    private sealed record ImportConflict
+    {
+        public ImportConflict(DateOnly day, DayRecord record, DayStamp stamp)
+        {
+            Day = day;
+            Record = record;
+            Stamp = stamp;
+        }
+
+        public DateOnly Day { get; }
+
+        public DayRecord Record { get; }
+
+        public DayStamp Stamp { get; }
     }
 
     // The grey note after an export with an open row; a fixed literal, so no escaping is needed.
@@ -2601,6 +2859,17 @@ internal sealed class App
                 }
 
                 result = connected;
+            }
+
+            if (pendingImport is { } import)
+            {
+                pendingImport = null;
+                if (AskImportConflicts(editor, import) is not { } imported)
+                {
+                    return 0;
+                }
+
+                result = imported;
             }
 
             if (openSettings)

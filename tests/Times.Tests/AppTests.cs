@@ -881,7 +881,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(
             ["absence", "addproject", "arrive", "backup", "booked", "break", "breakend", "…"],
             popup.Select(w => w.Text.Split(' ')[0]));
-        Assert.StartsWith("… 24 more", popup[^1].Text);
+        Assert.StartsWith("… 25 more", popup[^1].Text);
         Assert.Contains("Book the end of a break", popup[6].Text);
         Assert.Equal(80, popup[0].Text.Length);
     }
@@ -954,9 +954,9 @@ public sealed class AppTests : IDisposable
         List<string> hintRow = TypingWrites(output, 1).Where(w => w.Row == 21).Select(w => w.Text).ToList();
 
         // popup, restored (Backspace), popup, restored (Esc), popup (quit typing), ...
-        Assert.StartsWith("… 24 more", hintRow[0]);
+        Assert.StartsWith("… 25 more", hintRow[0]);
         Assert.Contains("Unknown command nope", hintRow[1]);
-        Assert.StartsWith("… 24 more", hintRow[2]);
+        Assert.StartsWith("… 25 more", hintRow[2]);
         Assert.Contains("Unknown command nope", hintRow[3]);
         Assert.Contains("Unknown command nope", hintRow[^1]);
         Assert.Contains("\u001b[38;5;9mUnknown command", output[output.LastIndexOf("\u001b[21;1H", StringComparison.Ordinal)..]);
@@ -990,7 +990,7 @@ public sealed class AppTests : IDisposable
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
         // 39 commands: 7 shown, the eighth row counts the other 32.
-        Assert.StartsWith("… 36 more", popup[^1].Text);
+        Assert.StartsWith("… 37 more", popup[^1].Text);
         // Nothing is drawn on row 1 while typing (the final clear on quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
@@ -4851,6 +4851,7 @@ public sealed class AppTests : IDisposable
             ["unbooked"] = "ub",
             ["update"] = "up",
             ["vacation"] = "va",
+            ["import"] = "im",
         };
 
         Assert.Equal(expected, registry.Commands.ToDictionary(c => c.Name, c => c.Alias));
@@ -13900,5 +13901,510 @@ public sealed class AppTests : IDisposable
         Assert.Equal(edited, ReadDay("2026-11-03"));
         Assert.DoesNotContain("\"booked\":true", ReadDay("2026-11-03"));
         Assert.True(new DayStore(data.Path).Load(new DateOnly(2026, 11, 2)).Entries.Single(e => e.Name == "Review").Booked);
+    }
+
+    // Job 118 ------------------------------------------------------------------------------
+
+    private const string ImportDay = "2026-10-28";
+
+    /// <summary>Runs <paramref name="input"/> on a wide 60-row console (the caller ends with quit) and returns the exit code and output.</summary>
+    private (int ExitCode, string Output) RunImport(Action<TestConsole> input, DayStore? store = null)
+    {
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Height = 60;
+        console.Profile.Width = 250;
+        input(console);
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), store ?? new DayStore(data.Path), instanceLock: sideLock).Run([]);
+        Assert.DoesNotContain("   at ", console.Output);
+        return (exitCode, console.Output);
+    }
+
+    /// <summary>Runs <paramref name="commands"/> then quit and returns the last frame's rows, trimmed.</summary>
+    private string[] ImportFrame(params string[] commands)
+    {
+        (int exitCode, string output) = RunImport(c =>
+        {
+            foreach (string command in commands)
+            {
+                c.Input.PushTextWithEnter(command);
+            }
+
+            c.Input.PushTextWithEnter("quit");
+        });
+        Assert.Equal(0, exitCode);
+        return LastLayout(output).Select(l => l.Trim()).ToArray();
+    }
+
+    /// <summary>A source folder holding the sample as <c>2026-10-28.json</c>.</summary>
+    private static TempFolder SampleSource()
+    {
+        TempFolder source = new TempFolder();
+        File.Copy(OldDataImportTests.SamplePath, Path.Combine(source.Path, ImportDay + ".json"));
+        return source;
+    }
+
+    /// <summary>Names, sizes and SHA-256 of everything in <paramref name="folder"/>, recursively.</summary>
+    private static List<string> SourceSnapshot(string folder) =>
+        Directory.EnumerateFileSystemEntries(folder, "*", SearchOption.AllDirectories)
+            .Order(StringComparer.Ordinal)
+            .Select(p => File.Exists(p)
+                ? $"{p} {new FileInfo(p).Length} {Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(p)))}"
+                : p + "/")
+            .ToList();
+
+    private static string ImportHint(string[] frame) => HintText(frame, "import:");
+
+    private static string OldFile(params string[] entries) => "{\"Recordings\":[" + string.Join(',', entries) + "]}";
+
+    private const string OldArrival = "{\"Time\":\"08:00:00\",\"Type\":0,\"Description\":null,\"Booked\":null,\"UsedTime\":null}";
+
+    // AC-1
+    [Theory]
+    [InlineData("none", "import: say the folder. Use import <folder>.")]
+    [InlineData("relative", "is not an absolute path.")]
+    [InlineData("missing", "does not exist.")]
+    [InlineData("file", "is a file, not a folder.")]
+    [InlineData("data", "import: choose a folder outside the data folder.")]
+    [InlineData("below", "import: choose a folder outside the data folder.")]
+    public void Import_BadFolder_ShowsRedHint_AndReadsOrWritesNothing(string kind, string hint)
+    {
+        using TempFolder source = SampleSource();
+        string file = Path.Combine(source.Path, ImportDay + ".json");
+        string below = Path.Combine(data.Path, "old");
+        Directory.CreateDirectory(below);
+        File.Copy(file, Path.Combine(below, ImportDay + ".json"));
+        File.Copy(file, Path.Combine(data.Path, "2026-10-29.json"));
+        string folder = kind switch
+        {
+            "none" => "   ",
+            "relative" => "old" + Guid.NewGuid().ToString("N"),
+            "missing" => Path.Combine(source.Path, "missing"),
+            "file" => file,
+            "data" => data.Path,
+            _ => below,
+        };
+        Dictionary<string, (DateTime Written, byte[] Bytes)> before = DataSnapshot();
+        List<string> sourceBefore = SourceSnapshot(source.Path);
+        string[] cwdBefore = WorkingDirectoryEntries();
+
+        string[] frame = ImportFrame($"import {folder}");
+
+        string expected = kind switch
+        {
+            "none" or "data" or "below" => hint,
+            "missing" => $"import: the folder {folder} {hint}",
+            _ => $"import: {folder} {hint}",
+        };
+        Assert.Contains(expected, ImportHint(frame));
+        Assert.DoesNotContain(frame, l => l.Contains("Imported", StringComparison.Ordinal));
+        AssertSameSnapshot(before);
+        Assert.Equal(sourceBefore, SourceSnapshot(source.Path));
+        Assert.Equal(cwdBefore, WorkingDirectoryEntries());
+    }
+
+    // AC-1
+    [Fact]
+    public void Import_HintIsRed()
+    {
+        string output = RunAnsiCommands("import");
+
+        Assert.Matches(@"\x1b\[[0-9;]*(31|91|38;5;9)mimport: say the folder", output);
+    }
+
+    // AC-3, AC-7, AC-10, AC-11
+    [Fact]
+    public void Import_Sample_WritesTheDay_AndLeavesTheSourceAlone()
+    {
+        using TempFolder source = SampleSource();
+        List<string> sourceBefore = SourceSnapshot(source.Path);
+
+        string[] frame = ImportFrame($"import {source.Path}");
+
+        DayRecord expected = OldDataImport.Parse(new DateOnly(2026, 10, 28), OldDataImportTests.Sample()).Record!;
+        Assert.Equal(expected, new DayStore(data.Path).Load(new DateOnly(2026, 10, 28)));
+        Assert.Equal(expected.ToJson(), ReadDay(ImportDay));
+        Assert.Contains($"Imported 1 day from {source.Path}", frame);
+        Assert.Contains("0 already there · 0 kept", frame);
+        Assert.DoesNotContain(frame, l => l.StartsWith('!'));
+        Assert.DoesNotContain(frame, l => l.Contains("Skipped", StringComparison.Ordinal));
+        Assert.Equal(sourceBefore, SourceSnapshot(source.Path));
+        Assert.Equal([ImportDay + ".json"], Listing(data.Path));
+    }
+
+    // AC-10
+    [Fact]
+    public void Import_Colours_SteelBlueCount_GreyCounts_YellowLines()
+    {
+        using TempFolder source = SampleSource();
+        File.WriteAllText(Path.Combine(source.Path, "2026-10-29.json"), "{}");
+        File.WriteAllText(Path.Combine(source.Path, "notes.txt"), "x");
+
+        string output = RunAnsiCommands($"import {source.Path}");
+
+        Assert.Matches(@"Imported \x1b\[[0-9;]*38;5;75m1\x1b\[0m day from ", output);
+        Assert.Matches(@"\x1b\[[0-9;]*38;5;8m0 already there · 0 kept", output);
+        Assert.Matches(@"\x1b\[(33|93|38;5;11)m! 2026-10-29\.json: has no Recordings list", output);
+        Assert.Matches(@"\x1b\[[0-9;]*38;5;8mSkipped \(not a day file\): notes\.txt", output);
+    }
+
+    // AC-8
+    [Fact]
+    public void Import_Twice_ChangesNothing_AndCountsAlreadyThere()
+    {
+        using TempFolder source = SampleSource();
+        File.WriteAllText(Path.Combine(source.Path, "2026-10-29.json"), OldFile(OldArrival));
+        ImportFrame($"import {source.Path}");
+        Dictionary<string, (DateTime Written, byte[] Bytes)> before = DataSnapshot();
+
+        string[] frame = ImportFrame($"import {source.Path}");
+
+        Assert.Contains($"Imported 0 days from {source.Path}", frame);
+        Assert.Contains("2 already there · 0 kept", frame);
+        Assert.DoesNotContain(frame, l => l.Contains("already has a different day", StringComparison.Ordinal));
+        AssertSameSnapshot(before);
+    }
+
+    // AC-8: same entries, same order, means already there, even when the file was written by hand.
+    [Fact]
+    public void Import_ExistingDayWithTheSameEntries_IsNotAskedAbout()
+    {
+        using TempFolder source = new TempFolder();
+        File.WriteAllText(Path.Combine(source.Path, "2026-10-29.json"), OldFile(OldArrival));
+        File.WriteAllText(DayFile("2026-10-29"), "{ \"entries\": [ { \"kind\": \"arrival\", \"time\": \"08:00\" } ] }");
+        Dictionary<string, (DateTime Written, byte[] Bytes)> before = DataSnapshot();
+
+        string[] frame = ImportFrame($"import {source.Path}");
+
+        Assert.Contains("1 already there · 0 kept", frame);
+        AssertSameSnapshot(before);
+    }
+
+    // AC-2
+    [Fact]
+    public void Import_OtherNames_AreListedInOrdinalOrder_AtMost20()
+    {
+        using TempFolder source = SampleSource();
+        for (int i = 0; i < 23; i++)
+        {
+            File.WriteAllText(Path.Combine(source.Path, $"n{i:00}"), "x");
+        }
+
+        Directory.CreateDirectory(Path.Combine(source.Path, "Archive"));
+        Directory.CreateDirectory(Path.Combine(source.Path, "deeper"));
+        File.Copy(OldDataImportTests.SamplePath, Path.Combine(source.Path, "deeper", "2026-10-30.json"));
+
+        string[] frame = ImportFrame($"import {source.Path}");
+
+        string expected = "Skipped (not a day file): Archive, deeper, " + string.Join(", ", Enumerable.Range(0, 18).Select(i => $"n{i:00}"));
+        Assert.Contains(expected, frame);
+        Assert.Contains("… and 5 more", frame);
+        Assert.Equal([ImportDay + ".json"], Listing(data.Path));
+    }
+
+    // AC-2, AC-10: markup and control characters in a name show literally.
+    [Fact]
+    public void Import_MarkupInASkippedName_ShowsLiterally()
+    {
+        using TempFolder source = SampleSource();
+        File.WriteAllText(Path.Combine(source.Path, "[red]x[[\u0007.txt"), "x");
+
+        string[] frame = ImportFrame($"import {source.Path}");
+
+        Assert.Contains("Skipped (not a day file): [red]x[[.txt", frame);
+    }
+
+    // AC-10
+    [Fact]
+    public void Import_NoCandidates_ShowsAGreyNote()
+    {
+        using TempFolder source = new TempFolder();
+        File.WriteAllText(Path.Combine(source.Path, "readme.md"), "x");
+
+        string[] frame = ImportFrame($"import {source.Path}");
+
+        Assert.Contains($"No day files to import in {source.Path}. Nothing was written.", frame);
+        Assert.Contains("Skipped (not a day file): readme.md", frame);
+        Assert.DoesNotContain(frame, l => l.StartsWith("Imported", StringComparison.Ordinal));
+        Assert.Empty(Listing(data.Path));
+    }
+
+    // AC-5, AC-10: a broken file is listed with its reason, and the others still import.
+    [Fact]
+    public void Import_BrokenFile_IsListed_AndOthersStillImport()
+    {
+        using TempFolder source = SampleSource();
+        File.WriteAllText(Path.Combine(source.Path, "2026-10-29.json"),
+            OldFile(OldArrival, "{\"Time\":\"09:00:00\",\"Type\":9}"));
+        File.WriteAllBytes(Path.Combine(source.Path, "2026-10-30.json"), new byte[DayStore.MaxFileBytes + 1]);
+
+        string[] frame = ImportFrame($"import {source.Path}");
+
+        Assert.Contains($"Imported 1 day from {source.Path}", frame);
+        Assert.Contains("! 2026-10-29.json: entry 2 has no Type from 0 to 4", frame);
+        Assert.Contains("! 2026-10-30.json: is larger than 64 KiB", frame);
+        Assert.Equal([ImportDay + ".json"], Listing(data.Path));
+    }
+
+    // AC-6
+    [Fact]
+    public void Import_UsedTimeMismatch_IsAYellowWarning_AndTheDayStillImports()
+    {
+        using TempFolder source = new TempFolder();
+        string json = File.ReadAllText(OldDataImportTests.SamplePath)
+            .Replace("\"UsedTime\":\"00:02:00\"", "\"UsedTime\":\"00:05:00\"", StringComparison.Ordinal)
+            .Replace("\"UsedTime\":\"00:36:00\"", "\"UsedTime\":\"later\"", StringComparison.Ordinal);
+        File.WriteAllText(Path.Combine(source.Path, ImportDay + ".json"), json);
+
+        string[] frame = ImportFrame($"import {source.Path}");
+
+        Assert.Contains("! 2026-10-28 07:22 Post & Rückfragen: UsedTime 0:05 but the entries give 0:02", frame);
+        Assert.Contains("! 2026-10-28 07:24 KLM: UsedTime is not a time", frame);
+        Assert.Contains($"Imported 1 day from {source.Path}", frame);
+    }
+
+    /// <summary>The day file a test puts in the way of the import: one arrival at 06:00.</summary>
+    private const string OtherDay = "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"06:00\"}]}";
+
+    private const string ReplacePrompt = "already has a different day. Replace it with the imported one? Type yes to replace.";
+
+    // AC-9
+    [Theory]
+    [InlineData("yes")]
+    [InlineData("  Y ")]
+    [InlineData("YES")]
+    public void Import_DifferentDay_AnsweredYes_IsReplaced(string answer)
+    {
+        using TempFolder source = SampleSource();
+        File.WriteAllText(DayFile(ImportDay), OtherDay);
+
+        (int exitCode, string output) = RunImport(c =>
+        {
+            c.Input.PushTextWithEnter($"import {source.Path}");
+            c.Input.PushTextWithEnter(answer);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains($"{ImportDay} {ReplacePrompt}", output);
+        Assert.Contains(App.ImportPlaceholder, output);
+        Assert.Equal(24, new DayStore(data.Path).Load(new DateOnly(2026, 10, 28)).Entries.Count);
+        string[] frame = LastLayout(output).Select(l => l.Trim()).ToArray();
+        Assert.Contains($"Imported 1 day from {source.Path}", frame);
+        Assert.Contains("0 already there · 0 kept", frame);
+    }
+
+    // AC-9
+    [Theory]
+    [InlineData("n")]
+    [InlineData("")]
+    [InlineData("yess")]
+    public void Import_DifferentDay_AnsweredOtherwise_IsKept(string answer)
+    {
+        using TempFolder source = SampleSource();
+        File.WriteAllText(DayFile(ImportDay), OtherDay);
+        Dictionary<string, (DateTime Written, byte[] Bytes)> before = DataSnapshot();
+
+        (_, string output) = RunImport(c =>
+        {
+            c.Input.PushTextWithEnter($"import {source.Path}");
+            c.Input.PushTextWithEnter(answer);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        AssertSameSnapshot(before);
+        string[] frame = LastLayout(output).Select(l => l.Trim()).ToArray();
+        Assert.Contains($"Imported 0 days from {source.Path}", frame);
+        Assert.Contains("0 already there · 1 kept", frame);
+    }
+
+    // AC-9: one day at a time in date order; Esc keeps this day and every later one without asking.
+    [Fact]
+    public void Import_Esc_KeepsThisAndEveryLaterConflict()
+    {
+        using TempFolder source = SampleSource();
+        foreach (string date in new[] { "2026-10-29", "2026-10-30" })
+        {
+            File.Copy(OldDataImportTests.SamplePath, Path.Combine(source.Path, date + ".json"));
+        }
+
+        foreach (string date in new[] { ImportDay, "2026-10-29", "2026-10-30" })
+        {
+            File.WriteAllText(DayFile(date), OtherDay);
+        }
+
+        (_, string output) = RunImport(c =>
+        {
+            c.Input.PushTextWithEnter($"import {source.Path}");
+            c.Input.PushTextWithEnter("yes");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        int first = output.IndexOf($"{ImportDay} {ReplacePrompt}", StringComparison.Ordinal);
+        int second = output.IndexOf($"2026-10-29 {ReplacePrompt}", StringComparison.Ordinal);
+        Assert.True(first >= 0 && second > first);
+        Assert.DoesNotContain($"2026-10-30 {ReplacePrompt}", output);
+        Assert.Equal(24, new DayStore(data.Path).Load(new DateOnly(2026, 10, 28)).Entries.Count);
+        Assert.Equal(OtherDay, ReadDay("2026-10-29"));
+        Assert.Equal(OtherDay, ReadDay("2026-10-30"));
+        string[] frame = LastLayout(output).Select(l => l.Trim()).ToArray();
+        Assert.Contains($"Imported 1 day from {source.Path}", frame);
+        Assert.Contains("0 already there · 2 kept", frame);
+    }
+
+    // AC-9: end of input stops like the token prompt, with nothing written.
+    [Fact]
+    public void Import_EndOfInputAtThePrompt_EndsTheLoop_AndKeepsTheDay()
+    {
+        using TempFolder source = SampleSource();
+        File.WriteAllText(DayFile(ImportDay), OtherDay);
+
+        TestConsole test = new TestConsole().Interactive();
+        IAnsiConsole console = new InputOverrideConsole(test, new EndingInput($"import {source.Path}\r"));
+
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains($"{ImportDay} already has a different day.", test.Output);
+        Assert.Equal(OtherDay, ReadDay(ImportDay));
+    }
+
+    // AC-9: an absence is a different day too.
+    [Fact]
+    public void Import_AbsenceDay_IsAskedAbout()
+    {
+        using TempFolder source = SampleSource();
+        WriteAbsenceDay(ImportDay, "vacation");
+
+        (_, string output) = RunImport(c =>
+        {
+            c.Input.PushTextWithEnter($"import {source.Path}");
+            c.Input.PushTextWithEnter("no");
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Contains($"{ImportDay} {ReplacePrompt}", output);
+        Assert.Equal("{\"absence\":\"vacation\"}", ReadDay(ImportDay));
+    }
+
+    // AC-9
+    [Fact]
+    public void Import_UnreadableExistingDay_IsNeverAskedAbout_OrWritten()
+    {
+        using TempFolder source = SampleSource();
+        File.WriteAllText(DayFile(ImportDay), "{not json");
+        Dictionary<string, (DateTime Written, byte[] Bytes)> before = DataSnapshot();
+
+        (_, string output) = RunImport(c =>
+        {
+            c.Input.PushTextWithEnter($"import {source.Path}");
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.DoesNotContain(ReplacePrompt, output);
+        AssertSameSnapshot(before);
+        string[] frame = LastLayout(output).Select(l => l.Trim()).ToArray();
+        Assert.Contains("! 2026-10-28: existing day file cannot be read, kept", frame);
+        Assert.Contains("0 already there · 1 kept", frame);
+    }
+
+    // AC-7: a file that appears between the check and the save is not overwritten.
+    [Fact]
+    public void Import_DayFileAppearingMeanwhile_IsNotOverwritten()
+    {
+        using TempFolder source = SampleSource();
+        DayStore store = new DayStore(data.Path);
+        store.BeforeStampCheck = day => File.WriteAllText(store.PathFor(day), OtherDay);
+
+        (_, string output) = RunImport(c =>
+        {
+            c.Input.PushTextWithEnter($"import {source.Path}");
+            c.Input.PushTextWithEnter("quit");
+        }, store);
+
+        Assert.Equal(OtherDay, ReadDay(ImportDay));
+        string[] frame = LastLayout(output).Select(l => l.Trim()).ToArray();
+        Assert.Contains("! 2026-10-28: a day file appeared meanwhile, not written", frame);
+        Assert.Contains($"Imported 0 days from {source.Path}", frame);
+    }
+
+    // AC-9: a replace whose file changed while the user was asked is not written.
+    [Fact]
+    public void Import_DayChangedWhileAsking_IsNotReplaced()
+    {
+        using TempFolder source = SampleSource();
+        File.WriteAllText(DayFile(ImportDay), OtherDay);
+        const string Edited = "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"06:30\"}]}";
+        DayStore store = new DayStore(data.Path);
+        store.BeforeStampCheck = day => File.WriteAllText(store.PathFor(day), Edited);
+
+        (_, string output) = RunImport(c =>
+        {
+            c.Input.PushTextWithEnter($"import {source.Path}");
+            c.Input.PushTextWithEnter("yes");
+            c.Input.PushTextWithEnter("quit");
+        }, store);
+
+        Assert.Equal(Edited, ReadDay(ImportDay));
+        Assert.Contains("! 2026-10-28: the day file changed on disk, not written", LastLayout(output).Select(l => l.Trim()));
+    }
+
+    // AC-10: a failed save is a yellow line, and the remaining days continue.
+    [Fact]
+    public void Import_FailedSave_IsAYellowLine_AndTheRestContinue()
+    {
+        using TempFolder source = SampleSource();
+        File.Copy(OldDataImportTests.SamplePath, Path.Combine(source.Path, "2026-10-29.json"));
+        DayStore store = new DayStore(data.Path);
+        store.BeforeStampCheck = day =>
+        {
+            if (day == new DateOnly(2026, 10, 28))
+            {
+                throw new IOException("disk full");
+            }
+        };
+
+        (int exitCode, string output) = RunImport(c =>
+        {
+            c.Input.PushTextWithEnter($"import {source.Path}");
+            c.Input.PushTextWithEnter("quit");
+        }, store);
+
+        Assert.Equal(0, exitCode);
+        string[] frame = LastLayout(output).Select(l => l.Trim()).ToArray();
+        Assert.Contains("! 2026-10-28: could not be written: disk full", frame);
+        Assert.Contains($"Imported 1 day from {source.Path}", frame);
+        Assert.Equal(["2026-10-29.json"], Listing(data.Path));
+    }
+
+    // AC-1: a quoted folder with spaces and a trailing blank is the whole trimmed argument; the alias works.
+    [Fact]
+    public void Import_QuotedFolderWithSpaces_AndAlias()
+    {
+        using TempFolder source = new TempFolder();
+        string folder = Path.Combine(source.Path, "old data");
+        Directory.CreateDirectory(folder);
+        File.Copy(OldDataImportTests.SamplePath, Path.Combine(folder, ImportDay + ".json"));
+
+        string[] frame = ImportFrame($"/im   \"{folder}\"  ");
+
+        Assert.Contains($"Imported 1 day from {folder}", frame);
+    }
+
+    // AC-11
+    [Fact]
+    public void Help_ListsImport_WithAliasIm()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 120;
+        console.Profile.Height = 80;
+        console.Input.PushTextWithEnter("help");
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+        string plain = Regex.Replace(console.Output, @"\x1b\[[0-9;?]*[A-Za-z]", string.Empty);
+
+        Assert.Matches(@"│ import +│ im +│ Import day files from the old tool: <folder> +│", plain);
+        Assert.Matches(@"\x1b\[[0-9;]*38;5;75mim\x1b\[0m", console.Output);
     }
 }
