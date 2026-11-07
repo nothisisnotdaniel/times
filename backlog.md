@@ -1,7 +1,11 @@
 # Times backlog
 
-`/factory next --project Times` runs the first unchecked item, checks it off and records the job id.
-Write one feature per line, in plain language.
+`/factory next --project Times` runs the first open item, checks it off and records the job id.
+Each item is a user story in its own file under `backlog/`, numbered `NNN-slug.md`; the line links it as `#N`.
+The order of the lines is the priority. Add items with `python3 factory/tools/job.py add --project Times '<json>'`
+(or by hand: write the story file first, then the line), and keep a number once it is given.
+`- [?]` items are follow-ups the factory proposed: change `[?]` to `[ ]` to approve one, or delete the line and its file.
+`- [h]` items are tasks for you. `(after: #3)` waits until item 3 is done; `(after: Times#5)` names another project's item.
 
 - [x] Main screen: replace the starter output with the interactive loop. The current day's view (date heading, empty state for now) sits above a pinned input box at the bottom, built as described in CLAUDE.md. Add the command registry with `/help` (lists registered commands) and `/quit` (exit code 0); unknown commands show a red hint. Tests drive it via TestConsole input and end with `/quit`. → 001-main-screen-loop
 - [x] Day navigation: add commands to move the current day to the previous day, the next day and back to today. Moving to a day with no file shows it as empty and creates no file. → 002-day-navigation
@@ -78,8 +82,8 @@ Write one feature per line, in plain language.
 - [x] Wrap hint rows: wrap the hint row instead of cropping it on narrow terminals. (from 059-read-error-next-step) → 096-wrap-hint-rows
 - [x] Narrow caption test: test the `summary` caption on a terminal narrower than 80 columns. (from 069-summary-caption) → 097-narrow-caption-test
 - [x] User manual: add `MANUAL.md` at the repo root, a user manual that documents every feature, command (name, alias, arguments, examples) and setting (name, values, default, effect) as the app has them now, plus the data folder, files and keyboard shortcuts, written for users rather than developers. Link it from the README. Add a test that fails when a registered command or setting is missing from the manual, so it stays complete. → 122-user-manual
-- [h] Windows terminal check: run Times by hand in Windows Terminal and the old console window (conhost). Check typing, Tab, ↑/↓, Esc, Backspace, PgUp/PgDn, AltGr and accented characters, mouse-wheel scrolling and clicks. After `/quit` and after Ctrl+C, check that drag-select (Quick Edit) works in the shell again. When the console mode is restored, check the `SetConsoleMode` result and handle a failure. Fix whatever breaks.
-- [h] Terminal check: verify in a real terminal (macOS Terminal, Windows Terminal) that the full-height layout doesn't scroll by one row and the cursor sits in the input box; fix it if it does.
+- [h] [#1](backlog/001-windows-terminal-check.md) Windows terminal check
+- [h] [#2](backlog/002-terminal-layout-check.md) Terminal layout check
 - [x] Daily target and flexitime balance: a configurable daily target (for example 8h, saved next to the day files) so the day view shows the day's overtime or shortfall against it and a running flexitime balance over all booked days. → 091-daily-target-flexitime
 - [x] Absence days: a command with an alias marks the current day as vacation, sick or public holiday, saved in the day file. An absence day counts as meeting the daily target without arrive and leave entries, and the day view shows the absence instead of an empty day. → 098-absence-days
 - [x] Project report: a `report <from> <to>` command with an alias shows a table of the hours booked per project (work item and title) over a date range, with a total, so the user can see what to book in Azure DevOps. → 099-project-report
@@ -96,13 +100,13 @@ Write one feature per line, in plain language.
 - [x] Import old data: an import command takes a folder path and imports every old-format input file in it (non-recursive, other files skipped and listed) into Times day files (arrivals, leavings, breaks, checkpoints), checked like typed entries. It reports what it imported and what it skipped, never overwrites an existing day without asking, and can be run again without creating duplicates. The spec takes the format from the example files in `import-samples/` (described in its README), which also serve as test fixtures. Format: one UTF-8 JSON file per day named `yyyy-MM-dd.json` (the date comes from the name) with a `Recordings` array of `Time` (`HH:mm:ss`), `Type` (0 arrival, 1 leaving, 2 break start, 3 break end, 4 checkpoint; any other value is an error for that file), `Description` (checkpoint title, else null), `Booked` (true → booked checkpoint, null → not booked) and `UsedTime` (checkpoints only: the gap to the next entry; not imported, but a mismatch with the entry times is listed as a warning). Keep the file order for entries at the same time; a day can have several arrivals and leavings. Full path, high risk (reads foreign files, writes day files). (after: Old data examples) → 118-import-old-data
 - [x] Import warning cap: the import command lists at most 20 problem and `UsedTime` warning lines (like the skipped-names list) and ends with `… and N more`, so a folder with thousands of broken files stays readable. Changes AC-6 of 118-import-old-data ("every mismatch is shown"). Full path. (Follow-up from 118-import-old-data, security review nit 1.) → 119-import-warning-cap
 - [x] Import folder scan cap: the import's `Scan` streams the folder listing and stops collecting names past a cap instead of reading every top-level entry into memory first, keeping the ordinal order and the `… and N more` count of skipped names correct. Full path, high risk (reads foreign folders). (Follow-up from 118-import-old-data, security review nit 2.) → 120-import-scan-cap
-- [ ] Home office or office: a command with an alias marks the current day as home office or office, saved in the day file and shown in the day view. A month count of home-office days is shown in the month or report output, for the German home-office allowance. Unmarked days count as neither.
-- [ ] One-shot commands: `times <command> [args]` (for example `times arrive 8:15`, `times leave`, `times status`) runs one registered command against today without the interactive session, prints the result as plain lines (no layout, no popup, no mouse reporting) and exits with 0 on success or non-zero with a red line on an error. Without arguments Times starts the interactive session as before. Same data folder rules and validation as the session.
-- [ ] Monthly timesheet: a command with an alias writes a printable timesheet for a month (one row per day with arrival, leaving, breaks, working time and absences, plus the month's total and balance) as a self-contained HTML file into a folder the user names, never overwriting without asking. All text HTML-escaped; no scripts or external resources in the file.
-- [ ] Menu bar and tray app: a small separate app (macOS menu bar, Windows tray) that shows whether you're checked in, the open checkpoint and the time left, and offers arrive, break, break end and leave. It calls the one-shot commands (`times status --json` and friends) and keeps no data of its own. Spec picks the toolkit; any new package needs a reason in the spec. Builds on one-shot commands. Revisit if Times moves into the Context desktop app. (after: One-shot commands)
-- [ ] Check-in reminder: when the computer has been in use for a while on a workday (a setting, for example since 9:30) and today has no arrival yet, show a system notification once, with arrival booked from it if the platform allows; not on absence days or public holidays. Works through the menu bar and tray app or a small background check, never by keeping the terminal app in the foreground. Builds on the menu bar and tray app and absence days. (after: Menu bar and tray app; Absence days)
-- [ ] Import: replacing a day through import drops that day's balance corrections; keep them or warn before replacing (121 review-security 2, review-ux 2) (from 121-balance-corrections)
-- [ ] Settings: an unknown state (or other unknown option value) in settings.json should fall back for that one setting (nationwide holidays) instead of making the whole file count as broken (115 review-ux 1) (from 115-public-holidays)
+- [ ] [#3](backlog/003-home-office-or-office.md) Home office or office
+- [ ] [#4](backlog/004-one-shot-commands.md) One-shot commands
+- [ ] [#5](backlog/005-monthly-timesheet.md) Monthly timesheet
+- [ ] [#6](backlog/006-menu-bar-and-tray-app.md) Menu bar and tray app (after: #4)
+- [ ] [#7](backlog/007-check-in-reminder.md) Check-in reminder (after: #6)
+- [ ] [#8](backlog/008-keep-balance-corrections-on-import.md) Keep balance corrections on import
+- [ ] [#9](backlog/009-fall-back-per-setting.md) Fall back per setting
 - [x] Live clock: while Times is open on today, update the time left and the day total once a minute through the background events, without touching the typed line, the cursor or the open popup. Other days don't tick. Builds on background events in the loop. (after: Background events in the loop) → 112-live-clock
 - [x] End-of-day alert: ring the terminal bell and show a hint once when today's working time reaches the daily target, and again 15 minutes before the 10-hour limit. Each alert is a setting that can be turned off. Builds on the live clock, the daily target and the settings dialog. (after: Daily target and flexitime balance; Live clock; Settings dialog) → 113-end-of-day-alert
 - [x] Working-time law checks: the day view warns (yellow, on the break summary line) when a day goes over 10 hours of work, when the rest between the last leave and the next day's arrival is under 11 hours, and when breaks are under 30 minutes after 6 hours or 45 minutes after 9 hours (if the existing "Breaks too short" warning doesn't already cover it, merge them). The summary lists the days of the week with a warning. Each check is a setting that can be turned off. Builds on the settings dialog. (after: Settings dialog) → 114-working-time-law-checks
@@ -110,31 +114,31 @@ Write one feature per line, in plain language.
 - [x] Vacation allowance: a setting for the yearly vacation days. A command with an alias (or the settings dialog) shows the days taken and left for the current year, counted from the vacation absence days; half days are not supported yet. Builds on absence days and the settings dialog. (after: Absence days; Settings dialog) → 116-vacation-allowance
 - [x] Second instance guard: on start, take a lock file in the data folder (removed on every exit; a lock left by a crashed run is detected and taken over). If another Times already holds it, show a red line and exit with a non-zero code instead of letting two copies overwrite each other's day files. Also refuse to save a day file that changed on disk since it was loaded, with a red hint to reload. → 117-second-instance-guard
 - [x] Balance corrections: a command with an alias books a manual adjustment to the flexitime balance on the current day (plus or minus hours and minutes, with a reason checked like other names), for example a starting balance or paid-out overtime. The day view shows it and the balance includes it; old day files without corrections load as before. Builds on the daily target and flexitime balance. (after: Daily target and flexitime balance) → 121-balance-corrections
-- [ ] Checkpoint to note: when a checkpoint with a work item (`#1234`) is booked, open the Context note tagged `#1234` in the Context desktop app, creating it if there's none (through Context's CLI, never by writing Context's files). A setting turns it on; if Context isn't installed, nothing happens. Builds on the settings dialog and Context's scriptable CLI. (after: Context: Scriptable CLI; Settings dialog)
-- [ ] Calendar to checkpoints: read today's appointments through Context's CLI (`context current --json`) and offer each meeting as a checkpoint at its start time (title checked like typed names; `#1234` in the title picks the project). Nothing is booked without the user choosing it. If Context isn't installed, the command says so. Builds on Context's JSON output for the CLI. (after: Context: JSON output for the CLI)
+- [ ] [#10](backlog/010-checkpoint-opens-context-note.md) Checkpoint opens Context note
+- [ ] [#11](backlog/011-calendar-to-checkpoints.md) Calendar to checkpoints (after: Context#17)
 - [x] Old data examples: put example files of the old time data (anonymised if needed; they become test fixtures) into `Times/import-samples/` and describe the old format or tool in `Times/import-samples/README.md`.
-- [ ] Dash test for the prune script: run the prerelease prune script under dash (POSIX sh) in a test or CI job, since this machine's sh is bash. (from 081-prune-old-prereleases)
-- [ ] Windows file loading: on Windows the day file is still opened by path; make it as safe as on the other platforms. 086 left this out of scope. (from 086-safer-file-loading)
-- [ ] README checksum guidance: tell users in the README how to check the downloaded package's checksum or origin before installing. (from 090-readme-user-install)
-- [ ] Folder scan cap: cap or cache the day-file folder scan behind the flexitime balance, so a very large data folder can't slow every redraw. (from 091-daily-target-flexitime)
-- [ ] Case-insensitive day files: also count day files with an upper-case `.JSON` extension on file systems that ignore case. (from 091-daily-target-flexitime)
-- [ ] Skipped hint on empty days: show the skipped hint on an empty day where no day counts. This changes AC-6 of 091. (from 091-daily-target-flexitime)
-- [?] --no-cache to bypass ~/.nuget/packages when installing the staged update; may break across SDKs, needs its own job (from 093-auto-update)
-- [ ] Shared sanitiser for echoed user text: the plain Markup.Escape echo of typed text in hints (remove, change, booked, time hints, absence) should go through one helper (from 098 security review) (from 098-absence-days)
-- [ ] CSV export failure test: add an injectable stream factory so a test can check that a partial CSV file is deleted after a mid-write failure (from 100 code/security review) (from 100-csv-export)
-- [ ] CSV export file mode: decide whether exported CSV files are created owner-only (0600) or stay shareable (from 100 security review) (from 100-csv-export)
-- [ ] Azure DevOps sync: show a 'Sending ...' progress line per work item during sync send, so a slow network does not look like a hang (from 101-azure-devops-sync)
-- [ ] Azure DevOps sync: keep mistyped lines such as '//devops connect x <token>' (rejected as unknown commands) out of the in-memory history too (from 101-azure-devops-sync)
-- [ ] Azure DevOps sync: when saving the new Keychain item fails after the old one was deleted, the old token is lost; keep it (for example by updating the item in place) (from 101-azure-devops-sync)
-- [ ] Help text for times: reword the arrive/leave/break/breakend help ("now, or at an optional H:mm, -10m or +5m") so it reads naturally; update the help tests to match. (from 103-relative-times)
-- [ ] Report caption: keep the ' · rounded to <n> min' suffix on one line in narrow report tables (shorten or move it so it never wraps onto a second grey line). (from 104-report-rounding)
-- [?] review-security 2 — capping the skipped-ids list changes the output format AC-10 defines; needs its own job. (from 105-devops-import)
-- [ ] review-security 3 — 0600 on the zip would change the file mode, which the spec does not cover, and would make `backup` differ from `export`. Worth its own job if backups should be private. (from 108-backup-command)
-- [?] review-security 1 — bounding or coalescing the unbounded queue changes behaviour (dropping or merging events) and has no producer to design it against yet; belongs in the job that adds the first real event source (Teams, live clock). (from 110-background-events-loop)
-- [ ] End-of-day alert: should an alert that is switched off at startup still be marked as fired by Prime, or ring later when it is switched on (review-ux 2)? (from 113-end-of-day-alert)
-- [ ] End-of-day alert: remove the unused targetOn/limitOn parameters from Prime (review-code 1) (from 113-end-of-day-alert)
-- [ ] End-of-day alert: pick a colour for the target hint instead of the steelblue1 accent (review-ui 1) (from 113-end-of-day-alert)
-- [ ] End-of-day alert: mention the live clock in the alert setting descriptions (review-ux 1) (from 113-end-of-day-alert)
-- [ ] Public holidays: style only the holiday name in the accent colour, not the whole 'Public holiday · <name>' value (115 review-ui 1) (from 115-public-holidays)
-- [?] review-ux 1: a way to show the hidden lines is out of scope in the spec and would be a new feature that needs its own job. (from 119-import-warning-cap)
-- [ ] Teams call tracking: connect to the new Teams app's local third-party API (WebSocket on localhost only, built-in `ClientWebSocket`, no new packages), turned on by a command with an alias and paired once in Teams. The pairing token is stored in the data folder like other private data, never shown or logged. When a meeting or call starts, book a `Call` checkpoint (with the meeting title if Teams sends one, checked like typed names); when it ends, book the checkpoint that was open before again. If Teams is not running or the connection drops, show a grey status hint and retry quietly; never crash or block typing. Before the spec, check against a real Teams which messages it sends and whether 1:1 calls are reported, and write that into the spec. Takes the full path with high risk. Builds on background events in the loop. (after: Background events in the loop)
+- [ ] [#12](backlog/012-dash-test-for-the-prune-script.md) Dash test for the prune script
+- [ ] [#13](backlog/013-safer-file-loading-on-windows.md) Safer file loading on Windows
+- [ ] [#14](backlog/014-readme-checksum-guidance.md) README checksum guidance
+- [ ] [#15](backlog/015-cap-the-folder-scan.md) Cap the folder scan
+- [ ] [#16](backlog/016-case-insensitive-day-files.md) Case-insensitive day files
+- [ ] [#17](backlog/017-skipped-hint-on-empty-days.md) Skipped hint on empty days
+- [?] [#18](backlog/018-bypass-the-nuget-cache-on-update.md) Bypass the NuGet cache on update
+- [ ] [#19](backlog/019-shared-sanitiser-for-echoed-text.md) Shared sanitiser for echoed text
+- [ ] [#20](backlog/020-csv-export-failure-test.md) CSV export failure test
+- [ ] [#21](backlog/021-csv-export-file-mode.md) CSV export file mode
+- [ ] [#22](backlog/022-progress-line-for-devops-sync.md) Progress line for DevOps sync
+- [ ] [#23](backlog/023-keep-mistyped-token-lines-out-of.md) Keep mistyped token lines out of history
+- [ ] [#24](backlog/024-don-t-lose-the-devops-token.md) Don't lose the DevOps token on save
+- [ ] [#25](backlog/025-clearer-time-help-text.md) Clearer time help text
+- [ ] [#26](backlog/026-report-caption-on-one-line.md) Report caption on one line
+- [?] [#27](backlog/027-cap-the-skipped-ids-list.md) Cap the skipped-ids list
+- [ ] [#28](backlog/028-private-backup-files.md) Private backup files
+- [?] [#29](backlog/029-bound-the-background-event-queue.md) Bound the background event queue
+- [ ] [#30](backlog/030-end-of-day-alert-when-switched.md) End-of-day alert when switched on later
+- [ ] [#31](backlog/031-remove-unused-prime-parameters.md) Remove unused Prime parameters
+- [ ] [#32](backlog/032-target-hint-colour.md) Target hint colour
+- [ ] [#33](backlog/033-mention-the-live-clock-in-alert.md) Mention the live clock in alert settings
+- [ ] [#34](backlog/034-holiday-name-in-accent-colour.md) Holiday name in accent colour
+- [?] [#35](backlog/035-show-hidden-import-warnings.md) Show hidden import warnings
+- [ ] [#36](backlog/036-teams-call-tracking.md) Teams call tracking
