@@ -143,4 +143,4 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [?] [#35](backlog/035-show-hidden-import-warnings.md) Show hidden import warnings
 - [ ] [#36](backlog/036-teams-call-tracking.md) Teams call tracking
 - [ ] [#37](backlog/037-hours-per-work-item-as-json.md) Hours per work item as JSON (after: #4)
-- [ ] [#38](backlog/038-end-of-day-ritual.md) End-of-day ritual (after: #4; #37)
+- [ ] [#38](backlog/038-end-of-day-ritual.md) End-of-day ritual (after: #4; #37; Context#17)
