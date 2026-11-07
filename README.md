@@ -302,6 +302,15 @@ absolute and is used exactly as given (no `~` expansion); if it is not absolute,
 with whitespace, Times does not start and exits with code 2. Unset or empty means the default
 folder.
 
+## License
+
+Times is source-available under the [Functional Source License, Version 1.1, ALv2 Future
+License](LICENSE.md) (FSL-1.1-ALv2). You may use, change and share it for any purpose except
+offering a competing commercial product or service. Each release becomes available under the
+Apache License 2.0 two years after it is published.
+
+Contributions are accepted under the same license.
+
 # Building Times
 
 ## Prerequisites
