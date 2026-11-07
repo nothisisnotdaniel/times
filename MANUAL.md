@@ -28,6 +28,9 @@ checkpoint #2 Review
 leave
 ```
 
+`#1` and `#2` are project numbers on your quicklist: add projects first with `addproject` (or
+`devops import`), or leave the `#` part out.
+
 Commands are plain words. Every command also has a short alias of one or two letters that does
 exactly the same, with the same arguments: `a 8:15` books the same arrival as `arrive 8:15`. One
 leading `/` is accepted and ignored, so `/arrive 8:15` works too (two are an unknown command).
