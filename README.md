@@ -12,6 +12,8 @@ itself.
 
 # Using Times
 
+The [user manual](MANUAL.md) explains every command, setting and feature of Times in one place.
+
 ## Install as a .NET tool
 
 You can install Times once as a .NET global tool and then start it from any terminal.
