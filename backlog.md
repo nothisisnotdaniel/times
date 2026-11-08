@@ -101,7 +101,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] Import warning cap: the import command lists at most 20 problem and `UsedTime` warning lines (like the skipped-names list) and ends with `… and N more`, so a folder with thousands of broken files stays readable. Changes AC-6 of 118-import-old-data ("every mismatch is shown"). Full path. (Follow-up from 118-import-old-data, security review nit 1.) → 119-import-warning-cap
 - [x] Import folder scan cap: the import's `Scan` streams the folder listing and stops collecting names past a cap instead of reading every top-level entry into memory first, keeping the ordinal order and the `… and N more` count of skipped names correct. Full path, high risk (reads foreign folders). (Follow-up from 118-import-old-data, security review nit 2.) → 120-import-scan-cap
 - [ ] [#3](backlog/003-home-office-or-office.md) Home office or office
-- [ ] [#4](backlog/004-one-shot-commands.md) One-shot commands
+- [x] [#4](backlog/004-one-shot-commands.md) One-shot commands → 126-one-shot-commands
 - [ ] [#5](backlog/005-monthly-timesheet.md) Monthly timesheet
 - [ ] [#6](backlog/006-menu-bar-and-tray-app.md) Menu bar and tray app (after: #4)
 - [ ] [#7](backlog/007-check-in-reminder.md) Check-in reminder (after: #6)
