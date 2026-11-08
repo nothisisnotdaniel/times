@@ -2901,12 +2901,73 @@ internal sealed class App
 
         try
         {
-            return RunLocked();
+            return args.Length > 0 && !args[0].StartsWith('-') ? RunOneShot(args) : RunLocked();
         }
         finally
         {
             instanceLock.Dispose();
         }
+    }
+
+    // Commands that need the session (a prompt, the panel, another day or the end of the loop).
+    private static readonly string[] SessionOnly = ["quit", "settings", "prev", "next", "today", "update", "import"];
+
+    // One command from the shell against today: plain lines, no layout, mouse, clock or update check.
+    // Exit code 0 on success, 1 on any error.
+    private int RunOneShot(string[] args)
+    {
+        string text = string.Join(' ', args).Trim();
+        dayView.Today();
+        IRenderable today = RenderDay();
+
+        if (string.Equals(text, "status", StringComparison.OrdinalIgnoreCase))
+        {
+            console.Write(today);
+            return 0;
+        }
+
+        if (SessionOnlyName(text) is { } refused)
+        {
+            console.MarkupLine($"[red]{Markup.Escape(refused)} needs the interactive session. Run times without arguments.[/]");
+            return 1;
+        }
+
+        CommandResult result = Dispatch(text);
+        foreach (IRenderable? part in new[] { result.Message, result.Hint })
+        {
+            if (part is not null)
+            {
+                console.Write(part);
+            }
+        }
+
+        return result.Failed ? 1 : 0;
+    }
+
+    // The name of the session-only command a one-shot line starts with, or null.
+    private string? SessionOnlyName(string text)
+    {
+        string[] words = text.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length == 0)
+        {
+            return null;
+        }
+
+        string token = words[0].StartsWith('/') ? words[0][1..] : words[0];
+        if (!registry.TryGet(token, out Command? command))
+        {
+            return null;
+        }
+
+        if (SessionOnly.Contains(command.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            return command.Name;
+        }
+
+        return string.Equals(command.Name, "devops", StringComparison.OrdinalIgnoreCase) && words.Length > 1
+            && string.Equals(words[1], "connect", StringComparison.OrdinalIgnoreCase)
+            ? "devops connect"
+            : null;
     }
 
     private int RunLocked()

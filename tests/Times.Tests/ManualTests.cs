@@ -13,7 +13,7 @@ public sealed class ManualTests : IDisposable
 {
     private static readonly string[] Sections =
     [
-        "Getting started", "The screen", "Commands", "Settings", "Features", "Keyboard shortcuts",
+        "Getting started", "The screen", "One-shot commands", "Commands", "Settings", "Features", "Keyboard shortcuts",
         "Mouse and paste", "Data folder", "Files", "Troubleshooting",
     ];
 

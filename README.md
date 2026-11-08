@@ -102,6 +102,18 @@ dotnet tool uninstall -g Times
 
 Uninstalling removes only the tool. Your data stays in the data folder that `help` shows.
 
+## One-shot commands
+
+Give Times a command and it runs that one command against today, prints plain lines and exits, without opening the screen:
+
+```
+times arrive 8:15
+times leave
+times status
+```
+
+`status` prints today's day view. Several words are joined, so `times checkpoint 8:30 #1 Design review` works. Commands that need the session (`quit`, `settings`, `prev`, `next`, `today`, `update`, `import`, `devops connect`) are refused with a red line. Exit codes: 0 done, 1 command error, 2 bad data folder, 3 another Times is open on the data folder, 4 the lock could not be taken. With no arguments, or an argument starting with `-`, Times starts the interactive session.
+
 ## Commands
 
 Every command has a short alias that does exactly the same, with the same arguments: `a 8:15`

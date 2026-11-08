@@ -27,6 +27,16 @@ public class CommandRegistryTests
         Assert.Equal("quit", command.Name);
     }
 
+    // AC-11 (126)
+    [Fact]
+    public void Failed_IsTrueOnlyForErrors()
+    {
+        Assert.True(CommandResult.Error("oops").Failed);
+        Assert.False(CommandResult.None.Failed);
+        Assert.False(new CommandResult(new Markup("x"), hint: new Markup("y")).Failed);
+        Assert.False(new CommandResult(quit: true).Failed);
+    }
+
     // Job 004
     [Fact]
     public void Error_SetsHint_NotMessage()

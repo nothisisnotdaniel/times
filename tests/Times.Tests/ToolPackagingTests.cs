@@ -626,7 +626,7 @@ public sealed class ToolPackagingTests
         int user = headings.IndexOf("# Using Times");
         int developer = headings.IndexOf("# Building Times");
         Assert.Equal(
-            ["## Install as a .NET tool", "## Commands", "## Keys", "## Mouse", "## The day view", "## Your data", "## License"],
+            ["## Install as a .NET tool", "## One-shot commands", "## Commands", "## Keys", "## Mouse", "## The day view", "## Your data", "## License"],
             headings.GetRange(user + 1, developer - user - 1));
         Assert.Equal(
             ["## Prerequisites", "## Build and test", "## Run from source", "## Install your own build", "## Project layout", "## Releasing"],
