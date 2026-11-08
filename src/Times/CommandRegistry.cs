@@ -25,8 +25,10 @@ internal sealed record CommandResult
         IRenderable? message = null,
         bool quit = false,
         IRenderable? hint = null,
-        bool hideQuicklist = false)
+        bool hideQuicklist = false,
+        bool failed = false)
     {
+        Failed = failed;
         Message = message;
         Quit = quit;
         Hint = hint;
@@ -40,7 +42,7 @@ internal sealed record CommandResult
     /// <c>[red]…[/]</c>; any user text in it must already be escaped with
     /// <see cref="Markup.Escape"/>.
     /// </summary>
-    internal static CommandResult Error(string markup) => new(hint: new Markup($"[red]{markup}[/]"));
+    internal static CommandResult Error(string markup) => new(hint: new Markup($"[red]{markup}[/]"), failed: true);
 
     /// <summary>
     /// Shown in the top area (under the day view) until the next command, or <c>null</c> for
@@ -62,6 +64,9 @@ internal sealed record CommandResult
     /// shown.
     /// </summary>
     public bool HideQuicklist { get; }
+
+    /// <summary>True for an error result (<see cref="Error"/>); a one-shot command then exits with 1.</summary>
+    public bool Failed { get; }
 }
 
 /// <summary>

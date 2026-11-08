@@ -3,8 +3,10 @@
 Every factory agent reads this file before working on Times. Keep it short and accurate.
 
 - **What it is:** a C# console app that helps tracking times used on projects. The user checks in, checks out and books breaks and can also add checkpoints that are later transfered into azure devops work items for controlling purposes.
-- **How it runs:** the app stays open in the terminal until the user closes it. It is an
-  interactive session, not a set of one-shot commands. The current day's view sits above an
+- **How it runs:** the app stays open in the terminal until the user closes it (an interactive
+  session). `times <command ...>` (first argument not starting with `-`) is a one-shot: `App.RunOneShot`
+  runs that line through `Dispatch` against today, prints plain lines (no layout, mouse or clock), exits 0, or 1 on
+  an error (`CommandResult.Failed`); `status` is one-shot only; session-only commands are refused. The current day's view sits above an
   **input box at the bottom of the screen**, in the style of the GitHub Copilot CLI: a bordered
   prompt line where the user types commands.
   - Commands are bare words (e.g. `arrive 8:15`); one leading `/` is still accepted and stripped
