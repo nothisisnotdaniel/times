@@ -150,3 +150,4 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] [#42](backlog/042-choose-a-source-licence.md) Choose a source licence
 - [h] [#43](backlog/043-open-the-lemon-squeezy-shop.md) Open the Lemon Squeezy shop (after: ReviewPack#1; #39; #41; #42)
 - [ ] [#44](backlog/044-one-shot-help.md) One-shot help
+- [ ] [#45](backlog/045-redraw-on-terminal-resize.md) Redraw on terminal resize
