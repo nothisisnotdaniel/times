@@ -121,9 +121,13 @@ public sealed class OneShotTests : IDisposable
         Shot(data.Path, "absence", "sick");
         string before = File.ReadAllText(TodayFile(data.Path));
 
-        (int exit, string output) = Shot(data.Path, "arrive", "8:00");
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 120;
+        int exit = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run(["arrive", "8:00"]);
+        string output = console.Output;
 
         Assert.Equal(1, exit);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)m", output);
         Assert.Contains("absence", output);
         Assert.Equal(before, File.ReadAllText(TodayFile(data.Path)));
     }
@@ -146,8 +150,22 @@ public sealed class OneShotTests : IDisposable
         Assert.DoesNotContain("Type help for commands", output);
         Assert.DoesNotContain("│ > ", output);
         Assert.DoesNotContain("\u001b[2J", output);
+        Assert.DoesNotMatch(@"\x1b\[H", output);
         Assert.DoesNotMatch(@"\x1b\[\d*;\d*H", output);
         Assert.Contains("08:15", output);
+    }
+
+    // AC-6: the same console does emit a clear in the session, so the check above can fail.
+    [Fact]
+    public void Session_EmitsAClear_SoTheOneShotCheckIsMeaningful()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 120;
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+
+        Assert.Matches(@"\x1b\[(2J|H|\d+;\d+H)", console.Output);
     }
 
     // AC-7
@@ -230,13 +248,20 @@ public sealed class OneShotTests : IDisposable
     [Fact]
     public void OneShot_EnablesNoMouse_NoLiveClock_NoUpdateCheck()
     {
+        using TestSigner signer = new();
+        FakeReleaseSource source = new([]);
+        UpdateService service = new(source, signer.Signature, null, new UpdateApplier(new FakeLauncher(), windows: false), "1.0.0");
         TestConsole console = new TestConsole().Interactive();
         ScriptedEvents events = new();
-        App app = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), mouse: new MouseReporting(console),
-            updates: null, events: events, liveClock: true);
+        App app = new(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), mouse: new MouseReporting(console),
+            updates: service, events: events, liveClock: true);
 
         Assert.Equal(0, app.Run(["arrive", "8:15"]));
 
+        Assert.Equal(0, source.ListCalls);
+        Assert.Empty(source.Downloads);
+        Assert.Equal(0, events.Waits);
+        Assert.False(events.TryTake(out _));
         Assert.DoesNotContain("\u001b[?1000h", console.Output);
         Assert.DoesNotContain("\u001b[?1000l", console.Output);
     }
