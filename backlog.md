@@ -82,6 +82,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] Wrap hint rows: wrap the hint row instead of cropping it on narrow terminals. (from 059-read-error-next-step) → 096-wrap-hint-rows
 - [x] Narrow caption test: test the `summary` caption on a terminal narrower than 80 columns. (from 069-summary-caption) → 097-narrow-caption-test
 - [x] User manual: add `MANUAL.md` at the repo root, a user manual that documents every feature, command (name, alias, arguments, examples) and setting (name, values, default, effect) as the app has them now, plus the data folder, files and keyboard shortcuts, written for users rather than developers. Link it from the README. Add a test that fails when a registered command or setting is missing from the manual, so it stays complete. → 122-user-manual
+- [ ] [#46](backlog/046-prerelease-update-fails.md) Prerelease update fails
 - [ ] [#45](backlog/045-redraw-on-terminal-resize.md) Redraw on terminal resize
 - [h] [#1](backlog/001-windows-terminal-check.md) Windows terminal check
 - [h] [#2](backlog/002-terminal-layout-check.md) Terminal layout check
