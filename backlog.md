@@ -105,7 +105,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [ ] [#3](backlog/003-home-office-or-office.md) Home office or office
 - [x] [#4](backlog/004-one-shot-commands.md) One-shot commands → 126-one-shot-commands
 - [ ] [#5](backlog/005-monthly-timesheet.md) Monthly timesheet
-- [ ] [#6](backlog/006-menu-bar-and-tray-app.md) Menu bar and tray app (after: #4)
+- [ ] [#6](backlog/006-menu-bar-and-tray-app.md) Menu bar and tray app
 - [ ] [#7](backlog/007-check-in-reminder.md) Check-in reminder (after: #6)
 - [ ] [#8](backlog/008-keep-balance-corrections-on-import.md) Keep balance corrections on import
 - [ ] [#9](backlog/009-fall-back-per-setting.md) Fall back per setting
@@ -144,11 +144,11 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [ ] [#34](backlog/034-holiday-name-in-accent-colour.md) Holiday name in accent colour
 - [?] [#35](backlog/035-show-hidden-import-warnings.md) Show hidden import warnings
 - [ ] [#36](backlog/036-teams-call-tracking.md) Teams call tracking
-- [ ] [#37](backlog/037-hours-per-work-item-as-json.md) Hours per work item as JSON (after: #4)
-- [ ] [#38](backlog/038-end-of-day-ritual.md) End-of-day ritual (after: #4; #37; Context#17; #39)
+- [ ] [#37](backlog/037-hours-per-work-item-as-json.md) Hours per work item as JSON
+- [ ] [#38](backlog/038-end-of-day-ritual.md) End-of-day ritual (after: #37; Context#17; #39)
 - [ ] [#39](backlog/039-licence-key-and-pro-gate.md) Licence key and Pro gate
 - [ ] [#40](backlog/040-devops-sync-becomes-pro.md) DevOps sync becomes Pro (after: #39)
 - [ ] [#41](backlog/041-suite-landing-page.md) Suite landing page (after: #39; Context#109)
 - [x] [#42](backlog/042-choose-a-source-licence.md) Choose a source licence
-- [h] [#43](backlog/043-open-the-lemon-squeezy-shop.md) Open the Lemon Squeezy shop (after: ReviewPack#1; #39; #41; #42)
+- [h] [#43](backlog/043-open-the-lemon-squeezy-shop.md) Open the Lemon Squeezy shop (after: ReviewPack#1; #39; #41)
 - [ ] [#44](backlog/044-one-shot-help.md) One-shot help
