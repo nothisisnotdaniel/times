@@ -99,6 +99,8 @@ internal sealed class LineEditor
     private readonly bool watchResize;
 
     // True while the current read draws nothing (the window is too small for the layout).
+    // Set at the start of each Read and by its resize callback; only meaningful inside a Read.
+    // ReadKey never draws, so it ignores it (unlike seen, which carries across ReadKey calls).
     private bool hidden;
 
     // The terminal size at the last check. A line or value read starts from the size its caller just drew
