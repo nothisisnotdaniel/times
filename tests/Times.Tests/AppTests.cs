@@ -7681,7 +7681,9 @@ public sealed class AppTests : IDisposable
         WriteUpdateMode("notify only", "beta");
         (_, output) = rig.Run("update", "quit");
         Assert.Contains("Times 1.2.0-beta.1 is ready and installs when you quit.", output);
-        Assert.Equal("--prerelease", Assert.Single(rig.Launcher.Calls).Arguments[^1]);
+        IReadOnlyList<string> arguments = Assert.Single(rig.Launcher.Calls).Arguments;
+        Assert.Equal(["--version", "1.2.0-beta.1"], arguments.TakeLast(2));
+        Assert.DoesNotContain("--prerelease", arguments);
     }
 
     // AC-8: a copy that is not an installed tool stages nothing.
