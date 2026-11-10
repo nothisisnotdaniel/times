@@ -49,9 +49,9 @@ public sealed class UpdateApplierTests : IDisposable
         Assert.DoesNotContain(temp.Path, UpdateApplier.UnixScript, StringComparison.Ordinal);
     }
 
-    // AC-9: --tool-path for a tool-path install, --prerelease for a prerelease.
+    // AC-9: --tool-path for a tool-path install; a prerelease is named by the exact --version alone, no --prerelease.
     [Fact]
-    public void HelperCall_Unix_ToolPathAndPrerelease()
+    public void HelperCall_Unix_ToolPathAndPrerelease_VersionOnly()
     {
         StagedUpdate staged = Staged("1.2.0-develop.7");
         string tools = Path.Combine(temp.Path, "my tools");
@@ -60,7 +60,7 @@ public sealed class UpdateApplierTests : IDisposable
         ProcessCall call = applier.HelperCall(staged, Install(tools, global: false), temp.Path, 1);
 
         Assert.Equal(
-            ["Times", "--tool-path", tools, "--configfile", staged.ConfigPath, "--add-source", staged.Folder, "--version", "1.2.0-develop.7", "--prerelease"],
+            ["Times", "--tool-path", tools, "--configfile", staged.ConfigPath, "--add-source", staged.Folder, "--version", "1.2.0-develop.7"],
             call.Arguments.Skip(7));
     }
 
@@ -138,9 +138,72 @@ public sealed class UpdateApplierTests : IDisposable
         Assert.Contains("tasklist /fi \"PID eq 77\"", script, StringComparison.Ordinal);
         Assert.Contains("(1,1,30)", script, StringComparison.Ordinal);
         Assert.Contains(
-            "dotnet tool update Times -g --configfile \"" + Path.Combine(@"C:\Users\Dan L\AppData\Local\Temp\times-update-x", "nuget.config") + "\" --add-source \"C:\\Users\\Dan L\\AppData\\Local\\Temp\\times-update-x\" --version 1.2.0-beta.1 --prerelease <nul >>\"" + Path.Combine(@"C:\Users\Dan L\AppData\Roaming\Times", "update.log") + "\" 2>&1",
+            "dotnet tool update Times -g --configfile \"" + Path.Combine(@"C:\Users\Dan L\AppData\Local\Temp\times-update-x", "nuget.config") + "\" --add-source \"C:\\Users\\Dan L\\AppData\\Local\\Temp\\times-update-x\" --version 1.2.0-beta.1 <nul >>\"" + Path.Combine(@"C:\Users\Dan L\AppData\Roaming\Times", "update.log") + "\" 2>&1",
             script, StringComparison.Ordinal);
         Assert.EndsWith("rmdir /s /q \"C:\\Users\\Dan L\\AppData\\Local\\Temp\\times-update-x\"", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("--prerelease", script, StringComparison.Ordinal);
+    }
+
+    // #46: UpdateArguments for a prerelease is exactly the install arguments, the staged config and folder
+    // and the exact version, with no --prerelease (dotnet tool update refuses it next to --version).
+    [Theory]
+    [InlineData("1.2.0-develop.7", true)]
+    [InlineData("1.2.0-develop.7", false)]
+    [InlineData("1.2.0-beta.1", true)]
+    [InlineData("1.2.0-beta.1", false)]
+    public void UpdateArguments_Prerelease_ExactVersionWithoutPrereleaseFlag(string version, bool global)
+    {
+        StagedUpdate staged = Staged(version);
+        string tools = Path.Combine(temp.Path, "tools");
+        ToolInstall install = Install(tools, global);
+        string[] installArguments = global ? ["-g"] : ["--tool-path", tools];
+
+        List<string> arguments = UpdateApplier.UpdateArguments(staged, install);
+
+        Assert.Equal(
+            ["Times", .. installArguments, "--configfile", Path.Combine(staged.Folder, "nuget.config"), "--add-source", staged.Folder, "--version", version],
+            arguments);
+    }
+
+    // #46: a stable version keeps the arguments it had, ending with the exact --version.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void UpdateArguments_Stable_Unchanged(bool global)
+    {
+        StagedUpdate staged = Staged("1.2.0");
+        string tools = Path.Combine(temp.Path, "tools");
+        string[] installArguments = global ? ["-g"] : ["--tool-path", tools];
+
+        List<string> arguments = UpdateApplier.UpdateArguments(staged, Install(tools, global));
+
+        Assert.Equal(
+            ["Times", .. installArguments, "--configfile", Path.Combine(staged.Folder, "nuget.config"), "--add-source", staged.Folder, "--version", "1.2.0"],
+            arguments);
+    }
+
+    // #46: no prerelease, label or install kind puts --prerelease in UpdateArguments or either helper call.
+    [Theory]
+    [InlineData("1.2.0-develop.7", true)]
+    [InlineData("1.2.0-develop.7", false)]
+    [InlineData("1.2.0-beta.1", true)]
+    [InlineData("1.2.0-beta.1", false)]
+    [InlineData("2.0.0-beta.12", false)]
+    public void Prerelease_NoPrereleaseFlagAnywhere(string version, bool global)
+    {
+        StagedUpdate staged = Staged(version);
+        ToolInstall install = Install(Path.Combine(temp.Path, "tools"), global);
+        string data = Path.Combine(temp.Path, "data");
+
+        ProcessCall unix = new UpdateApplier(new FakeLauncher(), windows: false).HelperCall(staged, install, data, 1);
+        ProcessCall windows = new UpdateApplier(new FakeLauncher(), windows: true).HelperCall(staged, install, data, 1);
+
+        Assert.DoesNotContain("--prerelease", UpdateApplier.UpdateArguments(staged, install));
+        Assert.DoesNotContain("--prerelease", unix.Arguments);
+        Assert.Equal(["--version", version], unix.Arguments.TakeLast(2));
+        Assert.All(windows.Arguments, a => Assert.DoesNotContain("--prerelease", a, StringComparison.Ordinal));
+        Assert.DoesNotContain("--prerelease", windows.CommandLine, StringComparison.Ordinal);
+        Assert.Contains("--version " + version + " <nul", windows.CommandLine, StringComparison.Ordinal);
     }
 
     // AC-9: Windows refuses paths with characters cmd treats specially, or control characters.

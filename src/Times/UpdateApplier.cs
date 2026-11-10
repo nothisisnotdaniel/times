@@ -132,17 +132,14 @@ internal sealed class UpdateApplier
     /// <summary>
     /// The <c>dotnet tool update</c> arguments after <c>dotnet tool update</c>. <c>--configfile</c> points at the
     /// staged <c>nuget.config</c>, which clears every other source, so only the verified package can be installed.
+    /// The exact <c>--version</c> also names a prerelease, so <c>--prerelease</c> is never added:
+    /// <c>dotnet tool update</c> refuses it next to <c>--version</c>.
     /// </summary>
     public static List<string> UpdateArguments(StagedUpdate staged, ToolInstall install)
     {
         List<string> arguments = ["Times"];
         arguments.AddRange(install.Arguments);
         arguments.AddRange(["--configfile", staged.ConfigPath, "--add-source", staged.Folder, "--version", staged.Version.ToString()]);
-        if (staged.Version.IsPrerelease)
-        {
-            arguments.Add("--prerelease");
-        }
-
         return arguments;
     }
 
