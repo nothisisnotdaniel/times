@@ -71,9 +71,20 @@ internal sealed class HookedInput : IAnsiConsoleInput
     /// <summary>Called with the key's number (1-based) right before the key is handed out.</summary>
     public Action<int>? BeforeKey { get; set; }
 
+    /// <summary>
+    /// Called with the call's number (1-based) at every <c>IsKeyAvailable</c>; a non-null result is
+    /// returned instead of asking the inner input (for example "no key" while it changes the size).
+    /// </summary>
+    public Func<int, bool?>? OnKeyAvailable { get; set; }
+
     public bool IsKeyAvailable()
     {
         KeyAvailableCalls++;
+        if (OnKeyAvailable?.Invoke(KeyAvailableCalls) is { } answer)
+        {
+            return answer;
+        }
+
         return inner.IsKeyAvailable();
     }
 

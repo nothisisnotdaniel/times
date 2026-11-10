@@ -85,6 +85,17 @@ Every factory agent reads this file before working on Times. Keep it short and a
       `LimitWarning` (9:45), each at most once per date and session; a fire writes one `ControlCode("\a")` and shows the hint
       (steelblue1 `Daily target H:mm reached.`, yellow `! 15 minutes left until 10 hours of work.`) through `ShowHintInPlace`
       (shared with the paste-cut hint). `Run` calls `Prime` before the first draw, so a start past a threshold stays silent.
+  - **Resize:** `LineEditor.ReadLine`/`ReadValue` (callback returns the new `InputGeometry`) and `ReadKey` take a resize callback;
+    before each fresh key (where events are applied) the editor compares `console.Profile.Width/Height` with the size it last saw
+    and, on a change, calls it once at the latest size, then draws popup and line on top (line, history, popup, Tab list kept).
+    `App.Resize` re-renders what is showing (top area with `shownMessage`/`shownHideQuicklist`, or the settings panel with its
+    selection in view), keeps the hint (re-wrapped) and the clamped offset, and calls `DrawFull`. Below `App.MinWidth` × `MinHeight`
+    (20×8) only a grey `Window too small` (cut to the width) is drawn on row 1 and the editor draws nothing (keys still edit,
+    Enter still runs); 0 or less writes nothing. With `events` a size change wakes `WaitForKeyOrEvent`; without, the editor polls
+    every `PollInterval` only with `watchResize` (`App` option, `Program.cs` passes `true`). Spectre's `Profile.Width/Height`
+    read the live size while unset (`Console.BufferWidth`/`WindowHeight`; on Windows the buffer width, which matches the
+    window in Windows Terminal and in conhost with wrap-on-resize). Tests set `TestConsole.Profile` sizes in `HookedInput.BeforeKey`
+    or `OnKeyAvailable`.
   - `quit` ends the loop with exit code 0.
   - Tests drive the loop by queuing input on `TestConsole.Input` (`PushTextWithEnter`, `PushKey`)
     and always end with `quit`, so they can't hang.

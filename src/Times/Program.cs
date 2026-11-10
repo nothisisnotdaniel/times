@@ -47,5 +47,6 @@ UpdateService updates = new UpdateService(
 App app = new App(console, TimeProvider.System, new DayStore(dataFolder.Path),
     folderFromEnvironment: dataFolder.FromEnvironment, mouse: mouse, updates: updates,
     tokenStore: TokenStore.ForCurrentPlatform(), devOpsClient: credential => new AzureDevOpsClient(credential),
-    events: new BackgroundEventQueue(), liveClock: true, instanceLock: instanceLock);
+    events: new BackgroundEventQueue(), liveClock: true, instanceLock: instanceLock,
+    watchResize: true);
 return app.Run(args);
