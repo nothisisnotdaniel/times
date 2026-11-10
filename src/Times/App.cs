@@ -22,6 +22,15 @@ internal sealed class App
     // While a hint takes more than one row, the top area keeps at least this many rows.
     private const int MinTopRowsForWrap = 4;
     private const string Prompt = "> ";
+
+    /// <summary>The narrowest terminal the layout is drawn for; below it only <see cref="TooSmallText"/> shows.</summary>
+    public const int MinWidth = 20;
+
+    /// <summary>The shortest terminal the layout is drawn for; below it only <see cref="TooSmallText"/> shows.</summary>
+    public const int MinHeight = 8;
+
+    /// <summary>The one grey line a window below <see cref="MinWidth"/> × <see cref="MinHeight"/> shows, cut to the width.</summary>
+    public const string TooSmallText = "Window too small";
     private const string Placeholder = "Type help for commands";
     private const string RetypeHiddenCharacters = "Retype it without the hidden characters.";
 
@@ -46,7 +55,11 @@ internal sealed class App
     private readonly Func<DevOpsCredential, IDevOpsClient>? devOpsClient;
     private readonly IBackgroundEvents? events;
     private readonly bool liveClock;
+    private readonly bool watchResize;
     private readonly InstanceLock instanceLock;
+
+    // While the settings panel is open: what it shows, so a resize can draw it again (null otherwise).
+    private SettingsView? shownSettings;
 
     // The day the last redraw showed and the stamp of its file then (null: it could not be read). A command
     // that writes the shown day refuses when the file's stamp is no longer this one.
@@ -106,11 +119,16 @@ internal sealed class App
     /// <param name="events">Background events applied between keys at the prompt, or <c>null</c> for none.</param>
     /// <param name="liveClock">True to run a <see cref="LiveClock"/> while the loop runs (only with <paramref name="events"/>).</param>
     /// <param name="instanceLock">Keeps a second Times off the data folder while the loop runs, or <c>null</c> for one on the store's folder.</param>
+    /// <param name="watchResize">
+    /// True to poll the terminal size while waiting for a key where no background events are applied (the
+    /// settings panel and the value prompts), so a resize redraws there without a key press.
+    /// </param>
     public App(IAnsiConsole console, TimeProvider time, DayStore store, CommandRegistry? registry = null,
         bool folderFromEnvironment = false, MouseReporting? mouse = null, SettingsRegistry? settings = null,
         UpdateService? updates = null, ITokenStore? tokenStore = null, Func<DevOpsCredential, IDevOpsClient>? devOpsClient = null,
-        IBackgroundEvents? events = null, bool liveClock = false, InstanceLock? instanceLock = null)
+        IBackgroundEvents? events = null, bool liveClock = false, InstanceLock? instanceLock = null, bool watchResize = false)
     {
+        this.watchResize = watchResize;
         this.instanceLock = instanceLock ?? new InstanceLock(store.Folder);
         this.events = events;
         this.liveClock = liveClock;
@@ -981,10 +999,10 @@ internal sealed class App
                 ImportConflict conflict = run.Conflicts[i];
                 string date = ReportDate(conflict.Day);
                 Draw(null, new Markup($"[grey]{date} already has a different day. Replace it with the imported one? Type yes to replace.[/]"), false);
-                console.Cursor.SetPosition(InputColumn, InputLine);
+                PlaceCursor();
                 int width = console.Profile.Width;
                 string? typed = editor.ReadValue(InputColumn, InputLine, width - InputColumn - 2, framePlaceholder, out bool cancelled,
-                    ShowPasteCut);
+                    ShowPasteCut, resized: Resize, hidden: TooSmall);
                 if (typed is null)
                 {
                     return null;
@@ -1768,10 +1786,10 @@ internal sealed class App
         try
         {
             Draw(null, new Markup($"[grey]Paste or type the personal access token for [steelblue1]{Markup.Escape(organization)}[/].[/]"), false);
-            console.Cursor.SetPosition(InputColumn, InputLine);
+            PlaceCursor();
             int width = console.Profile.Width;
             string? typed = editor.ReadValue(InputColumn, InputLine, width - InputColumn - 2, framePlaceholder, out bool cancelled,
-                ShowPasteCut, masked: true);
+                ShowPasteCut, masked: true, resized: Resize, hidden: TooSmall);
             if (typed is null)
             {
                 return null;
@@ -3003,7 +3021,7 @@ internal sealed class App
 
     private int Loop(IRenderable? startHint)
     {
-        LineEditor editor = new LineEditor(console, registry, IsDevOpsLineWithArgument);
+        LineEditor editor = new LineEditor(console, registry, IsDevOpsLineWithArgument, watchResize);
         IRenderable? message = null;
         IRenderable? hint = startHint;
         bool hideQuicklist = false;
@@ -3012,18 +3030,11 @@ internal sealed class App
         {
             Draw(message, hint, hideQuicklist);
 
-            int height = console.Profile.Height;
-            int width = console.Profile.Width;
-            // Inside the panel: border + 1 padding on the left, then the prompt. The cursor starts
-            // right after the prompt, on the placeholder's first character, not after it.
-            int column = 3 + Prompt.Length;
-            int line = height - 1;
-            console.Cursor.SetPosition(column, line);
-
-            // The popup ends on the last hint row (just above the input box) and grows upwards over the others.
-            PopupArea popup = new PopupArea(height - InputHeight, width, RestoreRow);
-            string? input = editor.ReadLine(column, line, width - column - 2, popup, Placeholder, Scroll, ShowPasteCut,
-                events, ApplyEvent);
+            // The cursor starts right after the prompt, on the placeholder's first character, not after it.
+            InputGeometry geometry = Geometry();
+            PlaceCursor();
+            string? input = editor.ReadLine(geometry.Column, geometry.Line, geometry.Width, geometry.Popup, Placeholder, Scroll,
+                ShowPasteCut, events, ApplyEvent, Resize, geometry.Hidden);
             if (input is null)
             {
                 return 0;
@@ -3170,6 +3181,11 @@ internal sealed class App
     private bool ApplyEvent()
     {
         SetTop(RenderTop(shownMessage, shownHideQuicklist));
+        if (TooSmall)
+        {
+            return false;
+        }
+
         int topHeight = TopHeight;
         offset = Math.Min(offset, TopArea.MaxOffset(topLines.Count, topHeight));
         frame = RenderFrame();
@@ -3182,11 +3198,84 @@ internal sealed class App
     }
 
     private void SetTop(IRenderable top) =>
-        topLines = Segment.SplitLines(top.Render(RenderOptions.Create(console, console.Profile.Capabilities), console.Profile.Width));
+        topLines = Segment.SplitLines(top.Render(RenderOptions.Create(console, console.Profile.Capabilities), Math.Max(1, console.Profile.Width)));
 
-    // Clears the screen and writes the whole layout for the current top lines, offset and hint.
+    // Called by the line editor (and the settings panel) after the terminal size changed: renders what
+    // is showing again at the new size (the settings panel with its selection in view, or the top area
+    // with the last message and hidden-quicklist flag), keeps the hint (re-wrapped) and the offset
+    // (clamped), and redraws the whole screen. Returns where the input line and popup now go.
+    private InputGeometry Resize()
+    {
+        if (shownSettings is { } view)
+        {
+            SetTop(SettingsPanel.Render(settings, view.Values, view.Selected, view.Unreadable));
+            offset = settings.Settings.Count == 0 || TooSmall
+                ? offset
+                : TopArea.OffsetShowing(SettingsPanel.LineOf(view.Selected, view.Unreadable is not null), topLines.Count, TopHeight, offset);
+        }
+        else
+        {
+            SetTop(RenderTop(shownMessage, shownHideQuicklist));
+            offset = TooSmall ? offset : Math.Min(offset, TopArea.MaxOffset(topLines.Count, TopHeight));
+        }
+
+        DrawFull();
+        PlaceCursor();
+        return Geometry();
+    }
+
+    // Where the input line and the popup go at the current size. Inside the panel: border + 1 padding on
+    // the left, then the prompt. The popup ends on the last hint row (just above the input box) and grows
+    // upwards over the others. Hidden while the window is too small for the layout.
+    private InputGeometry Geometry()
+    {
+        int height = console.Profile.Height;
+        int width = console.Profile.Width;
+        PopupArea popup = new PopupArea(height - InputHeight, width, RestoreRow);
+        return new InputGeometry(InputColumn, height - 1, width - InputColumn - 2, popup, TooSmall);
+    }
+
+    // True while the terminal is below MinWidth × MinHeight: only the too-small line is drawn.
+    private bool TooSmall => console.Profile.Width < MinWidth || console.Profile.Height < MinHeight;
+
+    // Puts the cursor after the prompt, unless the window is too small (then nothing is written).
+    private void PlaceCursor()
+    {
+        if (!TooSmall)
+        {
+            console.Cursor.SetPosition(InputColumn, InputLine);
+        }
+    }
+
+    // The rows the screen now shows: the whole layout, or none while the window is too small.
+    private List<SegmentLine> Relayout() => TooSmall ? [] : RenderFrame();
+
+    // Clears the screen and writes only the grey too-small line on row 1, cut to the width. With a width
+    // or height of 0 or less nothing is written at all.
+    private void DrawTooSmall()
+    {
+        int width = console.Profile.Width;
+        if (width <= 0 || console.Profile.Height <= 0)
+        {
+            return;
+        }
+
+        console.Clear(home: true);
+        string shown = TooSmallText.Length > width ? TooSmallText[..width] : TooSmallText;
+        console.Write(new Text(shown, new Style(Color.Grey)));
+    }
+
+    // Clears the screen and writes the whole layout for the current top lines, offset and hint (or only
+    // the too-small line while the window is below MinWidth × MinHeight).
     private void DrawFull()
     {
+        if (TooSmall)
+        {
+            frame = [];
+            DrawTooSmall();
+            return;
+        }
+
         frame = RenderFrame();
         console.Clear(home: true);
         console.Write(new SegmentsRenderable(frame.SelectMany(l => l.Append(Segment.LineBreak)).SkipLast(1)));
@@ -3280,6 +3369,11 @@ internal sealed class App
     // top, at the bottom, or it fits).
     private bool Scroll(int direction, ScrollStep step)
     {
+        if (TooSmall)
+        {
+            return false;
+        }
+
         int topHeight = TopHeight;
         int lines = step == ScrollStep.Wheel ? WheelLines : TopArea.PageSize(topHeight);
         int next = Math.Clamp(offset + (direction * lines), 0, TopArea.MaxOffset(topLines.Count, topHeight));
@@ -3306,10 +3400,22 @@ internal sealed class App
         int selected = 0;
         string? unreadable = LoadSettings(out SettingValues values);
         offset = 0;
+        try
+        {
+            return RunSettingsPanel(editor, selected, unreadable, values);
+        }
+        finally
+        {
+            shownSettings = null;
+        }
+    }
+
+    private bool RunSettingsPanel(LineEditor editor, int selected, string? unreadable, SettingValues values)
+    {
         ShowSettings(values, selected, unreadable, null, full: true);
         while (true)
         {
-            ConsoleKeyInfo? read = editor.ReadKey();
+            ConsoleKeyInfo? read = editor.ReadKey(resized: () => Resize());
             if (read is null)
             {
                 return false;
@@ -3448,7 +3554,8 @@ internal sealed class App
         {
             ShowSettings(values, selected, null, null, full: false);
             int width = console.Profile.Width;
-            return editor.ReadValue(InputColumn, InputLine, width - InputColumn - 2, framePlaceholder, out cancelled, ShowPasteCut);
+            return editor.ReadValue(InputColumn, InputLine, width - InputColumn - 2, framePlaceholder, out cancelled, ShowPasteCut,
+                resized: Resize, hidden: TooSmall);
         }
         finally
         {
@@ -3491,8 +3598,9 @@ internal sealed class App
     {
         // The hint first: its height sets the top area's rows, which the offset must keep the selected row in.
         frameHint = hint ?? Text.Empty;
+        shownSettings = new SettingsView(values, selected, unreadable);
         SetTop(SettingsPanel.Render(settings, values, selected, unreadable));
-        offset = settings.Settings.Count == 0
+        offset = settings.Settings.Count == 0 || TooSmall
             ? 0
             : TopArea.OffsetShowing(SettingsPanel.LineOf(selected, unreadable is not null), topLines.Count, TopHeight, offset);
         if (full)
@@ -3501,14 +3609,31 @@ internal sealed class App
         }
         else
         {
-            frame = RenderFrame();
+            frame = Relayout();
             for (int row = 1; row <= frame.Count; row++)
             {
                 RestoreRow(row);
             }
         }
 
-        console.Cursor.SetPosition(InputColumn, InputLine);
+        PlaceCursor();
+    }
+
+    /// <summary>What the open settings panel shows: the values, the selected row and why the file cannot be read (or null).</summary>
+    private sealed class SettingsView
+    {
+        public SettingsView(SettingValues values, int selected, string? unreadable)
+        {
+            Values = values;
+            Selected = selected;
+            Unreadable = unreadable;
+        }
+
+        public SettingValues Values { get; }
+
+        public int Selected { get; }
+
+        public string? Unreadable { get; }
     }
 
     // Inside the input panel: border + 1 padding on the left, then the prompt.
@@ -3619,6 +3744,13 @@ internal sealed class App
     // full redraw shows the hint it is given, as always.
     private void ShowHintInPlace(IRenderable hint)
     {
+        if (TooSmall)
+        {
+            // Nothing is drawn now; the hint shows once the window is big enough again.
+            frameHint = hint;
+            return;
+        }
+
         int before = HintHeight;
         frameHint = hint;
         int after = HintHeight;

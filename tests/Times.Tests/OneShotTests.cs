@@ -274,4 +274,23 @@ public sealed class OneShotTests : IDisposable
         Assert.Equal(0, Shot(data.Path, "leave").Exit);
         Assert.Equal(InstanceLockStatus.Acquired, new InstanceLock(data.Path).TryAcquire().Status);
     }
+
+    // AC-9 (128): one-shot commands never clear the screen, draw the layout or poll the size.
+    [Theory]
+    [InlineData("status")]
+    [InlineData("arrive", "8:15")]
+    public void OneShot_HasNoClear_AndNeverAsksForAKey(params string[] args)
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 120;
+        HookedInput input = new HookedInput(console.Input);
+
+        int exit = new App(new InputOverrideConsole(console, input), FixedTimeProvider.At20261027(), new DayStore(data.Path),
+            watchResize: true).Run(args);
+
+        Assert.Equal(0, exit);
+        Assert.DoesNotContain("\u001b[2J", console.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain("╭", console.Output, StringComparison.Ordinal);
+        Assert.Equal(0, input.KeyAvailableCalls);
+    }
 }

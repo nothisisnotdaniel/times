@@ -14991,4 +14991,777 @@ public sealed class AppTests : IDisposable
         Assert.NotEqual(Edited, ReadDay("2026-10-27"));
         Assert.Contains("Edited outside", ReadDay("2026-10-27"));
     }
+
+    // ---- 128: redraw on terminal resize ----
+
+    /// <summary>A run whose size changes at chosen keys; what the output looked like as each key was handed out.</summary>
+    private sealed class ResizeRun
+    {
+        public ResizeRun(TestConsole console, HookedInput input)
+        {
+            Console = console;
+            Input = input;
+        }
+
+        public TestConsole Console { get; }
+
+        public HookedInput Input { get; }
+
+        /// <summary>The output length right before key n (1-based) was handed out.</summary>
+        public Dictionary<int, int> OutputAtKey { get; } = [];
+
+        public string Output => Console.Output;
+
+        /// <summary>The output written after key n was handed out and before key n + 1.</summary>
+        public string AfterKey(int key) => Output[OutputAtKey[key]..OutputAtKey[key + 1]];
+    }
+
+    /// <summary>
+    /// Runs the loop on a <paramref name="width"/>×<paramref name="height"/> ANSI console. Right before key n is
+    /// handed out, the size becomes <paramref name="sizes"/>[n] (each pair in order, so several changes can
+    /// happen between two keys). The caller's input ends with quit.
+    /// </summary>
+    private ResizeRun RunResized(int width, int height, Action<TestConsole> input, Dictionary<int, (int Width, int Height)[]> sizes,
+        FakeTokenStore? tokenStore = null, IBackgroundEvents? events = null, bool watchResize = false, Action<ResizeRun>? setup = null,
+        string? folder = null)
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = width;
+        console.Profile.Height = height;
+        input(console);
+        HookedInput hooked = new HookedInput(console.Input);
+        ResizeRun run = new ResizeRun(console, hooked);
+        hooked.BeforeKey = key =>
+        {
+            run.OutputAtKey[key] = console.Output.Length;
+            if (sizes.TryGetValue(key, out (int Width, int Height)[]? changes))
+            {
+                foreach ((int w, int h) in changes)
+                {
+                    console.Profile.Width = w;
+                    console.Profile.Height = h;
+                }
+            }
+        };
+        setup?.Invoke(run);
+        App app = new App(new InputOverrideConsole(console, hooked), FixedTimeProvider.At20261027(), new DayStore(folder ?? data.Path),
+            tokenStore: tokenStore, events: events, instanceLock: folder is null ? sideLock : null, watchResize: watchResize);
+        Assert.Equal(0, app.Run([]));
+        return run;
+    }
+
+    private static Dictionary<int, (int Width, int Height)[]> SizeAt(int key, int width, int height) =>
+        new Dictionary<int, (int Width, int Height)[]> { [key] = [(width, height)] };
+
+    private static readonly Regex ClearSequence = new(@"\x1b\[2J");
+
+    /// <summary>
+    /// The screen <paramref name="output"/> leaves on a <paramref name="width"/>×<paramref name="height"/> terminal,
+    /// played from its last clear, and the cursor's last position. Fails if anything is written outside the screen.
+    /// </summary>
+    private static (string[] Rows, (int Row, int Column) Cursor) PlayScreen(string output, int width, int height)
+    {
+        int start = ClearSequence.Matches(output).Last().Index;
+        char[][] grid = Enumerable.Range(0, height).Select(_ => new string(' ', width).ToCharArray()).ToArray();
+        (int Row, int Column) cursor = (1, 1);
+        foreach (AnsiWrite write in AnsiWrites.Parse(output[start..]))
+        {
+            int row = write.Row;
+            int column = write.Column;
+            Assert.InRange(row, 1, height);
+            Assert.InRange(column, 1, width);
+            foreach (char c in write.Text)
+            {
+                if (c == '\n')
+                {
+                    row++;
+                    column = 1;
+                    continue;
+                }
+
+                Assert.True(row <= height && column <= width, $"a cell written at {row};{column} on a {width}×{height} screen");
+                grid[row - 1][column - 1] = c;
+                column++;
+            }
+
+            cursor = (row, column);
+        }
+
+        return (grid.Select(r => new string(r).TrimEnd()).ToArray(), cursor);
+    }
+
+    /// <summary>The rows of the full frame written right after each clear in <paramref name="output"/>.</summary>
+    private static List<string[]> ClearFrames(string output)
+    {
+        List<string[]> frames = [];
+        foreach (Match clear in ClearSequence.Matches(output))
+        {
+            List<AnsiWrite> writes = AnsiWrites.Parse(output[clear.Index..]);
+            if (writes.Count > 0 && writes[0].Row == 1 && writes[0].Column == 1 && writes[0].Text.Length > 0)
+            {
+                frames.Add(writes[0].Text.Split('\n'));
+            }
+        }
+
+        return frames;
+    }
+
+    /// <summary>Asserts one clear and a full layout of exactly <paramref name="height"/> rows of at most <paramref name="width"/> cells.</summary>
+    private static string[] AssertOneFullFrame(string written, int width, int height)
+    {
+        Assert.Equal(1, Count(written, ClearScreen));
+        string[] rows = Assert.Single(ClearFrames(written));
+        Assert.Equal(height, rows.Length);
+        Assert.All(rows, r => Assert.True(r.Length <= width, $"row wider than {width}: {r}"));
+        Assert.StartsWith("╭", rows[^3]);
+        Assert.EndsWith("╮", rows[^3]);
+        Assert.Equal(width, rows[^3].Length);
+        Assert.StartsWith("│ > ", rows[^2]);
+        Assert.StartsWith("╰", rows[^1]);
+        Assert.Equal(width, rows[^1].Length);
+        return rows;
+    }
+
+    /// <summary>
+    /// The screen a fresh session at that size, in a data folder of its own, shows after the same keys, right
+    /// before key <paramref name="key"/>.
+    /// </summary>
+    private (string[] Rows, (int Row, int Column) Cursor) ReferenceScreen(int width, int height, Action<TestConsole> input, int key)
+    {
+        using TempFolder own = new TempFolder();
+        ResizeRun reference = RunResized(width, height, input, [], folder: own.Path);
+        return PlayScreen(reference.Output[..reference.OutputAtKey[key]], width, height);
+    }
+
+    // AC-1
+    [Fact]
+    public void Resize_AtThePrompt_ClearsAndDrawsTheLayoutAtTheNewSize_WithTheCursorAfterTheText()
+    {
+        ResizeRun run = RunResized(120, 40, c =>
+        {
+            c.Input.PushText("arr");
+            c.Input.PushTextWithEnter("ive 8:15");
+            c.Input.PushTextWithEnter("quit");
+        }, SizeAt(3, 80, 20));
+
+        string redraw = run.AfterKey(3);
+        string[] rows = AssertOneFullFrame(redraw, 80, 20);
+        Assert.Contains(Heading, string.Join('\n', rows));
+        (string[] screen, (int Row, int Column) cursor) = PlayScreen(redraw, 80, 20);
+        Assert.StartsWith("│ > arr", screen[18]);
+        Assert.Equal((19, 5 + 3), cursor);
+        Assert.EndsWith("\u001b[19;8H", redraw);
+    }
+
+    // AC-2
+    [Fact]
+    public void Resize_KeepsTheTypedText_AndTheCommandRuns()
+    {
+        ResizeRun run = RunResized(120, 40, c =>
+        {
+            c.Input.PushText("arr");
+            c.Input.PushTextWithEnter("ive 8:15");
+            c.Input.PushTextWithEnter("quit");
+        }, SizeAt(3, 80, 20));
+
+        Assert.Equal([new DayEntry(EntryKind.Arrival, new TimeOnly(8, 15))], LoadDay().Entries);
+        Assert.Contains("│ > arr", PlayScreen(run.AfterKey(3), 80, 20).Rows[18]);
+    }
+
+    // AC-2: a line too long for the new width shows its tail behind ….
+    [Fact]
+    public void Resize_ALongLine_ShowsItsTailBehindAnEllipsis()
+    {
+        const string Typed = "checkpoint 8:30 a rather long checkpoint name";
+        ResizeRun run = RunResized(120, 24, c =>
+        {
+            c.Input.PushText(Typed);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        }, SizeAt(Typed.Length, 30, 12));
+
+        string line = PlayScreen(run.AfterKey(Typed.Length), 30, 12).Rows[10];
+        // Room is 30 - 5 - 2 - 1 = 22 cells: the … then the last 21 characters.
+        Assert.Equal("│ > …" + Typed[^21..], line[..(4 + 22)]);
+    }
+
+    // AC-2
+    [Fact]
+    public void Resize_KeepsTheHistory_UpRecallsTheLastLine()
+    {
+        int typed = "arrive 8:15".Length + 1;
+        ResizeRun run = RunResized(120, 40, c =>
+        {
+            c.Input.PushTextWithEnter("arrive 8:15");
+            c.Input.PushText("x");
+            c.Input.PushKey(ConsoleKey.Backspace);
+            c.Input.PushKey(ConsoleKey.UpArrow);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        }, SizeAt(typed + 1, 80, 20));
+
+        AssertOneFullFrame(run.AfterKey(typed + 1), 80, 20);
+        Assert.Contains("│ > arrive 8:15", PlayScreen(run.Output[..run.OutputAtKey[typed + 4]], 80, 20).Rows[18]);
+    }
+
+    // AC-2: the open popup is drawn again above the input box, at the new width, with the same matches.
+    [Fact]
+    public void Resize_RedrawsTheOpenPopup_AtTheNewWidth()
+    {
+        Action<TestConsole> input = c =>
+        {
+            c.Input.PushText("he");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        };
+        ResizeRun run = RunResized(120, 40, input, SizeAt(2, 70, 20));
+
+        (string[] screen, (int Row, int Column) cursor) = PlayScreen(run.Output[..run.OutputAtKey[3]], 70, 20);
+        Assert.Contains(screen[..17], r => r.StartsWith("help", StringComparison.Ordinal));
+        Assert.All(screen, r => Assert.True(r.Length <= 70));
+        Assert.Equal(ReferenceScreen(70, 20, input, 3), (screen, cursor), new ScreenComparer());
+    }
+
+    // AC-2: the Tab list keeps its entries and footer.
+    [Fact]
+    public void Resize_KeepsTheTabList()
+    {
+        Action<TestConsole> input = c =>
+        {
+            c.Input.PushText("re");
+            c.Input.PushKey(ConsoleKey.Tab);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        };
+        ResizeRun run = RunResized(120, 40, input, SizeAt(3, 70, 20));
+
+        (string[] screen, (int Row, int Column) cursor) = PlayScreen(run.Output[..run.OutputAtKey[4]], 70, 20);
+        Assert.Contains(screen, r => r.Contains("commands start with re", StringComparison.Ordinal));
+        Assert.Equal(ReferenceScreen(70, 20, input, 4), (screen, cursor), new ScreenComparer());
+    }
+
+    /// <summary>Compares two played screens row by row, and their cursors.</summary>
+    private sealed class ScreenComparer : IEqualityComparer<(string[] Rows, (int Row, int Column) Cursor)>
+    {
+        public bool Equals((string[] Rows, (int Row, int Column) Cursor) x, (string[] Rows, (int Row, int Column) Cursor) y) =>
+            x.Rows.SequenceEqual(y.Rows) && x.Cursor == y.Cursor;
+
+        public int GetHashCode((string[] Rows, (int Row, int Column) Cursor) obj) => obj.Rows.Length;
+    }
+
+    // AC-3
+    [Fact]
+    public void Resize_KeepsTheShownDay()
+    {
+        ResizeRun run = RunResized(120, 40, c =>
+        {
+            c.Input.PushTextWithEnter("next");
+            c.Input.PushText("x");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        }, SizeAt(6, 80, 20));
+
+        string[] rows = AssertOneFullFrame(run.AfterKey(6), 80, 20);
+        Assert.Contains("Wednesday, 2026-10-28", string.Join('\n', rows));
+    }
+
+    // AC-3: help stays shown (re-wrapped) and the quicklist stays hidden.
+    [Fact]
+    public void Resize_KeepsTheHelpOutput_WithTheQuicklistHidden()
+    {
+        Action<TestConsole> input = c =>
+        {
+            c.Input.PushTextWithEnter("help");
+            c.Input.PushText("x");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        };
+        ResizeRun run = RunResized(120, 40, input, SizeAt(6, 70, 30));
+
+        string[] rows = AssertOneFullFrame(run.AfterKey(6), 70, 30);
+        string all = string.Join('\n', rows);
+        Assert.Contains("absence", all);
+        Assert.DoesNotContain("Projects", all);
+        Assert.Equal(ReferenceScreen(70, 30, input, 7), PlayScreen(run.Output[..run.OutputAtKey[7]], 70, 30), new ScreenComparer());
+    }
+
+    // AC-3: the hint is re-wrapped at the new width under the 1-to-3-row rule.
+    [Fact]
+    public void Resize_RewrapsTheHint()
+    {
+        Action<TestConsole> input = c =>
+        {
+            c.Input.PushTextWithEnter("nosuchcommandwithaverylongname");
+            c.Input.PushText("x");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        };
+        int key = "nosuchcommandwithaverylongname".Length + 2;
+        ResizeRun run = RunResized(120, 24, input, SizeAt(key, 40, 20));
+
+        string[] rows = AssertOneFullFrame(run.AfterKey(key), 40, 20);
+        Assert.Contains("Unknown command", string.Join('\n', rows[^6..^3]));
+        Assert.Contains("commands", string.Join('\n', rows[^6..^3]));
+        Assert.Equal(ReferenceScreen(40, 20, input, key + 1), PlayScreen(run.Output[..run.OutputAtKey[key + 1]], 40, 20), new ScreenComparer());
+    }
+
+    // AC-3: the scroll offset is kept, clamped to the new maximum.
+    [Fact]
+    public void Resize_KeepsTheScrollOffset_ClampedToTheNewMaximum()
+    {
+        ResizeRun kept = RunResized(80, 24, c =>
+        {
+            c.Input.PushTextWithEnter("help");
+            c.Input.PushKey(ConsoleKey.PageDown);
+            c.Input.PushText("x");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        }, SizeAt(7, 80, 23));
+        string[] rows = AssertOneFullFrame(kept.AfterKey(7), 80, 23);
+        Assert.Contains($"↑ {TopArea.PageSize(TopHeight)} more lines above", rows[0]);
+
+        ResizeRun clamped = RunResized(80, 24, c =>
+        {
+            c.Input.PushTextWithEnter("help");
+            PageDown(c, HelpPages);
+            c.Input.PushText("x");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        }, SizeAt(6 + HelpPages, 80, 200));
+        string[] tall = AssertOneFullFrame(clamped.AfterKey(6 + HelpPages), 80, 200);
+        Assert.DoesNotContain(tall, r => r.Contains("more lines above", StringComparison.Ordinal));
+        Assert.Contains("absence", string.Join('\n', tall));
+    }
+
+    // AC-4: the settings panel is redrawn with the selected row in view; keys act on the same row; Esc closes it.
+    [Fact]
+    public void Resize_InSettings_RedrawsThePanel_WithTheSelectionKept()
+    {
+        int opened = "settings".Length + 1;
+        ResizeRun run = RunResized(80, 24, c =>
+        {
+            c.Input.PushTextWithEnter("settings");
+            c.Input.PushKey(ConsoleKey.DownArrow);
+            c.Input.PushKey(ConsoleKey.DownArrow);
+            c.Input.PushKey(ConsoleKey.DownArrow);
+            c.Input.PushKey(ConsoleKey.Spacebar);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        }, SizeAt(opened + 3, 60, 12));
+
+        string redraw = run.AfterKey(opened + 3);
+        Assert.Equal(1, Count(redraw, ClearScreen));
+        string[] rows = Assert.Single(ClearFrames(redraw));
+        Assert.Equal(12, rows.Length);
+        Assert.All(rows, r => Assert.True(r.Length <= 60, r));
+        Assert.Equal("check-breaks", Selected(rows));
+        Assert.Contains("\"check-breaks\":false", File.ReadAllText(Path.Combine(data.Path, "settings.json")));
+        // Esc closed the panel (the key after it is read along with it): the next frame is the day layout.
+        Assert.Contains(Heading, string.Join('\n', ClearFrames(run.Output[run.OutputAtKey[opened + 5]..run.OutputAtKey[opened + 7]])[0]));
+    }
+
+    // AC-4: the token prompt keeps the typed value and stays masked.
+    [Fact]
+    public void Resize_InTheTokenPrompt_KeepsTheValue_AndNeverShowsTheToken()
+    {
+        FakeTokenStore store = new FakeTokenStore();
+        int opened = "devops connect contoso".Length + 1;
+        ResizeRun run = RunResized(140, 40, c =>
+        {
+            c.Input.PushTextWithEnter("devops connect contoso");
+            c.Input.PushTextWithEnter(DevOpsPat);
+            c.Input.PushTextWithEnter("quit");
+        }, SizeAt(opened + 5, 100, 20), tokenStore: store);
+
+        string redraw = run.AfterKey(opened + 5);
+        string[] rows = AssertOneFullFrame(redraw, 100, 20);
+        Assert.Contains("Paste or type the personal access token", string.Join('\n', rows));
+        Assert.Contains("│ > " + new string(LineEditor.MaskCharacter, 5), PlayScreen(redraw, 100, 20).Rows[18]);
+        Assert.DoesNotContain(DevOpsPat, run.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain(DevOpsPat[..5], run.Output[run.OutputAtKey[opened + 1]..], StringComparison.Ordinal);
+        Assert.Equal([("contoso", DevOpsPat)], store.Writes);
+    }
+
+    // AC-4: the import-conflict question keeps its hint and the typed answer.
+    [Fact]
+    public void Resize_InTheImportQuestion_KeepsTheQuestion_AndTheAnswer()
+    {
+        using TempFolder source = SampleSource();
+        File.WriteAllText(DayFile(ImportDay), OtherDay);
+        string command = $"import {source.Path}";
+        int asked = command.Length + 1;
+        ResizeRun run = RunResized(250, 60, c =>
+        {
+            c.Input.PushTextWithEnter(command);
+            c.Input.PushTextWithEnter("yes");
+            c.Input.PushTextWithEnter("quit");
+        }, SizeAt(asked + 2, 200, 40));
+
+        string redraw = run.AfterKey(asked + 2);
+        string[] rows = AssertOneFullFrame(redraw, 200, 40);
+        Assert.Contains(ReplacePrompt, string.Join('\n', rows));
+        Assert.StartsWith("│ > ye", PlayScreen(redraw, 200, 40).Rows[38]);
+        Assert.Equal(24, new DayStore(data.Path).Load(new DateOnly(2026, 10, 28)).Entries.Count);
+    }
+
+    // AC-4: a number edit keeps the panel and the typed number.
+    [Fact]
+    public void Resize_InANumberEdit_KeepsThePanel_AndTheNumber()
+    {
+        int opened = "settings".Length + 1;
+        ResizeRun run = RunResized(80, 24, c =>
+        {
+            c.Input.PushTextWithEnter("settings");
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushText("45");
+            c.Input.PushKey(ConsoleKey.D0);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        }, SizeAt(opened + 3, 70, 16));
+
+        string redraw = run.AfterKey(opened + 3);
+        string[] rows = AssertOneFullFrame(redraw, 70, 16);
+        Assert.Equal("daily-target", Selected(rows));
+        Assert.StartsWith("│ > 45", PlayScreen(redraw, 70, 16).Rows[14]);
+        Assert.Contains("\"daily-target\":450", File.ReadAllText(Path.Combine(data.Path, "settings.json")));
+    }
+
+    // AC-5
+    [Fact]
+    public void Resize_ShrinkGrowAndShrink_EachChangeDrawsOneCleanFrame_AndTheLastEqualsAFreshSession()
+    {
+        Action<TestConsole> input = c =>
+        {
+            c.Input.PushTextWithEnter("arrive 8:15");
+            c.Input.PushTextWithEnter("quit");
+        };
+        Dictionary<int, (int Width, int Height)[]> sizes = new Dictionary<int, (int Width, int Height)[]>
+        {
+            [1] = [(60, 12)],
+            [2] = [(200, 50)],
+            [3] = [(40, 8)],
+        };
+        ResizeRun run = RunResized(120, 40, input, sizes);
+
+        AssertOneFullFrame(run.AfterKey(1), 60, 12);
+        AssertOneFullFrame(run.AfterKey(2), 200, 50);
+        AssertOneFullFrame(run.AfterKey(3), 40, 8);
+        int enter = "arrive 8:15".Length + 1;
+        Assert.Equal(ReferenceScreen(40, 8, input, enter), PlayScreen(run.Output[..run.OutputAtKey[enter]], 40, 8), new ScreenComparer());
+        Assert.Equal([new DayEntry(EntryKind.Arrival, new TimeOnly(8, 15))], LoadDay().Entries);
+    }
+
+    // AC-5: several changes between two keys give one redraw, at the latest size.
+    [Fact]
+    public void Resize_SeveralChangesBetweenTwoKeys_RedrawOnce_AtTheLatestSize()
+    {
+        ResizeRun run = RunResized(120, 40, c =>
+        {
+            c.Input.PushText("ab");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        }, new Dictionary<int, (int Width, int Height)[]> { [2] = [(60, 12), (200, 50), (90, 30)] });
+
+        AssertOneFullFrame(run.AfterKey(2), 90, 30);
+    }
+
+    // AC-6
+    [Theory]
+    [InlineData(19, 24, "Window too small")]
+    [InlineData(10, 24, "Window too")]
+    [InlineData(80, 7, "Window too small")]
+    [InlineData(1, 1, "W")]
+    public void Resize_BelowTheMinimum_ShowsOnlyTheGreyTooSmallLine(int width, int height, string shown)
+    {
+        ResizeRun run = RunResized(120, 40, c =>
+        {
+            c.Input.PushText("arr");
+            c.Input.PushTextWithEnter("ive 8:15");
+            c.Input.PushTextWithEnter("quit");
+        }, SizeAt(3, width, height));
+
+        string redraw = run.AfterKey(3);
+        Assert.Equal(1, Count(redraw, ClearScreen));
+        Assert.Matches(@"\x1b\[(90|38;5;8)m" + shown + @"\x1b\[0m", redraw);
+        (string[] rows, _) = PlayScreen(redraw, width, height);
+        Assert.Equal(shown, rows[0]);
+        Assert.All(rows[1..], r => Assert.Equal(string.Empty, r));
+        // Typing while too small draws nothing, and Enter still runs the command.
+        Assert.Equal(string.Empty, run.AfterKey(4));
+        Assert.Equal(string.Empty, run.AfterKey(10));
+        Assert.Equal([new DayEntry(EntryKind.Arrival, new TimeOnly(8, 15))], LoadDay().Entries);
+        // The frame after the command is the too-small line again, nothing more.
+        string after = run.AfterKey(11 + 1);
+        Assert.Equal(shown, PlayScreen(after, width, height).Rows[0]);
+        Assert.DoesNotContain("╭", after);
+    }
+
+    // AC-6: growing back draws the full layout with the typed text; quit exits 0 while too small.
+    [Fact]
+    public void Resize_GrowingBack_DrawsTheLayoutWithTheTypedText()
+    {
+        ResizeRun run = RunResized(120, 40, c =>
+        {
+            c.Input.PushText("arr");
+            c.Input.PushText("ive");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        }, new Dictionary<int, (int Width, int Height)[]> { [3] = [(15, 6)], [6] = [(20, 8)], [7] = [(10, 5)] });
+
+        string[] rows = AssertOneFullFrame(run.AfterKey(6), 20, 8);
+        Assert.StartsWith("│ > arrive", PlayScreen(run.AfterKey(6), 20, 8).Rows[6]);
+        Assert.DoesNotContain(rows, r => r.Contains("Window too small", StringComparison.Ordinal));
+    }
+
+    // AC-6: a width or height of 0 or less writes nothing and does not throw.
+    [Theory]
+    [InlineData(0, 24, false)]
+    [InlineData(80, 0, false)]
+    [InlineData(-1, -1, false)]
+    [InlineData(0, 0, true)]
+    [InlineData(-5, 24, true)]
+    public void Resize_ToZeroOrLess_WritesNothing(int width, int height, bool fromTheStart)
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        SizedOutput output = new SizedOutput(console.Profile.Out, fromTheStart ? width : 80, fromTheStart ? height : 24);
+        HookedInput hooked = new HookedInput(console.Input);
+        int atKey1 = -1;
+        int atKey2 = -1;
+        int atKey3 = -1;
+        hooked.BeforeKey = key =>
+        {
+            if (key == 1)
+            {
+                atKey1 = console.Output.Length;
+                output.Width = width;
+                output.Height = height;
+            }
+            else if (key == 2)
+            {
+                atKey2 = console.Output.Length;
+            }
+            else if (key == 3)
+            {
+                atKey3 = console.Output.Length;
+            }
+        };
+        console.Input.PushText("ab");
+        console.Input.PushKey(ConsoleKey.Escape);
+        console.Input.PushKey(ConsoleKey.Escape);
+        console.Input.PushTextWithEnter("quit");
+
+        int exit = new App(new SizedConsole(console, hooked, output), FixedTimeProvider.At20261027(), new DayStore(data.Path),
+            instanceLock: sideLock).Run([]);
+
+        Assert.Equal(0, exit);
+        Assert.Equal(atKey2, atKey3);
+        if (fromTheStart)
+        {
+            Assert.Equal(0, atKey1);
+            Assert.Equal(0, atKey2);
+        }
+    }
+
+    /// <summary>A console output whose size a test sets, so it can report 0 or less (Profile refuses such values).</summary>
+    private sealed class SizedOutput : IAnsiConsoleOutput
+    {
+        private readonly IAnsiConsoleOutput inner;
+
+        public SizedOutput(IAnsiConsoleOutput inner, int width, int height)
+        {
+            this.inner = inner;
+            Width = width;
+            Height = height;
+        }
+
+        public TextWriter Writer => inner.Writer;
+
+        public bool IsTerminal => true;
+
+        public int Width { get; set; }
+
+        public int Height { get; set; }
+
+        public void SetEncoding(Encoding encoding) => inner.SetEncoding(encoding);
+    }
+
+    /// <summary>A test console whose profile reads its size from a <see cref="SizedOutput"/>.</summary>
+    private sealed class SizedConsole : IAnsiConsole
+    {
+        private readonly TestConsole inner;
+
+        public SizedConsole(TestConsole inner, IAnsiConsoleInput input, SizedOutput output)
+        {
+            this.inner = inner;
+            Input = input;
+            Profile = new Profile(output, inner.Profile.Capabilities, Encoding.UTF8);
+        }
+
+        public Profile Profile { get; }
+
+        public IAnsiConsoleCursor Cursor => inner.Cursor;
+
+        public IAnsiConsoleInput Input { get; }
+
+        public IExclusivityMode ExclusivityMode => inner.ExclusivityMode;
+
+        public Spectre.Console.Rendering.RenderPipeline Pipeline => inner.Pipeline;
+
+        public void Clear(bool home) => inner.Clear(home);
+
+        public void Write(Spectre.Console.Rendering.IRenderable renderable) => inner.Write(renderable);
+
+        public void WriteAnsi(Action<AnsiWriter> action) => inner.WriteAnsi(action);
+    }
+
+    /// <summary>
+    /// Arms a hook on the input: the first <c>IsKeyAvailable</c> after key <paramref name="key"/> answers "no key"
+    /// and changes the size to <paramref name="width"/>×<paramref name="height"/>; later calls keep answering "no
+    /// key" until a clear was written (or 100 calls passed), so only a size wake-up can end the wait at once.
+    /// Returns how often the hook answered.
+    /// </summary>
+    private static Func<int> ArmResizeInWait(ResizeRun run, int key, int width, int height)
+    {
+        bool armed = false;
+        int calls = 0;
+        int clears = -1;
+        Action<int>? before = run.Input.BeforeKey;
+        run.Input.BeforeKey = k =>
+        {
+            before?.Invoke(k);
+            if (k == key)
+            {
+                armed = true;
+                clears = Count(run.Console.Output, ClearScreen);
+            }
+        };
+        run.Input.OnKeyAvailable = _ =>
+        {
+            if (!armed)
+            {
+                return null;
+            }
+
+            calls++;
+            if (calls == 1)
+            {
+                run.Console.Profile.Width = width;
+                run.Console.Profile.Height = height;
+                return false;
+            }
+
+            if (Count(run.Console.Output, ClearScreen) > clears || calls >= 100)
+            {
+                armed = false;
+                return null;
+            }
+
+            return false;
+        };
+        return () => calls;
+    }
+
+    // AC-7: with a BackgroundEventQueue, a size change while no key is waiting redraws before the next key.
+    [Fact]
+    public void Resize_WhileWaitingForAKey_WithEvents_RedrawsBeforeTheNextKey()
+    {
+        Func<int>? calls = null;
+        ResizeRun run = RunResized(120, 40, c =>
+        {
+            c.Input.PushText("arr");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        }, [], events: new BackgroundEventQueue(), setup: r => calls = ArmResizeInWait(r, 3, 80, 20));
+
+        AssertOneFullFrame(run.AfterKey(3), 80, 20);
+        Assert.Equal(2, calls!());
+    }
+
+    // AC-7: with watchResize, the same holds in the settings panel.
+    [Fact]
+    public void Resize_WhileWaitingInSettings_WithWatchResize_RedrawsBeforeTheNextKey()
+    {
+        Func<int>? calls = null;
+        int opened = "settings".Length + 1;
+        ResizeRun run = RunResized(80, 24, c =>
+        {
+            c.Input.PushTextWithEnter("settings");
+            c.Input.PushKey(ConsoleKey.DownArrow);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        }, [], watchResize: true, setup: r => calls = ArmResizeInWait(r, opened + 1, 60, 12));
+
+        string redraw = run.AfterKey(opened + 1);
+        Assert.Equal(1, Count(redraw, ClearScreen));
+        string[] rows = Assert.Single(ClearFrames(redraw));
+        Assert.Equal(12, rows.Length);
+        Assert.Equal("alert-target", Selected(rows));
+        Assert.Equal(2, calls!());
+    }
+
+    // AC-7: with watchResize, the same holds in a ReadValue prompt (a number edit).
+    [Fact]
+    public void Resize_WhileWaitingInAValuePrompt_WithWatchResize_RedrawsBeforeTheNextKey()
+    {
+        Func<int>? calls = null;
+        int opened = "settings".Length + 1;
+        ResizeRun run = RunResized(80, 24, c =>
+        {
+            c.Input.PushTextWithEnter("settings");
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushText("4");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        }, [], watchResize: true, setup: r => calls = ArmResizeInWait(r, opened + 2, 70, 16));
+
+        string redraw = run.AfterKey(opened + 2);
+        string[] rows = AssertOneFullFrame(redraw, 70, 16);
+        Assert.Equal("daily-target", Selected(rows));
+        Assert.StartsWith("│ > 4", PlayScreen(redraw, 70, 16).Rows[14]);
+        Assert.Equal(2, calls!());
+    }
+
+    // AC-7: without watchResize and without events, nothing polls: the editor never asks for a key.
+    [Fact]
+    public void WithoutWatchResize_TheSettingsPanel_NeverAsksWhetherAKeyIsAvailable()
+    {
+        ResizeRun run = RunResized(80, 24, c =>
+        {
+            c.Input.PushTextWithEnter("settings");
+            c.Input.PushKey(ConsoleKey.DownArrow);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        }, []);
+
+        Assert.Equal(1, run.Input.KeyAvailableCalls);
+    }
+
+    // AC-8: without a size change, each command writes exactly one clear (plus the first draw).
+    [Fact]
+    public void WithoutResize_EachCommandWritesExactlyOneClear()
+    {
+        ResizeRun run = RunResized(80, 24, c =>
+        {
+            c.Input.PushTextWithEnter("arrive 8:15");
+            c.Input.PushTextWithEnter("next");
+            c.Input.PushTextWithEnter("he");
+            c.Input.PushTextWithEnter("quit");
+        }, [], watchResize: true);
+
+        Assert.Equal(1 + 4, Count(run.Output, ClearScreen));
+    }
 }

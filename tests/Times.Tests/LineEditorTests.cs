@@ -2832,4 +2832,144 @@ public class LineEditorTests
         Assert.Equal("help", editor.ReadLine(5, 23, 70));
         Assert.Equal(0, input.KeyAvailableCalls);
     }
+
+    // ---- 128: redraw on terminal resize ----
+
+    /// <summary>An ANSI console, its hooked input and an editor reading through both.</summary>
+    private static (TestConsole Console, HookedInput Input, LineEditor Editor) CreateHooked()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        HookedInput input = new HookedInput(console.Input);
+        return (console, input, new LineEditor(new InputOverrideConsole(console, input), CommandRegistry.CreateDefault()));
+    }
+
+    // AC-1, AC-2 (128)
+    [Fact]
+    public void Resize_CallsTheCallbackOnce_ThenDrawsTheLineAtTheNewGeometry()
+    {
+        (TestConsole console, HookedInput input, LineEditor editor) = CreateHooked();
+        console.Input.PushTextWithEnter("ab");
+        input.BeforeKey = key =>
+        {
+            if (key == 1)
+            {
+                console.Profile.Width = 60;
+                console.Profile.Width = 50;
+            }
+        };
+        int calls = 0;
+        int outputAtCall = -1;
+
+        string? line = editor.ReadLine(5, 23, 70, resized: () =>
+        {
+            calls++;
+            outputAtCall = console.Output.Length;
+            return new InputGeometry(5, 11, 40, null, hidden: false);
+        });
+
+        Assert.Equal("ab", line);
+        Assert.Equal(1, calls);
+        List<AnsiWrite> after = AnsiWrites.Parse(console.Output[outputAtCall..]);
+        Assert.Contains(after, w => w.Row == 11 && w.Column == 5 && w.Text == "a");
+        Assert.Contains(after, w => w.Row == 11 && w.Column == 5 && w.Text == "ab");
+        Assert.DoesNotContain(after, w => w.Row == 23);
+    }
+
+    // AC-8 (128)
+    [Fact]
+    public void Resize_WithoutASizeChange_NeverCallsTheCallback()
+    {
+        (TestConsole console, _, LineEditor editor) = CreateHooked();
+        console.Input.PushTextWithEnter("help");
+        int calls = 0;
+
+        Assert.Equal("help", editor.ReadLine(5, 23, 70, resized: () =>
+        {
+            calls++;
+            return new InputGeometry(5, 23, 70, null, hidden: false);
+        }));
+        Assert.Equal(0, calls);
+    }
+
+    // AC-6 (128)
+    [Fact]
+    public void Resize_ToAHiddenGeometry_DrawsNothing_ButKeysStillEditTheLine()
+    {
+        (TestConsole console, HookedInput input, LineEditor editor) = CreateHooked();
+        console.Input.PushText("abc");
+        console.Input.PushKey(ConsoleKey.Backspace);
+        console.Input.PushKey(ConsoleKey.Enter);
+        int afterResize = -1;
+        input.BeforeKey = key =>
+        {
+            if (key == 1)
+            {
+                console.Profile.Width = 10;
+            }
+            else if (key == 2)
+            {
+                afterResize = console.Output.Length;
+            }
+        };
+
+        string? line = editor.ReadLine(5, 23, 70, BackgroundArea(console), Placeholder,
+            resized: () => new InputGeometry(5, 23, 3, null, hidden: true));
+
+        Assert.Equal("ab", line);
+        Assert.Equal(afterResize, console.Output.Length);
+    }
+
+    // AC-4 (128): ReadKey sees a change made while it returned the previous key.
+    [Fact]
+    public void ReadKey_Resize_IsSeenBeforeTheNextKey_AcrossCalls()
+    {
+        (TestConsole console, HookedInput input, LineEditor editor) = CreateHooked();
+        console.Input.PushKey(ConsoleKey.DownArrow);
+        console.Input.PushKey(ConsoleKey.UpArrow);
+        input.BeforeKey = key =>
+        {
+            if (key == 1)
+            {
+                console.Profile.Height = 12;
+            }
+        };
+        List<string> log = [];
+
+        log.Add(editor.ReadKey(resized: () => log.Add("resize"))!.Value.Key.ToString());
+        log.Add(editor.ReadKey(resized: () => log.Add("resize"))!.Value.Key.ToString());
+
+        Assert.Equal(["DownArrow", "resize", "UpArrow"], log);
+        Assert.Equal(0, input.KeyAvailableCalls);
+    }
+
+    // AC-7 (128): with resize watching, a size change while no key is waiting ends the wait.
+    [Fact]
+    public void ReadValue_WithWatchResize_WakesOnASizeChange_BeforeTheNextKey()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        HookedInput input = new HookedInput(console.Input);
+        LineEditor editor = new LineEditor(new InputOverrideConsole(console, input), CommandRegistry.CreateDefault(), watchResize: true);
+        console.Input.PushTextWithEnter("4");
+        int keysAtResize = -1;
+        input.OnKeyAvailable = call =>
+        {
+            if (call == 1)
+            {
+                console.Profile.Width = 50;
+                return false;
+            }
+
+            return null;
+        };
+
+        string? value = editor.ReadValue(5, 23, 70, null, out bool cancelled, resized: () =>
+        {
+            keysAtResize = input.KeysRead;
+            return new InputGeometry(5, 23, 40, null, hidden: false);
+        });
+
+        Assert.Equal("4", value);
+        Assert.False(cancelled);
+        Assert.Equal(0, keysAtResize);
+    }
 }

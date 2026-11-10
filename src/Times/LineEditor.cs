@@ -70,6 +70,18 @@ internal enum ScrollStep
 /// cell that tells the user the start is scrolled out of view. The cue goes away as soon as the
 /// whole line fits again, and it is never part of the returned line or the history.
 /// </para>
+/// <para>
+/// Resize: given a resize callback, the editor compares <c>console.Profile.Width/Height</c>
+/// with the size it last saw before each fresh key (where events are applied, never inside an
+/// escape sequence or a paste). On a change it calls the callback once, at the latest size,
+/// which redraws the screen and hands back the new <see cref="InputGeometry"/>; the editor then
+/// draws the popup (if open) and the line on top. The line, the history position, the popup
+/// state and the Tab list stay. While the geometry is hidden (a window too small for the
+/// layout) keys still edit the line, but nothing is drawn. With events, a size change wakes the
+/// wait like a key; without events, the editor polls the size every
+/// <see cref="BackgroundEventQueue.PollInterval"/> while it waits, but only when resize
+/// watching is on.
+/// </para>
 /// </summary>
 internal sealed class LineEditor
 {
@@ -83,6 +95,18 @@ internal sealed class LineEditor
     // A key read after a plain Esc in ReadKey, handed to the next read so it is not lost.
     private ConsoleKeyInfo? carried;
 
+    // True to poll the terminal size while waiting for a key (without events), so a resize redraws at once.
+    private readonly bool watchResize;
+
+    // True while the current read draws nothing (the window is too small for the layout).
+    // Set at the start of each Read and by its resize callback; only meaningful inside a Read.
+    // ReadKey never draws, so it ignores it (unlike seen, which carries across ReadKey calls).
+    private bool hidden;
+
+    // The terminal size at the last check. A line or value read starts from the size its caller just drew
+    // at; ReadKey goes on from the last check, so a change during the key a read returned is still seen.
+    private (int Width, int Height) seen;
+
     /// <summary>
     /// The most UTF-16 characters one bracketed paste keeps, counted after the clean-up (line
     /// breaks and Tab as a space, other control characters and sequences dropped). The rest is
@@ -94,9 +118,16 @@ internal sealed class LineEditor
     /// Says which submitted lines never enter the history (for example a line that may hold a
     /// token), or <c>null</c> to keep every non-blank line.
     /// </param>
-    public LineEditor(IAnsiConsole console, CommandRegistry registry, Func<string, bool>? keepOutOfHistory = null)
+    /// <param name="watchResize">
+    /// True to poll the terminal size every <see cref="BackgroundEventQueue.PollInterval"/> while
+    /// a read with a resize callback waits for a key, so a resize is redrawn without a key press.
+    /// </param>
+    public LineEditor(IAnsiConsole console, CommandRegistry registry, Func<string, bool>? keepOutOfHistory = null,
+        bool watchResize = false)
     {
+        this.watchResize = watchResize;
         this.console = console;
+        seen = Size();
         this.registry = registry;
         this.keepOutOfHistory = keepOutOfHistory;
     }
@@ -123,13 +154,18 @@ internal sealed class LineEditor
     /// dropped. After an event that changed the view, <paramref name="applied"/> is called; when
     /// it reports that it redrew rows, the editor draws the popup (if open) again on top and then
     /// the input line. The line, the history position, the popup state and the Tab list stay.
+    /// <paramref name="resized"/> is called once when the terminal size changed before a fresh
+    /// key; it redraws the screen and returns where the line (and popup) now go, or is
+    /// <c>null</c> to ignore resizes. <paramref name="hidden"/> starts the read without drawing
+    /// anything (the window is too small), until a resize returns a geometry that is not hidden.
     /// Returns <c>null</c> if the input has no more keys, also in the middle of an escape sequence
     /// or a paste.
     /// </summary>
     public string? ReadLine(int column, int line, int width, PopupArea? popup = null, string? placeholder = null,
         Func<int, ScrollStep, bool>? scroll = null, Action? pasteCut = null, IBackgroundEvents? events = null,
-        Func<bool>? applied = null) =>
-        Read(column, line, width, popup, placeholder, scroll, pasteCut, value: false, out _, masked: false, events, applied);
+        Func<bool>? applied = null, Func<InputGeometry>? resized = null, bool hidden = false) =>
+        Read(column, line, width, popup, placeholder, scroll, pasteCut, value: false, out _, masked: false, events, applied,
+            resized, hidden);
 
     /// <summary>
     /// Reads a value (not a command) at the same place as <see cref="ReadLine"/>: no popup, no
@@ -139,11 +175,12 @@ internal sealed class LineEditor
     /// <see cref="MaxPasteLength"/> cap and the <paramref name="pasteCut"/> callback. Returns
     /// <c>null</c> if the input has no more keys. With <paramref name="masked"/>, every
     /// character of the value (typed or pasted) is drawn as <see cref="MaskCharacter"/>,
-    /// never as itself, for a secret such as a token.
+    /// never as itself, for a secret such as a token (also when a resize redraws it).
+    /// <paramref name="resized"/> and <paramref name="hidden"/> work as in <see cref="ReadLine"/>.
     /// </summary>
     public string? ReadValue(int column, int line, int width, string? placeholder, out bool cancelled, Action? pasteCut = null,
-        bool masked = false) =>
-        Read(column, line, width, null, placeholder, null, pasteCut, value: true, out cancelled, masked, null, null);
+        bool masked = false, Func<InputGeometry>? resized = null, bool hidden = false) =>
+        Read(column, line, width, null, placeholder, null, pasteCut, value: true, out cancelled, masked, null, null, resized, hidden);
 
     /// <summary>What a masked value shows for each of its characters.</summary>
     public const char MaskCharacter = '\u2022';
@@ -155,12 +192,28 @@ internal sealed class LineEditor
     /// <paramref name="pasteCut"/> callback is never called, since nothing of the paste is used),
     /// so neither reaches the dialog as keys. Any Esc comes back as
     /// <see cref="ConsoleKey.Escape"/>; a key that followed a plain Esc is kept for the next read.
+    /// <paramref name="resized"/> is called once when the terminal size changed before a fresh key
+    /// (it redraws the dialog), or is <c>null</c> to ignore resizes.
     /// Returns <c>null</c> if the input has no more keys.
     /// </summary>
-    public ConsoleKeyInfo? ReadKey(Action? pasteCut = null)
+    public ConsoleKeyInfo? ReadKey(Action? pasteCut = null, Action? resized = null)
     {
         while (true)
         {
+            if (carried is null && resized is not null)
+            {
+                if (watchResize)
+                {
+                    WaitForKeyOrResize();
+                }
+
+                if (TakeSize())
+                {
+                    resized();
+                    continue;
+                }
+            }
+
             ConsoleKeyInfo? key = carried ?? console.Input.ReadKey(intercept: true);
             carried = null;
             if (key is null)
@@ -201,9 +254,11 @@ internal sealed class LineEditor
 
     private string? Read(int column, int line, int width, PopupArea? popup, string? placeholder,
         Func<int, ScrollStep, bool>? scroll, Action? pasteCut, bool value, out bool cancelled, bool masked,
-        IBackgroundEvents? events, Func<bool>? applied)
+        IBackgroundEvents? events, Func<bool>? applied, Func<InputGeometry>? resized, bool startHidden)
     {
         cancelled = false;
+        hidden = startHidden;
+        seen = Size();
         string buffer = string.Empty;
         int historyIndex = history.Count;
         int drawn = placeholder is null ? 0 : Crop(placeholder, Room(width)).Length;
@@ -215,18 +270,49 @@ internal sealed class LineEditor
 
         while (true)
         {
-            if (pending is null && events is not null)
+            while (pending is null)
             {
-                // Events run here, on the loop thread, between keys; only their redraw touches the screen.
-                ApplyEvents(events, applied, () =>
+                if (events is not null)
                 {
-                    if (popupRows > 0)
+                    // Events run here, on the loop thread, between keys; only their redraw touches the screen.
+                    ApplyEvents(events, applied, () =>
                     {
-                        popupRows = DrawPopup(popup!, buffer, popupRows, tabList);
-                    }
+                        if (popupRows > 0)
+                        {
+                            popupRows = DrawPopup(popup!, buffer, popupRows, tabList);
+                        }
 
-                    drawn = Redraw(masked ? new string(MaskCharacter, buffer.Length) : buffer, column, line, width, drawn, placeholder);
-                });
+                        drawn = Redraw(masked ? new string(MaskCharacter, buffer.Length) : buffer, column, line, width, drawn, placeholder);
+                    }, resized is null ? null : () => Size() != seen);
+                }
+                else if (resized is not null && watchResize)
+                {
+                    WaitForKeyOrResize();
+                }
+
+                if (resized is null || !TakeSize())
+                {
+                    break;
+                }
+
+                // The callback redrew the whole screen at the latest size: the popup and the line go on top.
+                InputGeometry geometry = resized();
+                column = geometry.Column;
+                line = geometry.Line;
+                width = geometry.Width;
+                hidden = geometry.Hidden;
+                if (popup is not null)
+                {
+                    popup = geometry.Popup ?? popup;
+                }
+
+                drawn = placeholder is null ? 0 : Crop(placeholder, Room(width)).Length;
+                if (popupRows > 0)
+                {
+                    popupRows = DrawPopup(popup!, buffer, 0, tabList);
+                }
+
+                drawn = Redraw(masked ? new string(MaskCharacter, buffer.Length) : buffer, column, line, width, drawn, placeholder);
             }
 
             ConsoleKeyInfo? key = pending ?? console.Input.ReadKey(intercept: true);
@@ -322,7 +408,7 @@ internal sealed class LineEditor
                             history.Add(buffer);
                         }
 
-                        if (popupRows > 0)
+                        if (popupRows > 0 && !hidden)
                         {
                             ClosePopup(popup, popupRows);
                             console.Cursor.SetPosition(column + drawn, line);
@@ -421,11 +507,13 @@ internal sealed class LineEditor
     // changed the view and whose redraw (applied) wrote rows, redrawOnTop draws the popup and the line
     // again. An event that throws is dropped and the rest still run. Repeats until a round finds no
     // event, so a key is waiting (or the read should block).
-    private void ApplyEvents(IBackgroundEvents events, Func<bool>? applied, Action redrawOnTop)
+    // With sizeChanged, a size change also ends the wait (the caller then redraws for it).
+    private void ApplyEvents(IBackgroundEvents events, Func<bool>? applied, Action redrawOnTop, Func<bool>? sizeChanged)
     {
+        Func<bool> wake = sizeChanged is null ? console.Input.IsKeyAvailable : () => console.Input.IsKeyAvailable() || sizeChanged();
         while (true)
         {
-            events.WaitForKeyOrEvent(console.Input.IsKeyAvailable);
+            events.WaitForKeyOrEvent(wake);
             bool any = false;
             while (events.TryTake(out BackgroundEvent? next))
             {
@@ -451,6 +539,49 @@ internal sealed class LineEditor
             {
                 return;
             }
+        }
+    }
+
+    // The terminal size as Spectre reports it now (the live console size unless a test set one).
+    private (int Width, int Height) Size() => (console.Profile.Width, console.Profile.Height);
+
+    // True, once, when the size differs from seen, which then becomes the size now.
+    private bool TakeSize()
+    {
+        (int Width, int Height) now = Size();
+        if (now == seen)
+        {
+            return false;
+        }
+
+        seen = now;
+        return true;
+    }
+
+    // Blocks until a key is waiting or the size differs from the last check, checking every PollInterval. If the
+    // input cannot say whether a key is waiting (redirected), it returns, so the read blocks as before.
+    private void WaitForKeyOrResize()
+    {
+        while (true)
+        {
+            try
+            {
+                if (console.Input.IsKeyAvailable())
+                {
+                    return;
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                return;
+            }
+
+            if (Size() != seen)
+            {
+                return;
+            }
+
+            Thread.Sleep(BackgroundEventQueue.PollInterval);
         }
     }
 
@@ -609,8 +740,14 @@ internal sealed class LineEditor
     // Draws the popup for the current line so that it ends on the bottom row, and restores the rows
     // above it that the previous, taller popup covered. In the Tab list it shows the prefix matches
     // with a count footer instead of the fuzzy match. Returns the number of rows now drawn.
+    // While hidden nothing is drawn, but the popup counts as open (1 row) so its state stays.
     private int DrawPopup(PopupArea popup, string buffer, int previousRows, bool tabList)
     {
+        if (hidden)
+        {
+            return 1;
+        }
+
         IReadOnlyList<string> rows;
         if (tabList)
         {
@@ -638,9 +775,9 @@ internal sealed class LineEditor
     }
 
     // Restores every row the popup covered. Returns 0, the number of popup rows left.
-    private static int ClosePopup(PopupArea? popup, int previousRows)
+    private int ClosePopup(PopupArea? popup, int previousRows)
     {
-        if (popup is null)
+        if (popup is null || hidden)
         {
             return 0;
         }
@@ -658,8 +795,14 @@ internal sealed class LineEditor
     // characters, filling the whole room; with a room of 1 only the last character is shown. An
     // empty buffer shows the placeholder in grey, if there is one, with the cursor at the start of
     // the line. Returns the number of cells now drawn.
+    // While hidden nothing is drawn and 0 is returned.
     private int Redraw(string buffer, int column, int line, int width, int previouslyDrawn, string? placeholder)
     {
+        if (hidden)
+        {
+            return 0;
+        }
+
         int room = Room(width);
         console.Cursor.SetPosition(column, line);
 
@@ -693,4 +836,31 @@ internal sealed class LineEditor
     private static int Room(int width) => Math.Max(1, width - 1);
 
     private static string Crop(string text, int room) => text.Length > room ? text[..room] : text;
+}
+
+/// <summary>
+/// Where the line editor draws after a resize: the 1-based column and line the text starts at, the
+/// room for it, the popup area (or <c>null</c> to keep the one the read started with), and whether
+/// nothing may be drawn at all (a window too small for the layout).
+/// </summary>
+internal sealed class InputGeometry
+{
+    public InputGeometry(int column, int line, int width, PopupArea? popup, bool hidden)
+    {
+        Column = column;
+        Line = line;
+        Width = width;
+        Popup = popup;
+        Hidden = hidden;
+    }
+
+    public int Column { get; }
+
+    public int Line { get; }
+
+    public int Width { get; }
+
+    public PopupArea? Popup { get; }
+
+    public bool Hidden { get; }
 }
