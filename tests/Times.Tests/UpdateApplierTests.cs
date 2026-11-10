@@ -203,7 +203,7 @@ public sealed class UpdateApplierTests : IDisposable
         Assert.Equal(["--version", version], unix.Arguments.TakeLast(2));
         Assert.All(windows.Arguments, a => Assert.DoesNotContain("--prerelease", a, StringComparison.Ordinal));
         Assert.DoesNotContain("--prerelease", windows.CommandLine, StringComparison.Ordinal);
-        Assert.Contains("--version " + version + " <nul", windows.Arguments[3], StringComparison.Ordinal);
+        Assert.Contains("--version " + version + " <nul", windows.CommandLine, StringComparison.Ordinal);
     }
 
     // AC-9: Windows refuses paths with characters cmd treats specially, or control characters.
