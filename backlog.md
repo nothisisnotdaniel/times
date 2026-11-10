@@ -84,6 +84,8 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] User manual: add `MANUAL.md` at the repo root, a user manual that documents every feature, command (name, alias, arguments, examples) and setting (name, values, default, effect) as the app has them now, plus the data folder, files and keyboard shortcuts, written for users rather than developers. Link it from the README. Add a test that fails when a registered command or setting is missing from the manual, so it stays complete. → 122-user-manual
 - [ ] [#46](backlog/046-prerelease-update-fails.md) Prerelease update fails
 - [ ] [#45](backlog/045-redraw-on-terminal-resize.md) Redraw on terminal resize
+- [ ] [#6](backlog/006-menu-bar-and-tray-app.md) Menu bar and tray app
+- [ ] [#7](backlog/007-check-in-reminder.md) Check-in reminder (after: #6)
 - [h] [#1](backlog/001-windows-terminal-check.md) Windows terminal check
 - [h] [#2](backlog/002-terminal-layout-check.md) Terminal layout check
 - [x] Daily target and flexitime balance: a configurable daily target (for example 8h, saved next to the day files) so the day view shows the day's overtime or shortfall against it and a running flexitime balance over all booked days. → 091-daily-target-flexitime
@@ -105,8 +107,6 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [ ] [#3](backlog/003-home-office-or-office.md) Home office or office
 - [x] [#4](backlog/004-one-shot-commands.md) One-shot commands → 126-one-shot-commands
 - [ ] [#5](backlog/005-monthly-timesheet.md) Monthly timesheet
-- [ ] [#6](backlog/006-menu-bar-and-tray-app.md) Menu bar and tray app
-- [ ] [#7](backlog/007-check-in-reminder.md) Check-in reminder (after: #6)
 - [ ] [#8](backlog/008-keep-balance-corrections-on-import.md) Keep balance corrections on import
 - [ ] [#9](backlog/009-fall-back-per-setting.md) Fall back per setting
 - [x] Live clock: while Times is open on today, update the time left and the day total once a minute through the background events, without touching the typed line, the cursor or the open popup. Other days don't tick. Builds on background events in the loop. (after: Background events in the loop) → 112-live-clock
@@ -116,7 +116,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] Vacation allowance: a setting for the yearly vacation days. A command with an alias (or the settings dialog) shows the days taken and left for the current year, counted from the vacation absence days; half days are not supported yet. Builds on absence days and the settings dialog. (after: Absence days; Settings dialog) → 116-vacation-allowance
 - [x] Second instance guard: on start, take a lock file in the data folder (removed on every exit; a lock left by a crashed run is detected and taken over). If another Times already holds it, show a red line and exit with a non-zero code instead of letting two copies overwrite each other's day files. Also refuse to save a day file that changed on disk since it was loaded, with a red hint to reload. → 117-second-instance-guard
 - [x] Balance corrections: a command with an alias books a manual adjustment to the flexitime balance on the current day (plus or minus hours and minutes, with a reason checked like other names), for example a starting balance or paid-out overtime. The day view shows it and the balance includes it; old day files without corrections load as before. Builds on the daily target and flexitime balance. (after: Daily target and flexitime balance) → 121-balance-corrections
-- [ ] [#10](backlog/010-checkpoint-opens-context-note.md) Checkpoint opens Context note
+- [ ] [#10](backlog/010-checkpoint-opens-context-note.md) Checkpoint opens Context note (after: Context#101)
 - [ ] [#11](backlog/011-calendar-to-checkpoints.md) Calendar to checkpoints (after: Context#17)
 - [x] Old data examples: put example files of the old time data (anonymised if needed; they become test fixtures) into `Times/import-samples/` and describe the old format or tool in `Times/import-samples/README.md`.
 - [ ] [#12](backlog/012-dash-test-for-the-prune-script.md) Dash test for the prune script
