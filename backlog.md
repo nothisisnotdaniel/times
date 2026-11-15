@@ -120,6 +120,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [ ] [#11](backlog/011-calendar-to-checkpoints.md) Calendar to checkpoints (after: Context#17)
 - [x] Old data examples: put example files of the old time data (anonymised if needed; they become test fixtures) into `Times/import-samples/` and describe the old format or tool in `Times/import-samples/README.md`.
 - [ ] [#12](backlog/012-dash-test-for-the-prune-script.md) Dash test for the prune script
+- [ ] [#49](backlog/049-safer-day-file-loading.md) Safer day-file loading
 - [ ] [#13](backlog/013-safer-file-loading-on-windows.md) Safer file loading on Windows
 - [ ] [#14](backlog/014-readme-checksum-guidance.md) README checksum guidance
 - [ ] [#15](backlog/015-cap-the-folder-scan.md) Cap the folder scan
