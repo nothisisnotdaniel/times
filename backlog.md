@@ -132,6 +132,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [ ] [#22](backlog/022-progress-line-for-devops-sync.md) Progress line for DevOps sync
 - [ ] [#23](backlog/023-keep-mistyped-token-lines-out-of.md) Keep mistyped token lines out of history
 - [ ] [#24](backlog/024-don-t-lose-the-devops-token.md) Don't lose the DevOps token on save
+- [ ] [#48](backlog/048-help-text-and-colour-fixes.md) Help text and colour fixes
 - [ ] [#25](backlog/025-clearer-time-help-text.md) Clearer time help text
 - [ ] [#26](backlog/026-report-caption-on-one-line.md) Report caption on one line
 - [?] [#27](backlog/027-cap-the-skipped-ids-list.md) Cap the skipped-ids list
