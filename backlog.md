@@ -128,6 +128,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [ ] [#17](backlog/017-skipped-hint-on-empty-days.md) Skipped hint on empty days
 - [?] [#18](backlog/018-bypass-the-nuget-cache-on-update.md) Bypass the NuGet cache on update
 - [ ] [#19](backlog/019-shared-sanitiser-for-echoed-text.md) Shared sanitiser for echoed text
+- [ ] [#50](backlog/050-csv-export-file-mode-and-failure.md) CSV export file mode and failure test
 - [ ] [#20](backlog/020-csv-export-failure-test.md) CSV export failure test
 - [ ] [#21](backlog/021-csv-export-file-mode.md) CSV export file mode
 - [ ] [#22](backlog/022-progress-line-for-devops-sync.md) Progress line for DevOps sync
