@@ -27,7 +27,7 @@ internal sealed class EndOfDayAlerts
     /// firing it, so starting Times past a threshold rings nothing for it. Reached means the work time is at or
     /// past the threshold, whether or not the day is still working and whether or not the alert is switched on.
     /// </summary>
-    public void Prime(DateOnly on, DayRecord day, TimeSpan target, TimeOnly now, bool targetOn, bool limitOn)
+    public void Prime(DateOnly on, DayRecord day, TimeSpan target, TimeOnly now)
     {
         MoveTo(on);
         TimeSpan work = day.WorkTimeAt(now);

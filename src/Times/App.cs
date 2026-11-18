@@ -2684,8 +2684,8 @@ internal sealed class App
             return;
         }
 
-        AlertSettings(out TimeSpan target, out bool targetOn, out bool limitOn);
-        alerts.Prime(today, day, target, now, targetOn, limitOn);
+        AlertSettings(out TimeSpan target, out _, out _);
+        alerts.Prime(today, day, target, now);
     }
 
     // Checks the end-of-day alerts for today; for any that fire, writes one bell and shows their hint in place.
