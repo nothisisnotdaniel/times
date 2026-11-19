@@ -86,7 +86,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] [#45](backlog/045-redraw-on-terminal-resize.md) Redraw on terminal resize → 128-redraw-on-resize
 - [ ] [#6](backlog/006-menu-bar-and-tray-app.md) Menu bar and tray app
 - [ ] [#7](backlog/007-check-in-reminder.md) Check-in reminder (after: #6)
-- [h] [#1](backlog/001-windows-terminal-check.md) Windows terminal check
+- [x] [#1](backlog/001-windows-terminal-check.md) Windows terminal check
 - [h] [#2](backlog/002-terminal-layout-check.md) Terminal layout check
 - [x] Daily target and flexitime balance: a configurable daily target (for example 8h, saved next to the day files) so the day view shows the day's overtime or shortfall against it and a running flexitime balance over all booked days. → 091-daily-target-flexitime
 - [x] Absence days: a command with an alias marks the current day as vacation, sick or public holiday, saved in the day file. An absence day counts as meeting the daily target without arrive and leave entries, and the day view shows the absence instead of an empty day. → 098-absence-days
