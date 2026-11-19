@@ -84,6 +84,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] User manual: add `MANUAL.md` at the repo root, a user manual that documents every feature, command (name, alias, arguments, examples) and setting (name, values, default, effect) as the app has them now, plus the data folder, files and keyboard shortcuts, written for users rather than developers. Link it from the README. Add a test that fails when a registered command or setting is missing from the manual, so it stays complete. → 122-user-manual
 - [x] [#46](backlog/046-prerelease-update-fails.md) Prerelease update fails → 127-prerelease-update-fix
 - [x] [#45](backlog/045-redraw-on-terminal-resize.md) Redraw on terminal resize → 128-redraw-on-resize
+- [ ] [#51](backlog/051-no-prerelease-for-backlog-only-pushes.md) No prerelease for backlog-only pushes
 - [ ] [#38](backlog/038-end-of-day-ritual.md) End-of-day ritual (after: #37; Context#17)
 - [ ] [#39](backlog/039-signed-licence-keys-and-pro-gate.md) Signed licence keys and Pro gate
 - [ ] [#6](backlog/006-menu-bar-and-tray-app.md) Menu bar and tray app
@@ -143,4 +144,3 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [h] [#43](backlog/043-open-the-shop.md) Open the shop (after: ReviewPack#1; #39; #41; Context#399)
 - [ ] [#44](backlog/044-one-shot-help.md) One-shot help
 - [x] [#47](backlog/047-windows-prerelease-update-check.md) Windows prerelease update check
-- [ ] [#51](backlog/051-no-prerelease-for-backlog-only-pushes.md) No prerelease for backlog-only pushes
