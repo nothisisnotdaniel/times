@@ -140,6 +140,24 @@ public sealed class LicenceIssuerTests : IDisposable
         Assert.Contains("\tGrace\t2028-01-31\t", lines[1], StringComparison.Ordinal);
     }
 
+    // Nit (review-security 1): the ledger names licensees, so on Unix its new folder is 0700 and the file 0600.
+    [Fact]
+    public void Issue_OnUnix_LedgerFolder0700_File0600()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        CreateKey();
+
+        Assert.Equal(0, Run(null, "issue", "--kid", "k1", "--name", "Ada", "--until", "2027-12-31"));
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(Ledger));
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute,
+            File.GetUnixFileMode(Path.GetDirectoryName(Ledger)!));
+    }
+
     // AC-13: the issue date is the local date from the injected clock.
     [Fact]
     public void Issue_TakesTheIssueDateFromTheInjectedClock()

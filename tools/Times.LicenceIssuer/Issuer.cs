@@ -177,14 +177,7 @@ internal sealed class Issuer
 
         try
         {
-            string? folder = Path.GetDirectoryName(ledger);
-            if (folder is not null)
-            {
-                Directory.CreateDirectory(folder);
-            }
-
-            string line = string.Join('\t', licenceId, name, LicenceKey.FormatDate(until), LicenceKey.FormatDate(issued), kid) + "\n";
-            File.AppendAllText(ledger, line, new UTF8Encoding(false));
+            AppendLedgerLine(ledger, string.Join('\t', licenceId, name, LicenceKey.FormatDate(until), LicenceKey.FormatDate(issued), kid) + "\n");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -219,6 +212,42 @@ internal sealed class Issuer
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Appends <paramref name="line"/> to the ledger. It names licensees, so on Unix a folder it creates is
+    /// <c>0700</c> and a new ledger <c>0600</c>.
+    /// </summary>
+    private static void AppendLedgerLine(string ledger, string line)
+    {
+        string? folder = Path.GetDirectoryName(ledger);
+        if (folder is not null)
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                Directory.CreateDirectory(folder);
+            }
+            else
+            {
+                Directory.CreateDirectory(folder, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+        }
+
+        FileStreamOptions options = new FileStreamOptions
+        {
+            Mode = FileMode.Append,
+            Access = FileAccess.Write,
+            Share = FileShare.None,
+        };
+        if (!OperatingSystem.IsWindows())
+        {
+            options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        }
+
+        byte[] bytes = new UTF8Encoding(false).GetBytes(line);
+        using FileStream stream = new FileStream(ledger, options);
+        stream.Write(bytes);
+        stream.Flush(flushToDisk: true);
     }
 
     // 16 random bytes as 22 base64url characters.
