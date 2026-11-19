@@ -135,12 +135,12 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] [#31](backlog/031-remove-unused-prime-parameters.md) Remove unused Prime parameters → 208-remove-prime-params
 - [ ] [#36](backlog/036-teams-call-tracking.md) Teams call tracking
 - [ ] [#37](backlog/037-hours-per-work-item-as-json.md) Hours per work item as JSON
-- [ ] [#38](backlog/038-end-of-day-ritual.md) End-of-day ritual (after: #37; Context#17; #39)
-- [ ] [#39](backlog/039-licence-key-and-pro-gate.md) Licence key and Pro gate
+- [ ] [#38](backlog/038-end-of-day-ritual.md) End-of-day ritual (after: #37; Context#17)
+- [ ] [#39](backlog/039-signed-licence-keys-and-pro-gate.md) Signed licence keys and Pro gate
 - [ ] [#40](backlog/040-devops-sync-becomes-pro.md) DevOps sync becomes Pro (after: #39)
 - [ ] [#41](backlog/041-suite-landing-page.md) Suite landing page (after: #39; Context#109)
 - [x] [#42](backlog/042-choose-a-source-licence.md) Choose a source licence
-- [h] [#43](backlog/043-open-the-lemon-squeezy-shop.md) Open the Lemon Squeezy shop (after: ReviewPack#1; #39; #41)
+- [h] [#43](backlog/043-open-the-shop.md) Open the shop (after: ReviewPack#1; #39; #41; Context#399)
 - [ ] [#44](backlog/044-one-shot-help.md) One-shot help
 - [x] [#47](backlog/047-windows-prerelease-update-check.md) Windows prerelease update check
 - [ ] [#51](backlog/051-no-prerelease-for-backlog-only-pushes.md) No prerelease for backlog-only pushes
