@@ -881,7 +881,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(
             ["absence", "addproject", "arrive", "backup", "booked", "break", "breakend", "…"],
             popup.Select(w => w.Text.Split(' ')[0]));
-        Assert.StartsWith("… 26 more", popup[^1].Text);
+        Assert.StartsWith("… 27 more", popup[^1].Text);
         Assert.Contains("Book the end of a break", popup[6].Text);
         Assert.Equal(80, popup[0].Text.Length);
     }
@@ -954,9 +954,9 @@ public sealed class AppTests : IDisposable
         List<string> hintRow = TypingWrites(output, 1).Where(w => w.Row == 21).Select(w => w.Text).ToList();
 
         // popup, restored (Backspace), popup, restored (Esc), popup (quit typing), ...
-        Assert.StartsWith("… 26 more", hintRow[0]);
+        Assert.StartsWith("… 27 more", hintRow[0]);
         Assert.Contains("Unknown command nope", hintRow[1]);
-        Assert.StartsWith("… 26 more", hintRow[2]);
+        Assert.StartsWith("… 27 more", hintRow[2]);
         Assert.Contains("Unknown command nope", hintRow[3]);
         Assert.Contains("Unknown command nope", hintRow[^1]);
         Assert.Contains("\u001b[38;5;9mUnknown command", output[output.LastIndexOf("\u001b[21;1H", StringComparison.Ordinal)..]);
@@ -990,7 +990,7 @@ public sealed class AppTests : IDisposable
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
         // 39 commands: 7 shown, the eighth row counts the other 32.
-        Assert.StartsWith("… 38 more", popup[^1].Text);
+        Assert.StartsWith("… 39 more", popup[^1].Text);
         // Nothing is drawn on row 1 while typing (the final clear on quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
@@ -4834,6 +4834,7 @@ public sealed class AppTests : IDisposable
             ["leave"] = "l",
             ["next"] = "n",
             ["prev"] = "p",
+            ["pro"] = "po",
             ["projects"] = "pr",
             ["renameproject"] = "rn",
             ["removeproject"] = "xp",
@@ -15763,5 +15764,110 @@ public sealed class AppTests : IDisposable
         }, [], watchResize: true);
 
         Assert.Equal(1 + 4, Count(run.Output, ClearScreen));
+    }
+
+    // --- pro (302) -----------------------------------------------------------------------------------
+
+    private (int ExitCode, string Output) RunPro(FakeLicenceStore store, TestLicences licences, Action<TestConsole> input)
+    {
+        using TempFolder activation = new TempFolder();
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Height = 40;
+        console.Profile.Width = 180;
+        input(console);
+        App app = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path),
+            licenceStore: store, pro: licences.Pro(store, new DateOnly(2026, 10, 27)),
+            activationFolder: Path.Combine(activation.Path, "SuitePro"));
+        int exitCode = app.Run([]);
+        Assert.DoesNotContain("   at ", console.Output, StringComparison.Ordinal);
+        return (exitCode, console.Output);
+    }
+
+    // AC-11: a pro line holding a key never enters history; Up recalls the pro status line before it.
+    [Theory]
+    [InlineData("pro activate CTX1-SECRETISH")]
+    [InlineData("po activate CTX1-SECRETISH")]
+    [InlineData("/pro activate CTX1-SECRETISH")]
+    [InlineData("pro CTX1-SECRETISH")]
+    public void ProLines_WithAKey_NeverEnterHistory(string line)
+    {
+        using TestLicences licences = new TestLicences();
+        FakeLicenceStore store = new FakeLicenceStore();
+
+        (_, string output) = RunPro(store, licences, c =>
+        {
+            c.Input.PushTextWithEnter("pro status");
+            c.Input.PushTextWithEnter(line);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.UpArrow);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Empty(store.Writes);
+        Assert.Contains("No Pro licence activated", LastHint(output));
+        Assert.DoesNotContain("SECRETISH", LastLayout(output).Last(l => l.Contains('>')), StringComparison.Ordinal);
+    }
+
+    // AC-11: a valid key typed in the session activates, and still stays out of history.
+    [Fact]
+    public void ProActivate_InTheSession_Activates_AndStaysOutOfHistory()
+    {
+        using TestLicences licences = new TestLicences();
+        FakeLicenceStore store = new FakeLicenceStore();
+        string token = licences.Token();
+
+        (_, string output) = RunPro(store, licences, c =>
+        {
+            c.Input.PushTextWithEnter("pro status");
+            c.Input.PushTextWithEnter("pro activate " + token);
+            c.Input.PushKey(ConsoleKey.UpArrow);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Equal(token, store.Stored);
+        Assert.Contains("Suite Pro activated for Ada Lovelace", output, StringComparison.Ordinal);
+        // Up recalled pro status, not the activate line: the last hint is the status of the new licence.
+        Assert.Contains("Suite Pro: Ada Lovelace · updates until 2027-12-31", LastHint(output));
+        Assert.Single(store.Writes);
+    }
+
+    // AC-11: pro status and pro deactivate stay in history.
+    [Theory]
+    [InlineData("pro status")]
+    [InlineData("po status")]
+    [InlineData("pro")]
+    public void ProStatusLine_StillEntersHistory(string line)
+    {
+        using TestLicences licences = new TestLicences();
+        FakeLicenceStore store = new FakeLicenceStore();
+
+        (_, string output) = RunPro(store, licences, c =>
+        {
+            c.Input.PushTextWithEnter(line);
+            c.Input.PushTextWithEnter("help");
+            c.Input.PushKey(ConsoleKey.UpArrow);
+            c.Input.PushKey(ConsoleKey.UpArrow);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Contains("No Pro licence activated", LastHint(output));
+    }
+
+    // AC-11
+    [Fact]
+    public void Help_ListsPro_WithAliasPo()
+    {
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 180;
+        console.Profile.Height = 80;
+        console.Input.PushTextWithEnter("help");
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+
+        Assert.Matches(@"│ pro +│ po +│ Show your Suite Pro licence, or change it: activate <key> \| deactivate", console.Output);
     }
 }

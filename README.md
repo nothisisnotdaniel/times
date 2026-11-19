@@ -148,6 +148,7 @@ required. A booking without a time uses the current time. `remove`, `change`, `b
 | `vacation` | `va` | none | Show this calendar year's vacation allowance (setting `vacation-days`, default 30) with the vacation days taken (up to today), planned (after today) and left; each day marked `absence vacation` counts as one day; reads only |
 | `sync` | `sy` | `<from> <to> [send]` (`yyyy-MM-dd`) | Preview the unbooked checkpoint hours per work item over a date range; with `send`, add them to each work item's Completed Work in Azure DevOps and mark those checkpoints booked (see [Azure DevOps](#azure-devops)) |
 | `devops` | `dv` | none, `connect <organization>` or `disconnect` | Show the Azure DevOps connection, connect (asks for the token in a masked prompt), or remove the stored token |
+| `pro` | `po` | none, `status`, `activate <key>` or `deactivate` | Show your Suite Pro licence (the licence for Times and Context), activate a licence key offline, or remove it from this computer (see the [manual](MANUAL.md#suite-pro)) |
 | `prev` | `p` | none | Go to the previous day |
 | `next` | `n` | none | Go to the next day |
 | `today` | `t` | none | Go back to today |

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Reflection;
 
 namespace Times;
@@ -26,4 +27,18 @@ internal static class AppVersion
         string version = (plus >= 0 ? informationalVersion[..plus] : informationalVersion).Trim();
         return version.Length == 0 ? Unknown : version;
     }
+
+    /// <summary>The <c>AssemblyMetadata</c> key <c>Times.csproj</c> writes the UTC build date under.</summary>
+    internal const string BuildDateKey = "BuildDate";
+
+    /// <summary>The day this build was made (UTC), or <c>null</c> when the metadata is missing or not a <c>yyyy-MM-dd</c> date.</summary>
+    internal static DateOnly? BuildDate =>
+        ParseBuildDate(typeof(App).Assembly.GetCustomAttributes<AssemblyMetadataAttribute>()
+            .FirstOrDefault(attribute => attribute.Key == BuildDateKey)?.Value);
+
+    /// <summary>Exactly <c>yyyy-MM-dd</c>, or <c>null</c>.</summary>
+    internal static DateOnly? ParseBuildDate(string? value) =>
+        DateOnly.TryParseExact(value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateOnly date)
+            ? date
+            : null;
 }

@@ -293,4 +293,312 @@ public sealed class OneShotTests : IDisposable
         Assert.DoesNotContain("╭", console.Output, StringComparison.Ordinal);
         Assert.Equal(0, input.KeyAvailableCalls);
     }
+
+    // --- pro (302) -----------------------------------------------------------------------------------
+
+    private static readonly DateOnly ProBuilt = new DateOnly(2026, 10, 27);
+
+    private const string Red = @"\x1b\[(31|91|38;5;9)m";
+    private const string Green = @"\x1b\[(32|92|38;5;2)m";
+    private const string Yellow = @"\x1b\[(33|93|38;5;11)m";
+    private const string Grey = @"\x1b\[(90|38;5;8|38;5;244)m";
+
+    private string ActivationFolder => Path.Combine(other.Path, "SuitePro");
+
+    private string ActivationFile => Path.Combine(ActivationFolder, "activation.json");
+
+    // One pro one-shot with ANSI colours, no update service, token store or DevOps client (so no network at all).
+    private (int Exit, string Output) ProShot(FakeLicenceStore store, Pro pro, params string[] args)
+    {
+        TestConsole console = new TestConsole().EmitAnsiSequences();
+        console.Profile.Width = 240;
+        int exit = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path),
+            licenceStore: store, pro: pro, activationFolder: ActivationFolder).Run(args);
+        Assert.DoesNotContain("   at ", console.Output, StringComparison.Ordinal);
+        return (exit, console.Output);
+    }
+
+    // Visible lines of the output, ANSI sequences removed, blank lines dropped.
+    private static List<string> PlainLines(string output) =>
+        Regex.Replace(output, @"\x1b\[[0-9;?]*[A-Za-z]", string.Empty)
+            .Split('\n')
+            .Select(line => line.TrimEnd())
+            .Where(line => line.Length > 0)
+            .ToList();
+
+    // AC-3
+    [Fact]
+    public void ProActivate_ValidKey_StoresTheExactToken_WritesTheFile_PrintsOneGreenLine()
+    {
+        using TestLicences licences = new TestLicences();
+        FakeLicenceStore store = new FakeLicenceStore();
+        string token = licences.Token(name: "Ada Lovelace", until: "2027-12-31");
+
+        (int exit, string output) = ProShot(store, licences.Pro(store, ProBuilt), "pro", "activate", token);
+
+        Assert.Equal(0, exit);
+        Assert.Equal([token], store.Writes);
+        Assert.Equal(token, store.Stored);
+        Assert.Equal(
+            "{\"format\":1,\"licenceId\":\"" + TestLicences.LicenceId + "\",\"licensee\":\"Ada Lovelace\",\"updatesUntil\":\"2027-12-31\"}",
+            File.ReadAllText(ActivationFile));
+        Assert.Equal(["Suite Pro activated for Ada Lovelace · updates until 2027-12-31"], PlainLines(output));
+        Assert.Matches(Green + "Suite Pro activated for Ada Lovelace", output);
+        Assert.DoesNotContain(token, output, StringComparison.Ordinal);
+        Assert.False(File.Exists(TodayFile(data.Path)));
+    }
+
+    // AC-3
+    [Fact]
+    public void ProActivate_OnUnix_File0600_Folder0700()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TestLicences licences = new TestLicences();
+        FakeLicenceStore store = new FakeLicenceStore();
+
+        (int exit, _) = ProShot(store, licences.Pro(store, ProBuilt), "po", "activate", licences.Token());
+
+        Assert.Equal(0, exit);
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(ActivationFile));
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, File.GetUnixFileMode(ActivationFolder));
+    }
+
+    // AC-4: bad, unknown-key and revoked keys: one red line with the reason, never the key, nothing changed.
+    [Theory]
+    [InlineData("garbage", LicenceKey.Malformed)]
+    [InlineData("tampered", LicenceKey.BadSignature)]
+    [InlineData("unknown", LicenceKey.UnknownKey)]
+    [InlineData("revoked", LicenceKey.Revoked)]
+    public void ProActivate_UnusableKey_RedReason_ExitOne_StoreAndFileUnchanged(string kind, string reason)
+    {
+        using TestLicences licences = new TestLicences();
+        using TestLicences stranger = new TestLicences();
+        string earlier = licences.Token(lid: "BBECAwQFBgcICQoLDA0ODw", name: "Earlier");
+        FakeLicenceStore store = new FakeLicenceStore(stored: earlier);
+        Directory.CreateDirectory(ActivationFolder);
+        File.WriteAllText(ActivationFile, "earlier file");
+        string key = kind switch
+        {
+            "garbage" => "CTX1-not-a-key-SECRETISH",
+            "tampered" => stranger.Token(),
+            "unknown" => licences.Token(kid: "other"),
+            _ => licences.Token(),
+        };
+
+        (int exit, string output) = ProShot(store, licences.Pro(store, ProBuilt, TestLicences.LicenceId), "pro", "activate", key);
+
+        Assert.Equal(1, exit);
+        Assert.Equal([$"pro: this licence key cannot be used: {reason}. Nothing was stored."], PlainLines(output));
+        Assert.Matches(Red + "pro: this licence key cannot be used", output);
+        Assert.DoesNotContain(key, output, StringComparison.Ordinal);
+        Assert.DoesNotContain("SECRETISH", output, StringComparison.Ordinal);
+        Assert.Empty(store.Writes);
+        Assert.Equal(0, store.Deletes);
+        Assert.Equal(earlier, store.Stored);
+        Assert.Equal("earlier file", File.ReadAllText(ActivationFile));
+    }
+
+    // AC-4
+    [Fact]
+    public void ProActivate_WithoutAKey_ShowsARedUsageHint()
+    {
+        using TestLicences licences = new TestLicences();
+        FakeLicenceStore store = new FakeLicenceStore();
+
+        (int exit, string output) = ProShot(store, licences.Pro(store, ProBuilt), "pro", "activate");
+
+        Assert.Equal(1, exit);
+        Assert.Matches(Red + "pro activate: paste your licence key after it: ", output);
+        Assert.Contains("pro activate <key>", PlainLines(output).Single(), StringComparison.Ordinal);
+        Assert.Equal(0, store.Calls);
+        Assert.False(Directory.Exists(ActivationFolder));
+    }
+
+    // AC-5
+    [Fact]
+    public void ProActivate_UnsupportedStoreOrRefusal_RefusesWithOneRedLine_WritesNothing()
+    {
+        using TestLicences licences = new TestLicences();
+        string token = licences.Token();
+        FakeLicenceStore unsupported = new FakeLicenceStore(supported: false);
+        FakeLicenceStore refusing = new FakeLicenceStore { WriteRefusal = "Not through dotnet." };
+
+        (int exit, string output) = ProShot(unsupported, licences.Pro(unsupported, ProBuilt), "pro", "activate", token);
+        (int refusedExit, string refused) = ProShot(refusing, licences.Pro(refusing, ProBuilt), "pro", "activate", token);
+
+        Assert.Equal(1, exit);
+        Assert.Single(PlainLines(output));
+        Assert.Matches(Red + "pro: No credential store is available on this system\\. Nothing was stored\\.", output);
+        Assert.Equal(1, refusedExit);
+        Assert.Equal(["pro: Not through dotnet. Nothing was stored."], PlainLines(refused));
+        Assert.Matches(Red + "pro: Not through dotnet", refused);
+        Assert.Equal(0, unsupported.Calls);
+        Assert.Equal(0, refusing.Calls);
+        Assert.False(Directory.Exists(ActivationFolder));
+    }
+
+    // AC-5: the store write fails: nothing else happens.
+    [Fact]
+    public void ProActivate_StoreWriteFails_RedLine_NoFile()
+    {
+        using TestLicences licences = new TestLicences();
+        FakeLicenceStore store = new FakeLicenceStore { Throws = true };
+
+        (int exit, string output) = ProShot(store, licences.Pro(store, ProBuilt), "pro", "activate", licences.Token());
+
+        Assert.Equal(1, exit);
+        Assert.Equal([$"pro: {FakeLicenceStore.Failure} Nothing was stored."], PlainLines(output));
+        Assert.False(Directory.Exists(ActivationFolder));
+    }
+
+    // AC-5: the file write fails after the store write: the store entry is removed again.
+    [Fact]
+    public void ProActivate_FileWriteFails_RemovesTheStoreEntryAgain()
+    {
+        using TestLicences licences = new TestLicences();
+        FakeLicenceStore store = new FakeLicenceStore();
+        File.WriteAllText(ActivationFolder, "a file where the folder should be");
+
+        (int exit, string output) = ProShot(store, licences.Pro(store, ProBuilt), "pro", "activate", licences.Token());
+
+        Assert.Equal(1, exit);
+        Assert.Equal(["pro: the activation file could not be written. Nothing was stored."], PlainLines(output));
+        Assert.Single(store.Writes);
+        Assert.Equal(1, store.Deletes);
+        Assert.Null(store.Stored);
+    }
+
+    // AC-6
+    [Fact]
+    public void ProStatus_ValidKey_ShowsLicenseeAndUpdatesUntil()
+    {
+        using TestLicences licences = new TestLicences();
+        FakeLicenceStore store = new FakeLicenceStore(stored: licences.Token(name: "Ada Lovelace", until: "2027-12-31"));
+
+        (int exit, string output) = ProShot(store, licences.Pro(store, ProBuilt), "pro", "status");
+        (int bareExit, string bare) = ProShot(store, licences.Pro(store, ProBuilt), "pro");
+
+        Assert.Equal(0, exit);
+        Assert.Equal(["Suite Pro: Ada Lovelace · updates until 2027-12-31"], PlainLines(output));
+        Assert.Equal(0, bareExit);
+        Assert.Equal(PlainLines(output), PlainLines(bare));
+        Assert.Empty(store.Writes);
+    }
+
+    // AC-6
+    [Fact]
+    public void ProStatus_NoKey_GreyNoteWithHowToActivate()
+    {
+        using TestLicences licences = new TestLicences();
+        FakeLicenceStore store = new FakeLicenceStore();
+
+        (int exit, string output) = ProShot(store, licences.Pro(store, ProBuilt), "po", "status");
+
+        Assert.Equal(0, exit);
+        Assert.Equal(["No Pro licence activated. Activate one with pro activate <key>."], PlainLines(output));
+        Assert.Matches(Grey + "No Pro licence activated\\.", output);
+    }
+
+    // AC-6: a stored key that no longer verifies is a red line, and Pro stays locked.
+    [Theory]
+    [InlineData("revoked", LicenceKey.Revoked)]
+    [InlineData("unknown", LicenceKey.UnknownKey)]
+    public void ProStatus_StoredKeyNoLongerVerifies_RedLine_Locked(string kind, string reason)
+    {
+        using TestLicences licences = new TestLicences();
+        FakeLicenceStore store = new FakeLicenceStore(stored: kind == "revoked" ? licences.Token() : licences.Token(kid: "old"));
+        Pro pro = licences.Pro(store, ProBuilt, TestLicences.LicenceId);
+
+        (int exit, string output) = ProShot(store, pro, "pro", "status");
+
+        Assert.Equal(1, exit);
+        Assert.Equal([$"pro: the stored licence key cannot be used: {reason}. Pro stays locked."], PlainLines(output));
+        Assert.Matches(Red + "pro: the stored licence key", output);
+        Assert.False(pro.IsUnlocked);
+    }
+
+    // AC-7: a key that ends before the build date is still saved, with a yellow line; status says the same.
+    [Fact]
+    public void ProActivate_KeyOlderThanTheBuild_SavesIt_WithAYellowLine()
+    {
+        using TestLicences licences = new TestLicences();
+        FakeLicenceStore store = new FakeLicenceStore();
+        Pro pro = licences.Pro(store, ProBuilt);
+        string token = licences.Token(until: "2026-10-26");
+        const string Note = "! This Times version (built 2026-10-27) is newer than this licence covers (updates until 2026-10-26); Pro stays locked in it.";
+
+        (int exit, string output) = ProShot(store, pro, "pro", "activate", token);
+        (int statusExit, string status) = ProShot(store, pro, "pro", "status");
+
+        Assert.Equal(0, exit);
+        Assert.Equal(token, store.Stored);
+        Assert.True(File.Exists(ActivationFile));
+        Assert.Equal(["Suite Pro activated for Ada Lovelace · updates until 2026-10-26", Note], PlainLines(output));
+        Assert.Matches(Yellow + "! This Times version", output);
+        Assert.Equal(0, statusExit);
+        Assert.Equal(["Suite Pro: Ada Lovelace · updates until 2026-10-26", Note], PlainLines(status));
+        Assert.Matches(Yellow + "! This Times version", status);
+        Assert.False(pro.IsUnlocked);
+    }
+
+    // AC-10
+    [Fact]
+    public void ProDeactivate_RemovesStoreEntryAndFile_ThenLocked()
+    {
+        using TestLicences licences = new TestLicences();
+        FakeLicenceStore store = new FakeLicenceStore();
+        Pro pro = licences.Pro(store, ProBuilt);
+        Assert.Equal(0, ProShot(store, pro, "pro", "activate", licences.Token()).Exit);
+        Assert.True(pro.IsUnlocked);
+
+        (int exit, string output) = ProShot(store, pro, "pro", "deactivate");
+
+        Assert.Equal(0, exit);
+        Assert.Equal(["Suite Pro licence removed from this computer."], PlainLines(output));
+        Assert.Null(store.Stored);
+        Assert.False(File.Exists(ActivationFile));
+        Assert.False(pro.IsUnlocked);
+    }
+
+    // AC-10
+    [Fact]
+    public void ProDeactivate_NothingActivated_GreyNote_ExitZero()
+    {
+        using TestLicences licences = new TestLicences();
+        FakeLicenceStore store = new FakeLicenceStore();
+
+        (int exit, string output) = ProShot(store, licences.Pro(store, ProBuilt), "pro", "deactivate");
+
+        Assert.Equal(0, exit);
+        Assert.Equal(["No Pro licence was activated."], PlainLines(output));
+        Assert.Matches(Grey + "No Pro licence was activated\\.", output);
+        Assert.Equal(1, store.Deletes);
+    }
+
+    // A mistyped sub-command is never echoed (it may be a pasted key).
+    [Fact]
+    public void Pro_UnknownSubCommand_IsNotEchoed()
+    {
+        using TestLicences licences = new TestLicences();
+        FakeLicenceStore store = new FakeLicenceStore();
+        string token = licences.Token();
+
+        (int exit, string output) = ProShot(store, licences.Pro(store, ProBuilt), "pro", token);
+
+        Assert.Equal(1, exit);
+        Assert.DoesNotContain(token, output, StringComparison.Ordinal);
+        Assert.Equal(0, store.Calls);
+    }
+
+    // The App never takes a licence store without an activation folder, so no test writes the real application data.
+    [Fact]
+    public void App_LicenceStoreWithoutActivationFolder_IsRefused()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            new App(new TestConsole(), FixedTimeProvider.At20261027(), new DayStore(data.Path), licenceStore: new FakeLicenceStore()));
+    }
 }

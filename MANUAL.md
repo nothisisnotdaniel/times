@@ -359,6 +359,19 @@ sync 2026-11-01 2026-11-30
 sy 2026-11-01 2026-11-30 send
 ```
 
+### `pro` (`po`)
+
+Arguments: none, `status`, `activate <key>` or `deactivate`.
+
+Shows your Suite Pro licence (`pro` and `pro status`), activates a licence key, or removes it
+from this computer. Activating works offline.
+
+```text
+pro
+pro activate CTX1-…
+po deactivate
+```
+
 ### `prev` (`p`)
 
 Arguments: none.
@@ -753,6 +766,33 @@ with `tm`. After an update, macOS may ask once for permission to read the item; 
 *Always Allow*, or run `devops connect` again. On Linux there is no supported credential store
 yet, so `devops connect` and `sync … send` say so (the preview still works).
 
+### Suite Pro
+
+Suite Pro is one licence for Times and Context. It unlocks the Pro features of both; a Pro
+command used without it shows one red line saying what it needs and how to unlock it.
+
+1. Type `pro activate <key>` with the licence key you received (it starts with `CTX1-`). Times
+   checks the key's signature on this computer; nothing is sent anywhere. A key that cannot be
+   used is refused with the reason, and nothing is stored. The key itself is never shown.
+2. Times keeps the key in the **macOS Keychain** (a generic password named `Suite Pro licence`)
+   or the **Windows Credential Manager** (target `Suite/ProLicence`), and writes the licensee and
+   the updates-until date to `SuitePro/activation.json` in your application data folder (next to
+   the `Times` folder, not inside it), where Context can read it. On macOS and Linux that folder and
+   file are readable only by you.
+3. `pro` shows who the licence is for and until when it covers updates. `pro deactivate` removes
+   the key and the file from this computer.
+
+A licence covers every Times version built on or before its **updates-until** date, for good. A
+newer version still shows the licence but keeps Pro locked, with a yellow line saying so.
+
+A `pro` line in Times with a key on it is never kept in the input history. If you activate from your
+shell instead (`times pro activate <key>`), the key stays in your shell's own history; clear that
+entry yourself, or activate inside Times.
+
+On macOS, the Keychain item trusts only the `tm` launcher; through the shared `dotnet` host,
+`pro activate` says so and stores nothing. On Linux there is no supported credential store yet,
+so `pro activate` says so and stores nothing.
+
 ### Updates
 
 At start, Times looks in its GitHub releases for a newer version on your `update-channel`. It
@@ -825,6 +865,7 @@ with one of these codes:
 | `times.lock` | Marks that Times is running with this folder | Do not edit or delete it; Times removes it when it exits and takes over a leftover one |
 | `update.log` | The output of the last update installs | Read it when an update failed; you can delete it |
 | `update-pending.json` | Marks an update that runs after quit, so the next start can report it | Do not edit or delete it; Times deletes it at the next start |
+| `SuitePro/activation.json` (in your application data folder, not the data folder) | The Suite Pro licensee and updates-until date, for Context | Better use `pro deactivate`; Times never trusts it, so editing it unlocks nothing |
 
 Day files, `projects.json` and `settings.json` must be normal files of at most 64 KiB. A file
 that is larger, is not a normal file or holds invalid text is shown as unreadable and never

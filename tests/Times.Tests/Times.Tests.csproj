@@ -26,6 +26,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Times\Times.csproj" />
+    <ProjectReference Include="..\..\tools\Times.LicenceIssuer\Times.LicenceIssuer.csproj" />
   </ItemGroup>
 
 </Project>

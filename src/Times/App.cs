@@ -52,6 +52,9 @@ internal sealed class App
     private readonly SettingsStore settingsStore;
     private readonly UpdateService? updates;
     private readonly ITokenStore tokenStore;
+    private readonly ILicenceStore licenceStore;
+    private readonly Pro pro;
+    private readonly LicenceActivationFile? activationFile;
     private readonly Func<DevOpsCredential, IDevOpsClient>? devOpsClient;
     private readonly IBackgroundEvents? events;
     private readonly bool liveClock;
@@ -123,11 +126,26 @@ internal sealed class App
     /// True to poll the terminal size while waiting for a key where no background events are applied (the
     /// settings panel and the value prompts), so a resize redraws there without a key press.
     /// </param>
+    /// <param name="licenceStore">Holds the Suite Pro licence key, or <c>null</c> for <see cref="UnsupportedLicenceStore"/>.</param>
+    /// <param name="pro">The Pro gate, or <c>null</c> for <see cref="Pro.ForBuild"/> on <paramref name="licenceStore"/>.</param>
+    /// <param name="activationFolder">
+    /// Where <c>activation.json</c> goes (<see cref="LicenceActivationFile"/>); required with a
+    /// <paramref name="licenceStore"/>, so a test never writes the real application data.
+    /// </param>
     public App(IAnsiConsole console, TimeProvider time, DayStore store, CommandRegistry? registry = null,
         bool folderFromEnvironment = false, MouseReporting? mouse = null, SettingsRegistry? settings = null,
         UpdateService? updates = null, ITokenStore? tokenStore = null, Func<DevOpsCredential, IDevOpsClient>? devOpsClient = null,
-        IBackgroundEvents? events = null, bool liveClock = false, InstanceLock? instanceLock = null, bool watchResize = false)
+        IBackgroundEvents? events = null, bool liveClock = false, InstanceLock? instanceLock = null, bool watchResize = false,
+        ILicenceStore? licenceStore = null, Pro? pro = null, string? activationFolder = null)
     {
+        if (licenceStore is not null && activationFolder is null)
+        {
+            throw new ArgumentException("A licence store needs an activation folder.", nameof(activationFolder));
+        }
+
+        this.licenceStore = licenceStore ?? new UnsupportedLicenceStore();
+        this.pro = pro ?? Pro.ForBuild(this.licenceStore);
+        activationFile = activationFolder is null ? null : new LicenceActivationFile(activationFolder);
         this.watchResize = watchResize;
         this.instanceLock = instanceLock ?? new InstanceLock(store.Folder);
         this.events = events;
@@ -155,6 +173,7 @@ internal sealed class App
         }));
         this.registry.Register("update", "up", "Check for a newer Times now and install it when you quit", NoArguments("update", Update));
         RegisterDevOps();
+        RegisterPro();
     }
 
     // Runs the check and download now, with the settings as they are, and stages the result for quit
@@ -1744,6 +1763,210 @@ internal sealed class App
             && string.Equals(command.Name, "devops", StringComparison.OrdinalIgnoreCase);
     }
 
+    // A line that never enters the in-memory history: a devops line with any argument, or a pro line with
+    // anything but status or deactivate after it (pro activate <key>, also mistyped, may hold a licence key).
+    private bool KeepOutOfHistory(string line) => IsDevOpsLineWithArgument(line) || IsProLineWithKey(line);
+
+    private bool IsProLineWithKey(string line)
+    {
+        (string token, string rest) = SplitToken(line.Trim());
+        string name = token.StartsWith('/') ? token[1..] : token;
+        if (name.Length == 0 || !registry.TryGet(name, out Command? command)
+            || !string.Equals(command.Name, "pro", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        string argument = rest.Trim();
+        return argument.Length > 0
+            && !string.Equals(argument, "status", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(argument, "deactivate", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private const string ProUsage = "Use [bold]pro activate <key>[/], [bold]pro status[/] or [bold]pro deactivate[/].";
+
+    private void RegisterPro()
+    {
+        registry.Register("pro", "po", "Show your Suite Pro licence, or change it: activate <key> | deactivate", ProCommand);
+    }
+
+    // pro activate <key> stores a verified key and writes the activation file, pro status shows it, and
+    // pro deactivate removes both. All offline. The key itself is never shown, not even when it is wrong.
+    private CommandResult ProCommand(string argument)
+    {
+        (string sub, string rest) = SplitToken(argument);
+        rest = rest.Trim();
+        if (sub.Length == 0 || string.Equals(sub, "status", StringComparison.OrdinalIgnoreCase))
+        {
+            return rest.Length > 0 ? Hint("[bold]pro status[/] takes no arguments.") : ProStatusResult();
+        }
+
+        if (string.Equals(sub, "activate", StringComparison.OrdinalIgnoreCase))
+        {
+            return ProActivate(rest);
+        }
+
+        if (string.Equals(sub, "deactivate", StringComparison.OrdinalIgnoreCase))
+        {
+            return rest.Length > 0 ? Hint("[bold]pro deactivate[/] takes no arguments.") : ProDeactivate();
+        }
+
+        // Never echoed: a mistyped sub-command may be followed by, or be, a pasted key.
+        return Hint($"pro: that is not something pro can do. {ProUsage}");
+    }
+
+    private CommandResult ProActivate(string key)
+    {
+        const string NothingStored = "Nothing was stored.";
+        if (key.Length == 0)
+        {
+            return Hint("pro activate: paste your licence key after it: [bold]pro activate <key>[/].");
+        }
+
+        if (!licenceStore.IsSupported || activationFile is null)
+        {
+            return Hint($"pro: {Markup.Escape(UnsupportedTokenStore.NotAvailable)} {NothingStored}");
+        }
+
+        if (licenceStore.WriteRefusal is { } refusal)
+        {
+            return Hint($"pro: {Markup.Escape(refusal)} {NothingStored}");
+        }
+
+        LicenceCheck check = pro.Check(key);
+        if (check.Licence is not { } licence)
+        {
+            return Hint($"pro: this licence key cannot be used: {check.Problem}. {NothingStored}");
+        }
+
+        try
+        {
+            licenceStore.Write(key);
+        }
+        catch (Exception ex) when (IsStoreFailure(ex))
+        {
+            return Hint($"pro: {StoreMessage(ex)} {NothingStored}");
+        }
+
+        try
+        {
+            activationFile.Write(licence);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // The store entry goes again, so the store and the file never disagree.
+            try
+            {
+                licenceStore.Delete();
+            }
+            catch (Exception deleteFailure) when (IsStoreFailure(deleteFailure))
+            {
+                return Hint("pro: the activation file could not be written, and the stored key could not be removed. " +
+                    "Run [bold]pro deactivate[/].");
+            }
+
+            return Hint($"pro: the activation file could not be written. {NothingStored}");
+        }
+
+        List<IRenderable> lines =
+        [
+            new Markup($"[green]Suite Pro activated for {Markup.Escape(licence.Name)} · updates until {LicenceKey.FormatDate(licence.Until)}[/]"),
+        ];
+        if (NotCoveredLine(licence) is { } notCovered)
+        {
+            lines.Add(notCovered);
+        }
+
+        return new CommandResult(hint: lines.Count == 1 ? lines[0] : new Rows(lines));
+    }
+
+    private CommandResult ProStatusResult()
+    {
+        if (!licenceStore.IsSupported)
+        {
+            return new CommandResult(hint: new Markup(
+                $"[grey]No Pro licence activated. {Markup.Escape(UnsupportedTokenStore.NotAvailable)}[/]"));
+        }
+
+        ProStatus status;
+        try
+        {
+            status = pro.Status();
+        }
+        catch (Exception ex) when (IsStoreFailure(ex))
+        {
+            return Hint($"pro: {StoreMessage(ex)}");
+        }
+
+        if (status.Kind == ProStatusKind.None)
+        {
+            return new CommandResult(hint: new Markup(
+                "[grey]No Pro licence activated. Activate one with [bold]pro activate <key>[/].[/]"));
+        }
+
+        if (status.Licence is not { } licence)
+        {
+            return Hint($"pro: the stored licence key cannot be used: {status.Problem}. Pro stays locked.");
+        }
+
+        List<IRenderable> lines =
+        [
+            new Markup($"[green]Suite Pro: {Markup.Escape(licence.Name)} · updates until {LicenceKey.FormatDate(licence.Until)}[/]"),
+        ];
+        if (NotCoveredLine(licence) is { } notCovered)
+        {
+            lines.Add(notCovered);
+        }
+
+        return new CommandResult(hint: lines.Count == 1 ? lines[0] : new Rows(lines));
+    }
+
+    // The yellow line when this build is newer than the licence covers (or has no build date), else null.
+    private Markup? NotCoveredLine(Licence licence)
+    {
+        if (pro.Covers(licence))
+        {
+            return null;
+        }
+
+        string until = LicenceKey.FormatDate(licence.Until);
+        return new Markup(pro.BuildDate is { } built
+            ? $"[yellow]! This Times version (built {LicenceKey.FormatDate(built)}) is newer than this licence covers " +
+                $"(updates until {until}); Pro stays locked in it.[/]"
+            : "[yellow]! This Times build has no build date, so Pro stays locked in it.[/]");
+    }
+
+    private CommandResult ProDeactivate()
+    {
+        if (!licenceStore.IsSupported || activationFile is null)
+        {
+            return Hint($"pro: {Markup.Escape(UnsupportedTokenStore.NotAvailable)} Nothing was removed.");
+        }
+
+        bool deleted;
+        try
+        {
+            deleted = licenceStore.Delete();
+        }
+        catch (Exception ex) when (IsStoreFailure(ex))
+        {
+            return Hint($"pro: {StoreMessage(ex)} Nothing was removed.");
+        }
+
+        try
+        {
+            deleted |= activationFile.Delete();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Hint("pro: the licence key was removed, but the activation file could not be deleted.");
+        }
+
+        return new CommandResult(hint: new Markup(deleted
+            ? "[steelblue1]Suite Pro licence removed from this computer.[/]"
+            : "[grey]No Pro licence was activated.[/]"));
+    }
+
     // The organisation and "token stored", or "not connected"; never the token.
     private CommandResult DevOpsStatus()
     {
@@ -3021,7 +3244,7 @@ internal sealed class App
 
     private int Loop(IRenderable? startHint)
     {
-        LineEditor editor = new LineEditor(console, registry, IsDevOpsLineWithArgument, watchResize);
+        LineEditor editor = new LineEditor(console, registry, KeepOutOfHistory, watchResize);
         IRenderable? message = null;
         IRenderable? hint = startHint;
         bool hideQuicklist = false;
