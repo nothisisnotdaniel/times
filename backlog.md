@@ -131,7 +131,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] [#50](backlog/050-csv-export-file-mode-and-failure.md) CSV export file mode and failure test → 319-csv-export-file-mode
 - [x] [#22](backlog/022-progress-line-for-devops-sync.md) Progress line for DevOps sync → 320-devops-sync-progress-line
 - [x] [#23](backlog/023-keep-mistyped-token-lines-out-of.md) Keep mistyped token lines out of history → 321-token-lines-out-history
-- [ ] [#24](backlog/024-don-t-lose-the-devops-token.md) Don't lose the DevOps token on save
+- [x] [#24](backlog/024-don-t-lose-the-devops-token.md) Don't lose the DevOps token on save → 322-keep-devops-token-save
 - [ ] [#48](backlog/048-help-text-and-colour-fixes.md) Help text and colour fixes
 - [ ] [#28](backlog/028-private-backup-files.md) Private backup files
 - [ ] [#29](backlog/029-bound-the-background-event-queue.md) Bound the background event queue
