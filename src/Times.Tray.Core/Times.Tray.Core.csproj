@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- All of the tray app's logic, free of any package: the OS shells (src/Times.Tray) only map it onto the menu. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>Times.Tray</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Times.Tests" />
+    <InternalsVisibleTo Include="Times.Tray" />
+  </ItemGroup>
+
+</Project>

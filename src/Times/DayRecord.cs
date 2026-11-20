@@ -419,6 +419,34 @@ internal sealed record DayRecord
     public bool IsWorking => entries.Length > 0 && FinalState() == WorkState.Working;
 
     /// <summary>
+    /// True when the walk of <see cref="TimeLeft"/> ends on a break: a break start while working with no
+    /// break end or leaving since. False for an empty or absence day.
+    /// </summary>
+    public bool IsOnBreak => entries.Length > 0 && FinalState() == WorkState.OnBreak;
+
+    /// <summary>
+    /// The entry that moved the day into the state it ends in (the arrival or break end for working, the
+    /// break start for a break, the leaving for off), or <c>null</c> when no entry changed the state.
+    /// </summary>
+    public DayEntry? StateEntry()
+    {
+        WorkState state = WorkState.Off;
+        DayEntry? changed = null;
+        foreach (DayEntry entry in entries)
+        {
+            WorkState next = Next(state, entry.Kind);
+            if (next != state)
+            {
+                changed = entry;
+            }
+
+            state = next;
+        }
+
+        return changed;
+    }
+
+    /// <summary>
     /// Returns the work time accrued up to <paramref name="now"/>: <see cref="WorkTime"/> plus the time since
     /// the last entry when the day <see cref="IsWorking"/> and <paramref name="now"/> is later than that entry.
     /// In every other case (on break, off, empty or absence day, <paramref name="now"/> at or before the last

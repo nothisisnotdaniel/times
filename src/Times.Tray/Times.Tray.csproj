@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The menu bar / tray shell: maps Times.Tray.Core's TrayMenuModel onto each OS's own tray API, with no package.
+       macOS: NSStatusItem and NSMenu through the Objective-C runtime (MacOS/). Windows: WinForms NotifyIcon and
+       ContextMenuStrip (Windows/), which needs the net10.0-windows target, so it is the target on Windows only.
+       Elsewhere (ubuntu CI) the project builds as net10.0; build the Windows shell there with
+       -p:TrayWindows=true (EnableWindowsTargeting allows it on any OS). -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework Condition="$([MSBuild]::IsOSPlatform('Windows')) Or '$(TrayWindows)' == 'true'">net10.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>Times.Tray</RootNamespace>
+    <AssemblyName>Times.Tray</AssemblyName>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net10.0-windows'">
+    <UseWindowsForms>true</UseWindowsForms>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' != 'net10.0-windows'">
+    <Compile Remove="Windows/**" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-windows'">
+    <Compile Remove="MacOS/**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Assets/in.png" LogicalName="Times.Tray.in.png" />
+    <EmbeddedResource Include="Assets/out.png" LogicalName="Times.Tray.out.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Times.Tray.Core\Times.Tray.Core.csproj" />
+  </ItemGroup>
+
+</Project>

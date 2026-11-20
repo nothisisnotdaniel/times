@@ -6,7 +6,7 @@ Every factory agent reads this file before working on Times. Keep it short and a
 - **How it runs:** the app stays open in the terminal until the user closes it (an interactive
   session). `times <command ...>` (first argument not starting with `-`) is a one-shot: `App.RunOneShot`
   runs that line through `Dispatch` against today, prints plain lines (no layout, mouse or clock), exits 0, or 1 on
-  an error (`CommandResult.Failed`); `status` is one-shot only; session-only commands are refused. The current day's view sits above an
+  an error (`CommandResult.Failed`); `status` (and `status --json`, see Tray app) is one-shot only; session-only commands are refused. The current day's view sits above an
   **input box at the bottom of the screen**, in the style of the GitHub Copilot CLI: a bordered
   prompt line where the user types commands.
   - Commands are bare words (e.g. `arrive 8:15`); one leading `/` is still accepted and stripped
@@ -267,6 +267,19 @@ Every factory agent reads this file before working on Times. Keep it short and a
   `TestLicences` (a fresh key per test, never a real one). Signing lives only in `tools/Times.LicenceIssuer`
   (`create-key --kid`, `issue --kid --name --until [--ledger]`, signing keys in the macOS Keychain, ledger outside any git
   repo; not packable, never referenced by `src/Times`).
+- **Tray app:** `Times.Tray` keeps no data and never reads the data folder: it only runs the installed `tm` one-shots
+  (`status --json`, `arrive`, `break`, `breakend`, `leave`, no time argument). `tm status --json` (`StatusJson.Build`,
+  read-only, raw like `report --json`; properties `schemaVersion` 1, `date`, `state` out/working/break/absent, `since`
+  from `DayRecord.StateEntry`, `checkpoint` (last one with no `CheckpointSummary.EndOf`, only while working),
+  `workedMinutes`, `targetMinutes`, `leftMinutes`); `status` with another argument is a red usage line, exit 1.
+  `TmLocator` takes only absolute paths to existing files (`TIMES_TM`, `~/.dotnet/tools/tm[.exe]`, absolute `PATH`
+  entries). `ProcessRunner` uses `ArgumentList` (no shell), the inherited environment, stdin closed, a 64 KiB stdout cap
+  and a 10 s tree kill. `TrayStatus.Parse` is strict (fixed `NotUnderstood` text, never the raw output); `TrayText.Clean`
+  drops ANSI, control and bidi characters and cuts names to 40 / error lines to 120. `TrayMenuModel` is plain data;
+  `TrayController` runs one operation at a time (a refresh joins the running one, a second action is ignored), refreshes
+  at start, every 60 s (`TimeProvider.CreateTimer`), on menu open and after an action, and raises `Changed` on a worker
+  thread (the shell posts to the UI thread). Tests use `FakeProcessRunner` and `SettableTimeProvider`; only
+  `ProcessRunnerTests` start real processes (scripts through /bin/sh, skipped on Windows). The shell has no unit tests.
 - **Days:** the app always shows one "current" day, starting at today. The user can move to
   the previous or next day or jump to a date. Navigating to a day with no file shows it as an
   empty day **without creating a file**. The day's file is created only when the first
@@ -275,10 +288,17 @@ Every factory agent reads this file before working on Times. Keep it short and a
   [Spectre.Console](https://spectreconsole.net) handles all terminal output.
 - **Build:** `dotnet build`
 - **Test command:** `dotnet test` (xUnit + Spectre.Console.Testing)
-- **Run:** `dotnet run --project src/Times -- <args>`
+- **Run:** `dotnet run --project src/Times -- <args>` (the tray app: `dotnet run --project src/Times.Tray`)
 - **Layout:**
   - `Times.slnx`: the solution.
   - `src/Times/`: the app. `Program.cs` only wires things up, and the logic starts in `App.cs`.
+  - `src/Times.Tray.Core/`: the tray app's logic (net10.0 library, **no packages**, `InternalsVisibleTo` Times.Tests and
+    Times.Tray). `src/Times.Tray/`: the thin shell on each OS's own tray API, **no packages** (WinExe): `MacOS/` is an
+    `NSStatusItem` + `NSMenu` through Objective-C runtime P/Invoke (`ObjC.cs`, AppKit loaded by path, accessory policy so no
+    Dock icon, callbacks via `[UnmanagedCallersOnly]` on a runtime-registered class, model changes posted with
+    `performSelectorOnMainThread`); `Windows/` is WinForms `NotifyIcon` + `ContextMenuStrip` (target `net10.0-windows`, chosen
+    on Windows or with `-p:TrayWindows=true`; elsewhere the project is `net10.0` and `Windows/` is not compiled). Tests
+    reference Times.Tray.Core, never Times.Tray.
   - `tests/Times.Tests/`: one test class per production class (`AppTests.cs` tests `App.cs`).
   - `tools/Times.LicenceIssuer/`: the developer-only licence issuer (in the solution's tools folder).
   - `.github/workflows/release.yml`: on a push to `develop`, a merged `develop` -> `main` pull request

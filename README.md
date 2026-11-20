@@ -114,6 +114,23 @@ times status
 
 `status` prints today's day view. Several words are joined, so `times checkpoint 8:30 #1 Design review` works. Commands that need the session (`quit`, `settings`, `prev`, `next`, `today`, `update`, `import`, `devops connect`) are refused with a red line. Exit codes: 0 done, 1 command error, 2 bad data folder, 3 another Times is open on the data folder, 4 the lock could not be taken. With no arguments, or an argument starting with `-`, Times starts the interactive session.
 
+`times status --json` prints today's state (`out`, `working`, `break` or `absent`, since when, the
+running checkpoint, and worked, target and left minutes) as one JSON document; see the
+[manual](MANUAL.md#one-shot-commands) for every property.
+
+### Menu bar and tray app
+
+`Times.Tray` shows a menu bar icon on macOS or a tray icon on Windows with your state, the running
+checkpoint and the time left today, and offers Arrive, Break, Break end and Leave. It keeps no data:
+it runs the installed `tm` (`TIMES_TM`, then `~/.dotnet/tools`, then `PATH`). Start it from the
+source with:
+
+```sh
+dotnet run --project src/Times.Tray
+```
+
+It is not packed or released yet. See the [manual](MANUAL.md#menu-bar-and-tray-app).
+
 ### Hours as JSON
 
 `times report --from <from> --to <to> --json` (the flags in any order, dates `yyyy-MM-dd`) prints the hours over the range as one JSON document for other tools and scripts, and nothing else: no table, colours or line wrapping. Without `--json`, `times report --from <from> --to <to>` prints the same table as `times report <from> <to>`. `--json` works only from the shell, not in the session. The report only reads the data folder. Property names are fixed; `schemaVersion` changes only on a breaking change.
@@ -417,6 +434,8 @@ To remove the tool, see [Uninstall](#uninstall).
 
 - `Times.slnx`: the solution.
 - `src/Times/`: the app. `Program.cs` only wires things up; the logic starts in `App.cs`.
+- `src/Times.Tray.Core/`: the menu bar / tray app's logic (no packages).
+- `src/Times.Tray/`: the tray app's shell on the OS's own tray API (macOS `NSStatusItem`, Windows `NotifyIcon`), no packages.
 - `tests/Times.Tests/`: the tests, one test class per production class.
 - `.github/`: the release workflow (`workflows/release.yml`) and its scripts.
 

@@ -93,6 +93,23 @@ times eod 17:30 --plan Write tests
 
 `status` prints today's day view. Several words are joined, so `times checkpoint 8:30 #1 Design review` works. Commands that need the session (`quit`, `settings`, `prev`, `next`, `today`, `update`, `import`, `devops connect`) are refused with a red line. Exit codes: 0 done, 1 command error, 2 bad data folder, 3 another Times is open on the data folder, 4 the lock could not be taken. With no arguments, or an argument starting with `-`, Times starts the interactive session.
 
+`times status --json` prints today's state as one JSON document for other tools (the menu bar
+app reads it), and nothing else: no colours or line wrapping. It only reads, so a day with no file
+stays without one. An unreadable day file gives one red line and exit 1, and `status` with any
+other argument gives a red usage line and exit 1. The properties always come in this order, and
+`schemaVersion` changes only on a breaking change:
+
+| Property | Type | Meaning |
+|----------|------|---------|
+| `schemaVersion` | number | The version of this shape, now `1` |
+| `date` | string | Today, `yyyy-MM-dd` |
+| `state` | string | `out` (not checked in), `working`, `break` or `absent` (an absence day) |
+| `since` | string or null | When the state started (`HH:mm`: the arrival or break end, the break start, or the leaving), or `null` |
+| `checkpoint` | object or null | While `working`, the running checkpoint: `name`, `workItem` (number or `null`) and `since` (`HH:mm`); otherwise `null` |
+| `workedMinutes` | number | The work time today, counted up to now while working |
+| `targetMinutes` | number | The `daily-target` setting |
+| `leftMinutes` | number | `targetMinutes` minus `workedMinutes`; negative past the target |
+
 ## Commands
 
 An argument in `<…>` is required; one in `[…]` is optional. `remove`, `change`, `booked`,
@@ -829,6 +846,27 @@ checks and downloads right away and installs after `quit`, in every mode. A pack
 only if its signature verifies with the key built into Times. The install runs after Times has
 exited and writes its output to `update.log` in the data folder; the next start says
 `Updated to X.` or that it failed. This works only for Times installed as a .NET tool.
+
+### Menu bar and tray app
+
+`Times.Tray` puts Times in the macOS menu bar or the Windows notification area, so you can check in
+and out without a terminal window. Start it from a copy of the Times source with
+`dotnet run --project src/Times.Tray` (macOS and Windows only). It shows no window and, on macOS, no Dock icon. The icon is
+a filled circle while you are checked in (working or on a break) and a ring otherwise.
+
+Its menu starts with grey status rows: `Working since 8:15`, `On a break since 12:00`,
+`Not checked in` or `Absent today`, then the running checkpoint (`Checkpoint: Design (#1234) since
+9:00`), then `Left today: 3:12` or `Over target: 0:20`. Below them are **Arrive**, **Break**,
+**Break end** and **Leave**: each books now, like `times arrive` and the others, and only the ones
+that fit your state can be chosen. **Refresh** reads the state again, and **Quit** closes the app.
+The state is also read when the app starts, every minute and whenever you open the menu.
+
+The app keeps no data of its own: it runs the installed `tm` (from the `TIMES_TM` variable if set
+to a full path, otherwise `~/.dotnet/tools`, otherwise your `PATH`), so your day files stay the
+only record, and it uses the same data folder (`TIMES_DATA_DIR` reaches `tm`). While Times is open
+in a terminal on the same data folder, the menu says `Times is open in a terminal. Use it there or
+close it.` If `tm` is missing, it says how to install it; if `tm` does not answer within 10
+seconds, it says so. A refused booking shows Times's own first line in the menu.
 
 ## Keyboard shortcuts
 
