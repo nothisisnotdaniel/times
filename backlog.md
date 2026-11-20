@@ -138,7 +138,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] [#30](backlog/030-end-of-day-alert-when-switched.md) End-of-day alert when switched on later → 326-alert-switched-on-later
 - [x] [#31](backlog/031-remove-unused-prime-parameters.md) Remove unused Prime parameters → 208-remove-prime-params
 - [x] [#36](backlog/036-teams-call-tracking.md) Teams call tracking → 327-teams-call-tracking
-- [ ] [#40](backlog/040-devops-sync-becomes-pro.md) DevOps sync becomes Pro (after: #39)
+- [x] [#40](backlog/040-devops-sync-becomes-pro.md) DevOps sync becomes Pro (after: #39) → 328-devops-sync-pro
 - [ ] [#41](backlog/041-suite-landing-page.md) Suite landing page (after: #39; Context#109)
 - [x] [#42](backlog/042-choose-a-source-licence.md) Choose a source licence
 - [h] [#43](backlog/043-open-the-shop.md) Open the shop (after: ReviewPack#1; #39; #41; Context#399)
