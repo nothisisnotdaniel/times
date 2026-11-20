@@ -110,7 +110,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] Import folder scan cap: the import's `Scan` streams the folder listing and stops collecting names past a cap instead of reading every top-level entry into memory first, keeping the ordinal order and the `… and N more` count of skipped names correct. Full path, high risk (reads foreign folders). (Follow-up from 118-import-old-data, security review nit 2.) → 120-import-scan-cap
 - [x] [#3](backlog/003-home-office-or-office.md) Home office or office → 308-home-office-mark
 - [x] [#4](backlog/004-one-shot-commands.md) One-shot commands → 126-one-shot-commands
-- [ ] [#5](backlog/005-monthly-timesheet.md) Monthly timesheet
+- [x] [#5](backlog/005-monthly-timesheet.md) Monthly timesheet → 309-monthly-timesheet
 - [ ] [#8](backlog/008-keep-balance-corrections-on-import.md) Keep balance corrections on import
 - [ ] [#9](backlog/009-fall-back-per-setting.md) Fall back per setting
 - [x] Live clock: while Times is open on today, update the time left and the day total once a minute through the background events, without touching the typed line, the cursor or the open popup. Other days don't tick. Builds on background events in the loop. (after: Background events in the loop) → 112-live-clock
