@@ -242,7 +242,8 @@ Every factory agent reads this file before working on Times. Keep it short and a
   plus `SkippedCount`), `Read` goes through `CappedFile`, `Parse` (strict UTF-8, `JsonDocument` without duplicate properties) gives a
   `DayRecord` plus `UsedTime` warnings, or one fixed reason with the 1-based entry number. A new day is saved with `DayStamp.Missing`, an
   identical one counts as `already there`, a differing one is asked about in the loop (`pendingImport`, like the token prompt; `yes`/`y`
-  replaces with the stamp loaded before asking, Esc keeps the rest); unreadable existing files are kept and listed. Never writes the source.
+  replaces with the stamp loaded before asking, Esc keeps the rest; a replaced day keeps the existing day's balance corrections in
+  their order, and the question says how many are kept); unreadable existing files are kept and listed. Never writes the source.
   The yellow `!` lines (problems, then `UsedTime` warnings, including those added while asking) are capped at `MaxImportLines` (20)
   with a grey `… and N more`, before the skipped names and their own cap.
 - **Updates:** `UpdateService` (wired in `Program.cs`, `null` in tests unless injected) runs one background

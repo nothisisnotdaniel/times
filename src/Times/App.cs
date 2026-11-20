@@ -1427,8 +1427,9 @@ internal sealed class App
         return ImportResult(run);
     }
 
-    // Writes a day that has no file, counts one that is already there, and queues one that differs.
-    private void PlaceImported(ImportRun run, DateOnly day, DayRecord record)
+    // Writes a day that has no file, counts one that is already there, and queues one that differs. A replaced day
+    // keeps the existing day's balance corrections (in their order): the old tool's files never hold any.
+    private void PlaceImported(ImportRun run, DateOnly day, DayRecord imported)
     {
         DayRecord existing;
         DayStamp stamp;
@@ -1445,9 +1446,11 @@ internal sealed class App
 
         if (stamp.IsMissing)
         {
-            SaveImported(run, day, record, stamp, "a day file appeared meanwhile, not written");
+            SaveImported(run, day, imported, stamp, "a day file appeared meanwhile, not written");
             return;
         }
+
+        DayRecord record = new DayRecord(imported.Entries, imported.Absence, existing.Corrections, imported.Workplace);
 
         if (existing.Equals(record))
         {
@@ -1487,7 +1490,7 @@ internal sealed class App
             {
                 ImportConflict conflict = run.Conflicts[i];
                 string date = ReportDate(conflict.Day);
-                Draw(null, new Markup($"[grey]{date} already has a different day. Replace it with the imported one? Type yes to replace.[/]"), false);
+                Draw(null, new Markup($"[grey]{date} already has a different day. Replace it with the imported one?{KeptCorrections(conflict.Record.Corrections.Count)} Type yes to replace.[/]"), false);
                 PlaceCursor();
                 int width = console.Profile.Width;
                 string? typed = editor.ReadValue(InputColumn, InputLine, width - InputColumn - 2, framePlaceholder, out bool cancelled,
@@ -1522,6 +1525,14 @@ internal sealed class App
             framePlaceholder = Placeholder;
         }
     }
+
+    // The sentence the replace question adds for the corrections a replaced day keeps; empty when there are none.
+    private static string KeptCorrections(int count) => count switch
+    {
+        0 => "",
+        1 => " Its 1 balance correction is kept.",
+        _ => $" Its {count.ToString(CultureInfo.InvariantCulture)} balance corrections are kept.",
+    };
 
     // The summary: the imported count, the grey counts, the yellow problems and warnings, then the skipped names.
     private static CommandResult ImportResult(ImportRun run)
