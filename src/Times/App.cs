@@ -62,6 +62,9 @@ internal sealed class App
     private readonly InstanceLock instanceLock;
     private readonly IContextCli? contextCli;
 
+    // The balance's day records, kept across redraws and read again only when a day file changes.
+    private readonly DayRecordCache dayRecords;
+
     // While the settings panel is open: what it shows, so a resize can draw it again (null otherwise).
     private SettingsView? shownSettings;
 
@@ -175,6 +178,7 @@ internal sealed class App
         this.time = time;
         this.folderFromEnvironment = folderFromEnvironment;
         Store = store;
+        dayRecords = new DayRecordCache(store);
         projectStore = new ProjectStore(store.Folder);
         dayView = new DayView(time);
         this.registry = registry ?? CommandRegistry.CreateDefault();
@@ -5161,7 +5165,7 @@ internal sealed class App
             DateOnly monthEnd = monthStart.AddDays(DateTime.DaysInMonth(shown.Year, shown.Month) - 1);
             int homeOffice = HomeOfficeCount.Calculate(Store, monthStart, monthEnd);
             return dayView.Render(
-                day, target, FlexitimeBalance.Compute(Store, shown, target, now), now, checks, week, holiday, homeOffice);
+                day, target, FlexitimeBalance.Compute(Store, shown, target, now, dayRecords), now, checks, week, holiday, homeOffice);
         }
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
         {

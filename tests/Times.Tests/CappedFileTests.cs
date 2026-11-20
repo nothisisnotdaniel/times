@@ -176,4 +176,77 @@ public class CappedFileTests
         string folder = OperatingSystem.IsMacOS() ? "/dev/fd" : "/proc/self/fd";
         return Directory.EnumerateFileSystemEntries(folder).Count();
     }
+
+    // AC-1 (314): only a disk handle with none of Directory, Device or ReparsePoint counts. Runs on every OS.
+    [Theory]
+    [InlineData(1u, FileAttributes.Normal, true)]
+    [InlineData(1u, FileAttributes.Archive, true)]
+    [InlineData(1u, FileAttributes.ReadOnly | FileAttributes.Hidden, true)]
+    [InlineData(1u, FileAttributes.Directory, false)]
+    [InlineData(1u, FileAttributes.Device, false)]
+    [InlineData(1u, FileAttributes.ReparsePoint, false)]
+    [InlineData(1u, FileAttributes.Archive | FileAttributes.ReparsePoint, false)]
+    [InlineData(2u, FileAttributes.Normal, false)]
+    [InlineData(3u, FileAttributes.Normal, false)]
+    [InlineData(0u, FileAttributes.Normal, false)]
+    [InlineData(0x8000u, FileAttributes.Normal, false)]
+    public void IsRegularWindowsHandle_OnlyDiskWithoutRefusedAttributes(uint fileType, FileAttributes attributes, bool expected)
+    {
+        Assert.Equal(expected, CappedFile.IsRegularWindowsHandle(fileType, attributes));
+    }
+
+    // AC-2 (314): on Windows a regular file is read through the checked handle, and the handle is closed after.
+    [Fact]
+    public void ReadWindows_RegularFile_ReturnsBytes_AndClosesTheHandle()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder temp = new TempFolder();
+        string path = Path.Combine(temp.Path, "2026-11-01.json");
+        File.WriteAllBytes(path, Encoding.UTF8.GetBytes("{}"));
+
+        Assert.Equal(Encoding.UTF8.GetBytes("{}"), CappedFile.ReadWindows(path, "the file", 64, "too large"));
+        Assert.Equal(Encoding.UTF8.GetBytes("{}"), CappedFile.Read(path, "the file", 64));
+        File.Delete(path);
+        Assert.False(File.Exists(path));
+    }
+
+    // AC-2 (314): a too-large file is refused and its handle is closed too.
+    [Fact]
+    public void ReadWindows_TooLarge_IsRefused_AndClosesTheHandle()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder temp = new TempFolder();
+        string path = Path.Combine(temp.Path, "projects.json");
+        File.WriteAllText(path, new string('x', 65));
+
+        InvalidDataException ex = Assert.Throws<InvalidDataException>(() => CappedFile.ReadWindows(path, "projects.json", 64, "too large"));
+        Assert.Equal("too large", ex.Message);
+        File.Delete(path);
+        Assert.False(File.Exists(path));
+    }
+
+    // AC-2 (314): the handle check alone (no FileKind pre-check) refuses the NUL character device without blocking.
+    [Theory]
+    [InlineData(@"\\.\NUL")]
+    [InlineData("NUL")]
+    public void ReadWindows_NulDevice_IsRefused_WithoutBlocking(string path)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        Exception? thrown = SpecialFiles.RunWithin(Timeout, () => CappedFile.ReadWindows(path, "settings.json", 64, "too large"));
+
+        InvalidDataException ex = Assert.IsType<InvalidDataException>(thrown);
+        Assert.Equal("settings.json is not a regular file.", ex.Message);
+    }
 }

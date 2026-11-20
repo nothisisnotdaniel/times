@@ -7336,6 +7336,23 @@ public sealed class AppTests : IDisposable
         Assert.Contains("Target 8:00 · day +0:30 · balance +1:00", LastFrame(output));
     }
 
+    // AC-10 (314): the cached balance shows each booking at once, also on another shown day after it.
+    [Fact]
+    public void Balance_AfterBookingEntries_ShowsTheNewBalance_OnEveryRedraw()
+    {
+        WriteDayFile("2026-10-20", "08:00", "17:00");
+
+        (int exitCode, string output) = RunShipped("arrive 8:00", "leave 12:00", "next", "prev", "arrive 13:00", "leave 16:30", "quit");
+
+        Assert.Equal(0, exitCode);
+        List<string> frames = Frames(output).Select(f => string.Join("\n", f)).ToList();
+        Assert.Contains("Target 8:00 · balance +1:00", frames[0]);
+        Assert.Contains(frames, f => f.Contains("Target 8:00 · day -4:00 · balance -3:00", StringComparison.Ordinal));
+        Assert.Contains(frames, f => f.Contains("Target 8:00 · balance -3:00", StringComparison.Ordinal)
+            && !f.Contains("· day", StringComparison.Ordinal));
+        Assert.Contains("Target 8:00 · day -0:30 · balance +0:30", LastFrame(output));
+    }
+
     // AC-6 (091)
     [Fact]
     public void EmptyDay_WithNoCountedDay_ShowsNoTargetLine()

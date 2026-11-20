@@ -319,4 +319,46 @@ public sealed class FlexitimeBalanceTests
         Assert.Equal(TimeSpan.FromHours(-3), balance.Total);
         Assert.Equal(1, balance.CountedDays);
     }
+
+    // AC-3, AC-4 (314): upper- and mixed-case day files count where the file system ignores case, and only there.
+    [Fact]
+    public void Compute_UpperCaseExtension_CountsOnlyWhereTheFileSystemIgnoresCase()
+    {
+        using TempFolder temp = new TempFolder();
+        Write(temp, "probe.json", "{}");
+        bool ignoresCase = File.Exists(Path.Combine(temp.Path, "PROBE.JSON"));
+        File.Delete(Path.Combine(temp.Path, "probe.json"));
+        Write(temp, "2026-10-20.JSON", Day("08:00", "17:00"));
+        Write(temp, "2026-10-21.Json", Day("08:00", "16:30"));
+        Write(temp, "2026-10-22.json", Day("08:00", "16:15"));
+        DayStore store = new DayStore(temp.Path);
+
+        FlexitimeBalance balance = FlexitimeBalance.Compute(store, Shown, EightHours);
+        FlexitimeBalance cached = FlexitimeBalance.Compute(store, Shown, EightHours, cache: new DayRecordCache(store));
+
+        if (ignoresCase)
+        {
+            Assert.Equal(TimeSpan.FromMinutes(105), balance.Total);
+            Assert.Equal(3, balance.CountedDays);
+        }
+        else
+        {
+            Assert.Equal(TimeSpan.FromMinutes(15), balance.Total);
+            Assert.Equal(1, balance.CountedDays);
+        }
+
+        Assert.Equal(0, balance.SkippedFiles);
+        Assert.Equal((balance.Total, balance.CountedDays, balance.SkippedFiles), (cached.Total, cached.CountedDays, cached.SkippedFiles));
+    }
+
+    // AC-6 (314): a cache for another store is refused, so a balance never mixes two folders.
+    [Fact]
+    public void Compute_CacheOfAnotherStore_IsRefused()
+    {
+        using TempFolder temp = new TempFolder();
+        DayStore store = new DayStore(temp.Path);
+
+        Assert.Throws<ArgumentException>(
+            () => FlexitimeBalance.Compute(store, Shown, EightHours, cache: new DayRecordCache(new DayStore(temp.Path))));
+    }
 }
