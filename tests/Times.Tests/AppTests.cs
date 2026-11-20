@@ -12115,6 +12115,158 @@ public sealed class AppTests : IDisposable
         }
     }
 
+    // Job 324 ------------------------------------------------------------------------------
+
+    // 324 AC-1
+    [Fact]
+    public void Backup_Zip_IsOwnerOnly()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder target = new TempFolder();
+        WriteBackupData();
+
+        (int exitCode, _) = RunExport($"backup {target.Path}");
+
+        string path = Path.Combine(target.Path, BackupName);
+        Assert.Equal(0, exitCode);
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
+        Assert.Equal(["2026-11-02.json", "2026-11-03.json", "projects.json"], ZipEntryNames(path));
+        using System.IO.Compression.ZipArchive zip = System.IO.Compression.ZipFile.OpenRead(path);
+        foreach (System.IO.Compression.ZipArchiveEntry entry in zip.Entries)
+        {
+            using Stream entryStream = entry.Open();
+            using MemoryStream copy = new MemoryStream();
+            entryStream.CopyTo(copy);
+            Assert.Equal(File.ReadAllBytes(Path.Combine(data.Path, entry.FullName)), copy.ToArray());
+        }
+    }
+
+    // 324 AC-2
+    [Fact]
+    public void Backup_ExistingZip_KeepsItsMode()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder target = new TempFolder();
+        WriteBackupData();
+        string path = Path.Combine(target.Path, BackupName);
+        File.WriteAllBytes(path, [1, 2, 3]);
+        UnixFileMode mode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead;
+        File.SetUnixFileMode(path, mode);
+
+        (int exitCode, string[] frame) = RunExport($"backup {target.Path}");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal($"backup: {path} already exists. Move or delete it first.", BackupHint(frame));
+        Assert.Equal([1, 2, 3], File.ReadAllBytes(path));
+        Assert.Equal(mode, File.GetUnixFileMode(path));
+        Assert.Equal([BackupName], Listing(target.Path));
+    }
+
+    // 324 AC-3
+    [Fact]
+    public void Backup_MidWriteFailure_DeletesThePartialZip()
+    {
+        using TempFolder target = new TempFolder();
+        WriteReportDays();
+        Dictionary<string, (DateTime Written, byte[] Bytes)> before = DataSnapshot();
+        FailingExportStream? failing = null;
+        Func<string, Stream> factory = p =>
+        {
+            failing = new FailingExportStream(App.OpenExportFile(p));
+            return failing;
+        };
+
+        (int exitCode, string[] frame) = RunExport(factory, $"backup {target.Path}", "report 2026-11-02 2026-11-04");
+        // A second session reads the hint from its last frame. It only gets past "already exists" because the first
+        // session deleted its partial zip.
+        (_, string[] hintFrame) = RunExport(factory, $"backup {target.Path}");
+
+        Assert.Equal(0, exitCode);
+        Assert.NotNull(failing);
+        Assert.True(failing.BytesWritten > 0, "the stream failed before writing any bytes");
+        Assert.Equal($"backup: could not write {Path.Combine(target.Path, BackupName)}. disk full", BackupHint(hintFrame));
+        Assert.Empty(Listing(target.Path));
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ Total +│"));
+        AssertSameSnapshot(before);
+    }
+
+    // 324 AC-4
+    [Fact]
+    public void Backup_FactoryFailsBeforeCreating_LeavesFolderAlone()
+    {
+        using TempFolder target = new TempFolder();
+        string other = Path.Combine(target.Path, "other.zip");
+        File.WriteAllBytes(other, [7, 8, 9]);
+        WriteBackupData();
+        Func<string, Stream> factory = _ => throw new IOException("disk full");
+
+        (int exitCode, string[] frame) = RunExport(factory, $"backup {target.Path}");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal($"backup: could not write {Path.Combine(target.Path, BackupName)}. disk full", BackupHint(frame));
+        Assert.Equal(["other.zip"], Listing(target.Path));
+        Assert.Equal([7, 8, 9], File.ReadAllBytes(other));
+    }
+
+    // 324 AC-5
+    [Fact]
+    public void Backup_PartialZipUndeletable_SaysSo()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder target = new TempFolder();
+        WriteBackupData();
+        UnixFileMode mode = File.GetUnixFileMode(target.Path);
+        bool root = false;
+        Func<string, Stream> factory = p => new FailingExportStream(App.OpenExportFile(p), () =>
+        {
+            // Never true here (the test returned on Windows), but the analyzer cannot see that guard inside a lambda (CA1416).
+            if (OperatingSystem.IsWindows())
+            {
+                return;
+            }
+
+            File.SetUnixFileMode(target.Path, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+            try
+            {
+                File.WriteAllText(Path.Combine(target.Path, "probe"), "x");
+                // Running as root: access can't be denied.
+                root = true;
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        });
+        try
+        {
+            (int exitCode, string[] frame) = RunExport(factory, $"backup {target.Path}");
+            if (root)
+            {
+                return;
+            }
+
+            string path = Path.Combine(target.Path, BackupName);
+            Assert.Equal(0, exitCode);
+            Assert.Equal($"backup: could not write {path} and could not remove the partial file. disk full", BackupHint(frame));
+            Assert.Equal([BackupName], Listing(target.Path));
+        }
+        finally
+        {
+            File.SetUnixFileMode(target.Path, mode);
+        }
+    }
+
     // AC-7
     [Fact]
     public void Backup_NothingToBackUp_ShowsGreyNote_AndWritesNoFile()

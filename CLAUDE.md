@@ -250,7 +250,8 @@ Every factory agent reads this file before working on Times. Keep it short and a
   day file `DayStore.Days()` lists plus `projects.json` byte for byte (`DataBackup.Write`: root entries in ordinal name order, each read
   through `CappedFile` with the 64 KiB cap, never parsed; a file that cannot be read is left out and counted, yellow `! N file(s) skipped`)
   into `times-backup-yyyy-MM-dd-HHmm.zip` (`DataBackup.FileName`, local time). The zip is built in memory, then written with
-  `FileMode.CreateNew` (an existing name, a link included, is refused; a failed write deletes the file); nothing to back up is a grey note
+  `FileMode.CreateNew` (an existing name, a link included, is refused; a failed write deletes the file; on Unix owner-only 0600 via
+  `OpenExportFile`, the same `exportStream` seam); nothing to back up is a grey note
   and no file. A target that is the data folder or below it is refused (`DataBackup.IsInside`: every symlink resolved in both paths,
   `..` after a link goes up from its target, case and trailing separators ignored). The data folder is never written.
 - **Import:** `import <folder>` (`im`, whole trimmed argument through `ExpandFolder`, `backup`'s folder hints, data folder refused) reads
