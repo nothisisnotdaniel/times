@@ -4319,7 +4319,7 @@ internal sealed class App
             TeamsPairingKind.Off => "off",
             TeamsPairingKind.Paired => teamsTracker is { Connected: true }
                 ? "on, paired, [steelblue1]connected[/]"
-                : "on, paired, not reachable",
+                : "on, paired, [yellow]not reachable[/]",
             _ => "on, not paired",
         };
     }

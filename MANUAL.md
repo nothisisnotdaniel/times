@@ -877,7 +877,8 @@ third-party app API (it talks only to `127.0.0.1:8124` on your machine, never to
 2. In Teams, open *Settings → Privacy* and turn on the **Third-party app API** (in some versions
    under *Manage API*, **Enable API**).
 3. Join or start any meeting. Teams asks whether to allow **Times**; allow it. Teams then gives
-   Times a pairing key, which Times keeps in `teams.json` (only you can read it). It is never shown.
+   Times a pairing key, which Times keeps in `teams.json` (on macOS and Linux only you can read it;
+   on Windows it keeps the data folder's permissions). It is never shown.
 
 When a meeting starts while you are working (checked in, not on a break, not on an absence day),
 Times books a `Call` checkpoint on today at that minute. When the meeting ends and nothing was booked
