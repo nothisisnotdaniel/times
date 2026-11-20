@@ -477,7 +477,7 @@ internal sealed class App
 
         if (clear && current.Workplace is null)
         {
-            return Hint($"{Name}: This day has no workplace mark.");
+            return Hint($"{Name}: this day has no workplace mark.");
         }
 
         try

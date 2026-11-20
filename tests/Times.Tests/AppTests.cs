@@ -16512,7 +16512,7 @@ public sealed class AppTests : IDisposable
     [InlineData("workplace sofa", "workplace: sofa is not a workplace. Use workplace home|office|clear.")]
     [InlineData("workplace home office", "workplace: home office is not a workplace.")]
     [InlineData("workplace [bold]x[/]", "workplace: [bold]x[/] is not a workplace.")]
-    [InlineData("workplace clear", "workplace: This day has no workplace mark.")]
+    [InlineData("workplace clear", "workplace: this day has no workplace mark.")]
     public void Workplace_Refused_ShowsHint_AndWritesNothing(string command, string hint)
     {
         (int exitCode, string output) = RunCommands(command, "quit");
