@@ -251,7 +251,8 @@ co remove 1
 
 ### `report` (`rp`)
 
-Arguments: `<from> <to>`, two dates as `yyyy-MM-dd`.
+Arguments: `<from> <to>`, two dates as `yyyy-MM-dd`, or the same dates as `--from <from> --to <to>`
+(in either order).
 
 Shows the checkpoint hours per work item over a date range, with `H:mm`, decimal hours and a
 `Total` row, ready to copy into Azure DevOps. Reads only.
@@ -259,7 +260,13 @@ Shows the checkpoint hours per work item over a date range, with `H:mm`, decimal
 ```text
 report 2026-11-01 2026-11-30
 rp 2026-11-02 2026-11-06
+report --from 2026-11-01 --to 2026-11-30
 ```
+
+From the shell, `--json` prints the same hours as one JSON document for other tools, with each
+day's arrival, leaving and breaks, and the minutes and checkpoint names per work item (the README
+lists every property): `times report --from 2026-11-01 --to 2026-11-30 --json`. It works only
+from the shell; in the session it shows a red hint.
 
 ### `export` (`ex`)
 

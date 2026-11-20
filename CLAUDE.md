@@ -192,6 +192,11 @@ Every factory agent reads this file before working on Times. Keep it short and a
   The `report-rounding` setting (`off`/`5 min`/`10 min`/`15 min`, read at each call, anything else is `off`) rounds
   each row's time per day to the nearest step (half rounds up) in `report` and `export` only, adding
   ` · rounded to <n> min` to the caption and the export success line.
+  `report --from <d> --to <d>` (flags in any order; missing, repeated or unknown flags and mixing with positional dates are red
+  hints) prints the same table; with `--json` (one-shot only, the session shows a red hint) `HoursJson.Build` (read-only,
+  `Utf8JsonWriter`, fixed camelCase names, `schemaVersion` 1) gives `days` (arrival, leaving, breaks, break/work minutes) and
+  `workItems` (the `ProjectReport` rows), passed as `CommandResult.Raw` and written by `RunOneShot` straight to
+  `console.Profile.Out.Writer` (the one exception to Spectre rendering), ending in `\n`.
 - **Search:** `find <text>` (`f`, whole trimmed argument) runs `CheckpointSearch.Calculate` (read-only) over every day file
   `DayStore.Days()` lists: each day's `CheckpointSummary` group whose names or quicklist title contain the text
   (`OrdinalIgnoreCase`) is one row (`App.FindView`: `Date`, `Work item`, `Title`, `Time`, by date then group order, caption

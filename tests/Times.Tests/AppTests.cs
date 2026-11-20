@@ -8534,6 +8534,36 @@ public sealed class AppTests : IDisposable
         Assert.Contains(frame, l => Regex.IsMatch(l, @"│ +│ \[bold\]y +│ 8:00 +│"));
     }
 
+    // AC-6 (303)
+    [Fact]
+    public void ReportJson_InTheSession_ShowsTheShellHint_AndWritesNothing()
+    {
+        WriteReportDays();
+        Dictionary<string, string> before = DataFiles();
+
+        (int exitCode, string[] frame) = RunReport("report --from 2026-11-02 --to 2026-11-04 --json", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.StartsWith("report: --json works only from the shell (times report …).", HintText(frame, "report: --json"));
+        Assert.DoesNotContain(frame, l => l.Contains("\"schemaVersion\"", StringComparison.Ordinal));
+        Assert.Equal(before, DataFiles());
+    }
+
+    // AC-5 (303): in the session the flags without --json show the same table.
+    [Fact]
+    public void ReportFlags_InTheSession_ShowTheTable()
+    {
+        WriteReportDays();
+
+        (int exitCode, string[] positional) = RunReport("report 2026-11-02 2026-11-04", "quit");
+        (int flagExit, string[] flags) = RunReport("report --to 2026-11-04 --from 2026-11-02", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(0, flagExit);
+        Assert.Contains(positional, l => l.Contains("Total", StringComparison.Ordinal));
+        Assert.Equal(positional, flags);
+    }
+
     // AC-11
     [Fact]
     public void Help_ListsReport_WithAliasRp()

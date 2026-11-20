@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Spectre.Console;
 using Spectre.Console.Testing;
@@ -600,5 +601,230 @@ public sealed class OneShotTests : IDisposable
     {
         Assert.Throws<ArgumentException>(() =>
             new App(new TestConsole(), FixedTimeProvider.At20261027(), new DayStore(data.Path), licenceStore: new FakeLicenceStore()));
+    }
+
+    // Job 303 ------------------------------------------------------------------------------
+
+    private static (int Exit, string Output) JsonShot(string folder, int width, InstanceLock? instanceLock, params string[] args)
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = width;
+        int exit = new App(console, FixedTimeProvider.At20261027(), new DayStore(folder), instanceLock: instanceLock).Run(args);
+        return (exit, console.Output);
+    }
+
+    private static string HoursCp(string time, string name, int? workItem = null) =>
+        workItem is { } w
+            ? $"{{\"kind\":\"checkpoint\",\"time\":\"{time}\",\"name\":{JsonSerializer.Serialize(name)},\"workItem\":{w}}}"
+            : $"{{\"kind\":\"checkpoint\",\"time\":\"{time}\",\"name\":{JsonSerializer.Serialize(name)}}}";
+
+    private void WriteHoursDay(string date, params string[] entries) =>
+        File.WriteAllText(Path.Combine(data.Path, date + ".json"), "{\"entries\":[" + string.Join(',', entries) + "]}");
+
+    private void WriteHoursDays()
+    {
+        WriteHoursDay("2026-10-20", "{\"kind\":\"arrival\",\"time\":\"08:00\"}",
+            HoursCp("09:00", "A rather long checkpoint name that is far wider than forty columns", 1234),
+            HoursCp("10:07", "Mail"), "{\"kind\":\"leaving\",\"time\":\"11:00\"}");
+        File.WriteAllText(Path.Combine(data.Path, "projects.json"),
+            "{\"projects\":[{\"workItem\":1234,\"title\":\"A quicklist title that is also longer than forty columns\"}]}");
+    }
+
+    private static readonly string[] TopLevel =
+        ["schemaVersion", "from", "to", "roundedToMinutes", "skippedFiles", "days", "workItems", "totalMinutes"];
+
+    // AC-1
+    [Fact]
+    public void ReportJson_PrintsOnlyOneJsonObject_UnwrappedAtWidth40()
+    {
+        WriteHoursDays();
+
+        (int exit, string output) = JsonShot(data.Path, 40, null, "report", "--from", "2026-10-01", "--to", "2026-10-31", "--json");
+
+        Assert.True(exit == 0, output);
+        Assert.DoesNotContain("\u001b", output, StringComparison.Ordinal);
+        Assert.StartsWith("{", output, StringComparison.Ordinal);
+        Assert.EndsWith("}\n", output, StringComparison.Ordinal);
+        using JsonDocument document = JsonDocument.Parse(output);
+        JsonElement root = document.RootElement;
+        Assert.Equal(TopLevel, root.EnumerateObject().Select(p => p.Name));
+        Assert.Equal(1, root.GetProperty("schemaVersion").GetInt32());
+        Assert.Equal("2026-10-01", root.GetProperty("from").GetString());
+        Assert.Equal("2026-10-31", root.GetProperty("to").GetString());
+        Assert.Equal(0, root.GetProperty("roundedToMinutes").GetInt32());
+        Assert.Equal("A quicklist title that is also longer than forty columns",
+            root.GetProperty("workItems")[0].GetProperty("title").GetString());
+        Assert.Equal(120, root.GetProperty("totalMinutes").GetInt32());
+    }
+
+    // AC-1, AC-3: the flags in another order, the alias, and the rounding step from settings.json.
+    [Fact]
+    public void ReportJson_FlagsInAnyOrder_AliasAndRounding()
+    {
+        WriteHoursDays();
+        File.WriteAllText(Path.Combine(data.Path, "settings.json"), "{\"settings\":{\"report-rounding\":\"15 min\"}}");
+
+        (int exit, string output) = JsonShot(data.Path, 120, null, "rp", "--json", "--to", "2026-10-31", "--from", "2026-10-01");
+
+        Assert.True(exit == 0, output);
+        using JsonDocument document = JsonDocument.Parse(output);
+        Assert.Equal(15, document.RootElement.GetProperty("roundedToMinutes").GetInt32());
+        // 1:07 rounds to 1:00 for #1234, 0:53 to 1:00 for Mail.
+        Assert.Equal(60, document.RootElement.GetProperty("workItems")[0].GetProperty("minutes").GetInt32());
+        Assert.Equal(60, document.RootElement.GetProperty("workItems")[1].GetProperty("minutes").GetInt32());
+    }
+
+    // AC-4
+    [Fact]
+    public void ReportJson_BrokenFileAndEmptyRange_ExitZero()
+    {
+        File.WriteAllText(Path.Combine(data.Path, "2026-10-21.json"), "{ broken");
+
+        (int exit, string output) = Shot(data.Path, "report", "--from", "2026-10-01", "--to", "2026-10-31", "--json");
+        (int emptyExit, string empty) = Shot(data.Path, "report", "--from", "2026-11-01", "--to", "2026-11-30", "--json");
+
+        Assert.Equal(0, exit);
+        using JsonDocument document = JsonDocument.Parse(output);
+        Assert.Equal(1, document.RootElement.GetProperty("skippedFiles").GetInt32());
+        Assert.Equal(0, document.RootElement.GetProperty("days").GetArrayLength());
+        Assert.Equal(0, emptyExit);
+        using JsonDocument none = JsonDocument.Parse(empty);
+        Assert.Equal(0, none.RootElement.GetProperty("days").GetArrayLength());
+        Assert.Equal(0, none.RootElement.GetProperty("workItems").GetArrayLength());
+        Assert.Equal(0, none.RootElement.GetProperty("totalMinutes").GetInt32());
+    }
+
+    // AC-5
+    [Fact]
+    public void ReportFlags_WithoutJson_PrintTheSameTable()
+    {
+        WriteHoursDays();
+
+        (int exit, string positional) = Shot(data.Path, "report", "2026-10-01", "2026-10-31");
+        (int flagExit, string flags) = Shot(data.Path, "report", "--from", "2026-10-01", "--to", "2026-10-31");
+        (int swappedExit, string swapped) = Shot(data.Path, "report", "--to", "2026-10-31", "--from", "2026-10-01");
+
+        Assert.Equal(0, exit);
+        Assert.Equal(0, flagExit);
+        Assert.Equal(0, swappedExit);
+        Assert.Contains("Total", positional, StringComparison.Ordinal);
+        Assert.Equal(positional, flags);
+        Assert.Equal(positional, swapped);
+    }
+
+    // AC-5
+    [Theory]
+    [InlineData("--from", "2026-10-01", "--json")]
+    [InlineData("--to", "2026-10-31", "--json")]
+    [InlineData("--from", "2026-10-01", "--to", "--json")]
+    [InlineData("--from", "2026-10-01", "--from", "2026-10-02", "--to", "2026-10-31", "--json")]
+    [InlineData("--from", "2026-10-01", "--to", "2026-10-31", "--to", "2026-10-31", "--json")]
+    [InlineData("--from", "2026-10-01", "--to", "2026-10-31", "--json", "--json")]
+    [InlineData("--from", "2026-10-01", "--to", "2026-10-31", "--csv")]
+    [InlineData("2026-10-01", "2026-10-31", "--json")]
+    [InlineData("2026-10-01", "--to", "2026-10-31", "--json")]
+    [InlineData("--from", "2026-10-01", "--to", "2026-10-31", "extra", "--json")]
+    [InlineData("--from", "2026-13-01", "--to", "2026-10-31", "--json")]
+    [InlineData("--from", "2026-10-31", "--to", "2026-10-01", "--json")]
+    public void ReportFlags_BadForms_FailWithARedHint(params string[] flags)
+    {
+        (int exit, string output) = JsonShot(data.Path, 200, null, ["report", .. flags]);
+
+        Assert.Equal(1, exit);
+        Assert.False(output.StartsWith('{'), output);
+        Assert.Contains("report: ", output, StringComparison.Ordinal);
+        Assert.Contains("\u001b[", output, StringComparison.Ordinal);
+    }
+
+    // AC-5
+    [Fact]
+    public void ReportJson_FolderThatCannotBeListed_FailsWithARedHint()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using InstanceLock sideLock = new InstanceLock(other.Path);
+        UnixFileMode mode = File.GetUnixFileMode(data.Path);
+        File.SetUnixFileMode(data.Path, UnixFileMode.None);
+        try
+        {
+            try
+            {
+                Directory.EnumerateFileSystemEntries(data.Path).ToList();
+                // Running as root: access can't be denied.
+                return;
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+
+            (int exit, string output) = JsonShot(data.Path, 200, sideLock,
+                "report", "--from", "2026-10-01", "--to", "2026-10-31", "--json");
+
+            Assert.Equal(1, exit);
+            Assert.False(output.StartsWith('{'), output);
+            Assert.Contains("report: the data folder cannot be listed", output, StringComparison.Ordinal);
+            Assert.DoesNotContain("   at ", output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.SetUnixFileMode(data.Path, mode);
+        }
+    }
+
+    // AC-7
+    [Fact]
+    public void ReportJson_NeverChangesTheDataFolder()
+    {
+        WriteHoursDays();
+        WriteHoursDay("2026-10-27", "{\"kind\":\"arrival\",\"time\":\"17:00\"}", HoursCp("17:10", "Say \"hi\" \\ <b>&</b> Grüße"));
+        Dictionary<string, byte[]> before = Snapshot(data.Path);
+
+        (int exit, string output) = Shot(data.Path, "report", "--from", "2026-10-01", "--to", "2026-10-31", "--json");
+
+        Assert.Equal(0, exit);
+        using JsonDocument document = JsonDocument.Parse(output);
+        Assert.Contains(document.RootElement.GetProperty("workItems").EnumerateArray(),
+            r => r.GetProperty("title").GetString() == "Say \"hi\" \\ <b>&</b> Grüße");
+        Dictionary<string, byte[]> after = Snapshot(data.Path);
+        Assert.Equal(before.Keys.Order(StringComparer.Ordinal), after.Keys.Order(StringComparer.Ordinal));
+        foreach (KeyValuePair<string, byte[]> pair in before)
+        {
+            Assert.Equal(pair.Value, after[pair.Key]);
+        }
+    }
+
+    private static Dictionary<string, byte[]> Snapshot(string folder) =>
+        Directory.EnumerateFileSystemEntries(folder).ToDictionary(p => Path.GetFileName(p), File.ReadAllBytes, StringComparer.Ordinal);
+
+    // AC-8
+    [Fact]
+    public void Readme_DocumentsEveryJsonProperty()
+    {
+        DirectoryInfo? directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "Times.slnx")))
+        {
+            directory = directory.Parent;
+        }
+
+        Assert.NotNull(directory);
+        string readme = File.ReadAllText(Path.Combine(directory.FullName, "README.md"));
+        string manual = File.ReadAllText(Path.Combine(directory.FullName, "MANUAL.md"));
+        string[] nested =
+        [
+            "days[].date", "days[].absence", "days[].arrival", "days[].leaving", "days[].breaks", "days[].breakMinutes",
+            "days[].workMinutes", "workItems[].workItem", "workItems[].title", "workItems[].minutes", "workItems[].open",
+            "workItems[].checkpoints",
+        ];
+        foreach (string name in TopLevel.Concat(nested))
+        {
+            Assert.Contains("| `" + name + "` |", readme, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("`start`", readme, StringComparison.Ordinal);
+        Assert.Contains("`end`", readme, StringComparison.Ordinal);
+        Assert.Contains("times report --from 2026-11-01 --to 2026-11-30 --json", manual, StringComparison.Ordinal);
     }
 }
