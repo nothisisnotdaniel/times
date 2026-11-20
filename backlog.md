@@ -135,7 +135,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] [#48](backlog/048-help-text-and-colour-fixes.md) Help text and colour fixes → 323-help-text-colour-fixes
 - [x] [#28](backlog/028-private-backup-files.md) Private backup files → 324-private-backup-files
 - [x] [#29](backlog/029-bound-the-background-event-queue.md) Bound the background event queue → 325-bound-event-queue
-- [ ] [#30](backlog/030-end-of-day-alert-when-switched.md) End-of-day alert when switched on later
+- [x] [#30](backlog/030-end-of-day-alert-when-switched.md) End-of-day alert when switched on later → 326-alert-switched-on-later
 - [x] [#31](backlog/031-remove-unused-prime-parameters.md) Remove unused Prime parameters → 208-remove-prime-params
 - [ ] [#36](backlog/036-teams-call-tracking.md) Teams call tracking
 - [ ] [#40](backlog/040-devops-sync-becomes-pro.md) DevOps sync becomes Pro (after: #39)
