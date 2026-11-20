@@ -54,5 +54,6 @@ App app = new App(console, TimeProvider.System, new DayStore(dataFolder.Path),
     folderFromEnvironment: dataFolder.FromEnvironment, mouse: mouse, updates: updates,
     tokenStore: TokenStore.ForCurrentPlatform(), devOpsClient: credential => new AzureDevOpsClient(credential),
     events: new BackgroundEventQueue(), liveClock: true, instanceLock: instanceLock,
-    watchResize: true, licenceStore: licenceStore, pro: Pro.ForBuild(licenceStore), activationFolder: activationFolder);
+    watchResize: true, licenceStore: licenceStore, pro: Pro.ForBuild(licenceStore), activationFolder: activationFolder,
+    contextCli: new ProcessContextCli());
 return app.Run(args);

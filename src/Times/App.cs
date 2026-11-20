@@ -60,6 +60,7 @@ internal sealed class App
     private readonly bool liveClock;
     private readonly bool watchResize;
     private readonly InstanceLock instanceLock;
+    private readonly IContextCli? contextCli;
 
     // While the settings panel is open: what it shows, so a resize can draw it again (null otherwise).
     private SettingsView? shownSettings;
@@ -82,6 +83,9 @@ internal sealed class App
 
     // Set by import when imported days differ from existing ones; the loop then asks about each of them.
     private ImportRun? pendingImport;
+
+    // Set by eod in the session without --plan; the loop then asks for the plan for tomorrow.
+    private EndOfDayRun? pendingPlan;
 
     // The start-up update check (started once in Run), whether its hint was shown, and whether its
     // staged package was taken over. The package staged for quit, from that check or from update.
@@ -131,6 +135,7 @@ internal sealed class App
     /// </param>
     /// <param name="licenceStore">Holds the Suite Pro licence key, or <c>null</c> for <see cref="UnsupportedLicenceStore"/>.</param>
     /// <param name="pro">The Pro gate, or <c>null</c> for <see cref="Pro.ForBuild"/> on <paramref name="licenceStore"/>.</param>
+    /// <param name="contextCli">Runs the optional Context command line for <c>eod</c>, or <c>null</c> for none (not installed).</param>
     /// <param name="activationFolder">
     /// Where <c>activation.json</c> goes (<see cref="LicenceActivationFile"/>); required with a
     /// <paramref name="licenceStore"/>, so a test never writes the real application data.
@@ -139,13 +144,14 @@ internal sealed class App
         bool folderFromEnvironment = false, MouseReporting? mouse = null, SettingsRegistry? settings = null,
         UpdateService? updates = null, ITokenStore? tokenStore = null, Func<DevOpsCredential, IDevOpsClient>? devOpsClient = null,
         IBackgroundEvents? events = null, bool liveClock = false, InstanceLock? instanceLock = null, bool watchResize = false,
-        ILicenceStore? licenceStore = null, Pro? pro = null, string? activationFolder = null)
+        ILicenceStore? licenceStore = null, Pro? pro = null, string? activationFolder = null, IContextCli? contextCli = null)
     {
         if (licenceStore is not null && activationFolder is null)
         {
             throw new ArgumentException("A licence store needs an activation folder.", nameof(activationFolder));
         }
 
+        this.contextCli = contextCli;
         this.licenceStore = licenceStore ?? new UnsupportedLicenceStore();
         this.pro = pro ?? Pro.ForBuild(this.licenceStore);
         activationFile = activationFolder is null ? null : new LicenceActivationFile(activationFolder);
@@ -326,6 +332,7 @@ internal sealed class App
         registry.Register("backup", "bu", "Zip your day files and projects into a folder: <folder>", Backup);
         registry.Register("import", "im", "Import day files from the old tool: <folder>", Import);
         registry.Register("vacation", "va", "Show vacation days taken and left this year", NoArguments("vacation", Vacation));
+        registry.Register("eod", "ed", "End the day: book the leaving, see today's hours, todos and a stand-up: [time] [--plan <text>]", EndOfDay);
     }
 
     // Marks the day being viewed as an absence (vacation, sick, holiday) or clears it. Nothing is written
@@ -1255,6 +1262,317 @@ internal sealed class App
         public DayRecord Record { get; }
 
         public DayStamp Stamp { get; }
+    }
+
+    /// <summary>The grey question eod asks in the session when no <c>--plan</c> was given.</summary>
+    internal const string PlanPrompt = "Plan for tomorrow (one line, Enter or Esc skips)";
+
+    /// <summary>The placeholder in the input box while eod asks for the plan.</summary>
+    internal const string PlanPlaceholder = "one line for tomorrow · Enter or Esc skips";
+
+    /// <summary>The most Context todos eod lists before <c>… and N more</c>.</summary>
+    internal const int MaxTodoRows = 10;
+
+    private const string EndOfDayName = "eod";
+    private const string PlanFlag = "--plan";
+    private const string EndOfDayUsage = "Use [bold]eod [[time]] [[--plan <text>]][/].";
+
+    // Ends today: books the leaving (unless the day already ends in one), shows today's summary and Context's open
+    // todos, then saves a plan for tomorrow to Context and shows a stand-up draft. In the session without --plan the
+    // loop asks for the plan first (AskPlan). Only a refused booking is an error; Context problems are yellow lines.
+    private CommandResult EndOfDay(string argument)
+    {
+        (DateOnly today, TimeOnly now) = Today();
+        if (dayView.Current != today)
+        {
+            return Hint($"{EndOfDayName} works on today. Type [bold]today[/] first.");
+        }
+
+        string? timeText = null;
+        string? plan = null;
+        string rest = argument;
+        while (true)
+        {
+            (string token, string after) = SplitToken(rest);
+            if (token.Length == 0)
+            {
+                break;
+            }
+
+            if (string.Equals(token, PlanFlag, StringComparison.Ordinal))
+            {
+                plan = after.Trim();
+                break;
+            }
+
+            if (timeText is not null)
+            {
+                return Hint($"{EndOfDayName}: give at most one time. {EndOfDayUsage}");
+            }
+
+            timeText = token;
+            rest = after;
+        }
+
+        TimeOnly at = now;
+        if (timeText is not null && !TryParseTime(EndOfDayName, timeText, out at, out CommandResult notATime))
+        {
+            return notATime;
+        }
+
+        DayRecord current;
+        try
+        {
+            (current, _) = LoadForWrite(today);
+        }
+        catch (DayFileChangedException)
+        {
+            return ChangedOnDisk(EndOfDayName, today);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{EndOfDayName}: {Markup.Escape(ex.Message)} Nothing was booked.");
+        }
+
+        if (current.Absence is { } absence)
+        {
+            return Hint($"{EndOfDayName}: this day is marked as absence ({DayView.AbsenceLabel(absence)}). " +
+                "Use [bold]absence clear[/] first. Nothing was booked.");
+        }
+
+        if (!current.Entries.Any(e => e.Kind == EntryKind.Arrival))
+        {
+            return Hint($"{EndOfDayName}: there is no arrival today. Book it first with [bold]arrive[/]. Nothing was booked.");
+        }
+
+        List<IRenderable> parts = [];
+        if (current.Entries[^1].Kind == EntryKind.Leaving)
+        {
+            string booked = current.Entries[^1].Time.ToString("HH:mm", CultureInfo.InvariantCulture);
+            parts.Add(new Markup($"[grey]Leaving already booked at {booked}.[/]"));
+        }
+        else
+        {
+            CommandResult saved = Save(EndOfDayName, new DayEntry(EntryKind.Leaving, at));
+            if (saved.Failed)
+            {
+                return saved;
+            }
+        }
+
+        DayRecord record;
+        try
+        {
+            record = Store.Load(today);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{EndOfDayName}: {Markup.Escape(ex.Message)}");
+        }
+
+        IReadOnlyList<CheckpointGroup> groups = CheckpointSummary.Calculate(record, isToday: true, now);
+        parts.Add(groups.Count == 0 ? new Markup("[grey]No checkpoints on this day.[/]") : SummaryView(today, groups));
+
+        bool context = false;
+        if (contextCli?.Run(["todos", "--json"]) is { } todos)
+        {
+            context = true;
+            parts.Add(TodosView(todos));
+        }
+
+        EndOfDayRun run = new EndOfDayRun(parts, groups, LoadProjectsOrNull(), today.AddDays(1), context);
+        if (plan is null && !oneShot)
+        {
+            pendingPlan = run;
+            return CommandResult.None;
+        }
+
+        return FinishEndOfDay(run, plan);
+    }
+
+    // Asks for the plan in the input box, below what eod has shown so far. The answer never enters the history;
+    // Esc or an empty line means no plan. Returns null if the input ended.
+    private CommandResult? AskPlan(LineEditor editor, EndOfDayRun run)
+    {
+        framePlaceholder = PlanPlaceholder;
+        try
+        {
+            Draw(new Rows(run.Parts), new Markup($"[grey]{PlanPrompt}[/]"), true);
+            PlaceCursor();
+            int width = console.Profile.Width;
+            string? typed = editor.ReadValue(InputColumn, InputLine, width - InputColumn - 2, framePlaceholder, out bool cancelled,
+                ShowPasteCut, resized: Resize, hidden: TooSmall);
+            if (typed is null)
+            {
+                return null;
+            }
+
+            string answer = cancelled ? string.Empty : typed.Trim();
+            return FinishEndOfDay(run, answer.Length == 0 ? null : answer);
+        }
+        finally
+        {
+            framePlaceholder = Placeholder;
+        }
+    }
+
+    // Checks the plan, saves a valid one to Context (when it is there) and adds the stand-up draft. An invalid plan
+    // is a red hint, but the result is no error: the leaving stays booked.
+    private CommandResult FinishEndOfDay(EndOfDayRun run, string? plan)
+    {
+        List<IRenderable> parts = [.. run.Parts];
+        IRenderable? hint = null;
+        string? kept = null;
+        if (plan is not null)
+        {
+            if (PlanProblem(plan) is { } problem)
+            {
+                hint = new Markup($"[red]{EndOfDayName}: {problem} No plan was saved.[/]");
+            }
+            else
+            {
+                kept = plan;
+            }
+        }
+
+        if (kept is not null && run.Context && contextCli is not null)
+        {
+            ContextRun? saved = contextCli.Run(["capture", $"Plan for {ReportDate(run.Tomorrow)}: {kept}"]);
+            if (saved is not null)
+            {
+                parts.Add(saved.Succeeded
+                    ? new Markup("[grey]Plan saved to Context.[/]")
+                    : new Markup("[yellow]! Could not save the plan to Context.[/]"));
+            }
+        }
+
+        parts.AddRange(StandupDraft(run.Groups, run.Projects, kept));
+        return new CommandResult(new Rows(parts), hint: hint, hideQuicklist: true);
+    }
+
+    // Why a plan is not valid (escaped markup), or null when it passes ProjectList.IsValidTitle.
+    private static string? PlanProblem(string plan)
+    {
+        if (ProjectList.IsValidTitle(plan))
+        {
+            return null;
+        }
+
+        if (plan.Trim().Length == 0)
+        {
+            return $"say the plan after [bold]{PlanFlag}[/].";
+        }
+
+        if (plan.Length > ProjectList.MaxTitleLength)
+        {
+            return $"the plan is longer than {ProjectList.MaxTitleLength.ToString(CultureInfo.InvariantCulture)} characters.";
+        }
+
+        if (ProjectList.HasControlCharacters(plan))
+        {
+            return $"the plan must not contain control characters. {RetypeHiddenCharacters}";
+        }
+
+        return $"the plan must not contain invisible formatting or broken characters. {RetypeHiddenCharacters}";
+    }
+
+    /// <summary>
+    /// What Context's <c>todos --json</c> run shows: a <c>Todos</c> table of at most <see cref="MaxTodoRows"/> rows
+    /// then a grey <c>… and N more</c>, a grey note for no todos, or one yellow line when the run failed, timed out
+    /// or gave JSON that does not parse. Every Context text is cleaned and escaped.
+    /// </summary>
+    internal static IRenderable TodosView(ContextRun run)
+    {
+        IReadOnlyList<ContextTodo>? todos = run.Succeeded ? ContextTodos.Parse(run.Stdout) : null;
+        if (todos is null)
+        {
+            return new Markup("[yellow]! Could not read todos from Context.[/]");
+        }
+
+        if (todos.Count == 0)
+        {
+            return new Markup("[grey]No open todos in Context.[/]");
+        }
+
+        Table table = new Table()
+            .Border(TableBorder.Rounded)
+            .BorderColor(Color.Grey)
+            .Title("Todos", new Style(Color.Grey))
+            .AddColumn("[grey]Due[/]")
+            .AddColumn("[grey]Todo[/]")
+            .AddColumn("[grey]Note[/]");
+        foreach (ContextTodo todo in todos.Take(MaxTodoRows))
+        {
+            string due = todo.Due is { } date
+                ? ReportDate(date) + (todo.Time is { } at ? " " + at.ToString("HH:mm", CultureInfo.InvariantCulture) : string.Empty)
+                : "-";
+            table.AddRow(new Markup(Markup.Escape(due)), new Markup(Shown(todo.Text)), new Markup(Shown(todo.Note ?? string.Empty)));
+        }
+
+        if (todos.Count > MaxTodoRows)
+        {
+            return new Rows(table,
+                new Markup($"[grey]… and {(todos.Count - MaxTodoRows).ToString(CultureInfo.InvariantCulture)} more[/]"));
+        }
+
+        return table;
+    }
+
+    /// <summary>
+    /// The stand-up draft as plain lines with no markup: <c>Stand-up</c>, <c>Yesterday:</c>, one
+    /// <c>- &lt;title&gt; (H:mm)</c> per group (or <c>- No checkpoints booked.</c>), <c>Today:</c> and
+    /// <c>- &lt;plan&gt;</c> (or <c>- (no plan)</c>). A work-item group is <c>#&lt;n&gt; &lt;title&gt;</c>, its
+    /// quicklist title from <paramref name="projects"/> or else its names; a name group is its name.
+    /// </summary>
+    internal static IReadOnlyList<IRenderable> StandupDraft(IReadOnlyList<CheckpointGroup> groups, ProjectList? projects, string? plan)
+    {
+        List<IRenderable> lines = [new Text("Stand-up"), new Text("Yesterday:")];
+        foreach (CheckpointGroup group in groups)
+        {
+            string names = string.Join(", ", group.Names);
+            string title = names;
+            if (group.WorkItem is { } item)
+            {
+                string? listed = projects?.Projects.FirstOrDefault(p => p.WorkItem == item)?.Title;
+                title = "#" + item.ToString(CultureInfo.InvariantCulture) + " " + (listed ?? names);
+            }
+
+            lines.Add(new Text($"- {DataFolder.ForDisplay(title)} ({DayView.FormatTimeLeft(group.Total)})"));
+        }
+
+        if (groups.Count == 0)
+        {
+            lines.Add(new Text("- No checkpoints booked."));
+        }
+
+        lines.Add(new Text("Today:"));
+        lines.Add(new Text("- " + (plan is null ? "(no plan)" : DataFolder.ForDisplay(plan))));
+        return lines;
+    }
+
+    // What eod has shown and worked out before the plan is known.
+    private sealed class EndOfDayRun
+    {
+        public EndOfDayRun(IReadOnlyList<IRenderable> parts, IReadOnlyList<CheckpointGroup> groups, ProjectList? projects,
+            DateOnly tomorrow, bool context)
+        {
+            Parts = parts;
+            Groups = groups;
+            Projects = projects;
+            Tomorrow = tomorrow;
+            Context = context;
+        }
+
+        public IReadOnlyList<IRenderable> Parts { get; }
+
+        public IReadOnlyList<CheckpointGroup> Groups { get; }
+
+        public ProjectList? Projects { get; }
+
+        public DateOnly Tomorrow { get; }
+
+        // True when Context answered the todos run, so it is installed and the plan can be saved there.
+        public bool Context { get; }
     }
 
     // The grey note after an export with an open row; a fixed literal, so no escaping is needed.
@@ -3410,6 +3728,17 @@ internal sealed class App
                 }
 
                 result = imported;
+            }
+
+            if (pendingPlan is { } planRun)
+            {
+                pendingPlan = null;
+                if (AskPlan(editor, planRun) is not { } planned)
+                {
+                    return 0;
+                }
+
+                result = planned;
             }
 
             if (openSettings)

@@ -827,4 +827,153 @@ public sealed class OneShotTests : IDisposable
         Assert.Contains("`end`", readme, StringComparison.Ordinal);
         Assert.Contains("times report --from 2026-11-01 --to 2026-11-30 --json", manual, StringComparison.Ordinal);
     }
+
+    // ---- eod (305) ----
+
+    private string EodFile => Path.Combine(data.Path, "2026-11-20.json");
+
+    private const string ArrivedAtEight = "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}," +
+        "{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"Spec work\",\"workItem\":1234}]}";
+
+    private (int Exit, string Output) EodShot(IContextCli? cli, bool ansi, params string[] args)
+    {
+        // No input is queued: a prompt would throw instead of hanging.
+        TestConsole console = new TestConsole().Interactive();
+        if (ansi)
+        {
+            console.EmitAnsiSequences();
+        }
+
+        console.Profile.Width = 120;
+        FixedTimeProvider clock = new FixedTimeProvider(new DateTimeOffset(2026, 11, 20, 17, 0, 0, TimeSpan.Zero), TimeZoneInfo.Utc);
+        int exit = new App(console, clock, new DayStore(data.Path), contextCli: cli).Run(args);
+        return (exit, console.Output);
+    }
+
+    // AC-9: books 17:30 and prints the summary, the todos, the saved plan and the draft as plain lines; exit 0.
+    [Fact]
+    public void Eod_OneShot_BooksAndPrintsEverything()
+    {
+        File.WriteAllText(EodFile, ArrivedAtEight);
+        File.WriteAllText(Path.Combine(data.Path, "projects.json"), "{\"projects\":[{\"workItem\":1234,\"title\":\"Design\"}]}");
+        FakeContextCli cli = new FakeContextCli(FakeContextCli.Ok(
+            "{\"todos\":[{\"due\":\"2026-11-21\",\"time\":null,\"text\":\"Review\",\"note\":null}]}"));
+
+        (int exit, string output) = EodShot(cli, false, "eod", "17:30", "--plan", "Write", "tests");
+
+        Assert.Equal(0, exit);
+        Assert.Contains("{\"kind\":\"leaving\",\"time\":\"17:30\"}", File.ReadAllText(EodFile));
+        Assert.Matches(@"│ #1234 +│ Spec work +│ 8:30 +│", output);
+        Assert.Contains("Todos", output);
+        Assert.Matches(@"│ 2026-11-21 +│ Review +│", output);
+        Assert.Contains("Plan saved to Context.", output);
+        Assert.Equal(["capture", "Plan for 2026-11-21: Write tests"], cli.Calls[1]);
+        List<string> lines = PlainLines(output);
+        int start = lines.IndexOf("Stand-up");
+        Assert.True(start >= 0, output);
+        Assert.Equal(["Stand-up", "Yesterday:", "- #1234 Design (8:30)", "Today:", "- Write tests"], lines.GetRange(start, 5));
+        Assert.True(output.IndexOf("Todos", StringComparison.Ordinal) < output.IndexOf("Plan saved", StringComparison.Ordinal));
+        Assert.True(output.IndexOf("Plan saved", StringComparison.Ordinal) < output.IndexOf("Stand-up", StringComparison.Ordinal));
+    }
+
+    // AC-9: the output has no ANSI colours beyond what Spectre prints for markup, and the draft lines carry none.
+    [Fact]
+    public void Eod_OneShot_DraftHasNoMarkup()
+    {
+        File.WriteAllText(EodFile, ArrivedAtEight);
+
+        (_, string output) = EodShot(null, true, "eod", "--plan", "Ship");
+
+        Assert.Contains("\nStand-up", output);
+        Assert.Contains("\nToday:", output);
+        Assert.Contains("\n- Ship", output);
+    }
+
+    // AC-5, AC-9: a one-shot without --plan asks nothing (no input is queued) and saves no plan.
+    [Fact]
+    public void Eod_OneShot_WithoutPlan_AsksNothing()
+    {
+        File.WriteAllText(EodFile, ArrivedAtEight);
+        FakeContextCli cli = new FakeContextCli(FakeContextCli.Ok("{\"todos\":[]}"));
+
+        (int exit, string output) = EodShot(cli, false, "eod");
+
+        Assert.Equal(0, exit);
+        Assert.DoesNotContain(App.PlanPrompt, output);
+        Assert.Contains("- (no plan)", output);
+        Assert.Equal(["todos", "--json"], Assert.Single(cli.Calls));
+        Assert.Contains("\"17:00\"", File.ReadAllText(EodFile));
+    }
+
+    // AC-2, AC-9: no arrival, an invalid time or an absence day exit 1 with a red line, nothing written, no Context call.
+    [Theory]
+    [InlineData(null, "eod")]
+    [InlineData("{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}", "eod 25:00")]
+    [InlineData("{\"absence\":\"vacation\"}", "eod")]
+    public void Eod_OneShot_RefusalsExitOne(string? initial, string line)
+    {
+        if (initial is not null)
+        {
+            File.WriteAllText(EodFile, initial);
+        }
+
+        FakeContextCli cli = new FakeContextCli(FakeContextCli.Ok("{\"todos\":[]}"));
+
+        (int exit, string output) = EodShot(cli, true, line.Split(' '));
+
+        Assert.Equal(1, exit);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)meod", output);
+        Assert.Empty(cli.Calls);
+        if (initial is null)
+        {
+            Assert.False(File.Exists(EodFile));
+        }
+        else
+        {
+            Assert.Equal(initial, File.ReadAllText(EodFile));
+        }
+    }
+
+    // AC-9: Context warnings and an invalid plan do not change the exit code.
+    [Fact]
+    public void Eod_OneShot_ContextWarnings_ExitZero()
+    {
+        File.WriteAllText(EodFile, ArrivedAtEight);
+        FakeContextCli cli = new FakeContextCli(new ContextRun(-1, string.Empty, timedOut: true), new ContextRun(2, string.Empty, false));
+
+        (int exit, string output) = EodShot(cli, false, "eod", "--plan", "Ship");
+
+        Assert.Equal(0, exit);
+        Assert.Contains("! Could not read todos from Context.", output);
+        Assert.Contains("! Could not save the plan to Context.", output);
+    }
+
+    // AC-5, AC-9: an invalid --plan is a red line, the leaving stays and the exit code stays 0.
+    [Fact]
+    public void Eod_OneShot_InvalidPlan_KeepsTheLeaving()
+    {
+        File.WriteAllText(EodFile, ArrivedAtEight);
+        FakeContextCli cli = new FakeContextCli(FakeContextCli.Ok("{\"todos\":[]}"));
+
+        (int exit, string output) = EodShot(cli, true, "eod", "--plan", "a\u200Bb");
+
+        Assert.Equal(0, exit);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)meod: the plan must not contain invisible", output);
+        Assert.DoesNotContain(cli.Calls, call => call[0] == "capture");
+        Assert.Contains("leaving", File.ReadAllText(EodFile));
+    }
+
+    // AC-7: without Context the output has no Context line and the exit code is the same.
+    [Fact]
+    public void Eod_OneShot_WithoutContext_NoContextLines()
+    {
+        File.WriteAllText(EodFile, ArrivedAtEight);
+
+        (int exit, string output) = EodShot(FakeContextCli.Missing(), false, "eod", "--plan", "Ship");
+
+        Assert.Equal(0, exit);
+        Assert.DoesNotContain("Context", output);
+        Assert.DoesNotContain("Todos", output);
+        Assert.Contains("- Ship", output);
+    }
 }
