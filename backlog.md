@@ -171,3 +171,4 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [?] [#76](backlog/076-escape-other-echoed-text-with-echotext.md) Escape other echoed text with EchoText
 - [?] [#77](backlog/077-sync-send-exits-1-when-a.md) Sync send exits 1 when a work item fails
 - [?] [#78](backlog/078-keep-slash-only-first-word-token.md) Keep slash-only first word token lines out of history
+- [?] [#79](backlog/079-no-spurious-refusals-in-the-event.md) No spurious refusals in the event queue
