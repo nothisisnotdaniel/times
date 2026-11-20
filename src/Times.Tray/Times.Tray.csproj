@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The menu bar / tray shell: maps Times.Tray.Core's TrayMenuModel onto Avalonia's TrayIcon and NativeMenu.
+       Avalonia is the only package, and only here: .NET has no cross-platform tray API (spec 306). -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>Times.Tray</RootNamespace>
+    <AssemblyName>Times.Tray</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="[12.1.6]" />
+    <PackageReference Include="Avalonia.Desktop" Version="[12.1.6]" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Assets/in.png" LogicalName="Times.Tray.in.png" />
+    <EmbeddedResource Include="Assets/out.png" LogicalName="Times.Tray.out.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Times.Tray.Core\Times.Tray.Core.csproj" />
+  </ItemGroup>
+
+</Project>

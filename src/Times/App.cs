@@ -3595,6 +3595,12 @@ internal sealed class App
             return 0;
         }
 
+        string[] words = text.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length > 1 && string.Equals(words[0], "status", StringComparison.OrdinalIgnoreCase))
+        {
+            return StatusJsonShot(words);
+        }
+
         if (SessionOnlyName(text) is { } refused)
         {
             console.MarkupLine($"[red]{Markup.Escape(refused)} needs the interactive session. Run times without arguments.[/]");
@@ -3620,6 +3626,36 @@ internal sealed class App
         }
 
         return result.Failed ? 1 : 0;
+    }
+
+    // status --json from the shell: today's state as raw JSON (StatusJson), read-only. Any other argument, or a
+    // second --json, is a red usage line; an unreadable day file is one red line. Exit 0 or 1.
+    private int StatusJsonShot(string[] words)
+    {
+        if (words.Length != 2 || words[1] != JsonFlag)
+        {
+            console.MarkupLine($"[red]status: use [bold]status[/] or [bold]status {JsonFlag}[/], nothing else.[/]");
+            return 1;
+        }
+
+        DateTime local = time.GetLocalNow().DateTime;
+        DateOnly today = DateOnly.FromDateTime(local);
+        DayRecord record;
+        try
+        {
+            record = Store.Load(today);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException
+            or InvalidOperationException)
+        {
+            console.MarkupLine($"[red]status: today's day file cannot be read: {Markup.Escape(DataFolder.ForDisplay(ex.Message))}[/]");
+            return 1;
+        }
+
+        string json = StatusJson.Build(today, record, DailyTarget(), new TimeOnly(local.Hour, local.Minute));
+        console.Profile.Out.Writer.Write(json);
+        console.Profile.Out.Writer.Flush();
+        return 0;
     }
 
     // The name of the session-only command a one-shot line starts with, or null.
