@@ -174,3 +174,4 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [?] [#79](backlog/079-no-spurious-refusals-in-the-event.md) No spurious refusals in the event queue
 - [?] [#80](backlog/080-teams-token-file-read-without-following.md) Teams token file read without following links
 - [?] [#81](backlog/081-cap-call-bookings-from-teams.md) Cap Call bookings from Teams
+- [h] [#82](backlog/082-try-teams-call-tracking-with-a.md) Try Teams call tracking with a real Teams
