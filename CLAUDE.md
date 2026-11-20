@@ -355,6 +355,7 @@ Every factory agent reads this file before working on Times. Keep it short and a
     (non-prerelease) release `vX.Y.Z`, the `Prune old prereleases` step (`continue-on-error`) deletes
     older `-develop` prereleases with their tags (core <= X.Y.Z, filtered by
     `.github/scripts/old-prereleases.sh`); proper releases and higher prereleases stay.
+    The prune script's tests run it under both bash and dash (POSIX `sh` on the runner); dash is required in CI.
     Both actions are pinned to full commit SHAs with a trailing `# vX.Y.Z` comment (change the SHA and the comment together),
     so a moved tag cannot run new code with the `contents: write` token. `develop-version.sh` runs under
     `LC_ALL=C` and ignores a tag whose MAJOR, MINOR or PATCH has more than 9 digits, so the bumped patch
