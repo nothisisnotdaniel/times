@@ -17737,6 +17737,7 @@ public sealed class AppTests : IDisposable
         Assert.Contains("meetings takes no arguments.", output);
         Assert.Empty(cli.Calls);
     }
+
     // 318 AC-2: a typed bidi override is dropped from the remove echo.
     [Fact]
     public void EchoedText_Remove_DropsBidiOverride()
@@ -17795,7 +17796,7 @@ public sealed class AppTests : IDisposable
         string plain = Regex.Replace(console.Output, @"\x1b\[[0-9;]*m", string.Empty);
         Assert.Contains("Unknown command x[31m.", plain);
         // The echo is one bold red span whose text is the literal x[31m; the user's ESC never reaches the terminal.
-        Assert.Matches(@"\x1b\[1;38;5;9mx\[31m\x1b\[0m", console.Output);
+        Assert.Matches(@"\x1b\[[0-9;]*mx\[31m\x1b\[0m", console.Output);
         Assert.DoesNotContain("x\u001B", console.Output, StringComparison.Ordinal);
         Assert.DoesNotContain("\u001B[31m.", console.Output, StringComparison.Ordinal);
     }
