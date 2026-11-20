@@ -197,6 +197,9 @@ Every factory agent reads this file before working on Times. Keep it short and a
   `Utf8JsonWriter`, fixed camelCase names, `schemaVersion` 1) gives `days` (arrival, leaving, breaks, break/work minutes) and
   `workItems` (the `ProjectReport` rows), passed as `CommandResult.Raw` and written by `RunOneShot` straight to
   `console.Profile.Out.Writer` (the one exception to Spectre rendering), ending in `\n`.
+- **End of day:** `eod [<time>] [--plan <text…>]` (`ed`, today only) books a `Leaving` through `Save`, shows `SummaryView`, Context's
+  todos, saves the plan via `context capture` and prints a plain stand-up draft. `IContextCli` (`ContextCli.cs`; `null` = not installed,
+  nothing shown); the session asks for the plan (`pendingPlan`); only a refused booking fails. Tests use `FakeContextCli`.
 - **Search:** `find <text>` (`f`, whole trimmed argument) runs `CheckpointSearch.Calculate` (read-only) over every day file
   `DayStore.Days()` lists: each day's `CheckpointSummary` group whose names or quicklist title contain the text
   (`OrdinalIgnoreCase`) is one row (`App.FindView`: `Date`, `Work item`, `Title`, `Time`, by date then group order, caption

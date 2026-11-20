@@ -881,7 +881,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(
             ["absence", "addproject", "arrive", "backup", "booked", "break", "breakend", "…"],
             popup.Select(w => w.Text.Split(' ')[0]));
-        Assert.StartsWith("… 27 more", popup[^1].Text);
+        Assert.StartsWith("… 28 more", popup[^1].Text);
         Assert.Contains("Book the end of a break", popup[6].Text);
         Assert.Equal(80, popup[0].Text.Length);
     }
@@ -954,9 +954,9 @@ public sealed class AppTests : IDisposable
         List<string> hintRow = TypingWrites(output, 1).Where(w => w.Row == 21).Select(w => w.Text).ToList();
 
         // popup, restored (Backspace), popup, restored (Esc), popup (quit typing), ...
-        Assert.StartsWith("… 27 more", hintRow[0]);
+        Assert.StartsWith("… 28 more", hintRow[0]);
         Assert.Contains("Unknown command nope", hintRow[1]);
-        Assert.StartsWith("… 27 more", hintRow[2]);
+        Assert.StartsWith("… 28 more", hintRow[2]);
         Assert.Contains("Unknown command nope", hintRow[3]);
         Assert.Contains("Unknown command nope", hintRow[^1]);
         Assert.Contains("\u001b[38;5;9mUnknown command", output[output.LastIndexOf("\u001b[21;1H", StringComparison.Ordinal)..]);
@@ -990,7 +990,7 @@ public sealed class AppTests : IDisposable
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
         // 39 commands: 7 shown, the eighth row counts the other 32.
-        Assert.StartsWith("… 39 more", popup[^1].Text);
+        Assert.StartsWith("… 40 more", popup[^1].Text);
         // Nothing is drawn on row 1 while typing (the final clear on quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
@@ -4830,6 +4830,7 @@ public sealed class AppTests : IDisposable
             ["change"] = "c",
             ["checkpoint"] = "cp",
             ["devops"] = "dv",
+            ["eod"] = "ed",
             ["help"] = "h",
             ["leave"] = "l",
             ["next"] = "n",
@@ -15899,5 +15900,457 @@ public sealed class AppTests : IDisposable
         new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
 
         Assert.Matches(@"│ pro +│ po +│ Show your Suite Pro licence, or change it: activate <key> \| deactivate", console.Output);
+    }
+
+    // ---- eod (305) ----
+
+    private const string EodDate = "2026-11-20";
+
+    /// <summary>Friday 2026-11-20, 17:00 UTC: the fixed clock of every eod test.</summary>
+    private static FixedTimeProvider EodClock() =>
+        new FixedTimeProvider(new DateTimeOffset(2026, 11, 20, 17, 0, 0, TimeSpan.Zero), TimeZoneInfo.Utc);
+
+    private static string TodosJson(params string[] texts) =>
+        "{\"todos\":[" + string.Join(',', texts.Select(t => "{\"due\":null,\"time\":null,\"text\":\"" + t + "\",\"note\":null}")) + "]}";
+
+    /// <summary>Runs the session on a tall, wide console with the eod clock; the lines are typed, then quit.</summary>
+    private (int ExitCode, string Output) RunEod(IContextCli? cli, params string[] lines) =>
+        RunEodKeys(cli, c =>
+        {
+            foreach (string line in lines)
+            {
+                foreach (char ch in line)
+                {
+                    // TestConsoleInput.PushText only takes characters with a ConsoleKey (below 256).
+                    c.Input.PushKey(new ConsoleKeyInfo(ch, ch < 256 ? (ConsoleKey)char.ToUpperInvariant(ch) : ConsoleKey.NoName, false, false, false));
+                }
+
+                c.Input.PushKey(ConsoleKey.Enter);
+            }
+        });
+
+    private (int ExitCode, string Output) RunEodKeys(IContextCli? cli, Action<TestConsole> input)
+    {
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 200;
+        console.Profile.Height = 80;
+        input(console);
+        console.Input.PushTextWithEnter("quit");
+        int exit = new App(console, EodClock(), new DayStore(data.Path), instanceLock: sideLock, contextCli: cli).Run([]);
+        return (exit, console.Output);
+    }
+
+    // AC-1, AC-2: eod without a time books the leaving at now through the same save as leave.
+    [Fact]
+    public void Eod_BooksTheLeavingAtNow()
+    {
+        FakeContextCli cli = new FakeContextCli(FakeContextCli.Ok(TodosJson()));
+
+        (int exit, string output) = RunEod(cli, "arrive 8:00", "eod --plan Ship it");
+
+        Assert.Equal(0, exit);
+        Assert.Contains("{\"kind\":\"leaving\",\"time\":\"17:00\"}", ReadDay(EodDate));
+        Assert.DoesNotContain("Leaving already booked", output);
+    }
+
+    // AC-1, AC-2: a given time, in any of leave's forms, is booked as is; the alias works.
+    [Theory]
+    [InlineData("eod 16:30", "16:30")]
+    [InlineData("ed -15m --plan Ship it", "16:45")]
+    public void Eod_BooksTheGivenTime(string line, string booked)
+    {
+        (int exit, _) = RunEodKeys(null, c =>
+        {
+            c.Input.PushTextWithEnter("arrive 8:00");
+            c.Input.PushTextWithEnter(line);
+            c.Input.PushKey(ConsoleKey.Escape);
+        });
+
+        Assert.Equal(0, exit);
+        Assert.Contains("{\"kind\":\"leaving\",\"time\":\"" + booked + "\"}", ReadDay(EodDate));
+    }
+
+    // AC-2: a day that already ends in a leaving gets nothing new, and says so in grey.
+    [Fact]
+    public void Eod_ExistingLeaving_BooksNothing()
+    {
+        (_, string output) = RunEod(null, "arrive 8:00", "leave 16:00", "eod 16:30 --plan x");
+
+        Assert.Equal(1, Count(ReadDay(EodDate), "leaving"));
+        Assert.Contains("\"16:00\"", ReadDay(EodDate));
+        Assert.Contains("Leaving already booked at 16:00.", output);
+    }
+
+    // AC-2: no arrival, an invalid time or an absence day refuse with a red hint, write nothing and call no Context.
+    [Theory]
+    [InlineData(null, "eod", "no arrival today")]
+    [InlineData("{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}", "eod 25:00", "is not a time")]
+    [InlineData("{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}", "eod 23:00 23:30", "at most one time")]
+    [InlineData("{\"absence\":\"sick\"}", "eod --plan x", "marked as absence")]
+    public void Eod_Refusals_WriteNothing_AndCallNoContext(string? initial, string line, string hint)
+    {
+        if (initial is not null)
+        {
+            File.WriteAllText(DayFile(EodDate), initial);
+        }
+
+        FakeContextCli cli = new FakeContextCli(FakeContextCli.Ok(TodosJson("x")));
+
+        (int exit, string output) = RunEod(cli, line);
+
+        Assert.Equal(0, exit);
+        Assert.Contains(hint, LastHint(output));
+        Assert.Empty(cli.Calls);
+        if (initial is null)
+        {
+            Assert.False(File.Exists(DayFile(EodDate)));
+        }
+        else
+        {
+            Assert.Equal(initial, ReadDay(EodDate));
+        }
+    }
+
+    // AC-2: a day file changed on disk since it was shown is refused through the stamp check, with nothing written.
+    [Fact]
+    public void Eod_ChangedStamp_IsRefused()
+    {
+        string initial = "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}";
+        string edited = "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"},{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"Edited outside\"}]}";
+        File.WriteAllText(DayFile(EodDate), initial);
+        FakeContextCli cli = new FakeContextCli(FakeContextCli.Ok(TodosJson()));
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 250;
+        HookedInput input = new HookedInput(console.Input);
+        input.BeforeKey = key =>
+        {
+            if (key == 1)
+            {
+                File.WriteAllText(DayFile(EodDate), edited);
+            }
+        };
+        console.Input.PushTextWithEnter("eod --plan x");
+        console.Input.PushTextWithEnter("quit");
+
+        Assert.Equal(0, new App(new InputOverrideConsole(console, input), EodClock(), new DayStore(data.Path), contextCli: cli).Run([]));
+
+        Assert.Contains("changed on disk", console.Output);
+        Assert.Equal(edited, ReadDay(EodDate));
+        Assert.Empty(cli.Calls);
+    }
+
+    // AC-1: on another day than today the session refuses with the red hint and writes nothing.
+    [Fact]
+    public void Eod_OnAnotherDay_IsRefused()
+    {
+        FakeContextCli cli = new FakeContextCli(FakeContextCli.Ok(TodosJson()));
+
+        (_, string output) = RunEod(cli, "arrive 8:00", "prev", "eod");
+
+        Assert.Contains("eod works on today. Type today first.", LastHint(output));
+        Assert.DoesNotContain("leaving", ReadDay(EodDate));
+        Assert.False(File.Exists(DayFile("2026-11-19")));
+        Assert.Empty(cli.Calls);
+    }
+
+    // AC-1: the refusal is red.
+    [Fact]
+    public void Eod_OnAnotherDay_HintIsRed()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Input.PushTextWithEnter("prev");
+        console.Input.PushTextWithEnter("eod");
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, EodClock(), new DayStore(data.Path)).Run([]);
+
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)meod works on today\.", console.Output);
+    }
+
+    // AC-3: an open checkpoint is closed by the booked leaving, not by now.
+    [Fact]
+    public void Eod_Summary_ClosesTheOpenCheckpointAtTheLeaving()
+    {
+        (_, string output) = RunEod(null, "arrive 8:00", "checkpoint 9:00 Design", "eod 16:00 --plan x");
+
+        Assert.Matches(@"│ +│ Design +│ 7:00 +│", output);
+        Assert.Contains("- Design (7:00)", output);
+    }
+
+    // AC-3, AC-8: a day without checkpoints shows the grey note and the draft says so.
+    [Fact]
+    public void Eod_NoCheckpoints_ShowsTheNote()
+    {
+        (_, string output) = RunEod(null, "arrive 8:00", "eod --plan x");
+
+        Assert.Contains("No checkpoints on this day.", output);
+        Assert.Contains("- No checkpoints booked.", output);
+    }
+
+    // AC-4: at most 10 todos in Context's order, then the count of the rest.
+    [Fact]
+    public void Eod_Todos_ShowsTenAndTheRest()
+    {
+        string[] texts = Enumerable.Range(1, 12).Select(i => "T" + i.ToString("00", System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+        FakeContextCli cli = new FakeContextCli(FakeContextCli.Ok(TodosJson(texts)));
+
+        (_, string output) = RunEod(cli, "arrive 8:00", "eod --plan x");
+
+        Assert.Contains("Todos", output);
+        Assert.Matches(@"│ Due +│ Todo +│ Note +│", output);
+        Assert.Contains("T01", output);
+        Assert.Contains("T10", output);
+        Assert.DoesNotContain("T11", output);
+        Assert.Contains("… and 2 more", output);
+        Assert.True(output.IndexOf("T01", StringComparison.Ordinal) < output.IndexOf("T02", StringComparison.Ordinal));
+        Assert.Equal(["todos", "--json"], cli.Calls[0]);
+    }
+
+    // AC-4: the Due column: date, date and time, or a dash.
+    [Fact]
+    public void Eod_Todos_DueColumn()
+    {
+        string json = "{\"todos\":[{\"due\":\"2026-11-21\",\"time\":\"09:30\",\"text\":\"Timed\",\"note\":\"n1\"}," +
+            "{\"due\":\"2026-11-22\",\"time\":null,\"text\":\"Dated\",\"note\":null},{\"due\":null,\"time\":null,\"text\":\"Undated\",\"note\":null}]}";
+        FakeContextCli cli = new FakeContextCli(FakeContextCli.Ok(json));
+
+        (_, string output) = RunEod(cli, "arrive 8:00", "eod --plan x");
+
+        Assert.Matches(@"│ 2026-11-21 09:30 +│ Timed +│ n1 +│", output);
+        Assert.Matches(@"│ 2026-11-22 +│ Dated +│ +│", output);
+        Assert.Matches(@"│ - +│ Undated +│ +│", output);
+    }
+
+    // AC-4: an empty list is a grey note.
+    [Fact]
+    public void Eod_Todos_EmptyList()
+    {
+        (_, string output) = RunEod(new FakeContextCli(FakeContextCli.Ok(TodosJson())), "arrive 8:00", "eod --plan x");
+
+        Assert.Contains("No open todos in Context.", output);
+    }
+
+    // AC-4: a failed run, a timeout or malformed JSON give one yellow line; the leaving stays booked.
+    [Theory]
+    [InlineData(1, "{\"todos\":[]}", false)]
+    [InlineData(-1, "", true)]
+    [InlineData(0, "{\"todos\":", false)]
+    public void Eod_Todos_UnreadableGivesTheYellowLine(int exitCode, string stdout, bool timedOut)
+    {
+        FakeContextCli cli = new FakeContextCli(new ContextRun(exitCode, stdout, timedOut));
+
+        (int exit, string output) = RunEod(cli, "arrive 8:00", "eod --plan x");
+
+        Assert.Equal(0, exit);
+        Assert.Equal(1, Count(output, "! Could not read todos from Context."));
+        Assert.Contains("leaving", ReadDay(EodDate));
+    }
+
+    // AC-4: the yellow line is yellow.
+    [Fact]
+    public void Eod_Todos_UnreadableLineIsYellow()
+    {
+        File.WriteAllText(DayFile(EodDate), "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}");
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Height = 80;
+        console.Input.PushTextWithEnter("eod --plan x");
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, EodClock(), new DayStore(data.Path), contextCli: new FakeContextCli(new ContextRun(1, string.Empty, false))).Run([]);
+
+        Assert.Matches(@"\x1b\[(33|93|38;5;11)m! Could not read todos from Context\.", console.Output);
+    }
+
+    // AC-4: markup in a todo is shown literally, control and Cf characters are removed.
+    [Fact]
+    public void Eod_Todos_AreEscapedAndCleaned()
+    {
+        string json = "{\"todos\":[{\"due\":null,\"time\":null,\"text\":\"[red]boom[/]\\u0007x\\u200By\\u202E\",\"note\":\"[bold]n[/]\\u001b[31m\"}]}";
+        FakeContextCli cli = new FakeContextCli(FakeContextCli.Ok(json));
+
+        (_, string output) = RunEod(cli, "arrive 8:00", "eod --plan x");
+
+        Assert.Contains("[red]boom[/]xy", output);
+        Assert.Contains("[bold]n[/][31m", output);
+        Assert.DoesNotContain("\u200B", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("\u202E", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("\u0007", output, StringComparison.Ordinal);
+    }
+
+    // AC-5, AC-6: the session asks for the plan, and saves the typed one as exactly two capture arguments.
+    [Fact]
+    public void Eod_Session_AsksForThePlan_AndSavesIt()
+    {
+        FakeContextCli cli = new FakeContextCli(FakeContextCli.Ok(TodosJson()));
+
+        (_, string output) = RunEod(cli, "arrive 8:00", "eod", "Write the release notes");
+
+        Assert.Contains(App.PlanPrompt, output);
+        Assert.Equal(2, cli.Calls.Count);
+        Assert.Equal(["capture", "Plan for 2026-11-21: Write the release notes"], cli.Calls[1]);
+        Assert.Contains("Plan saved to Context.", output);
+        Assert.Contains("- Write the release notes", output);
+        Assert.Contains("leaving", ReadDay(EodDate));
+    }
+
+    // AC-5: with --plan the session asks nothing.
+    [Fact]
+    public void Eod_Session_WithPlanFlag_AsksNothing()
+    {
+        FakeContextCli cli = new FakeContextCli(FakeContextCli.Ok(TodosJson()));
+
+        (_, string output) = RunEod(cli, "arrive 8:00", "eod --plan Ship  it");
+
+        Assert.DoesNotContain(App.PlanPrompt, output);
+        Assert.Equal(["capture", "Plan for 2026-11-21: Ship  it"], cli.Calls[1]);
+    }
+
+    // AC-5: Enter on an empty line or Esc skips the plan: nothing saved, the draft says (no plan).
+    [Theory]
+    [InlineData(ConsoleKey.Enter)]
+    [InlineData(ConsoleKey.Escape)]
+    public void Eod_Session_SkippingThePlan_SavesNothing(ConsoleKey key)
+    {
+        FakeContextCli cli = new FakeContextCli(FakeContextCli.Ok(TodosJson()));
+
+        (_, string output) = RunEodKeys(cli, c =>
+        {
+            c.Input.PushTextWithEnter("arrive 8:00");
+            c.Input.PushTextWithEnter("eod");
+            if (key == ConsoleKey.Escape)
+            {
+                c.Input.PushText("draft");
+                c.Input.PushKey(ConsoleKey.Escape);
+            }
+            else
+            {
+                c.Input.PushKey(ConsoleKey.Enter);
+            }
+        });
+
+        Assert.Contains(App.PlanPrompt, output);
+        Assert.DoesNotContain(cli.Calls, call => call[0] == "capture");
+        Assert.Contains("- (no plan)", output);
+        Assert.DoesNotContain("Unknown command", output);
+    }
+
+    // AC-5: the plan never enters the history: Up recalls the eod line, not the plan.
+    [Fact]
+    public void Eod_Session_PlanNeverEntersHistory()
+    {
+        FakeContextCli cli = new FakeContextCli(FakeContextCli.Ok(TodosJson()));
+
+        (_, string output) = RunEodKeys(cli, c =>
+        {
+            c.Input.PushTextWithEnter("arrive 8:00");
+            c.Input.PushTextWithEnter("eod");
+            c.Input.PushTextWithEnter("SECRETPLAN");
+            c.Input.PushKey(ConsoleKey.UpArrow);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushKey(ConsoleKey.Escape);
+        });
+
+        // The recalled line was eod again: the prompt came twice and the plan was never run as a command.
+        Assert.Equal(2, Count(output, App.PlanPrompt));
+        Assert.DoesNotContain("Unknown command", output);
+        Assert.Single(cli.Calls, call => call[0] == "capture");
+    }
+
+    // AC-5: an invalid plan (a zero-width space) is a red hint naming the rule; the leaving stays, nothing is captured.
+    [Fact]
+    public void Eod_InvalidPlan_SavesNoPlan_ButKeepsTheLeaving()
+    {
+        FakeContextCli cli = new FakeContextCli(FakeContextCli.Ok(TodosJson()));
+
+        (_, string output) = RunEod(cli, "arrive 8:00", "eod", "Ship\u200Bit");
+
+        Assert.Contains("invisible formatting", LastHint(output));
+        Assert.Contains("No plan was saved.", LastHint(output));
+        Assert.DoesNotContain(cli.Calls, call => call[0] == "capture");
+        Assert.Contains("leaving", ReadDay(EodDate));
+        Assert.Contains("- (no plan)", output);
+    }
+
+    // AC-6: a failed capture gives the yellow line.
+    [Fact]
+    public void Eod_CaptureFails_GivesTheYellowLine()
+    {
+        FakeContextCli cli = new FakeContextCli(FakeContextCli.Ok(TodosJson()), new ContextRun(1, string.Empty, false));
+
+        (int exit, string output) = RunEod(cli, "arrive 8:00", "eod --plan Ship it");
+
+        Assert.Equal(0, exit);
+        Assert.Contains("! Could not save the plan to Context.", output);
+        Assert.DoesNotContain("Plan saved to Context.", output);
+    }
+
+    // AC-7: no cli, or one that is not installed, shows no Context line at all.
+    [Fact]
+    public void Eod_WithoutContext_ShowsNoContextLines()
+    {
+        FakeContextCli missing = FakeContextCli.Missing();
+
+        (int nullExit, string nullOutput) = RunEod(null, "arrive 8:00", "eod --plan Ship it");
+        File.Delete(DayFile(EodDate));
+        (int missingExit, string missingOutput) = RunEod(missing, "arrive 8:00", "eod --plan Ship it");
+
+        foreach (string output in new[] { nullOutput, missingOutput })
+        {
+            Assert.DoesNotContain("Context", output);
+            Assert.DoesNotContain("Todos", output);
+            Assert.Contains("- Ship it", output);
+        }
+
+        Assert.Equal(0, nullExit);
+        Assert.Equal(0, missingExit);
+        Assert.Equal(["todos", "--json"], Assert.Single(missing.Calls));
+    }
+
+    // AC-8: the draft lines in order, with quicklist titles for work items and names otherwise.
+    [Fact]
+    public void Eod_Draft_UsesQuicklistTitles()
+    {
+        (_, string output) = RunEod(null, "addproject 1234 Design", "arrive 8:00", "checkpoint 9:00 #1 Spec work",
+            "checkpoint 12:00 Lunch call", "eod --plan Write tests");
+
+        string[] lines = output.Split('\n').Select(l => l.TrimEnd()).ToArray();
+        int start = Array.LastIndexOf(lines, "Stand-up");
+        Assert.True(start >= 0, output);
+        Assert.Equal(["Stand-up", "Yesterday:", "- #1234 Design (3:00)", "- Lunch call (5:00)", "Today:", "- Write tests"],
+            lines[start..(start + 6)]);
+    }
+
+    // AC-8: without projects.json a work item falls back to the group's names.
+    [Fact]
+    public void Eod_Draft_WithoutProjects_UsesTheNames()
+    {
+        File.WriteAllText(DayFile(EodDate), "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}," +
+            "{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"Task\",\"workItem\":5}]}");
+
+        (_, string output) = RunEodKeys(null, c =>
+        {
+            c.Input.PushTextWithEnter("eod 10:30");
+            c.Input.PushKey(ConsoleKey.Enter);
+        });
+
+        Assert.Contains("- #5 Task (1:30)", output);
+        Assert.Contains("- (no plan)", output);
+    }
+
+    // AC-10: help lists eod with its alias, and both names reach the command.
+    [Fact]
+    public void Eod_IsRegistered_WithItsAlias_AndInHelp()
+    {
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+        _ = new App(new TestConsole(), EodClock(), new DayStore(data.Path), registry);
+
+        Assert.True(registry.TryGet("eod", out Command? byName));
+        Assert.True(registry.TryGet("ed", out Command? byAlias));
+        Assert.Equal("eod", byName.Name);
+        Assert.Equal("eod", byAlias.Name);
+        Assert.Contains(registry.Match("eo"), c => c.Name == "eod");
+
+        (_, string output) = RunEod(null, "help");
+        Assert.Matches(@"│ eod +│ ed +│ End the day", output);
     }
 }
