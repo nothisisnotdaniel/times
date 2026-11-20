@@ -278,6 +278,18 @@ Every factory agent reads this file before working on Times. Keep it short and a
   `update-pending.json` and starts one detached helper (`nohup sh -c` fixed script, or `cmd /c` with refused
   characters) through `IProcessLauncher`; the next start reports and deletes the pending file. Tests use
   `FakeReleaseSource`, `TestSigner` and `FakeLauncher`: no network, no real `dotnet tool update`, never the real key.
+- **Teams calls:** `teams` (`tc`, session only): no argument shows `Teams: off|on, not paired|on, paired, connected|on, paired,
+  not reachable` (never the token); `connect` writes `teams.json` (`TeamsPairing`: `{"token":null|"…"}`, 0600, temp file and move,
+  read through `CappedFile`; a link, non-regular, oversize or malformed file is `Broken` = not paired and only `connect`/`disconnect`
+  replace or delete it) and starts the tracker; `disconnect` stops it and deletes the file. `TeamsTracker` (started by `Run` only with
+  `events`, a `teamsSocket` factory and an existing `teams.json`; disposed in `finally` without waiting) connects to
+  `ws://127.0.0.1:8124/` (`TeamsProtocol.BuildUri`, protocol 2.0.0, app `Times`; `ClientWebSocketTeamsSocket`, no proxy, 64 KiB
+  message cap), sends only the pair request (once per meeting while not paired and `canPair`), saves a valid `tokenRefresh`, retries
+  after 5 s/15 s/60 s through the `TimeProvider`, and posts at most one queued state event (pending flag). The event shows the grey
+  `App.TeamsNotReachableHint` once per drop and on false→true/true→false (first state only a baseline) calls
+  `App.TeamsMeetingChanged`: `TeamsCallBooking.Start` books `Call` on today (working, no absence), `End` rebooks the remembered
+  open checkpoint if the entries are unchanged since; both with `LoadForWrite` and `Save(…, stamp)`. `null` `teamsSocket` (tests
+  by default) never connects. Tests use `FakeTeams`, `CountingEvents` and `SettableTimeProvider.WaitForTimer`.
 - **Azure DevOps:** `devops` (`dv`) shows, sets (`connect <org>`, masked `LineEditor` prompt, never in history) or
   removes (`disconnect`) the link; the PAT lives only in the OS store (`ITokenStore`: macOS Keychain generic password
   service `Times Azure DevOps` whose access list (`SecAccessCreate`, built first; a stored item gets it and is updated in

@@ -49,11 +49,12 @@ ILicenceStore licenceStore = LicenceStore.ForCurrentPlatform();
 string activationFolder = LicenceActivationFile.DefaultFolder(
     Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData));
 
+// Teams calls come from the Teams app's local API on 127.0.0.1 only (ClientWebSocket, no proxy), once teams connect is run.
 // The Azure DevOps token lives only in the OS credential store (Keychain or Credential Manager).
 App app = new App(console, TimeProvider.System, new DayStore(dataFolder.Path),
     folderFromEnvironment: dataFolder.FromEnvironment, mouse: mouse, updates: updates,
     tokenStore: TokenStore.ForCurrentPlatform(), devOpsClient: credential => new AzureDevOpsClient(credential),
     events: new BackgroundEventQueue(), liveClock: true, instanceLock: instanceLock,
     watchResize: true, licenceStore: licenceStore, pro: Pro.ForBuild(licenceStore), activationFolder: activationFolder,
-    contextCli: new ProcessContextCli());
+    contextCli: new ProcessContextCli(), teamsSocket: () => new ClientWebSocketTeamsSocket());
 return app.Run(args);

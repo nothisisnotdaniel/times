@@ -91,7 +91,7 @@ times status
 times eod 17:30 --plan Write tests
 ```
 
-`status` prints today's day view. Several words are joined, so `times checkpoint 8:30 #1 Design review` works. Commands that need the session (`quit`, `settings`, `prev`, `next`, `today`, `update`, `import`, `devops connect`) are refused with a red line. Exit codes: 0 done, 1 command error, 2 bad data folder, 3 another Times is open on the data folder, 4 the lock could not be taken. With no arguments, or an argument starting with `-`, Times starts the interactive session.
+`status` prints today's day view. Several words are joined, so `times checkpoint 8:30 #1 Design review` works. Commands that need the session (`quit`, `settings`, `prev`, `next`, `today`, `update`, `import`, `teams`, `devops connect`) are refused with a red line. Exit codes: 0 done, 1 command error, 2 bad data folder, 3 another Times is open on the data folder, 4 the lock could not be taken. With no arguments, or an argument starting with `-`, Times starts the interactive session.
 
 `times status --json` prints today's state as one JSON document for other tools (the menu bar
 app reads it), and nothing else: no colours or line wrapping. It only reads, so a day with no file
@@ -430,6 +430,20 @@ breaks the checkpoint name rules is not offered, and a meeting that is already b
 ```text
 meetings
 mt
+```
+
+### `teams` (`tc`)
+
+Arguments: none, `connect` or `disconnect`.
+
+Shows whether Times books your Teams calls (`Teams: off`, `on, not paired`, `on, paired, connected`
+or `on, paired, not reachable`), turns that on (`connect`) or off (`disconnect`, which also removes
+the pairing). Needs the session; a one-shot (`times teams`) is refused. See *Teams calls* below.
+
+```text
+teams
+teams connect
+tc disconnect
 ```
 
 ### `devops` (`dv`)
@@ -853,6 +867,29 @@ unchanged are left alone. When a day already holds something different, Times as
 replace it: type `yes` (or `y`) to replace it, anything else to keep it, and `Esc` to keep all the
 remaining ones. Broken files, files with other names and differences in the old tool's
 `UsedTime` values are listed as yellow lines. The source folder is never changed.
+
+### Teams calls
+
+While the session runs, Times can follow your Microsoft Teams meetings through Teams' local
+third-party app API (it talks only to `127.0.0.1:8124` on your machine, never to the internet):
+
+1. In Times, type `teams connect`. This writes `teams.json` next to your day files.
+2. In Teams, open *Settings → Privacy* and turn on the **Third-party app API** (in some versions
+   under *Manage API*, **Enable API**).
+3. Join or start any meeting. Teams asks whether to allow **Times**; allow it. Teams then gives
+   Times a pairing key, which Times keeps in `teams.json` (only you can read it). It is never shown.
+
+When a meeting starts while you are working (checked in, not on a break, not on an absence day),
+Times books a `Call` checkpoint on today at that minute. When the meeting ends and nothing was booked
+in between, Times books the checkpoint you had open before the call again. If you booked something
+yourself during the call, the end books nothing. A meeting already running when Times starts is not
+booked. If today's file changed outside Times since it was shown, nothing is booked and a red line
+says so.
+
+When Teams is closed or not reachable, Times shows a grey `Teams is not reachable. Retrying quietly.`
+once and tries again after 5 seconds, 15 seconds, then every minute. Times only asks Teams for
+pairing; it never mutes, leaves or changes anything in a meeting. `teams disconnect` stops this and
+deletes `teams.json`; to pair again, run `teams connect` and allow Times in your next meeting.
 
 ### Azure DevOps
 

@@ -62,6 +62,16 @@ internal sealed class App
     private readonly bool watchResize;
     private readonly InstanceLock instanceLock;
     private readonly IContextCli? contextCli;
+    private readonly Func<ITeamsSocket>? teamsSocket;
+    private readonly TeamsPairing teamsPairing;
+
+    // The Teams tracker while it runs (started by Run or teams connect, stopped by teams disconnect and on exit), and
+    // the Call it booked last, so the end of that meeting can book the checkpoint that was open before.
+    private TeamsTracker? teamsTracker;
+    private TeamsCall? teamsCall;
+
+    // True while RunLocked runs the loop, so teams connect may start the tracker.
+    private bool sessionRunning;
 
     // The balance's day records, kept across redraws and read again only when a day file changes.
     private readonly DayRecordCache dayRecords;
@@ -154,12 +164,16 @@ internal sealed class App
     /// Creates the <c>export</c> CSV file or the <c>backup</c> zip at a path, or throws without
     /// creating it; <c>null</c> for <see cref="OpenExportFile"/>. Tests use it to fail a write halfway.
     /// </param>
+    /// <param name="teamsSocket">
+    /// Makes a fresh connection to Teams' local API for the <see cref="TeamsTracker"/>, or <c>null</c> for none (the
+    /// tracker never starts; <c>teams</c> still turns tracking on and off).
+    /// </param>
     public App(IAnsiConsole console, TimeProvider time, DayStore store, CommandRegistry? registry = null,
         bool folderFromEnvironment = false, MouseReporting? mouse = null, SettingsRegistry? settings = null,
         UpdateService? updates = null, ITokenStore? tokenStore = null, Func<DevOpsCredential, IDevOpsClient>? devOpsClient = null,
         IBackgroundEvents? events = null, bool liveClock = false, InstanceLock? instanceLock = null, bool watchResize = false,
         ILicenceStore? licenceStore = null, Pro? pro = null, string? activationFolder = null, IContextCli? contextCli = null,
-        Func<string, Stream>? exportStream = null)
+        Func<string, Stream>? exportStream = null, Func<ITeamsSocket>? teamsSocket = null)
     {
         if (licenceStore is not null && activationFolder is null)
         {
@@ -167,6 +181,8 @@ internal sealed class App
         }
 
         this.contextCli = contextCli;
+        this.teamsSocket = teamsSocket;
+        teamsPairing = new TeamsPairing(store.Folder);
         this.exportStream = exportStream ?? OpenExportFile;
         this.licenceStore = licenceStore ?? new UnsupportedLicenceStore();
         this.pro = pro ?? Pro.ForBuild(this.licenceStore);
@@ -200,6 +216,7 @@ internal sealed class App
         this.registry.Register("update", "up", "Check for a newer Times now and install it when you quit", NoArguments("update", Update));
         RegisterDevOps();
         RegisterPro();
+        this.registry.Register("teams", "tc", "Book Teams calls as checkpoints: [connect | disconnect]", Teams);
     }
 
     // Runs the check and download now, with the settings as they are, and stages the result for quit
@@ -4231,6 +4248,178 @@ internal sealed class App
             ? handler()
             : Hint($"[bold]{EchoText.Markup(name)}[/] takes no arguments.");
 
+    // Teams call tracking (job 327) ----------------------------------------------------------
+
+    private const string TeamsUsage = "Use [bold]teams[/], [bold]teams connect[/] or [bold]teams disconnect[/].";
+
+    /// <summary>The grey hint shown once per drop while Teams cannot be reached.</summary>
+    public const string TeamsNotReachableHint = "Teams is not reachable. Retrying quietly.";
+
+    // teams: shows the state; connect turns tracking on (teams.json) and starts the tracker; disconnect stops it and
+    // deletes teams.json. Never shows the token.
+    private CommandResult Teams(string argument)
+    {
+        string sub = argument.Trim();
+        if (sub.Length == 0)
+        {
+            return new CommandResult(hint: new Markup($"[grey]Teams:[/] {TeamsStatus()}"));
+        }
+
+        if (string.Equals(sub, "connect", StringComparison.OrdinalIgnoreCase))
+        {
+            if (teamsPairing.Read(out _) is TeamsPairingKind.NotPaired or TeamsPairingKind.Paired)
+            {
+                StartTeams();
+                return new CommandResult(hint: new Markup($"[grey]Teams tracking is already on.[/] [grey]Teams:[/] {TeamsStatus()}"));
+            }
+
+            try
+            {
+                teamsPairing.Create();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return Hint($"teams: could not write {TeamsPairing.FileName}. {Markup.Escape(ex.Message)} Teams tracking stays off.");
+            }
+
+            StartTeams();
+            return new CommandResult(hint: new Markup(
+                "[grey]Teams tracking is on. In Teams, turn on [bold]Third-party app API[/] (Settings, Privacy), " +
+                "then allow Times when Teams asks during a meeting.[/]"));
+        }
+
+        if (string.Equals(sub, "disconnect", StringComparison.OrdinalIgnoreCase))
+        {
+            StopTeams();
+            teamsCall = null;
+            bool deleted;
+            try
+            {
+                deleted = teamsPairing.Delete();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return Hint($"teams: could not delete {TeamsPairing.FileName}. {Markup.Escape(ex.Message)}");
+            }
+
+            return new CommandResult(hint: new Markup(deleted
+                ? "[grey]Teams tracking is off. The pairing was removed.[/]"
+                : "[grey]Teams tracking is already off.[/]"));
+        }
+
+        return Hint($"teams: [bold]{EchoText.Markup(sub)}[/] is not something teams can do. {TeamsUsage}");
+    }
+
+    // off, on and not paired, or on and paired, connected or not. Never the token.
+    private string TeamsStatus()
+    {
+        TeamsPairingKind kind = teamsPairing.Read(out _);
+        return kind switch
+        {
+            TeamsPairingKind.Off => "off",
+            TeamsPairingKind.Paired => teamsTracker is { Connected: true }
+                ? "on, paired, [steelblue1]connected[/]"
+                : "on, paired, not reachable",
+            _ => "on, not paired",
+        };
+    }
+
+    // Starts the tracker while the session runs, with background events and a socket factory, unless it runs already.
+    private void StartTeams()
+    {
+        if (!sessionRunning || events is null || teamsSocket is null || teamsTracker is not null)
+        {
+            return;
+        }
+
+        teamsTracker = new TeamsTracker(time, events, teamsPairing, teamsSocket, AppVersion.Current, TeamsMeetingChanged,
+            TeamsNotReachable);
+        teamsTracker.Start();
+    }
+
+    private void StopTeams()
+    {
+        teamsTracker?.Dispose();
+        teamsTracker = null;
+    }
+
+    // On the loop thread, once per drop: the grey hint in place.
+    private bool TeamsNotReachable()
+    {
+        ShowHintInPlace(new Markup($"[grey]{TeamsNotReachableHint}[/]"));
+        return true;
+    }
+
+    // On the loop thread, for a meeting start (true) or end (false): books on today (never the shown day) through
+    // LoadForWrite and Save with the stamp. Not working, an absence day or an unreadable file books nothing and shows
+    // nothing; a file changed on disk is a red hint. Returns true when the view must be redrawn.
+    private bool TeamsMeetingChanged(bool inMeeting)
+    {
+        (DateOnly today, TimeOnly now) = Today();
+        DayRecord record;
+        DayStamp stamp;
+        try
+        {
+            (record, stamp) = LoadForWrite(today);
+        }
+        catch (DayFileChangedException)
+        {
+            return TeamsChangedOnDisk(today);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            if (!inMeeting)
+            {
+                teamsCall = null;
+            }
+
+            return false;
+        }
+
+        DayRecord? updated;
+        TeamsCall? call = null;
+        if (inMeeting)
+        {
+            (DayRecord Updated, TeamsCall Call)? started = TeamsCallBooking.Start(today, record, now);
+            updated = started?.Updated;
+            call = started?.Call;
+        }
+        else
+        {
+            updated = TeamsCallBooking.End(today, record, now, teamsCall);
+        }
+
+        teamsCall = null;
+        if (updated is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            Store.Save(today, updated, stamp);
+        }
+        catch (DayFileChangedException)
+        {
+            return TeamsChangedOnDisk(today);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            ShowHintInPlace(new Markup($"[red]teams: could not save the day. {Markup.Escape(ex.Message)}[/]"));
+            return true;
+        }
+
+        teamsCall = call;
+        return ShowsToday();
+    }
+
+    private bool TeamsChangedOnDisk(DateOnly day)
+    {
+        ShowHintInPlace(new Markup($"[red]teams: the file for {ReportDate(day)} changed on disk since it was shown. " +
+            "The day is reloaded. Nothing was booked.[/]"));
+        return true;
+    }
+
     public int Run(string[] args)
     {
         // First of all: --version prints and exits without drawing or touching the data folder.
@@ -4295,7 +4484,7 @@ internal sealed class App
     }
 
     // Commands that need the session (a prompt, the panel, another day or the end of the loop).
-    private static readonly string[] SessionOnly = ["quit", "settings", "prev", "next", "today", "update", "import"];
+    private static readonly string[] SessionOnly = ["quit", "settings", "prev", "next", "today", "update", "import", "teams"];
 
     // One command from the shell against today: plain lines, no layout, mouse, clock or update check.
     // Exit code 0 on success, 1 on any error.
@@ -4426,10 +4615,18 @@ internal sealed class App
             }
 
             clock?.Start();
+            sessionRunning = true;
+            if (teamsPairing.Exists)
+            {
+                StartTeams();
+            }
+
             return Loop(pending is null ? null : new Markup(pending));
         }
         finally
         {
+            sessionRunning = false;
+            StopTeams();
             clock?.Dispose();
             mouse?.Disable();
         }

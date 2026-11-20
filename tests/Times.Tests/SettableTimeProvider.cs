@@ -23,8 +23,33 @@ internal sealed class SettableTimeProvider : TimeProvider
     public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
     {
         ManualTimer timer = new ManualTimer(callback, state, dueTime, period);
-        Timers.Add(timer);
+        lock (Timers)
+        {
+            Timers.Add(timer);
+            Monitor.PulseAll(Timers);
+        }
+
         return timer;
+    }
+
+    /// <summary>
+    /// Waits until at least <paramref name="count"/> timers were created (also from another thread) and returns the
+    /// <paramref name="count"/>-th; fails the test after <paramref name="bound"/>.
+    /// </summary>
+    public ManualTimer WaitForTimer(int count, TimeSpan bound)
+    {
+        DateTime until = DateTime.UtcNow + bound;
+        lock (Timers)
+        {
+            while (Timers.Count < count)
+            {
+                TimeSpan left = until - DateTime.UtcNow;
+                Assert.True(left > TimeSpan.Zero, $"timer {count} was not created within {bound.TotalSeconds} s");
+                Monitor.Wait(Timers, left);
+            }
+
+            return Timers[count - 1];
+        }
     }
 }
 
