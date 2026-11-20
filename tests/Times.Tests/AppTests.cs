@@ -1521,8 +1521,8 @@ public sealed class AppTests : IDisposable
             c.Input.PushTextWithEnter("quit");
         });
 
-        Assert.Matches(@"arrive +│ a +│ Book your arrival: now, or at an optional H:mm", output);
-        Assert.Matches(@"leave +│ l +│ Book your leaving: now, or at an optional H:mm", output);
+        Assert.Matches(@"arrive +│ a +│ Book your arrival now, or at H:mm", output);
+        Assert.Matches(@"leave +│ l +│ Book your leaving now, or at H:mm", output);
     }
 
     // AC-11
@@ -1575,7 +1575,7 @@ public sealed class AppTests : IDisposable
 
         AnsiWrite row = writes[top];
         Assert.StartsWith(expected, row.Text);
-        Assert.Contains("optional H:mm", row.Text);
+        Assert.Contains("now, or at H:mm", row.Text);
     }
 
     // Top area overflow (job 009) ----------------------------------------------------------
@@ -3981,8 +3981,8 @@ public sealed class AppTests : IDisposable
             c.Input.PushTextWithEnter("quit");
         });
 
-        Assert.Matches(@"break +│ b +│ Book the start of a break: now, or at an optional H:mm", output);
-        Assert.Matches(@"breakend +│ be +│ Book the end of a break: now, or at an optional H:mm", output);
+        Assert.Matches(@"break +│ b +│ Book the start of a break now, or at H:mm", output);
+        Assert.Matches(@"breakend +│ be +│ Book the end of a break now, or at H:mm", output);
         Assert.Matches(@"checkpoint +│ cp +│ Book a checkpoint: \[H:mm\|now\|-10m\|\+5m\] \[#project\] <name> +│", output);
     }
 
@@ -10620,10 +10620,10 @@ public sealed class AppTests : IDisposable
             c.Input.PushTextWithEnter("quit");
         });
 
-        Assert.Matches(@"arrive +│ a +│ Book your arrival: now, or at an optional H:mm, -10m or \+5m", output);
-        Assert.Matches(@"leave +│ l +│ Book your leaving: now, or at an optional H:mm, -10m or \+5m", output);
-        Assert.Matches(@"break +│ b +│ Book the start of a break: now, or at an optional H:mm, -10m or \+5m", output);
-        Assert.Matches(@"breakend +│ be +│ Book the end of a break: now, or at an optional H:mm, -10m or \+5m", output);
+        Assert.Matches(@"arrive +│ a +│ Book your arrival now, or at H:mm, -10m or \+5m", output);
+        Assert.Matches(@"leave +│ l +│ Book your leaving now, or at H:mm, -10m or \+5m", output);
+        Assert.Matches(@"break +│ b +│ Book the start of a break now, or at H:mm, -10m or \+5m", output);
+        Assert.Matches(@"breakend +│ be +│ Book the end of a break now, or at H:mm, -10m or \+5m", output);
         Assert.Matches(@"checkpoint +│ cp +│ Book a checkpoint: \[H:mm\|now\|-10m\|\+5m\] \[#project\] <name>", output);
         Assert.Matches(@"change +│ c +│ Change the time of an entry on this day: <number> <H:mm\|now\|-10m\|\+5m>", output);
     }
@@ -10651,7 +10651,34 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, exitCode);
         Assert.Contains(frame, l => Regex.IsMatch(l, @"│ #1 +│ Fix +│ 0:30 +│ +0\.50 │"));
         Assert.Contains(frame, l => Regex.IsMatch(l, @"│ Total +│ +│ 0:30 +│ +0\.50 │"));
-        Assert.Contains("2026-11-02 – 2026-11-02 · rounded to 15 min", Joined(frame));
+        Assert.Contains("2026-11-02 – 2026-11-02", Joined(frame));
+        int caption = Array.FindIndex(frame, l => l.Contains("2026-11-02 – 2026-11-02", StringComparison.Ordinal));
+        Assert.True(caption >= 0);
+        Assert.Equal("Rounded to 15 min", frame[caption + 1].Trim());
+    }
+
+    // 323 AC-2: the note comes before the open footnote and the Home office line.
+    [Fact]
+    public void Report_WithRounding_NoteComesBeforeFootnoteAndHomeOfficeLine()
+    {
+        File.WriteAllText(DayFile(RoundingDay), "{\"workplace\":\"home\",\"entries\":[" + ReportCp("09:00", "Fix", 1) + "]}");
+        WriteRounding("\"5 min\"");
+
+        (_, string[] frame) = RunReport($"report {RoundingDay} {RoundingDay}", "quit");
+
+        int note = Array.FindIndex(frame, l => l.Trim() == "Rounded to 5 min");
+        int footnote = Array.FindIndex(frame, l => l.Trim() == App.OpenFootnote);
+        int home = Array.FindIndex(frame, l => l.Trim() == "Home office: 1 day");
+        Assert.True(note >= 0 && footnote > note && home > footnote, $"{note} {footnote} {home}");
+    }
+
+    // 323 AC-1: the old help wording is gone.
+    [Fact]
+    public void Help_DoesNotUseTheOldOptionalWording()
+    {
+        (_, string output) = RunCommands("help", "quit");
+
+        Assert.DoesNotContain("at an optional", output);
     }
 
     // The frame's non-blank rows, trimmed and joined with one space, so a wrapped caption reads as one line.
@@ -10667,9 +10694,9 @@ public sealed class AppTests : IDisposable
 
         string output = RunAnsiCommands($"report {RoundingDay} {RoundingDay}");
 
-        // The narrow table wraps the caption; every part of it is grey.
-        Assert.Matches(@"\x1b\[(90|38;5;8)m2026-11-02 – 2026-11-02 · rounded to\x1b\[0m", output);
-        Assert.Matches(@"\x1b\[(90|38;5;8)m5 min\x1b\[0m", output);
+        // The caption is one grey line; the note is its own grey line.
+        Assert.Matches(@"\x1b\[(90|38;5;8)m2026-11-02 – 2026-11-02\x1b\[0m", output);
+        Assert.Matches(@"\x1b\[(90|38;5;8)mRounded to 5 min\x1b\[0m", output);
     }
 
     // AC-6 (104)
@@ -10689,7 +10716,7 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(withoutFile, with);
         Assert.Contains("2026-11-02 – 2026-11-04", with);
-        Assert.DoesNotContain("rounded", with);
+        Assert.DoesNotContain("rounded", with, StringComparison.OrdinalIgnoreCase);
         Assert.Matches(@"│ #1 +│ Fix +│ 0:23 +│ +0\.38 │", with);
     }
 
@@ -10722,7 +10749,7 @@ public sealed class AppTests : IDisposable
         string path = Path.Combine(target.Path, "times-report-2026-11-02-to-2026-11-02.csv");
         Assert.Equal(Encoding.UTF8.GetBytes("\uFEFFWork item,Title,Hours\r\n1,Fix,0.38\r\n"), File.ReadAllBytes(path));
         Assert.Contains(frame, l => l.TrimEnd().EndsWith($"Exported 1 row to {path}", StringComparison.Ordinal));
-        Assert.DoesNotContain(frame, l => l.Contains("rounded", StringComparison.Ordinal));
+        Assert.DoesNotContain(frame, l => l.Contains("rounded", StringComparison.OrdinalIgnoreCase));
     }
 
     // AC-8 (104)
@@ -10744,7 +10771,7 @@ public sealed class AppTests : IDisposable
 
         Assert.Contains(report, l => Regex.IsMatch(l, @"│ #1 +│ Fix +│ 0:23 +│ +0\.38 │"));
         Assert.Contains(report, l => l.Trim() == "2026-11-02 – 2026-11-02");
-        Assert.DoesNotContain(report, l => l.Contains("rounded", StringComparison.Ordinal));
+        Assert.DoesNotContain(report, l => l.Contains("rounded", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(export, l => l.Contains("rounded", StringComparison.Ordinal));
         string csv = File.ReadAllText(Path.Combine(target.Path, "times-report-2026-11-02-to-2026-11-02.csv"));
         Assert.EndsWith("1,Fix,0.38\r\n", csv);
@@ -10765,7 +10792,7 @@ public sealed class AppTests : IDisposable
         new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), settings: new SettingsRegistry()).Run([]);
 
         Assert.Matches(@"│ #1 +│ Fix +│ 0:23 +│ +0\.38 │", console.Output);
-        Assert.DoesNotContain("rounded", console.Output);
+        Assert.DoesNotContain("rounded", console.Output, StringComparison.OrdinalIgnoreCase);
     }
 
     // AC-9 (104)
@@ -12888,7 +12915,7 @@ public sealed class AppTests : IDisposable
         Assert.True(line > hint);
         Assert.Contains(writes.Skip(hint + 1).Take(line - hint), w => w.StartsWithCommand && w.Row <= 21);
         Assert.Equal(LastCursor(typed), (writes[line + 1].Row, writes[line + 1].Column));
-        Assert.Contains(Styled("[steelblue1]" + TargetReached + "[/]").TrimEnd('\n'), output[at..]);
+        Assert.Contains(Styled("[green]" + TargetReached + "[/]").TrimEnd('\n'), output[at..]);
     }
 
     // AC-6: later ticks write no more bells.

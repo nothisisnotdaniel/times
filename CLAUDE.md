@@ -83,7 +83,7 @@ Every factory agent reads this file before working on Times. Keep it short and a
       unreadable or missing: nothing) with `daily-target` and the `OnOff` settings `alert-target`/`alert-limit` (read per tick;
       missing, broken or unregistered: on). While today `IsWorking`, `Target` fires at the target (above 0) and `Limit` at
       `LimitWarning` (9:45), each at most once per date and session; a fire writes one `ControlCode("\a")` and shows the hint
-      (steelblue1 `Daily target H:mm reached.`, yellow `! 15 minutes left until 10 hours of work.`) through `ShowHintInPlace`
+      (green `Daily target H:mm reached.`, yellow `! 15 minutes left until 10 hours of work.`) through `ShowHintInPlace`
       (shared with the paste-cut hint). `Run` calls `Prime` before the first draw, so a start past a threshold stays silent.
   - **Resize:** `LineEditor.ReadLine`/`ReadValue` (callback returns the new `InputGeometry`) and `ReadKey` take a resize callback;
     before each fresh key (where events are applied) the editor compares `console.Profile.Width/Height` with the size it last saw
@@ -185,7 +185,7 @@ Every factory agent reads this file before working on Times. Keep it short and a
   knows Germany's nationwide and per-state holidays (current rules, a few with start years). `App.RenderDay` reads the
   `Choice` settings `holiday-country` (`none`/`Germany`) and `holiday-state` (`none` or a state code) per redraw (missing,
   broken or unregistered: `none`) and passes the name to `DayView.Render`: an empty day shows
-  `Absence: Public holiday · <name>` with `day +0:00`, a stored `publicHoliday` names it too, and a booked day gets a grey
+  `Absence: Public holiday · <name>` (only the name in steelblue1) with `day +0:00`, a stored `publicHoliday` names it too, and a booked day gets a grey
   `Public holiday: <name>` line below the heading. Nothing is written for a holiday; the balance is unchanged.
 - **Working-time checks:** `WorkingTimeChecks.Check` (pure) gives a day's warnings for the `OnOff` settings `check-breaks`
   (the `Breaks too short` rule), `check-max-work` (work over 10:00, `WorkTimeAt(now)` on live today) and `check-rest` (previous
@@ -210,7 +210,7 @@ Every factory agent reads this file before working on Times. Keep it short and a
   (e.g. `FailingExportStream`) to fail a write.
   The `report-rounding` setting (`off`/`5 min`/`10 min`/`15 min`, read at each call, anything else is `off`) rounds
   each row's time per day to the nearest step (half rounds up) in `report` and `export` only, adding
-  ` · rounded to <n> min` to the caption and the export success line.
+  a grey `Rounded to <n> min` line after the report table and ` · rounded to <n> min` to the export success line.
   `report --from <d> --to <d>` (flags in any order; missing, repeated or unknown flags and mixing with positional dates are red
   hints) prints the same table; with `--json` (one-shot only, the session shows a red hint) `HoursJson.Build` (read-only,
   `Utf8JsonWriter`, fixed camelCase names, `schemaVersion` 1) gives `days` (arrival, leaving, breaks, break/work minutes) and

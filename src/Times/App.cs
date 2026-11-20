@@ -324,13 +324,13 @@ internal sealed class App
 
     private void RegisterBookings()
     {
-        registry.Register("arrive", "a", $"Book your arrival: now, or at an optional {TimeInput.Format}, -10m or +5m", argument =>
+        registry.Register("arrive", "a", $"Book your arrival now, or at {TimeInput.Format}, -10m or +5m", argument =>
             Book("arrive", argument, EntryKind.Arrival));
-        registry.Register("leave", "l", $"Book your leaving: now, or at an optional {TimeInput.Format}, -10m or +5m", argument =>
+        registry.Register("leave", "l", $"Book your leaving now, or at {TimeInput.Format}, -10m or +5m", argument =>
             Book("leave", argument, EntryKind.Leaving));
-        registry.Register("break", "b", $"Book the start of a break: now, or at an optional {TimeInput.Format}, -10m or +5m", argument =>
+        registry.Register("break", "b", $"Book the start of a break now, or at {TimeInput.Format}, -10m or +5m", argument =>
             Book("break", argument, EntryKind.BreakStart));
-        registry.Register("breakend", "be", $"Book the end of a break: now, or at an optional {TimeInput.Format}, -10m or +5m", argument =>
+        registry.Register("breakend", "be", $"Book the end of a break now, or at {TimeInput.Format}, -10m or +5m", argument =>
             Book("breakend", argument, EntryKind.BreakEnd));
         registry.Register("checkpoint", "cp", $"Book a checkpoint: [{TimeInput.ShortForms}] [#project] <name>", Checkpoint);
         registry.Register("remove", "r", "Remove an entry from this day by its number", Remove);
@@ -2389,7 +2389,7 @@ internal sealed class App
                 .AddColumn("[grey]Title[/]")
                 .AddColumn("[grey]Time[/]")
                 .AddColumn(new TableColumn("[grey]Hours[/]").RightAligned())
-                .Caption($"{ReportDate(from)} – {ReportDate(to)}{RoundingSuffix(step)}", new Style(Color.Grey));
+                .Caption($"{ReportDate(from)} – {ReportDate(to)}", new Style(Color.Grey));
 
             foreach (ReportRow row in report.Rows)
             {
@@ -2409,6 +2409,11 @@ internal sealed class App
                 new Markup($"[bold steelblue1]{DayView.FormatTimeLeft(report.Total)}[/]"),
                 new Markup($"[bold steelblue1]{FormatHours(report.Total)}[/]"));
             parts.Add(table);
+            if (step > 0)
+            {
+                parts.Add(new Markup($"[grey]Rounded to {step.ToString(CultureInfo.InvariantCulture)} min[/]"));
+            }
+
             if (report.Rows.Any(r => r.Open))
             {
                 parts.Add(new Markup($"[grey]{OpenFootnote}[/]"));
@@ -4069,7 +4074,7 @@ internal sealed class App
         foreach (EndOfDayAlert alert in fired)
         {
             parts.Add(alert == EndOfDayAlert.Target
-                ? $"[steelblue1]Daily target {DayView.FormatTimeLeft(target)} reached.[/]"
+                ? $"[green]Daily target {DayView.FormatTimeLeft(target)} reached.[/]"
                 : "[yellow]! 15 minutes left until 10 hours of work.[/]");
         }
 

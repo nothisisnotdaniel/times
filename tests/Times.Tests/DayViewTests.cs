@@ -1455,7 +1455,17 @@ public class DayViewTests
     {
         string output = HolidayAnsi(DayRecord.Empty, "Corpus Christi");
 
-        Assert.Contains("\u001b[38;5;8mAbsence:\u001b[0m \u001b[38;5;75mPublic holiday · Corpus Christi\u001b[0m", output);
+        Assert.Contains("Absence: Public holiday \u001b[38;5;8m·\u001b[0m \u001b[38;5;75mCorpus Christi\u001b[0m", output);
+    }
+
+    // 323 AC-6: only the name is accented; label and bullet are not steelblue.
+    [Fact]
+    public void Render_HolidayRow_OnlyNameIsSteelBlue()
+    {
+        string output = HolidayAnsi(DayRecord.Empty, "[x]");
+
+        Assert.DoesNotContain("\u001b[38;5;75mPublic holiday", output);
+        Assert.Contains("\u001b[38;5;75m[x]\u001b[0m", output);
     }
 
     // AC-6: the name goes through Markup.Escape.
@@ -1501,6 +1511,27 @@ public class DayViewTests
 
         Assert.Equal(expected, lines[1]);
         Assert.Equal("Target 8:00 · day +0:00 · balance 0:00", lines[2]);
+    }
+
+    // 323 AC-6: stored publicHoliday with a name is styled like the empty day.
+    [Fact]
+    public void Render_StoredPublicHolidayWithName_OnlyNameIsSteelBlue()
+    {
+        string output = HolidayAnsi(DayRecord.Empty.WithAbsence(AbsenceKind.PublicHoliday), "Whit Monday");
+
+        Assert.Contains("Absence: Public holiday \u001b[38;5;8m·\u001b[0m \u001b[38;5;75mWhit Monday\u001b[0m", output);
+    }
+
+    // 323 AC-6: nameless stored publicHoliday, Vacation and Sick keep the steelblue label.
+    [Theory]
+    [InlineData("PublicHoliday", "Public holiday")]
+    [InlineData("Vacation", "Vacation")]
+    [InlineData("Sick", "Sick")]
+    public void Render_OtherAbsences_KeepSteelBlueLabel(string kind, string label)
+    {
+        string output = HolidayAnsi(DayRecord.Empty.WithAbsence(Enum.Parse<AbsenceKind>(kind)), null);
+
+        Assert.Contains("\u001b[38;5;8mAbsence:\u001b[0m \u001b[38;5;75m" + label + "\u001b[0m", output);
     }
 
     // AC-9

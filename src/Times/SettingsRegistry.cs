@@ -174,8 +174,8 @@ internal sealed partial class SettingsRegistry
     {
         SettingsRegistry registry = new SettingsRegistry();
         registry.RegisterNumber(DailyTargetName, "Daily work target in minutes (480 = 8:00)", DailyTargetDefault, 0, DailyTargetMax);
-        registry.RegisterOnOff(AlertTargetName, "Ring and show a hint when today's work reaches the daily target", true);
-        registry.RegisterOnOff(AlertLimitName, "Ring and show a hint 15 minutes before 10 hours of work", true);
+        registry.RegisterOnOff(AlertTargetName, "Ring and show a hint when today's work reaches the daily target (needs the live clock, while working)", true);
+        registry.RegisterOnOff(AlertLimitName, "Ring and show a hint 15 minutes before 10 hours of work (needs the live clock, while working)", true);
         registry.RegisterChoice(CheckInReminderName, "Remind me to book my arrival from this time on workdays",
             CheckInReminderDefault, CheckInReminderOptions);
         registry.RegisterOnOff(CheckBreaksName, "Warn when breaks are shorter than the law requires", true);

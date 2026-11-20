@@ -118,15 +118,14 @@ internal sealed class DayView
         if (shownAbsence is { } absence)
         {
             string label = Markup.Escape(AbsenceLabel(absence));
-            if (absence == AbsenceKind.PublicHoliday && holiday is not null)
-            {
-                label += " · " + Markup.Escape(holiday);
-            }
+            string row = absence == AbsenceKind.PublicHoliday && holiday is not null
+                ? $"Absence: {label} [grey]·[/] [steelblue1]{Markup.Escape(holiday)}[/]"
+                : $"[grey]Absence:[/] [steelblue1]{label}[/]";
 
             List<IRenderable> absent =
             [
                 HeadingRule(),
-                new Markup($"[grey]Absence:[/] [steelblue1]{label}[/]"),
+                new Markup(row),
             ];
             if (day.Absence is null)
             {
