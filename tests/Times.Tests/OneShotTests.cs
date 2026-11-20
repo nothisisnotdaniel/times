@@ -180,6 +180,9 @@ public sealed class OneShotTests : IDisposable
     [InlineData("import /tmp/x")]
     [InlineData("devops connect contoso")]
     [InlineData("dv connect contoso")]
+    [InlineData("teams")]
+    [InlineData("teams connect")]
+    [InlineData("tc disconnect")]
     public void SessionOnly_IsRefused_ChangesNothing(string line)
     {
         (int exit, string output) = Shot(data.Path, line.Split(' '));

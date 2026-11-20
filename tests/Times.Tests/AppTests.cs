@@ -901,7 +901,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(
             ["absence", "addproject", "arrive", "backup", "booked", "break", "breakend", "…"],
             popup.Select(w => w.Text.Split(' ')[0]));
-        Assert.StartsWith("… 31 more", popup[^1].Text);
+        Assert.StartsWith("… 32 more", popup[^1].Text);
         Assert.Contains("Book the end of a break", popup[6].Text);
         Assert.Equal(80, popup[0].Text.Length);
     }
@@ -974,9 +974,9 @@ public sealed class AppTests : IDisposable
         List<string> hintRow = TypingWrites(output, 1).Where(w => w.Row == 21).Select(w => w.Text).ToList();
 
         // popup, restored (Backspace), popup, restored (Esc), popup (quit typing), ...
-        Assert.StartsWith("… 31 more", hintRow[0]);
+        Assert.StartsWith("… 32 more", hintRow[0]);
         Assert.Contains("Unknown command nope", hintRow[1]);
-        Assert.StartsWith("… 31 more", hintRow[2]);
+        Assert.StartsWith("… 32 more", hintRow[2]);
         Assert.Contains("Unknown command nope", hintRow[3]);
         Assert.Contains("Unknown command nope", hintRow[^1]);
         Assert.Contains("\u001b[38;5;9mUnknown command", output[output.LastIndexOf("\u001b[21;1H", StringComparison.Ordinal)..]);
@@ -1010,7 +1010,7 @@ public sealed class AppTests : IDisposable
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
         // 39 commands: 7 shown, the eighth row counts the other 32.
-        Assert.StartsWith("… 43 more", popup[^1].Text);
+        Assert.StartsWith("… 44 more", popup[^1].Text);
         // Nothing is drawn on row 1 while typing (the final clear on quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
@@ -4853,6 +4853,7 @@ public sealed class AppTests : IDisposable
             ["devops"] = "dv",
             ["eod"] = "ed",
             ["meetings"] = "mt",
+            ["teams"] = "tc",
             ["help"] = "h",
             ["leave"] = "l",
             ["next"] = "n",
@@ -18433,5 +18434,462 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(1, exitCode);
         Assert.Contains("remove: [red] is not an entry number.", output);
+    }
+
+    // Teams call tracking (job 327) ----------------------------------------------------------
+
+    private const string TeamsToken = "SECRET-token-327";
+
+    private static string TeamsState(bool inMeeting) =>
+        $"{{\"meetingUpdate\":{{\"meetingState\":{{\"isInMeeting\":{(inMeeting ? "true" : "false")}}}}}}}";
+
+    private static SettableTimeProvider TeamsTime(int hour, int minute) =>
+        new SettableTimeProvider(new DateTimeOffset(2026, 10, 27, hour, minute, 0, TimeSpan.Zero));
+
+    private static DateTimeOffset TeamsAt(int hour, int minute) => new DateTimeOffset(2026, 10, 27, hour, minute, 0, TimeSpan.Zero);
+
+    private static DayRecord WorkingOnFeature() =>
+        Arrived(8).Add(new DayEntry(EntryKind.Checkpoint, new TimeOnly(8, 30), "Feature", 1234));
+
+    /// <summary>Runs the app with a scripted Teams and background events; <paramref name="onWait"/> runs at every wait.</summary>
+    private string RunTeams(SettableTimeProvider time, FakeTeams teams, ScriptedEvents scripted, IBackgroundEvents events,
+        params string[] commands)
+    {
+        TestConsole console = new TestConsole().Interactive();
+        foreach (string command in commands)
+        {
+            console.Input.PushTextWithEnter(command);
+        }
+
+        console.Input.PushTextWithEnter("quit");
+        App app = new App(console, time, new DayStore(data.Path), events: events, instanceLock: sideLock, teamsSocket: teams.Factory);
+        Assert.Equal(0, app.Run([]));
+        return console.Output;
+    }
+
+    // AC-1
+    [Fact]
+    public void Teams_IsRegistered_WithTheAliasTc()
+    {
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+        _ = new App(new TestConsole(), FixedTimeProvider.At20261027(), new DayStore(data.Path), registry);
+
+        Assert.True(registry.TryGet("tc", out Command? command));
+        Assert.Equal("teams", command!.Name);
+    }
+
+    // AC-1
+    [Fact]
+    public void Teams_ShowsOff_ConnectTurnsItOn_DisconnectTurnsItOff()
+    {
+        string path = Path.Combine(data.Path, TeamsPairing.FileName);
+        string output = RunCommands("teams", "teams connect", "teams", "quit").Output;
+
+        Assert.Contains("Teams: off", output);
+        Assert.Contains("Teams tracking is on.", output);
+        Assert.Contains("Third-party app API", output);
+        Assert.Contains("Teams: on, not paired", output);
+        Assert.Equal("{\"token\":null}", File.ReadAllText(path));
+
+        output = RunCommands("tc disconnect", "teams", "teams disconnect", "quit").Output;
+
+        Assert.Contains("Teams tracking is off.", output);
+        Assert.Contains("Teams: off", output);
+        Assert.Contains("Teams tracking is already off.", output);
+        Assert.False(File.Exists(path));
+    }
+
+    // AC-1, AC-4: paired but no tracker running: not reachable; the token is never shown.
+    [Fact]
+    public void Teams_Paired_ShowsNotReachable_AndNeverTheToken()
+    {
+        TeamsPairing pairing = new TeamsPairing(data.Path);
+        pairing.Create();
+        Assert.True(pairing.SaveToken(TeamsToken));
+
+        string output = RunCommands("teams", "teams connect", "quit").Output;
+
+        Assert.Contains("Teams: on, paired, not reachable", output);
+        Assert.Contains("Teams tracking is already on.", output);
+        Assert.DoesNotContain(TeamsToken, output);
+        Assert.Equal(TeamsPairingKind.Paired, pairing.Read(out string? kept));
+        Assert.Equal(TeamsToken, kept);
+    }
+
+    // AC-1, AC-4: a broken teams.json is "on, not paired" until teams connect replaces it.
+    [Fact]
+    public void Teams_BrokenFile_IsNotPaired_AndConnectReplacesIt()
+    {
+        string path = Path.Combine(data.Path, TeamsPairing.FileName);
+        File.WriteAllText(path, "{\"token\":\"has space\"}");
+
+        string output = RunCommands("teams", "teams connect", "quit").Output;
+
+        Assert.Contains("Teams: on, not paired", output);
+        Assert.Contains("Teams tracking is on.", output);
+        Assert.Equal("{\"token\":null}", File.ReadAllText(path));
+    }
+
+    // AC-1
+    [Theory]
+    [InlineData("teams pair")]
+    [InlineData("teams connect now")]
+    [InlineData("tc on")]
+    public void Teams_OtherArguments_AreARedUsageHint(string line)
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Input.PushTextWithEnter(line);
+        console.Input.PushTextWithEnter("quit");
+
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]));
+
+        Assert.Contains("is not something teams can do.", console.Output);
+        Assert.Contains("\u001b[38;5;9m", console.Output);
+        Assert.False(File.Exists(Path.Combine(data.Path, TeamsPairing.FileName)));
+    }
+
+    // AC-6, AC-7, AC-10: a meeting start books Call on today at the current minute, its end the checkpoint open before;
+    // both through events that return true on the shown day.
+    [Fact]
+    public void Teams_MeetingStartAndEnd_BookCallThenThePreviousCheckpoint()
+    {
+        DayStore store = new DayStore(data.Path);
+        store.Save(Shown, WorkingOnFeature());
+        new TeamsPairing(data.Path).Create();
+        SettableTimeProvider time = TeamsTime(10, 15);
+        FakeTeams teams = new FakeTeams();
+        ScriptedEvents scripted = new ScriptedEvents();
+        ObservedEvents observed = new ObservedEvents(scripted);
+        CountingEvents events = new CountingEvents(observed);
+        IReadOnlyList<DayEntry>? duringCall = null;
+        scripted.OnWait = call =>
+        {
+            switch (call)
+            {
+                case 1:
+                    teams.WaitForReceives(1);
+                    teams.Send(TeamsState(false));
+                    events.WaitForPosts(1);
+                    break;
+                case 2:
+                    time.UtcNow = TeamsAt(10, 20);
+                    teams.Send(TeamsState(true));
+                    events.WaitForPosts(2);
+                    break;
+                case 3:
+                    duringCall = store.Load(Shown).Entries;
+                    time.UtcNow = TeamsAt(10, 50);
+                    teams.Send(TeamsState(false));
+                    events.WaitForPosts(3);
+                    break;
+            }
+        };
+
+        string output = RunTeams(time, teams, scripted, events);
+
+        Assert.Equal([false, true, true], observed.Results);
+        DayEntry call = duringCall![^1];
+        Assert.Equal(("Call", (int?)null, new TimeOnly(10, 20)), (call.Name, call.WorkItem, call.Time));
+        DayEntry back = store.Load(Shown).Entries[^1];
+        Assert.Equal(("Feature", (int?)1234, new TimeOnly(10, 50)), (back.Name, back.WorkItem, back.Time));
+        Assert.Equal(4, store.Load(Shown).Entries.Count);
+        Assert.Contains("Call", output);
+    }
+
+    // AC-6: not working (no arrival) or an absence day: nothing is booked.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Teams_MeetingStart_NotWorkingOrAbsence_BooksNothing(bool absence)
+    {
+        DayStore store = new DayStore(data.Path);
+        if (absence)
+        {
+            store.Save(Shown, new DayRecord([], AbsenceKind.Vacation));
+        }
+
+        byte[]? before = absence ? File.ReadAllBytes(store.PathFor(Shown)) : null;
+        new TeamsPairing(data.Path).Create();
+        FakeTeams teams = new FakeTeams();
+        ScriptedEvents scripted = new ScriptedEvents();
+        ObservedEvents observed = new ObservedEvents(scripted);
+        CountingEvents events = new CountingEvents(observed);
+        scripted.OnWait = call =>
+        {
+            if (call == 1)
+            {
+                teams.WaitForReceives(1);
+                teams.Send(TeamsState(false));
+                events.WaitForPosts(1);
+            }
+            else if (call == 2)
+            {
+                teams.Send(TeamsState(true));
+                events.WaitForPosts(2);
+            }
+        };
+
+        RunTeams(TeamsTime(10, 15), teams, scripted, events);
+
+        Assert.Equal([false, false], observed.Results);
+        if (absence)
+        {
+            Assert.Equal(before, File.ReadAllBytes(store.PathFor(Shown)));
+        }
+        else
+        {
+            Assert.False(store.Exists(Shown));
+        }
+    }
+
+    // AC-8: a meeting running at start only sets the baseline; its end then books nothing (nothing remembered).
+    [Fact]
+    public void Teams_MeetingRunningAtStart_IsNotBooked()
+    {
+        DayStore store = new DayStore(data.Path);
+        store.Save(Shown, WorkingOnFeature());
+        byte[] before = File.ReadAllBytes(store.PathFor(Shown));
+        new TeamsPairing(data.Path).Create();
+        FakeTeams teams = new FakeTeams();
+        ScriptedEvents scripted = new ScriptedEvents();
+        CountingEvents events = new CountingEvents(scripted);
+        scripted.OnWait = call =>
+        {
+            if (call == 1)
+            {
+                teams.WaitForReceives(1);
+                teams.Send(TeamsState(true));
+                events.WaitForPosts(1);
+            }
+            else if (call == 2)
+            {
+                teams.Send(TeamsState(false));
+                events.WaitForPosts(2);
+            }
+        };
+
+        RunTeams(TeamsTime(10, 15), teams, scripted, events);
+
+        Assert.Equal(before, File.ReadAllBytes(store.PathFor(Shown)));
+    }
+
+    // AC-7: the user booked a checkpoint during the call: its end books nothing.
+    [Fact]
+    public void Teams_MeetingEnd_AfterTheUserBookedSomething_BooksNothing()
+    {
+        DayStore store = new DayStore(data.Path);
+        store.Save(Shown, WorkingOnFeature());
+        new TeamsPairing(data.Path).Create();
+        SettableTimeProvider time = TeamsTime(10, 15);
+        FakeTeams teams = new FakeTeams();
+        ScriptedEvents scripted = new ScriptedEvents();
+        CountingEvents events = new CountingEvents(scripted);
+        scripted.OnWait = call =>
+        {
+            switch (call)
+            {
+                case 1:
+                    teams.WaitForReceives(1);
+                    teams.Send(TeamsState(false));
+                    events.WaitForPosts(1);
+                    break;
+                case 2:
+                    teams.Send(TeamsState(true));
+                    events.WaitForPosts(2);
+                    break;
+            }
+        };
+        bool endSent = false;
+        scripted.OnWait += call =>
+        {
+            if (!endSent && call > 2 && store.Load(Shown).Entries.Any(e => e.Name == "Review"))
+            {
+                endSent = true;
+                time.UtcNow = TeamsAt(10, 50);
+                teams.Send(TeamsState(false));
+                events.WaitForPosts(3);
+            }
+        };
+
+        RunTeams(time, teams, scripted, events, "cp 10:30 Review");
+
+        Assert.True(endSent);
+        IReadOnlyList<DayEntry> entries = store.Load(Shown).Entries;
+        Assert.Equal(["Feature", "Call", "Review"], entries.Where(e => e.Kind == EntryKind.Checkpoint).Select(e => e.Name));
+    }
+
+    // AC-10: today's file changed on disk since it was shown: a red hint, nothing saved.
+    [Fact]
+    public void Teams_FileChangedOnDisk_IsARedHint_AndSavesNothing()
+    {
+        DayStore store = new DayStore(data.Path);
+        store.Save(Shown, WorkingOnFeature());
+        new TeamsPairing(data.Path).Create();
+        FakeTeams teams = new FakeTeams();
+        ScriptedEvents scripted = new ScriptedEvents();
+        ObservedEvents observed = new ObservedEvents(scripted);
+        CountingEvents events = new CountingEvents(observed);
+        byte[]? changed = null;
+        scripted.OnWait = call =>
+        {
+            if (call == 1)
+            {
+                teams.WaitForReceives(1);
+                teams.Send(TeamsState(false));
+                events.WaitForPosts(1);
+            }
+            else if (call == 2)
+            {
+                new DayStore(data.Path).Save(Shown, WorkingOnFeature().Add(new DayEntry(EntryKind.Checkpoint, new TimeOnly(9, 0), "Other", null)));
+                changed = File.ReadAllBytes(store.PathFor(Shown));
+                teams.Send(TeamsState(true));
+                events.WaitForPosts(2);
+            }
+        };
+
+        string output = RunTeams(TeamsTime(10, 15), teams, scripted, events);
+
+        Assert.Equal([false, true], observed.Results);
+        Assert.Contains("teams: the file for 2026-10-27 changed on disk since it was shown.", output);
+        Assert.Equal(changed, File.ReadAllBytes(store.PathFor(Shown)));
+    }
+
+    // AC-9: Teams not reachable: one grey hint for the whole outage, however many retries.
+    [Fact]
+    public void Teams_NotReachable_ShowsOneGreyHint_AcrossRetries()
+    {
+        new TeamsPairing(data.Path).Create();
+        SettableTimeProvider time = TeamsTime(10, 15);
+        FakeTeams teams = new FakeTeams();
+        teams.FailNextConnects(3);
+        ScriptedEvents scripted = new ScriptedEvents();
+        ObservedEvents observed = new ObservedEvents(scripted);
+        CountingEvents events = new CountingEvents(observed);
+        scripted.OnWait = call =>
+        {
+            if (call == 1)
+            {
+                events.WaitForPosts(1);
+            }
+            else if (call is 2 or 3)
+            {
+                time.WaitForTimer(call - 1, FakeTeams.Bound).Fire();
+                teams.WaitForConnects(call);
+                time.WaitForTimer(call, FakeTeams.Bound);
+            }
+        };
+
+        string output = RunTeams(time, teams, scripted, events);
+
+        Assert.Equal(3, teams.Uris.Count);
+        Assert.Equal(1, events.Posts);
+        Assert.Equal([true], observed.Results);
+        Assert.Contains(App.TeamsNotReachableHint, output);
+    }
+
+    // AC-1, AC-4: connected and paired: the status says so; the token is never in the output (history recalled too).
+    [Fact]
+    public void Teams_Connected_ShowsConnected_AndNeverTheToken()
+    {
+        TeamsPairing pairing = new TeamsPairing(data.Path);
+        pairing.Create();
+        pairing.SaveToken(TeamsToken);
+        FakeTeams teams = new FakeTeams();
+        ScriptedEvents scripted = new ScriptedEvents();
+        scripted.OnWait = call =>
+        {
+            if (call == 1)
+            {
+                teams.WaitForReceives(1);
+            }
+        };
+        TestConsole console = new TestConsole().Interactive();
+        console.Input.PushTextWithEnter("teams");
+        console.Input.PushTextWithEnter("tc connect");
+        console.Input.PushKey(ConsoleKey.UpArrow);
+        console.Input.PushKey(ConsoleKey.UpArrow);
+        console.Input.PushKey(ConsoleKey.Escape);
+        console.Input.PushKey(ConsoleKey.Escape);
+        console.Input.PushTextWithEnter("quit");
+
+        Assert.Equal(0, new App(console, TeamsTime(10, 15), new DayStore(data.Path), events: new CountingEvents(scripted),
+            teamsSocket: teams.Factory).Run([]));
+
+        Assert.Contains("Teams: on, paired, connected", console.Output);
+        Assert.DoesNotContain(TeamsToken, console.Output);
+        Assert.Contains("token=" + TeamsToken, Assert.Single(teams.Uris).Query, StringComparison.Ordinal);
+    }
+
+    // AC-11: no teams.json, or no background events: the tracker never starts.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Teams_TrackerStartsOnlyWithEventsAndTheFile(bool withFile)
+    {
+        if (withFile)
+        {
+            new TeamsPairing(data.Path).Create();
+        }
+
+        FakeTeams teams = new FakeTeams();
+        TestConsole console = new TestConsole().Interactive();
+        console.Input.PushTextWithEnter("teams");
+        console.Input.PushTextWithEnter("quit");
+        IBackgroundEvents? events = withFile ? null : new ScriptedEvents();
+
+        Assert.Equal(0, new App(console, TeamsTime(10, 15), new DayStore(data.Path), events: events, teamsSocket: teams.Factory).Run([]));
+
+        Assert.Empty(teams.Uris);
+    }
+
+    // AC-11: quit while a connect hangs: Run returns and the connect is cancelled.
+    [Fact]
+    public void Teams_Quit_WhileAConnectIsPending_CancelsIt()
+    {
+        new TeamsPairing(data.Path).Create();
+        FakeTeams teams = new FakeTeams { HangConnect = true };
+        ScriptedEvents scripted = new ScriptedEvents();
+        scripted.OnWait = call =>
+        {
+            if (call == 1)
+            {
+                teams.WaitForConnects(1);
+            }
+        };
+
+        RunTeams(TeamsTime(10, 15), teams, scripted, new CountingEvents(scripted));
+
+        teams.WaitForConnectCancelled(1);
+    }
+
+    // AC-1, AC-11: teams connect in the session starts the tracker; teams disconnect stops it and deletes the file.
+    [Fact]
+    public void Teams_ConnectStartsTheTracker_DisconnectStopsIt()
+    {
+        FakeTeams teams = new FakeTeams();
+        ScriptedEvents scripted = new ScriptedEvents();
+        int afterConnect = "teams connect".Length + 1 + 1;
+        int afterDisconnect = afterConnect + "teams disconnect".Length + 1;
+        bool startedAfterConnect = false;
+        bool cancelledAfterDisconnect = false;
+        scripted.OnWait = call =>
+        {
+            if (call == afterConnect)
+            {
+                teams.WaitForReceives(1);
+                startedAfterConnect = !teams.ConnectTokens[0].IsCancellationRequested;
+            }
+            else if (call == afterDisconnect)
+            {
+                cancelledAfterDisconnect = teams.ConnectTokens[0].IsCancellationRequested;
+            }
+        };
+
+        RunTeams(TeamsTime(10, 15), teams, scripted, new CountingEvents(scripted), "teams connect", "teams disconnect");
+
+        Assert.True(startedAfterConnect);
+        Assert.True(cancelledAfterDisconnect);
+        Assert.Single(teams.Uris);
+        Assert.False(File.Exists(Path.Combine(data.Path, TeamsPairing.FileName)));
     }
 }
