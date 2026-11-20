@@ -34,7 +34,11 @@ internal sealed class ScriptedEvents : IBackgroundEvents
         return this;
     }
 
-    public void Post(BackgroundEvent e) => queue.Enqueue(e);
+    public bool Post(BackgroundEvent e)
+    {
+        queue.Enqueue(e);
+        return true;
+    }
 
     public bool TryTake(out BackgroundEvent? e) => queue.TryDequeue(out e);
 
@@ -123,7 +127,7 @@ internal sealed class ObservedEvents : IBackgroundEvents
     /// <summary>Called right before each posted event is applied.</summary>
     public Action? OnApply { get; set; }
 
-    public void Post(BackgroundEvent e) => inner.Post(new BackgroundEvent(() =>
+    public bool Post(BackgroundEvent e) => inner.Post(new BackgroundEvent(() =>
     {
         OnApply?.Invoke();
         bool changed = e.Apply();
