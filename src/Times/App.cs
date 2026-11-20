@@ -151,8 +151,8 @@ internal sealed class App
     /// <paramref name="licenceStore"/>, so a test never writes the real application data.
     /// </param>
     /// <param name="exportStream">
-    /// Creates the <c>export</c> CSV file at a path, or throws without creating it; <c>null</c> for
-    /// <see cref="OpenExportFile"/>. Tests use it to fail a write halfway.
+    /// Creates the <c>export</c> CSV file or the <c>backup</c> zip at a path, or throws without
+    /// creating it; <c>null</c> for <see cref="OpenExportFile"/>. Tests use it to fail a write halfway.
     /// </param>
     public App(IAnsiConsole console, TimeProvider time, DayStore store, CommandRegistry? registry = null,
         bool folderFromEnvironment = false, MouseReporting? mouse = null, SettingsRegistry? settings = null,
@@ -1334,8 +1334,9 @@ internal sealed class App
         bool created = false;
         try
         {
-            // CreateNew is O_CREAT | O_EXCL: it never overwrites a file or follows a link at the name.
-            using (FileStream stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            // OpenExportFile uses CreateNew (O_CREAT | O_EXCL): it never overwrites a file or follows a
+            // link at the name, and on Unix it creates the zip owner-only (0600).
+            using (Stream stream = exportStream(path))
             {
                 created = true;
                 stream.Write(bytes);
