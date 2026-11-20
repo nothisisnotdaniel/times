@@ -349,7 +349,7 @@ optionally `--plan <text>`: everything after `--plan` is your plan for tomorrow.
 Ends today with one command. It books your leaving (unless today already ends in one), shows
 today's time per work item, lists your open todos from Context (at most 10), saves your plan for
 tomorrow to Context and prints a plain stand-up draft to copy. In the session without `--plan` it
-asks for the plan in the input box; Enter or Esc skips it. The plan follows the checkpoint name
+asks for the plan in the input box; Enter or Esc skips it. A one-shot (`times eod`) never asks: give the plan with `--plan`. The plan follows the checkpoint name
 rules. Without Context installed, the Context steps are skipped. Works on today only: type `today`
 first if you are looking at another day. Today needs an arrival.
 
