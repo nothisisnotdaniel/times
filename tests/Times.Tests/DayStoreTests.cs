@@ -497,7 +497,7 @@ public class DayStoreTests
         foreach (string name in new[]
         {
             "2026-11-02.json", "2026-10-30.json", "2026-13-01.json", "2026-02-30.json", "settings.json",
-            "projects.json", "x2026-11-01.json", "2026-11-01.json.bak", "2026-11-01.JSON", "2026-1-01.json",
+            "projects.json", "x2026-11-01.json", "2026-11-01.json.bak", "2026-1-01.json",
             "2026-11-01.json ", ".2026-11-01.json.abc.tmp",
         })
         {
@@ -706,5 +706,107 @@ public class DayStoreTests
         store.Save(Day, Arrival(10));
 
         Assert.Equal(new TimeOnly(10, 0), Assert.Single(store.Load(Day).Entries).Time);
+    }
+
+    // True if the folder's file system ignores case: probe.json is found as PROBE.JSON.
+    private static bool IgnoresCase(string folder)
+    {
+        string probe = Path.Combine(folder, "probe.json");
+        File.WriteAllText(probe, "{}");
+        bool ignores = File.Exists(Path.Combine(folder, "PROBE.JSON"));
+        File.Delete(probe);
+        return ignores;
+    }
+
+    // AC-3 (314) on a case-insensitive folder, AC-4 (314) on a case-sensitive one.
+    [Fact]
+    public void Days_UpperAndMixedCaseExtension_ListedOnlyWhereTheFileSystemIgnoresCase()
+    {
+        using TempFolder temp = new TempFolder();
+        bool ignoresCase = IgnoresCase(temp.Path);
+        File.WriteAllText(Path.Combine(temp.Path, "2026-11-01.JSON"), "{}");
+        File.WriteAllText(Path.Combine(temp.Path, "2026-11-02.Json"), "{}");
+        File.WriteAllText(Path.Combine(temp.Path, "2026-11-03.json"), "{}");
+
+        IReadOnlyList<DateOnly> days = new DayStore(temp.Path).Days();
+
+        if (ignoresCase)
+        {
+            Assert.Equal([new DateOnly(2026, 11, 1), new DateOnly(2026, 11, 2), new DateOnly(2026, 11, 3)], days);
+        }
+        else
+        {
+            Assert.Equal([new DateOnly(2026, 11, 3)], days);
+        }
+    }
+
+    // AC-4 (314): with both spellings of one day (only possible where case matters), the day is listed once.
+    [Fact]
+    public void Days_BothLowerAndUpperCaseNames_ListTheDayOnce()
+    {
+        using TempFolder temp = new TempFolder();
+        File.WriteAllText(Path.Combine(temp.Path, "2026-11-01.json"), "{}");
+        File.WriteAllText(Path.Combine(temp.Path, "2026-11-01.JSON"), "{}");
+        File.WriteAllText(Path.Combine(temp.Path, "2026-10-31.JSON"), "{}");
+
+        IReadOnlyList<DateOnly> days = new DayStore(temp.Path).Days();
+
+        if (Directory.GetFiles(temp.Path).Length == 3)
+        {
+            // Case-sensitive: 10-31 has no lower-case file, so it is not listed.
+            Assert.Equal([new DateOnly(2026, 11, 1)], days);
+        }
+        else
+        {
+            Assert.Equal([new DateOnly(2026, 10, 31), new DateOnly(2026, 11, 1)], days);
+        }
+    }
+
+    // AC-5 (314): non-ASCII look-alikes, a trailing line break and a longer extension are still ignored.
+    [Theory]
+    [InlineData("2026-11-01.js\u00f3n")]
+    [InlineData("2026-11-01.JSON\n")]
+    [InlineData("2026-11-01.JSONX")]
+    [InlineData("2026-11-01.\u0237son")]
+    [InlineData("2026-11-01.j\u017fon")]
+    [InlineData("2026-11-01.JSO\u0274")]
+    [InlineData("2026-11-01.JSON ")]
+    [InlineData("\u0662026-11-01.JSON")]
+    public void Days_LookAlikeExtensions_AreIgnored(string name)
+    {
+        if (OperatingSystem.IsWindows() && (name.EndsWith('\n') || name.EndsWith(' ')))
+        {
+            return;
+        }
+
+        using TempFolder temp = new TempFolder();
+        File.WriteAllText(Path.Combine(temp.Path, name), "{}");
+
+        Assert.Empty(new DayStore(temp.Path).Days());
+    }
+
+    // AC-5 (314): the strict name check used by the old-data import does not change.
+    [Theory]
+    [InlineData("2026-11-01.JSON")]
+    [InlineData("2026-11-01.Json")]
+    public void TryParseName_UpperCaseExtension_StaysFalse(string name)
+    {
+        Assert.False(DayStore.TryParseName(name, out _));
+    }
+
+    // AC-8 (314): every Save bumps the day's save counter, and only that day's.
+    [Fact]
+    public void Save_BumpsTheDaysSaveCount()
+    {
+        using TempFolder temp = new TempFolder();
+        DayStore store = new DayStore(temp.Path);
+        Assert.Equal(0, store.SaveCount(Day));
+
+        store.Save(Day, Arrival(9));
+        (DayRecord _, DayStamp stamp) = store.LoadWithStamp(Day);
+        store.Save(Day, Arrival(10), stamp);
+
+        Assert.Equal(2, store.SaveCount(Day));
+        Assert.Equal(0, store.SaveCount(Day.AddDays(1)));
     }
 }

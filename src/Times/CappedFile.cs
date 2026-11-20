@@ -9,7 +9,8 @@ namespace Times;
 /// bytes are taken in, whatever its reported size. <see cref="FileKind"/> checks the path first (for
 /// the missing case and on Windows). On macOS arm64 and Linux x64/arm64 the file is then opened with
 /// <c>O_NONBLOCK</c>, so a FIFO swapped in after the check never blocks, and the opened descriptor
-/// is checked with <c>fstat</c> before anything is read from it. Other platforms fail closed.
+/// is checked with <c>fstat</c> before anything is read from it. On Windows the opened handle is checked
+/// (<c>GetFileType</c> and its attributes) before anything is read. Other platforms fail closed.
 /// </summary>
 internal static class CappedFile
 {
@@ -18,6 +19,7 @@ internal static class CappedFile
     private const int EACCES = 13;
     private const int EPERM = 1;
     private const int ENOENT = 2;
+    private const uint FileTypeDisk = 1;
 
     /// <summary>Big enough for <c>struct stat</c> on every supported platform (at most 144 bytes).</summary>
     private const int StatBufferBytes = 256;
@@ -50,7 +52,7 @@ internal static class CappedFile
 
         if (OperatingSystem.IsWindows())
         {
-            return ReadWindows(path, maxBytes, tooLargeMessage);
+            return ReadWindows(path, fileName, maxBytes, tooLargeMessage);
         }
 
         return ReadOpened(path, fileName, maxBytes, tooLargeMessage);
@@ -158,16 +160,42 @@ internal static class CappedFile
         return null;
     }
 
-    private static byte[] ReadWindows(string path, long maxBytes, string tooLargeMessage)
+    /// <summary>
+    /// The open-and-check step on Windows, without the <see cref="FileKind"/> pre-check: opens
+    /// <paramref name="path"/> as a handle (read, <see cref="FileShare.Read"/>), checks the opened handle
+    /// with <see cref="IsRegularWindowsHandle"/> before anything is read from it, and reads at most
+    /// <paramref name="maxBytes"/> bytes. So a pipe or device swapped in after the path check is refused
+    /// with <c>&lt;fileName&gt; is not a regular file.</c>. The handle is always closed.
+    /// </summary>
+    internal static byte[] ReadWindows(string path, string fileName, long maxBytes, string tooLargeMessage)
     {
-        byte[] bytes;
-        using (FileStream stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+        using SafeFileHandle handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        uint fileType;
+        FileAttributes attributes;
+        try
         {
-            if (stream.Length > maxBytes)
-            {
-                throw new InvalidDataException(tooLargeMessage);
-            }
+            fileType = GetFileType(handle);
+            attributes = File.GetAttributes(handle);
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException or IOException
+            or UnauthorizedAccessException)
+        {
+            throw NotRegular(fileName);
+        }
 
+        if (!IsRegularWindowsHandle(fileType, attributes))
+        {
+            throw NotRegular(fileName);
+        }
+
+        if (RandomAccess.GetLength(handle) > maxBytes)
+        {
+            throw new InvalidDataException(tooLargeMessage);
+        }
+
+        byte[] bytes;
+        using (FileStream stream = new FileStream(handle, FileAccess.Read, bufferSize: 0))
+        {
             bytes = ReadAtMost(stream, maxBytes + 1);
         }
 
@@ -177,6 +205,18 @@ internal static class CappedFile
         }
 
         return bytes;
+    }
+
+    /// <summary>
+    /// True only for an opened Windows handle that is a plain file: kernel32 <c>GetFileType</c> gave
+    /// <c>FILE_TYPE_DISK</c> (1), and none of <see cref="FileAttributes.Directory"/>,
+    /// <see cref="FileAttributes.Device"/> or <see cref="FileAttributes.ReparsePoint"/> is set.
+    /// Pure, so it can be tested on every OS.
+    /// </summary>
+    internal static bool IsRegularWindowsHandle(uint fileType, FileAttributes attributes)
+    {
+        const FileAttributes Refused = FileAttributes.Directory | FileAttributes.Device | FileAttributes.ReparsePoint;
+        return fileType == FileTypeDisk && (attributes & Refused) == 0;
     }
 
     // Reads st_mode from the opened descriptor at the same offset FileKind uses. A failed fstat refuses the file.
@@ -226,4 +266,7 @@ internal static class CappedFile
 
     [DllImport("libc", EntryPoint = "fstat", SetLastError = true)]
     private static extern int FStat(int descriptor, [Out] byte[] buffer);
+
+    [DllImport("kernel32", EntryPoint = "GetFileType", SetLastError = true)]
+    private static extern uint GetFileType(SafeFileHandle handle);
 }

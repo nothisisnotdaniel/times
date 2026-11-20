@@ -16,6 +16,8 @@ internal sealed partial class DayStore
     /// <summary>Day files are tiny. Anything bigger is not ours and is not read.</summary>
     internal const long MaxFileBytes = 64 * 1024;
 
+    private readonly Dictionary<DateOnly, int> saveCounts = [];
+
     public DayStore(string folder)
     {
         Folder = folder;
@@ -93,13 +95,15 @@ internal sealed partial class DayStore
     }
 
     /// <summary>
-    /// Lists the days that have an entry in the folder, in ascending order. Only names that are exactly
+    /// Lists the days that have an entry in the folder, in ascending order, each once. Names that are exactly
     /// <c>yyyy-MM-dd.json</c> (ASCII digits, lower-case extension) and parse as a date with the invariant
-    /// culture count; every other name is ignored. An entry is listed whatever it is (a directory or FIFO
-    /// with a day's name too), so <see cref="Load"/> decides whether it can be read. Reads only the
-    /// folder listing: never opens a file and never creates the folder. A missing or invalid folder lists
-    /// nothing. Throws <see cref="IOException"/> or <see cref="UnauthorizedAccessException"/> if the
-    /// folder cannot be listed.
+    /// culture count. A name whose extension is <c>.json</c> in another ASCII case (<c>.JSON</c>, <c>.Json</c>)
+    /// counts only when the lower-case <see cref="PathFor"/> name exists or is a link, that is when the file
+    /// system ignores case and <see cref="Load"/> will find it. Every other name is ignored. An entry is listed
+    /// whatever it is (a directory or FIFO with a day's name too), so <see cref="Load"/> decides whether it can
+    /// be read. Reads only the folder listing (and, for an upper-case name, the lower-case path's existence):
+    /// never opens a file and never creates the folder. A missing or invalid folder lists nothing. Throws
+    /// <see cref="IOException"/> or <see cref="UnauthorizedAccessException"/> if the folder cannot be listed.
     /// </summary>
     public IReadOnlyList<DateOnly> Days()
     {
@@ -108,17 +112,67 @@ internal sealed partial class DayStore
             return [];
         }
 
+        HashSet<DateOnly> seen = [];
         List<DateOnly> days = [];
         foreach (string path in Directory.EnumerateFileSystemEntries(Folder))
         {
-            if (TryParseName(Path.GetFileName(path), out DateOnly day))
+            string fileName = Path.GetFileName(path);
+            if (!TryParseAnyCaseName(fileName, out DateOnly day) || seen.Contains(day))
             {
-                days.Add(day);
+                continue;
             }
+
+            if (!fileName.EndsWith(".json", StringComparison.Ordinal) && !ResolvesToLowerCaseName(day))
+            {
+                continue;
+            }
+
+            seen.Add(day);
+            days.Add(day);
         }
 
         days.Sort();
         return days;
+    }
+
+    // True if the lower-case day path exists or is a link (dangling too), so the file system resolved it.
+    private bool ResolvesToLowerCaseName(DateOnly day)
+    {
+        string lower = PathFor(day);
+        if (Path.Exists(lower))
+        {
+            return true;
+        }
+
+        try
+        {
+            return new FileInfo(lower).LinkTarget is not null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    // Like TryParseName, but the extension ".json" may be in any ASCII case.
+    private static bool TryParseAnyCaseName(string fileName, out DateOnly day)
+    {
+        day = default;
+        return AnyCaseDayFileName().IsMatch(fileName)
+            && DateOnly.TryParseExact(fileName[..10], "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out day);
+    }
+
+    /// <summary>
+    /// How often <see cref="Save(DateOnly, DayRecord)"/> or <see cref="Save(DateOnly, DayRecord, DayStamp)"/>
+    /// has tried to write <paramref name="day"/> on this store (counted after the move, also when it failed), so a cache can tell
+    /// that the day changed even when the file's length and last-write time look the same.
+    /// </summary>
+    internal int SaveCount(DateOnly day)
+    {
+        lock (saveCounts)
+        {
+            return saveCounts.TryGetValue(day, out int count) ? count : 0;
+        }
     }
 
     /// <summary>True if <paramref name="fileName"/> is exactly a day file's name, <c>yyyy-MM-dd.json</c>, for a real date.</summary>
@@ -170,6 +224,8 @@ internal sealed partial class DayStore
         }
         finally
         {
+            // After the move, so a load that raced with it is never kept under the new count.
+            BumpSaveCount(day);
             if (File.Exists(temp))
             {
                 File.Delete(temp);
@@ -195,6 +251,14 @@ internal sealed partial class DayStore
         }
     }
 
+    private void BumpSaveCount(DateOnly day)
+    {
+        lock (saveCounts)
+        {
+            saveCounts[day] = (saveCounts.TryGetValue(day, out int count) ? count : 0) + 1;
+        }
+    }
+
     private void EnsureValidFolder()
     {
         if (!IsValidFolder(Folder))
@@ -208,6 +272,11 @@ internal sealed partial class DayStore
     // \z, not $: a trailing line break is not part of a name.
     [GeneratedRegex(@"^[0-9]{4}-[0-9]{2}-[0-9]{2}\.json\z", RegexOptions.CultureInvariant)]
     private static partial Regex DayFileName();
+
+    // The same name with ".json" in any ASCII case: explicit classes, not IgnoreCase, so the Kelvin sign
+    // or other non-ASCII look-alikes never match.
+    [GeneratedRegex(@"^[0-9]{4}-[0-9]{2}-[0-9]{2}\.[jJ][sS][oO][nN]\z", RegexOptions.CultureInvariant)]
+    private static partial Regex AnyCaseDayFileName();
 }
 
 /// <summary>

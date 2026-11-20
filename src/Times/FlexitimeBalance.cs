@@ -37,9 +37,17 @@ internal sealed class FlexitimeBalance
     /// folder, or one that cannot be listed, gives <see cref="None"/>. <paramref name="now"/> is the live
     /// minute when <paramref name="shownDay"/> is today, or <c>null</c>: then the shown day counts with
     /// <see cref="DayRecord.WorkTimeAt"/> instead of <see cref="DayRecord.WorkTime"/>. Earlier days never do.
+    /// With a <paramref name="cache"/> (which must belong to <paramref name="store"/>) every day is loaded through
+    /// it, so unchanged day files are not read again; the result is the same as without one.
     /// </summary>
-    public static FlexitimeBalance Compute(DayStore store, DateOnly shownDay, TimeSpan target, TimeOnly? now = null)
+    public static FlexitimeBalance Compute(DayStore store, DateOnly shownDay, TimeSpan target, TimeOnly? now = null,
+        DayRecordCache? cache = null)
     {
+        if (cache is not null && !ReferenceEquals(cache.Store, store))
+        {
+            throw new ArgumentException("The cache belongs to another store.", nameof(cache));
+        }
+
         IReadOnlyList<DateOnly> days;
         try
         {
@@ -63,7 +71,7 @@ internal sealed class FlexitimeBalance
             DayRecord record;
             try
             {
-                record = store.Load(day);
+                record = cache is null ? store.Load(day) : cache.Load(day);
             }
             catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException
                 or InvalidOperationException or JsonException)

@@ -117,7 +117,9 @@ Every factory agent reads this file before working on Times. Keep it short and a
   Day files and `projects.json` must be regular files (the final link target) of at most 64 KiB, read
   through `CappedFile`: `FileKind` checks the path first, then on Unix the file is opened with
   `O_NONBLOCK | O_CLOEXEC` and the opened descriptor is checked with `fstat` before a capped read, so a
-  FIFO or device (even one swapped in after the check) is refused without blocking. A day file or
+  FIFO or device (even one swapped in after the check) is refused without blocking. On Windows the file is opened with
+  `File.OpenHandle` and the handle is checked before any read (`GetFileType` must be `FILE_TYPE_DISK`, no `Directory`,
+  `Device` or `ReparsePoint` attribute; pure rule in `CappedFile.IsRegularWindowsHandle`). A day file or
   `projects.json` whose property names or strings cannot be decoded (lone surrogates) is unreadable.
   Project titles and checkpoint names (`ProjectList.IsValidTitle`) must be non-blank, at most 200
   characters, and hold no control characters, no unpaired surrogates and no invisible code points
@@ -166,8 +168,12 @@ Every factory agent reads this file before working on Times. Keep it short and a
   never written). Below the `Breaks` line, `DayView` shows `Target 8:00 · day -0:30 · balance +1:15`
   (signed values via `DayView.FormatSigned`; an empty day shows it without `day`, only when a day
   counts). `FlexitimeBalance.Compute` sums `WorkTime() - target` over every day file (`DayStore.Days()`:
-  names exactly `yyyy-MM-dd.json`, folder listing only) on or before the shown day that holds an
-  arrival; unreadable files are skipped and counted (yellow `! N day file(s) skipped`, no names).
+  names `yyyy-MM-dd.json`, folder listing only; `.JSON`/`.Json` in any ASCII case only when the lower-case path
+  exists or is a link, so on a case-insensitive file system; each day once; `TryParseName` stays strict) on or before
+  the shown day that holds an arrival; unreadable files are skipped and counted (yellow `! N day file(s) skipped`, no names).
+  `RenderDay` passes the `App`'s one `DayRecordCache`: a day's record is kept while its final target's length and
+  `LastWriteTimeUtc` are unchanged and the store has not saved that day since (`DayStore.SaveCount`); failed and
+  missing loads are never kept. Other `Days()` callers load directly.
   An absence day counts with a delta of zero, and `DayView` shows `Absence: Vacation` plus the
   target line with `day +0:00` for it.
   `correction` (`co`) books `+H:mm|-H:mm <reason>` (`BalanceCorrection.TryParseAmount`, ASCII, 1-3 hour digits, not zero; reason
