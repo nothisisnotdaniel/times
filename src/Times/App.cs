@@ -2062,7 +2062,7 @@ internal sealed class App
                     : string.Empty;
                 if (row.Status == MeetingStatus.AlreadyBooked)
                 {
-                    table.AddRow(new Markup("[grey]already booked[/]"), new Markup($"[grey]{at}[/]"), new Markup($"[grey]{name}[/]"),
+                    table.AddRow(new Markup("[grey]–[/]"), new Markup($"[grey]{at}[/]"), new Markup($"[grey]{name} · already booked[/]"),
                         new Markup($"[grey]{project}[/]"));
                 }
                 else

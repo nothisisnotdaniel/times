@@ -17511,7 +17511,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(2, cli.Calls.Count);
         Assert.DoesNotContain("Unknown command", output);
         // The second list shows the booked ones as already booked.
-        Assert.Matches(@"│ already booked +│ 09:00 +│ Sprint review", output);
+        Assert.Matches(@"│ – +│ 09:00 +│ Sprint review · already booked", output);
         Assert.Contains("No meetings were booked.", output);
     }
 
@@ -17654,7 +17654,7 @@ public sealed class AppTests : IDisposable
 
         Assert.Contains("No meetings to book today.", output);
         Assert.DoesNotContain(App.MeetingsPrompt, output);
-        Assert.Matches(@"│ already booked +│ 10:00 +│ Standup", output);
+        Assert.Matches(@"│ – +│ 10:00 +│ Standup · already booked", output);
         Assert.Contains("! Meeting at 12:00 not offered: " + CalendarMeetings.InvisibleCharacters, output);
         Assert.Contains("! Meeting at 13:00 not offered: " + CalendarMeetings.NoTitle, output);
         Assert.DoesNotContain("gnissap", output);
