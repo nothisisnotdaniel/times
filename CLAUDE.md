@@ -119,7 +119,8 @@ Every factory agent reads this file before working on Times. Keep it short and a
   `O_NONBLOCK | O_CLOEXEC` and the opened descriptor is checked with `fstat` before a capped read, so a
   FIFO or device (even one swapped in after the check) is refused without blocking. On Windows the file is opened with
   `File.OpenHandle` and the handle is checked before any read (`GetFileType` must be `FILE_TYPE_DISK`, no `Directory`,
-  `Device` or `ReparsePoint` attribute; pure rule in `CappedFile.IsRegularWindowsHandle`). A day file or
+  `Device` or `ReparsePoint` attribute; pure rule in `CappedFile.IsRegularWindowsHandle`), so a cloud placeholder
+  (OneDrive) or dedup file, whose final target carries `ReparsePoint`, is refused as not a regular file. A day file or
   `projects.json` whose property names or strings cannot be decoded (lone surrogates) is unreadable.
   Project titles and checkpoint names (`ProjectList.IsValidTitle`) must be non-blank, at most 200
   characters, and hold no control characters, no unpaired surrogates and no invisible code points

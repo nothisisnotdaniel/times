@@ -42,14 +42,13 @@ internal sealed class DayRecordCache
             }
         }
 
-        DayRecord record;
         lock (entries)
         {
             entries.Remove(day);
         }
 
         Interlocked.Increment(ref loads);
-        record = Store.Load(day);
+        DayRecord record = Store.Load(day);
         if (stamp is not null)
         {
             lock (entries)
