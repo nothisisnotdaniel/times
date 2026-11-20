@@ -133,7 +133,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] [#23](backlog/023-keep-mistyped-token-lines-out-of.md) Keep mistyped token lines out of history → 321-token-lines-out-history
 - [x] [#24](backlog/024-don-t-lose-the-devops-token.md) Don't lose the DevOps token on save → 322-keep-devops-token-save
 - [x] [#48](backlog/048-help-text-and-colour-fixes.md) Help text and colour fixes → 323-help-text-colour-fixes
-- [ ] [#28](backlog/028-private-backup-files.md) Private backup files
+- [x] [#28](backlog/028-private-backup-files.md) Private backup files → 324-private-backup-files
 - [ ] [#29](backlog/029-bound-the-background-event-queue.md) Bound the background event queue
 - [ ] [#30](backlog/030-end-of-day-alert-when-switched.md) End-of-day alert when switched on later
 - [x] [#31](backlog/031-remove-unused-prime-parameters.md) Remove unused Prime parameters → 208-remove-prime-params
