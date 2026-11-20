@@ -89,7 +89,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] [#51](backlog/051-no-prerelease-for-backlog-only-pushes.md) No prerelease for backlog-only pushes → 304-no-prerelease-backlog-pushes
 - [x] [#38](backlog/038-end-of-day-ritual.md) End-of-day ritual (after: #37; Context#17) → 305-end-of-day-ritual
 - [x] [#6](backlog/006-menu-bar-and-tray-app.md) Menu bar and tray app → 306-menu-bar-tray-app
-- [ ] [#7](backlog/007-check-in-reminder.md) Check-in reminder (after: #6)
+- [x] [#7](backlog/007-check-in-reminder.md) Check-in reminder (after: #6) → 307-check-in-reminder
 - [x] [#1](backlog/001-windows-terminal-check.md) Windows terminal check
 - [x] [#2](backlog/002-terminal-layout-check.md) Terminal layout check
 - [x] Daily target and flexitime balance: a configurable daily target (for example 8h, saved next to the day files) so the day view shows the day's overtime or shortfall against it and a running flexitime balance over all booked days. → 091-daily-target-flexitime
