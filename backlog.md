@@ -128,7 +128,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] [#14](backlog/014-readme-checksum-guidance.md) README checksum guidance → 316-readme-checksum-guidance
 - [x] [#17](backlog/017-skipped-hint-on-empty-days.md) Skipped hint on empty days → 317-skipped-hint-empty-days
 - [x] [#19](backlog/019-shared-sanitiser-for-echoed-text.md) Shared sanitiser for echoed text → 318-shared-echo-sanitiser
-- [ ] [#50](backlog/050-csv-export-file-mode-and-failure.md) CSV export file mode and failure test
+- [x] [#50](backlog/050-csv-export-file-mode-and-failure.md) CSV export file mode and failure test → 319-csv-export-file-mode
 - [ ] [#22](backlog/022-progress-line-for-devops-sync.md) Progress line for DevOps sync
 - [ ] [#23](backlog/023-keep-mistyped-token-lines-out-of.md) Keep mistyped token lines out of history
 - [ ] [#24](backlog/024-don-t-lose-the-devops-token.md) Don't lose the DevOps token on save
