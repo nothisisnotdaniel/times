@@ -55,6 +55,7 @@ internal sealed class App
     private readonly ILicenceStore licenceStore;
     private readonly Pro pro;
     private readonly LicenceActivationFile? activationFile;
+    private readonly Func<string, Stream> exportStream;
     private readonly Func<DevOpsCredential, IDevOpsClient>? devOpsClient;
     private readonly IBackgroundEvents? events;
     private readonly bool liveClock;
@@ -149,11 +150,16 @@ internal sealed class App
     /// Where <c>activation.json</c> goes (<see cref="LicenceActivationFile"/>); required with a
     /// <paramref name="licenceStore"/>, so a test never writes the real application data.
     /// </param>
+    /// <param name="exportStream">
+    /// Creates the <c>export</c> CSV file at a path, or throws without creating it; <c>null</c> for
+    /// <see cref="OpenExportFile"/>. Tests use it to fail a write halfway.
+    /// </param>
     public App(IAnsiConsole console, TimeProvider time, DayStore store, CommandRegistry? registry = null,
         bool folderFromEnvironment = false, MouseReporting? mouse = null, SettingsRegistry? settings = null,
         UpdateService? updates = null, ITokenStore? tokenStore = null, Func<DevOpsCredential, IDevOpsClient>? devOpsClient = null,
         IBackgroundEvents? events = null, bool liveClock = false, InstanceLock? instanceLock = null, bool watchResize = false,
-        ILicenceStore? licenceStore = null, Pro? pro = null, string? activationFolder = null, IContextCli? contextCli = null)
+        ILicenceStore? licenceStore = null, Pro? pro = null, string? activationFolder = null, IContextCli? contextCli = null,
+        Func<string, Stream>? exportStream = null)
     {
         if (licenceStore is not null && activationFolder is null)
         {
@@ -161,6 +167,7 @@ internal sealed class App
         }
 
         this.contextCli = contextCli;
+        this.exportStream = exportStream ?? OpenExportFile;
         this.licenceStore = licenceStore ?? new UnsupportedLicenceStore();
         this.pro = pro ?? Pro.ForBuild(this.licenceStore);
         activationFile = activationFolder is null ? null : new LicenceActivationFile(activationFolder);
@@ -888,6 +895,27 @@ internal sealed class App
         }
     }
 
+    /// <summary>
+    /// Creates the <c>export</c> CSV file at <paramref name="path"/> for writing. <c>CreateNew</c> is
+    /// <c>O_CREAT | O_EXCL</c>: it never overwrites a file or follows a link at the name. On Unix the file
+    /// is created owner-only (0600) within that same open; Windows keeps its default ACLs.
+    /// </summary>
+    internal static Stream OpenExportFile(string path)
+    {
+        FileStreamOptions options = new FileStreamOptions
+        {
+            Mode = FileMode.CreateNew,
+            Access = FileAccess.Write,
+            Share = FileShare.None,
+        };
+        if (!OperatingSystem.IsWindows())
+        {
+            options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+        }
+
+        return new FileStream(path, options);
+    }
+
     // Writes the report over an inclusive date range as a CSV file into an existing folder the user
     // names. Never overwrites: the file is created exclusively, and a failed write leaves no file.
     // Reads the data folder only, and creates nothing but the one file in the target folder.
@@ -943,8 +971,7 @@ internal sealed class App
         bool created = false;
         try
         {
-            // CreateNew is O_CREAT | O_EXCL: it never overwrites a file or follows a link at the name.
-            using (FileStream stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            using (Stream stream = exportStream(path))
             {
                 created = true;
                 stream.Write(bytes);

@@ -205,7 +205,9 @@ Every factory agent reads this file before working on Times. Keep it short and a
   Titles come from `ReportRow.Title(projects)`. `export <from> <to> <folder>` (`ex`) writes the same rows as
   `times-report-<from>-to-<to>.csv` (`ReportCsv`: UTF-8 BOM, CRLF, `Work item,Title,Hours`, RFC 4180 quoting, a `'`
   before titles starting `=+-@`, no total) into an existing absolute folder (one pair of quotes removed, `~` expanded),
-  created with `FileMode.CreateNew` (never overwrites or follows a link; a failed write deletes the file).
+  created by `App.OpenExportFile` with `FileMode.CreateNew` (never overwrites or follows a link; a failed write deletes the file;
+  on Unix owner-only 0600 via `UnixCreateMode`, Windows keeps its ACLs). Tests inject the optional `App` parameter `exportStream`
+  (e.g. `FailingExportStream`) to fail a write.
   The `report-rounding` setting (`off`/`5 min`/`10 min`/`15 min`, read at each call, anything else is `off`) rounds
   each row's time per day to the nearest step (half rounds up) in `report` and `export` only, adding
   ` · rounded to <n> min` to the caption and the export success line.

@@ -67,12 +67,13 @@ public sealed class AppTests : IDisposable
             $"{folder} holds files");
     }
 
-    private (int ExitCode, string Output) Run(Action<TestConsole> input, CommandRegistry? registry = null, TimeProvider? time = null, string? dataFolder = null)
+    private (int ExitCode, string Output) Run(Action<TestConsole> input, CommandRegistry? registry = null, TimeProvider? time = null, string? dataFolder = null,
+        Func<string, Stream>? exportStream = null)
     {
         TestConsole console = new TestConsole().Interactive();
         input(console);
         int exitCode = new App(console, time ?? FixedTimeProvider.At20261027(), new DayStore(dataFolder ?? data.Path), registry,
-            instanceLock: sideLock).Run([]);
+            instanceLock: sideLock, exportStream: exportStream).Run([]);
         return (exitCode, console.Output);
     }
 
@@ -8627,7 +8628,10 @@ public sealed class AppTests : IDisposable
     private const string ExportedCsv = "\uFEFFWork item,Title,Hours\r\n99,Call,0.50\r\n1234,Times,40.48\r\n,Mail,1.00\r\n";
 
     /// <summary>Runs <paramref name="commands"/> then quit on a wide 40-row console and returns the exit code and the last frame.</summary>
-    private (int ExitCode, string[] Frame) RunExport(params string[] commands)
+    private (int ExitCode, string[] Frame) RunExport(params string[] commands) => RunExport(null, commands);
+
+    /// <summary>Like <see cref="RunExport(string[])"/>, with <paramref name="exportStream"/> creating the export file.</summary>
+    private (int ExitCode, string[] Frame) RunExport(Func<string, Stream>? exportStream, params string[] commands)
     {
         (int exitCode, string output) = Run(c =>
         {
@@ -8639,7 +8643,7 @@ public sealed class AppTests : IDisposable
             }
 
             c.Input.PushTextWithEnter("quit");
-        });
+        }, exportStream: exportStream);
         Assert.DoesNotContain("   at ", output);
         string[] frame = LastLayout(output);
         AssertLayout(frame, 40);
@@ -9025,6 +9029,135 @@ public sealed class AppTests : IDisposable
         finally
         {
             File.SetUnixFileMode(data.Path, mode);
+        }
+    }
+
+    // Job 319 ------------------------------------------------------------------------------
+
+    // 319 AC-1
+    [Fact]
+    public void Export_File_IsOwnerOnly()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder target = new TempFolder();
+        WriteReportDays();
+        File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":1234,\"title\":\"Times\"}]}");
+
+        (int exitCode, _) = RunExport($"export 2026-11-02 2026-11-04 {target.Path}");
+
+        string path = Path.Combine(target.Path, ExportName);
+        Assert.Equal(0, exitCode);
+        Assert.Equal(Encoding.UTF8.GetBytes(ExportedCsv), File.ReadAllBytes(path));
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
+    }
+
+    // 319 AC-2
+    [Fact]
+    public void OpenExportFile_ExistingFile_Throws_AndKeepsItsBytes()
+    {
+        using TempFolder target = new TempFolder();
+        string path = Path.Combine(target.Path, ExportName);
+        File.WriteAllBytes(path, [1, 2, 3]);
+
+        Assert.ThrowsAny<IOException>(() => App.OpenExportFile(path).Dispose());
+
+        Assert.Equal([1, 2, 3], File.ReadAllBytes(path));
+        Assert.Equal([ExportName], Listing(target.Path));
+    }
+
+    // 319 AC-3
+    [Fact]
+    public void Export_MidWriteFailure_DeletesThePartialFile()
+    {
+        using TempFolder target = new TempFolder();
+        WriteReportDays();
+        FailingExportStream? failing = null;
+        Func<string, Stream> factory = p =>
+        {
+            failing = new FailingExportStream(App.OpenExportFile(p));
+            return failing;
+        };
+
+        (int exitCode, string[] frame) = RunExport(factory, $"export 2026-11-02 2026-11-04 {target.Path}", "report 2026-11-02 2026-11-04");
+        (_, string[] hintFrame) = RunExport(factory, $"export 2026-11-02 2026-11-04 {target.Path}");
+
+        Assert.Equal(0, exitCode);
+        Assert.NotNull(failing);
+        Assert.True(failing.BytesWritten > 0, "the stream failed before writing any bytes");
+        Assert.Equal($"export: could not write {Path.Combine(target.Path, ExportName)}. disk full", ExportHint(hintFrame));
+        Assert.Empty(Listing(target.Path));
+        Assert.Contains(frame, l => Regex.IsMatch(l, @"│ Total +│"));
+    }
+
+    // 319 AC-4
+    [Fact]
+    public void Export_FactoryFailsBeforeCreating_LeavesFolderAlone()
+    {
+        using TempFolder target = new TempFolder();
+        string other = Path.Combine(target.Path, "other.csv");
+        File.WriteAllBytes(other, [7, 8, 9]);
+        WriteReportDays();
+        Func<string, Stream> factory = _ => throw new IOException("disk full");
+
+        (int exitCode, string[] frame) = RunExport(factory, $"export 2026-11-02 2026-11-04 {target.Path}");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal($"export: could not write {Path.Combine(target.Path, ExportName)}. disk full", ExportHint(frame));
+        Assert.Equal(["other.csv"], Listing(target.Path));
+        Assert.Equal([7, 8, 9], File.ReadAllBytes(other));
+    }
+
+    // 319 AC-5
+    [Fact]
+    public void Export_PartialFileUndeletable_SaysSo()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder target = new TempFolder();
+        WriteReportDays();
+        UnixFileMode mode = File.GetUnixFileMode(target.Path);
+        bool root = false;
+        Func<string, Stream> factory = p => new FailingExportStream(App.OpenExportFile(p), () =>
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                return;
+            }
+
+            File.SetUnixFileMode(target.Path, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+            try
+            {
+                File.WriteAllText(Path.Combine(target.Path, "probe"), "x");
+                // Running as root: access can't be denied.
+                root = true;
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        });
+        try
+        {
+            (int exitCode, string[] frame) = RunExport(factory, $"export 2026-11-02 2026-11-04 {target.Path}");
+            if (root)
+            {
+                return;
+            }
+
+            string path = Path.Combine(target.Path, ExportName);
+            Assert.Equal(0, exitCode);
+            Assert.Equal($"export: could not write {path} and could not remove the partial file. disk full", ExportHint(frame));
+            Assert.Equal([ExportName], Listing(target.Path));
+        }
+        finally
+        {
+            File.SetUnixFileMode(target.Path, mode);
         }
     }
 
