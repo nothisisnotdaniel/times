@@ -280,7 +280,8 @@ Every factory agent reads this file before working on Times. Keep it short and a
   apphost at `Environment.ProcessPath` (symlinks resolved), never a .NET host (named `dotnet` or next to `host/fxr`);
   `ITokenStore.WriteRefusal` says so before the masked prompt; Windows Credential Manager target `Times/AzureDevOps`; `UnsupportedTokenStore` elsewhere
   and in tests unless injected), never in a file, output or exception. A `devops`/`dv` line with an argument never enters
-  `LineEditor.History` (the editor's `keepOutOfHistory` predicate). `sync <from> <to>` (`sy`) previews
+  `LineEditor.History` (the editor's `keepOutOfHistory` predicate; the first word counts after any number of
+  leading `/`). `sync <from> <to>` (`sy`) previews
   `DevOpsSync.Plan` (ended, unbooked checkpoints with a work item, per work item) with no store read or network;
   `sync <from> <to> send` reads the store once, then per work item GETs Completed Work and PATCHes
   `round(old + hours, 2)` with a rev test (`AzureDevOpsClient`: no redirects, 15 s, 1 MiB cap, fixed error texts),
@@ -299,7 +300,8 @@ Every factory agent reads this file before working on Times. Keep it short and a
   the key is stored in `ILicenceStore` (Keychain service `Suite Pro licence` trusting the apphost like DevOps, Windows target
   `Suite/ProLicence`, `UnsupportedLicenceStore` elsewhere), then `LicenceActivationFile` writes
   `<ApplicationData>/SuitePro/activation.json` (0700/0600, temp file and move, shown only); a failed file write removes the
-  store entry again. A `pro` line with an argument other than `status`/`deactivate` never enters history. `App` takes
+  store entry again. A `pro` line with an argument other than `status`/`deactivate` never enters history (name or
+  alias after any number of leading `/`). `App` takes
   `licenceStore`, `pro` and `activationFolder` (a store without a folder throws); tests use `FakeLicenceStore` and
   `TestLicences` (a fresh key per test, never a real one). Signing lives only in `tools/Times.LicenceIssuer`
   (`create-key --kid`, `issue --kid --name --until [--ledger]`, signing keys in the macOS Keychain, ledger outside any git

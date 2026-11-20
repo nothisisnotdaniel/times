@@ -9309,6 +9309,115 @@ public sealed class AppTests : IDisposable
         Assert.Contains("Azure DevOps: not connected", LastHint(output));
     }
 
+    // Job 321 AC-1/AC-2: a devops line typed with two or more leading '/' is an unknown command, but its
+    // token still never stays in history. Each line is typed and, separately, pasted with a tab after the first
+    // word (a tab only reaches the line through a paste; a typed Tab is completion).
+    [Theory]
+    [InlineData("//devops connect contoso SECRET-ON-THE-LINE", false)]
+    [InlineData("///dv connect contoso SECRET-ON-THE-LINE", false)]
+    [InlineData("//DV conect SECRET-ON-THE-LINE", false)]
+    [InlineData("//devops\tconnect contoso SECRET-ON-THE-LINE", true)]
+    [InlineData("///dv\tconnect contoso SECRET-ON-THE-LINE", true)]
+    [InlineData("//DV\tconect SECRET-ON-THE-LINE", true)]
+    public void DevOpsLines_WithManySlashes_NeverEnterHistory(string line, bool paste)
+    {
+        FakeTokenStore store = new FakeTokenStore();
+
+        (_, string output) = RunDevOps(store, null, c =>
+        {
+            c.Input.PushTextWithEnter("devops");
+            if (paste)
+            {
+                PushPastedLine(c, line);
+                c.Input.PushKey(ConsoleKey.Enter);
+            }
+            else
+            {
+                c.Input.PushTextWithEnter(line);
+            }
+
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.UpArrow);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        string first = line.Split(' ', '\t')[0];
+        Assert.Empty(store.Writes);
+        Assert.Contains($"Unknown command {first}. Type help to see all commands.", output, StringComparison.Ordinal);
+        Assert.Contains("Azure DevOps: not connected", LastHint(output));
+        Assert.DoesNotContain(LastLayout(output), l => l.Contains('>') && l.Contains("SECRET-ON-THE-LINE", StringComparison.Ordinal));
+    }
+
+    // Job 321 AC-5: dispatch is unchanged; //devops connect x tok runs nothing and echoes only the first word.
+    [Fact]
+    public void DevOpsLine_WithManySlashes_StaysAnUnknownCommand()
+    {
+        FakeTokenStore store = new FakeTokenStore();
+
+        (_, string output) = RunDevOps(store, null, "//devops connect x tok", "quit");
+
+        Assert.Empty(store.Writes);
+        Assert.Contains("Unknown command //devops. Type help to see all commands.", LastHint(output));
+        Assert.DoesNotContain("Paste or type the personal access token", output, StringComparison.Ordinal);
+        Assert.DoesNotContain(LastLayout(output), l => l.Contains("tok", StringComparison.Ordinal));
+    }
+
+    // Job 321: the predicate itself, with a literal tab after the first word.
+    [Theory]
+    [InlineData("//devops\tconnect contoso SECRET", true)]
+    [InlineData("///DV\tconect SECRET", true)]
+    [InlineData("//pro\tactivate CTX1-SECRETISH", true)]
+    [InlineData("//po\tCTX1-SECRETISH", true)]
+    [InlineData("//devops", false)]
+    [InlineData("//pro\tstatus", false)]
+    [InlineData("//pro deactivate", false)]
+    [InlineData("// devops connect x tok", false)]
+    [InlineData("//help", false)]
+    public void KeepOutOfHistory_StripsEveryLeadingSlash(string line, bool kept)
+    {
+        TestConsole console = new TestConsole().Interactive();
+        App app = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path));
+
+        Assert.Equal(kept, app.KeepOutOfHistory(line));
+    }
+
+    // Job 321 AC-4: lines without a secret still enter history, also with two leading '/'.
+    [Theory]
+    [InlineData("//devops", "Unknown command //devops. Type help to see all commands.")]
+    [InlineData("//help", "Unknown command //help. Type help to see all commands.")]
+    [InlineData("devops", "Azure DevOps: not connected")]
+    public void DevOpsLines_WithoutASecret_StillEnterHistory(string line, string hint)
+    {
+        FakeTokenStore store = new FakeTokenStore();
+
+        (_, string output) = RunDevOps(store, null, c =>
+        {
+            c.Input.PushTextWithEnter(line);
+            c.Input.PushTextWithEnter("help");
+            c.Input.PushKey(ConsoleKey.UpArrow);
+            c.Input.PushKey(ConsoleKey.UpArrow);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Contains(hint, LastHint(output));
+    }
+
+    // A bracketed paste of the line: Esc [200~, its characters, Esc [201~.
+    private static void PushPastedLine(TestConsole console, string line)
+    {
+        console.Input.PushKey(new ConsoleKeyInfo('\u001b', ConsoleKey.Escape, false, false, false));
+        console.Input.PushText("[200~");
+        foreach (char c in line)
+        {
+            console.Input.PushKey(new ConsoleKeyInfo(c, default, false, false, false));
+        }
+
+        console.Input.PushKey(new ConsoleKeyInfo('\u001b', ConsoleKey.Escape, false, false, false));
+        console.Input.PushText("[201~");
+    }
+
     // Other lines still enter history as before.
     [Fact]
     public void DevOpsStatusLine_StillEntersHistory()
@@ -16377,6 +16486,54 @@ public sealed class AppTests : IDisposable
         Assert.Empty(store.Writes);
         Assert.Contains("No Pro licence activated", LastHint(output));
         Assert.DoesNotContain("SECRETISH", LastLayout(output).Last(l => l.Contains('>')), StringComparison.Ordinal);
+    }
+
+    // Job 321 AC-3: a pro line with two leading '/' holding a key never enters history either.
+    [Theory]
+    [InlineData("//pro activate CTX1-SECRETISH")]
+    [InlineData("//po activate CTX1-SECRETISH")]
+    [InlineData("//pro CTX1-SECRETISH")]
+    public void ProLines_WithManySlashes_AndAKey_NeverEnterHistory(string line)
+    {
+        using TestLicences licences = new TestLicences();
+        FakeLicenceStore store = new FakeLicenceStore();
+
+        (_, string output) = RunPro(store, licences, c =>
+        {
+            c.Input.PushTextWithEnter("pro status");
+            c.Input.PushTextWithEnter(line);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushKey(ConsoleKey.UpArrow);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Empty(store.Writes);
+        Assert.Contains("No Pro licence activated", LastHint(output));
+        Assert.DoesNotContain("SECRETISH", LastLayout(output).Last(l => l.Contains('>')), StringComparison.Ordinal);
+    }
+
+    // Job 321 AC-4: pro lines without a key still enter history, also with two leading '/'.
+    [Theory]
+    [InlineData("//pro status", "Unknown command //pro. Type help to see all commands.")]
+    [InlineData("//pro deactivate", "Unknown command //pro. Type help to see all commands.")]
+    [InlineData("pro status", "No Pro licence activated")]
+    public void ProLines_WithoutAKey_StillEnterHistory(string line, string hint)
+    {
+        using TestLicences licences = new TestLicences();
+        FakeLicenceStore store = new FakeLicenceStore();
+
+        (_, string output) = RunPro(store, licences, c =>
+        {
+            c.Input.PushTextWithEnter(line);
+            c.Input.PushTextWithEnter("help");
+            c.Input.PushKey(ConsoleKey.UpArrow);
+            c.Input.PushKey(ConsoleKey.UpArrow);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Contains(hint, LastHint(output));
     }
 
     // AC-11: a valid key typed in the session activates, and still stays out of history.

@@ -2882,7 +2882,8 @@ internal sealed class App
 
     // A devops (dv) line with any argument never enters the in-memory history: connect asks for the
     // token next, but a user may still type or paste it on the line (devops connect contoso <token>),
-    // and a typo'd sub-command may hold it too. Parsed like Dispatch (one leading '/', name or alias).
+    // and a typo'd sub-command may hold it too. Name or alias as in Dispatch, but after any number of leading
+    // '/' (//devops connect x <token> is an unknown command there, yet must not keep its token in history).
     private bool IsDevOpsLineWithArgument(string line)
     {
         string text = line.Trim();
@@ -2893,19 +2894,19 @@ internal sealed class App
         }
 
         string token = text[..split];
-        string name = token.StartsWith('/') ? token[1..] : token;
+        string name = token.TrimStart('/');
         return name.Length > 0 && registry.TryGet(name, out Command? command)
             && string.Equals(command.Name, "devops", StringComparison.OrdinalIgnoreCase);
     }
 
     // A line that never enters the in-memory history: a devops line with any argument, or a pro line with
     // anything but status or deactivate after it (pro activate <key>, also mistyped, may hold a licence key).
-    private bool KeepOutOfHistory(string line) => IsDevOpsLineWithArgument(line) || IsProLineWithKey(line);
+    internal bool KeepOutOfHistory(string line) => IsDevOpsLineWithArgument(line) || IsProLineWithKey(line);
 
     private bool IsProLineWithKey(string line)
     {
         (string token, string rest) = SplitToken(line.Trim());
-        string name = token.StartsWith('/') ? token[1..] : token;
+        string name = token.TrimStart('/');
         if (name.Length == 0 || !registry.TryGet(name, out Command? command)
             || !string.Equals(command.Name, "pro", StringComparison.OrdinalIgnoreCase))
         {
