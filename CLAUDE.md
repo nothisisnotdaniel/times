@@ -222,6 +222,11 @@ Every factory agent reads this file before working on Times. Keep it short and a
 - **End of day:** `eod [<time>] [--plan <text…>]` (`ed`, today only) books a `Leaving` through `Save`, shows `SummaryView`, Context's
   todos, saves the plan via `context capture` and prints a plain stand-up draft. `IContextCli` (`ContextCli.cs`; `null` = not installed,
   nothing shown); the session asks for the plan (`pendingPlan`); only a refused booking fails. Tests use `FakeContextCli`.
+- **Meetings:** `meetings` (`mt`, `NoArguments`) runs `context current --json` once (missing, timed out or unparsable: fixed red line, fails;
+  any exit code with a parsable answer is used). `CalendarMeetings.Parse` (strict contract, `null` otherwise) and `Offer` (pure: today's non-all-day
+  starts in their own offset, sorted stably, titles checked like typed names before the first `#<work item>` token matching `projects.json` is removed,
+  duplicates of today's checkpoints `already booked`) build the rows; titles never appear in not-offered lines. The session asks (`pendingMeetings`,
+  numbers or `all`/`a`, never in history) and books the chosen ones in one `Save` with the stamp from the listing; the one-shot only lists.
 - **Search:** `find <text>` (`f`, whole trimmed argument) runs `CheckpointSearch.Calculate` (read-only) over every day file
   `DayStore.Days()` lists: each day's `CheckpointSummary` group whose names or quicklist title contain the text
   (`OrdinalIgnoreCase`) is one row (`App.FindView`: `Date`, `Work item`, `Title`, `Time`, by date then group order, caption

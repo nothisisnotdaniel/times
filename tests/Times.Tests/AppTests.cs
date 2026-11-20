@@ -883,7 +883,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(
             ["absence", "addproject", "arrive", "backup", "booked", "break", "breakend", "…"],
             popup.Select(w => w.Text.Split(' ')[0]));
-        Assert.StartsWith("… 30 more", popup[^1].Text);
+        Assert.StartsWith("… 31 more", popup[^1].Text);
         Assert.Contains("Book the end of a break", popup[6].Text);
         Assert.Equal(80, popup[0].Text.Length);
     }
@@ -956,9 +956,9 @@ public sealed class AppTests : IDisposable
         List<string> hintRow = TypingWrites(output, 1).Where(w => w.Row == 21).Select(w => w.Text).ToList();
 
         // popup, restored (Backspace), popup, restored (Esc), popup (quit typing), ...
-        Assert.StartsWith("… 30 more", hintRow[0]);
+        Assert.StartsWith("… 31 more", hintRow[0]);
         Assert.Contains("Unknown command nope", hintRow[1]);
-        Assert.StartsWith("… 30 more", hintRow[2]);
+        Assert.StartsWith("… 31 more", hintRow[2]);
         Assert.Contains("Unknown command nope", hintRow[3]);
         Assert.Contains("Unknown command nope", hintRow[^1]);
         Assert.Contains("\u001b[38;5;9mUnknown command", output[output.LastIndexOf("\u001b[21;1H", StringComparison.Ordinal)..]);
@@ -992,7 +992,7 @@ public sealed class AppTests : IDisposable
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
         // 39 commands: 7 shown, the eighth row counts the other 32.
-        Assert.StartsWith("… 42 more", popup[^1].Text);
+        Assert.StartsWith("… 43 more", popup[^1].Text);
         // Nothing is drawn on row 1 while typing (the final clear on quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
@@ -1577,13 +1577,13 @@ public sealed class AppTests : IDisposable
     {
         (_, string output) = Run(c =>
         {
-            c.Profile.Height = 90;
+            c.Profile.Height = 100;
             c.Input.PushTextWithEnter("help");
             c.Input.PushTextWithEnter("quit");
         }, ManyCommands());
 
         string[] frame = Frames(output)[1];
-        Assert.Equal(90, frame.Length);
+        Assert.Equal(100, frame.Length);
         Assert.DoesNotContain(frame, l => l.Contains("more lines", StringComparison.Ordinal));
         string[] top = frame[..^4];
         int last = Array.FindLastIndex(top, l => !string.IsNullOrWhiteSpace(l));
@@ -4834,6 +4834,7 @@ public sealed class AppTests : IDisposable
             ["checkpoint"] = "cp",
             ["devops"] = "dv",
             ["eod"] = "ed",
+            ["meetings"] = "mt",
             ["help"] = "h",
             ["leave"] = "l",
             ["next"] = "n",
@@ -17385,5 +17386,321 @@ public sealed class AppTests : IDisposable
         Assert.DoesNotContain(SheetPrompt, plain);
         Assert.Equal([1, 2, 3], File.ReadAllBytes(path));
         Assert.Equal([SheetName], Listing(target.Path));
+    }
+
+    // ---- meetings (312) ----
+
+    private const string MeetingsJson =
+        "{\"appointments\":[" +
+        "{\"start\":\"2026-11-20T14:00:00+00:00\",\"allDay\":false,\"title\":\"Planning\"}," +
+        "{\"start\":\"2026-11-20T09:00:00+00:00\",\"allDay\":false,\"title\":\"Sprint review #1234\"}," +
+        "{\"start\":\"2026-11-20T11:00:00+00:00\",\"allDay\":false,\"title\":\"Customer call\"}," +
+        "{\"start\":\"2026-11-20T08:00:00+00:00\",\"allDay\":true,\"title\":\"Conference\"}]}";
+
+    private static FakeContextCli MeetingsCli(string json = MeetingsJson) => FakeContextCli.Current(FakeContextCli.Ok(json));
+
+    private (int ExitCode, string Output) RunMeetings(IContextCli? cli, Action<TestConsole> input)
+    {
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 200;
+        console.Profile.Height = 80;
+        input(console);
+        console.Input.PushTextWithEnter("quit");
+        int exit = new App(console, EodClock(), new DayStore(data.Path), instanceLock: sideLock, contextCli: cli).Run([]);
+        return (exit, console.Output);
+    }
+
+    private void WriteDesignProject() =>
+        File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":1234,\"title\":\"Design\"}]}");
+
+    private static string MeetingEntry(string time, string name, int? workItem = null) =>
+        $"{{\"kind\":\"checkpoint\",\"time\":\"{time}\",\"name\":\"{name}\"" +
+        (workItem is { } item ? $",\"workItem\":{item}" : string.Empty) + "}";
+
+    // AC-1: Context runs exactly once with current --json; the list and the prompt show, sorted and numbered.
+    [Fact]
+    public void Meetings_RunsContextOnce_AndShowsTheList()
+    {
+        WriteDesignProject();
+        FakeContextCli cli = MeetingsCli();
+
+        (int exit, string output) = RunMeetings(cli, c =>
+        {
+            c.Input.PushTextWithEnter("meetings");
+            c.Input.PushKey(ConsoleKey.Escape);
+        });
+
+        Assert.Equal(0, exit);
+        Assert.Equal(["current", "--json"], Assert.Single(cli.Calls));
+        Assert.Contains(App.MeetingsPrompt, output);
+        Assert.Matches(@"│ 1 +│ 09:00 +│ Sprint review +│ #1234 Design", output);
+        Assert.Matches(@"│ 2 +│ 11:00 +│ Customer call", output);
+        Assert.Matches(@"│ 3 +│ 14:00 +│ Planning", output);
+        Assert.DoesNotContain("Conference", output);
+    }
+
+    // AC-1: no Context (null or not installed) is the red line, and nothing is written.
+    [Fact]
+    public void Meetings_WithoutContext_IsTheRedLine()
+    {
+        FakeContextCli missing = FakeContextCli.Missing();
+
+        (_, string nullOutput) = RunMeetings(null, c => c.Input.PushTextWithEnter("meetings"));
+        (_, string missingOutput) = RunMeetings(missing, c => c.Input.PushTextWithEnter("mt"));
+
+        Assert.Contains(App.MeetingsNoContext, nullOutput);
+        Assert.Contains(App.MeetingsNoContext, missingOutput);
+        Assert.Equal(["current", "--json"], Assert.Single(missing.Calls));
+        Assert.False(File.Exists(DayFile(EodDate)));
+    }
+
+    // AC-2: a timed-out run or output that is not the contract is a fixed red line without Context's output.
+    [Theory]
+    [InlineData(0, "SECRET-OUTPUT not json", false, App.MeetingsNotUnderstood)]
+    [InlineData(0, "{\"appointments\":[{\"title\":\"SECRET-OUTPUT\"}]}", false, App.MeetingsNotUnderstood)]
+    [InlineData(-1, "SECRET-OUTPUT", true, App.MeetingsTimedOut)]
+    public void Meetings_BadRun_IsAFixedRedLine(int exitCode, string stdout, bool timedOut, string line)
+    {
+        FakeContextCli cli = FakeContextCli.Current(new ContextRun(exitCode, stdout, timedOut));
+
+        (_, string output) = RunMeetings(cli, c => c.Input.PushTextWithEnter("meetings"));
+
+        Assert.Contains(line, output);
+        Assert.DoesNotContain("SECRET-OUTPUT", output);
+        Assert.DoesNotContain(App.MeetingsPrompt, output);
+        Assert.False(File.Exists(DayFile(EodDate)));
+    }
+
+    // AC-2: an exit-1 run whose output parses is used as normal.
+    [Fact]
+    public void Meetings_ExitOneWithValidJson_IsUsed()
+    {
+        FakeContextCli cli = FakeContextCli.Current(new ContextRun(1, MeetingsJson, timedOut: false));
+
+        (_, string output) = RunMeetings(cli, c =>
+        {
+            c.Input.PushTextWithEnter("meetings");
+            c.Input.PushTextWithEnter("all");
+        });
+
+        Assert.Contains("Booked 3 meeting(s).", output);
+    }
+
+    // AC-7, AC-8: "1 3" books the first and third in one save; the day view shows them; the answer is not in history.
+    [Fact]
+    public void Meetings_Numbers_BookThoseMeetings()
+    {
+        WriteDesignProject();
+        File.WriteAllText(DayFile(EodDate), "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}");
+        FakeContextCli cli = MeetingsCli();
+
+        (_, string output) = RunMeetings(cli, c =>
+        {
+            c.Input.PushTextWithEnter("meetings");
+            c.Input.PushTextWithEnter("1 3");
+            // Up recalls the meetings line, not "1 3": the prompt comes again and Esc books none.
+            c.Input.PushKey(ConsoleKey.UpArrow);
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushKey(ConsoleKey.Escape);
+        });
+
+        Assert.Equal("{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}," + MeetingEntry("09:00", "Sprint review", 1234) + "," +
+            MeetingEntry("14:00", "Planning") + "]}", ReadDay(EodDate));
+        Assert.Contains("Booked 2 meeting(s).", output);
+        Assert.Equal(2, Count(output, App.MeetingsPrompt));
+        Assert.Equal(2, cli.Calls.Count);
+        Assert.DoesNotContain("Unknown command", output);
+        // The second list shows the booked ones as already booked.
+        Assert.Matches(@"│ – +│ 09:00 +│ Sprint review · already booked", output);
+        Assert.Contains("No meetings were booked.", output);
+    }
+
+    // AC-7, AC-8: all (or a, or commas) books every offered meeting.
+    [Theory]
+    [InlineData("all")]
+    [InlineData("A")]
+    [InlineData("1,2, 3")]
+    public void Meetings_All_BooksEveryMeeting(string answer)
+    {
+        (_, string output) = RunMeetings(MeetingsCli(), c =>
+        {
+            c.Input.PushTextWithEnter("meetings");
+            c.Input.PushTextWithEnter(answer);
+        });
+
+        Assert.Equal("{\"entries\":[" + MeetingEntry("09:00", "Sprint review #1234") + "," + MeetingEntry("11:00", "Customer call") + "," +
+            MeetingEntry("14:00", "Planning") + "]}", ReadDay(EodDate));
+        Assert.Contains("Booked 3 meeting(s).", output);
+    }
+
+    // AC-7: Esc or an empty answer books none, in grey.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Meetings_EscOrEmpty_BooksNone(bool esc)
+    {
+        (_, string output) = RunMeetings(MeetingsCli(), c =>
+        {
+            c.Input.PushTextWithEnter("meetings");
+            if (esc)
+            {
+                c.Input.PushKey(ConsoleKey.Escape);
+            }
+            else
+            {
+                c.Input.PushKey(ConsoleKey.Enter);
+            }
+        });
+
+        Assert.Contains("No meetings were booked.", output);
+        Assert.False(File.Exists(DayFile(EodDate)));
+    }
+
+    // AC-7: a number that is not offered, or other text, is a red hint and nothing is booked.
+    [Theory]
+    [InlineData("9", "there is no meeting 9 on the list.")]
+    [InlineData("1 9", "there is no meeting 9 on the list.")]
+    [InlineData("0", "there is no meeting 0 on the list.")]
+    [InlineData("x", "type the numbers of the meetings to book")]
+    [InlineData("1 x", "type the numbers of the meetings to book")]
+    [InlineData("all 1", "type the numbers of the meetings to book")]
+    public void Meetings_BadAnswer_IsARedHint(string answer, string hint)
+    {
+        (_, string output) = RunMeetings(MeetingsCli(), c =>
+        {
+            c.Input.PushTextWithEnter("meetings");
+            c.Input.PushTextWithEnter(answer);
+        });
+
+        Assert.Contains("meetings: " + hint, output);
+        Assert.Contains("Nothing was booked.", output);
+        Assert.False(File.Exists(DayFile(EodDate)));
+    }
+
+    // AC-8: a day file changed before the answer is refused for all meetings; the change stays.
+    [Fact]
+    public void Meetings_ChangedStamp_BooksNone()
+    {
+        string initial = "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}";
+        string edited = "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"},{\"kind\":\"checkpoint\",\"time\":\"08:30\",\"name\":\"Edited outside\"}]}";
+        File.WriteAllText(DayFile(EodDate), initial);
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 200;
+        console.Profile.Height = 80;
+        HookedInput input = new HookedInput(console.Input);
+        int answerKey = "meetings".Length + 2;
+        input.BeforeKey = key =>
+        {
+            // Right before the first key of the answer, after the prompt was drawn.
+            if (key == answerKey)
+            {
+                File.WriteAllText(DayFile(EodDate), edited);
+            }
+        };
+        console.Input.PushTextWithEnter("meetings");
+        console.Input.PushTextWithEnter("all");
+        console.Input.PushTextWithEnter("quit");
+
+        Assert.Equal(0, new App(new InputOverrideConsole(console, input), EodClock(), new DayStore(data.Path), contextCli: MeetingsCli()).Run([]));
+
+        Assert.Contains("changed on disk", console.Output);
+        Assert.DoesNotContain("Booked", console.Output);
+        Assert.Equal(edited, ReadDay(EodDate));
+    }
+
+    // AC-8: an absence day is refused for all meetings.
+    [Fact]
+    public void Meetings_AbsenceDay_BooksNone()
+    {
+        File.WriteAllText(DayFile(EodDate), "{\"absence\":\"sick\"}");
+
+        (_, string output) = RunMeetings(MeetingsCli(), c =>
+        {
+            c.Input.PushTextWithEnter("meetings");
+            c.Input.PushTextWithEnter("all");
+        });
+
+        Assert.Contains("meetings: this day is marked as absence", output);
+        Assert.Equal("{\"absence\":\"sick\"}", ReadDay(EodDate));
+    }
+
+    // AC-8: on another shown day the meetings go to today's file, and the view comes back to today.
+    [Fact]
+    public void Meetings_FromAnotherDay_BookToday()
+    {
+        (_, string output) = RunMeetings(MeetingsCli(), c =>
+        {
+            c.Input.PushTextWithEnter("prev");
+            c.Input.PushTextWithEnter("meetings");
+            c.Input.PushTextWithEnter("2");
+        });
+
+        Assert.Equal("{\"entries\":[" + MeetingEntry("11:00", "Customer call") + "]}", ReadDay(EodDate));
+        Assert.False(File.Exists(DayFile("2026-11-19")));
+        Assert.Contains("Booked 1 meeting(s).", output);
+    }
+
+    // AC-9: nothing offered shows the grey note and does not ask; not-offered and booked rows still show.
+    [Fact]
+    public void Meetings_NothingOffered_DoesNotAsk()
+    {
+        File.WriteAllText(DayFile(EodDate), "{\"entries\":[" + MeetingEntry("10:00", "Standup") + "]}");
+        string json = "{\"appointments\":[" +
+            "{\"start\":\"2026-11-20T10:00:00+00:00\",\"allDay\":false,\"title\":\"Standup\"}," +
+            "{\"start\":\"2026-11-20T12:00:00+00:00\",\"allDay\":false,\"title\":\"Evil \\u202Egnissap\"}," +
+            "{\"start\":\"2026-11-20T13:00:00+00:00\",\"allDay\":false,\"title\":null}]}";
+
+        (_, string output) = RunMeetings(MeetingsCli(json), c => c.Input.PushTextWithEnter("meetings"));
+
+        Assert.Contains("No meetings to book today.", output);
+        Assert.DoesNotContain(App.MeetingsPrompt, output);
+        Assert.Matches(@"│ – +│ 10:00 +│ Standup · already booked", output);
+        Assert.Contains("! Meeting at 12:00 not offered: " + CalendarMeetings.InvisibleCharacters, output);
+        Assert.Contains("! Meeting at 13:00 not offered: " + CalendarMeetings.NoTitle, output);
+        Assert.DoesNotContain("gnissap", output);
+    }
+
+    // AC-4: an unreadable projects.json picks no project and says so in one yellow line.
+    [Fact]
+    public void Meetings_UnreadableProjects_PicksNone()
+    {
+        File.WriteAllText(ProjectsFile, "not json");
+
+        (_, string output) = RunMeetings(MeetingsCli(), c =>
+        {
+            c.Input.PushTextWithEnter("meetings");
+            c.Input.PushTextWithEnter("1");
+        });
+
+        Assert.Equal(1, Count(output, "! projects.json cannot be read, so no meeting gets a project."));
+        Assert.Equal("{\"entries\":[" + MeetingEntry("09:00", "Sprint review #1234") + "]}", ReadDay(EodDate));
+    }
+
+    // AC-3: titles are escaped in markup, so brackets show as typed.
+    [Fact]
+    public void Meetings_TitlesAreEscaped()
+    {
+        string json = "{\"appointments\":[{\"start\":\"2026-11-20T10:00:00+00:00\",\"allDay\":false,\"title\":\"[red]Review[/]\"}]}";
+
+        (_, string output) = RunMeetings(MeetingsCli(json), c =>
+        {
+            c.Input.PushTextWithEnter("meetings");
+            c.Input.PushTextWithEnter("1");
+        });
+
+        Assert.Contains("[red]Review[/]", output);
+        Assert.Contains("\"name\":\"[red]Review[/]\"", ReadDay(EodDate));
+    }
+
+    // AC-10: meetings takes no arguments.
+    [Fact]
+    public void Meetings_WithAnArgument_IsAUsageHint()
+    {
+        FakeContextCli cli = MeetingsCli();
+
+        (_, string output) = RunMeetings(cli, c => c.Input.PushTextWithEnter("meetings foo"));
+
+        Assert.Contains("meetings takes no arguments.", output);
+        Assert.Empty(cli.Calls);
     }
 }

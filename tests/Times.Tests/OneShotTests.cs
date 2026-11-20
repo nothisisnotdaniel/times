@@ -1009,4 +1009,72 @@ public sealed class OneShotTests : IDisposable
         Assert.Contains("workplace home|office|clear", console.Output);
         Assert.False(File.Exists(TodayFile(data.Path)));
     }
+
+    // ---- meetings (312) ----
+
+    private const string OneShotMeetingsJson =
+        "{\"appointments\":[{\"start\":\"2026-11-20T09:00:00+00:00\",\"allDay\":false,\"title\":\"Sprint review #1234\"}," +
+        "{\"start\":\"2026-11-20T11:00:00+00:00\",\"allDay\":false,\"title\":\"Customer call\"}]}";
+
+    // AC-10: the one-shot prints the list and the plain note, books nothing and exits 0.
+    [Fact]
+    public void Meetings_OneShot_ListsAndBooksNothing()
+    {
+        File.WriteAllText(Path.Combine(data.Path, "projects.json"), "{\"projects\":[{\"workItem\":1234,\"title\":\"Design\"}]}");
+        FakeContextCli cli = FakeContextCli.Current(FakeContextCli.Ok(OneShotMeetingsJson));
+
+        (int exit, string output) = EodShot(cli, false, "meetings");
+
+        Assert.Equal(0, exit);
+        Assert.Equal(["current", "--json"], Assert.Single(cli.Calls));
+        Assert.Matches(@"│ 1 +│ 09:00 +│ Sprint review +│ #1234 Design", output);
+        Assert.Matches(@"│ 2 +│ 11:00 +│ Customer call", output);
+        Assert.Contains(App.MeetingsOneShotNote, output);
+        Assert.DoesNotContain(App.MeetingsPrompt, output);
+        Assert.False(File.Exists(EodFile));
+    }
+
+    // AC-10, AC-9: the alias works; nothing offered is the grey note, still exit 0.
+    [Fact]
+    public void Meetings_OneShot_NothingOffered_ExitsZero()
+    {
+        FakeContextCli cli = FakeContextCli.Current(FakeContextCli.Ok("{\"appointments\":[]}"));
+
+        (int exit, string output) = EodShot(cli, false, "mt");
+
+        Assert.Equal(0, exit);
+        Assert.Contains("No meetings to book today.", output);
+        Assert.DoesNotContain(App.MeetingsOneShotNote, output);
+        Assert.False(File.Exists(EodFile));
+    }
+
+    // AC-10: an argument is a red usage line, exit 1, and Context is not run.
+    [Fact]
+    public void Meetings_OneShot_WithAnArgument_Fails()
+    {
+        FakeContextCli cli = FakeContextCli.Current(FakeContextCli.Ok(OneShotMeetingsJson));
+
+        (int exit, string output) = EodShot(cli, true, "meetings", "foo");
+
+        Assert.Equal(1, exit);
+        Assert.Contains("\u001b[", output);
+        Assert.Contains("takes no arguments", output);
+        Assert.Empty(cli.Calls);
+        Assert.False(File.Exists(EodFile));
+    }
+
+    // AC-1, AC-2: no Context, or output that is not the contract, fails with exit 1 and never echoes the output.
+    [Fact]
+    public void Meetings_OneShot_ContextProblems_ExitOne()
+    {
+        (int missingExit, string missingOutput) = EodShot(FakeContextCli.Missing(), false, "meetings");
+        (int badExit, string badOutput) = EodShot(FakeContextCli.Current(FakeContextCli.Ok("SECRET-OUTPUT")), false, "meetings");
+
+        Assert.Equal(1, missingExit);
+        Assert.Contains(App.MeetingsNoContext, missingOutput);
+        Assert.Equal(1, badExit);
+        Assert.Contains(App.MeetingsNotUnderstood, badOutput);
+        Assert.DoesNotContain("SECRET-OUTPUT", badOutput);
+        Assert.False(File.Exists(EodFile));
+    }
 }

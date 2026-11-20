@@ -90,6 +90,9 @@ internal sealed class App
     // Set by timesheet when the sheet's file already exists; the loop then asks whether to replace it.
     private TimesheetRun? pendingTimesheet;
 
+    // Set by meetings in the session when it offers meetings; the loop then asks which of them to book.
+    private MeetingsRun? pendingMeetings;
+
     // The start-up update check (started once in Run), whether its hint was shown, and whether its
     // staged package was taken over. The package staged for quit, from that check or from update.
     private Task<UpdateOutcome>? startupCheck;
@@ -338,6 +341,7 @@ internal sealed class App
         registry.Register("import", "im", "Import day files from the old tool: <folder>", Import);
         registry.Register("vacation", "va", "Show vacation days taken and left this year", NoArguments("vacation", Vacation));
         registry.Register("eod", "ed", "End the day: book the leaving, see today's hours, todos and a stand-up: [time] [--plan <text>]", EndOfDay);
+        registry.Register("meetings", "mt", "Book today's calendar meetings from Context as checkpoints", NoArguments("meetings", Meetings));
     }
 
     // Marks the day being viewed as an absence (vacation, sick, holiday) or clears it. Nothing is written
@@ -1937,6 +1941,306 @@ internal sealed class App
 
         // True when Context answered the todos run, so it is installed and the plan can be saved there.
         public bool Context { get; }
+    }
+
+    private const string MeetingsName = "meetings";
+
+    /// <summary>The grey question meetings asks in the session when it offers at least one meeting.</summary>
+    internal const string MeetingsPrompt = "Type the numbers to book (e.g. 1 3) or all. Esc books none.";
+
+    /// <summary>The placeholder in the input box while meetings asks which to book.</summary>
+    internal const string MeetingsPlaceholder = "numbers or all · Esc books none";
+
+    /// <summary>The red line when Context is not there.</summary>
+    internal const string MeetingsNoContext = "meetings: Context is not installed. Nothing was booked.";
+
+    /// <summary>The red line when Context did not answer in time.</summary>
+    internal const string MeetingsTimedOut = "meetings: Context did not answer in time. Nothing was booked.";
+
+    /// <summary>The red line when Context's answer is not its calendar contract.</summary>
+    internal const string MeetingsNotUnderstood = "meetings: Context's calendar could not be read. Nothing was booked.";
+
+    /// <summary>The plain line a one-shot ends with when it offers meetings.</summary>
+    internal const string MeetingsOneShotNote = "Run meetings in Times to choose which to book.";
+
+    // Lists today's calendar meetings from Context (context current --json) as checkpoints to book. Nothing is booked here:
+    // in the session the loop then asks which to book (AskMeetings); a one-shot only lists them. Context's output is never shown.
+    private CommandResult Meetings()
+    {
+        (DateOnly today, _) = Today();
+        if (contextCli?.Run(["current", "--json"]) is not { } run)
+        {
+            return Hint(MeetingsNoContext);
+        }
+
+        if (run.TimedOut)
+        {
+            return Hint(MeetingsTimedOut);
+        }
+
+        // An exit code other than 0 is fine as long as the output is the contract.
+        if (CalendarMeetings.Parse(run.Stdout) is not { } appointments)
+        {
+            return Hint(MeetingsNotUnderstood);
+        }
+
+        DayRecord record;
+        DayStamp stamp;
+        try
+        {
+            (record, stamp) = LoadForWrite(today);
+        }
+        catch (DayFileChangedException)
+        {
+            return ChangedOnDisk(MeetingsName, today);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{MeetingsName}: {Markup.Escape(ex.Message)} Nothing was booked.");
+        }
+
+        ProjectList? projects;
+        bool projectsUnreadable = false;
+        try
+        {
+            projects = projectStore.Load();
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            projects = null;
+            projectsUnreadable = true;
+        }
+
+        IReadOnlyList<MeetingRow> rows = CalendarMeetings.Offer(appointments, today, projects, record);
+        List<IRenderable> parts = [.. MeetingsView(rows)];
+        if (projectsUnreadable)
+        {
+            parts.Add(new Markup("[yellow]! projects.json cannot be read, so no meeting gets a project.[/]"));
+        }
+
+        List<MeetingRow> offered = rows.Where(r => r.Status == MeetingStatus.Offered).ToList();
+        if (offered.Count == 0)
+        {
+            parts.Add(new Markup("[grey]No meetings to book today.[/]"));
+            return new CommandResult(new Rows(parts), hideQuicklist: true);
+        }
+
+        if (oneShot)
+        {
+            parts.Add(new Text(MeetingsOneShotNote));
+            return new CommandResult(new Rows(parts));
+        }
+
+        pendingMeetings = new MeetingsRun(parts, offered, today, stamp);
+        return CommandResult.None;
+    }
+
+    /// <summary>
+    /// The meetings list: a <c>Meetings today</c> table of the offered (numbered) and already booked (grey, no number) rows,
+    /// then one yellow line per meeting that is not offered, which never holds its title. Every text is escaped.
+    /// </summary>
+    internal static IReadOnlyList<IRenderable> MeetingsView(IReadOnlyList<MeetingRow> rows)
+    {
+        List<IRenderable> parts = [];
+        List<MeetingRow> listed = rows.Where(r => r.Status != MeetingStatus.NotOffered).ToList();
+        if (listed.Count > 0)
+        {
+            Table table = new Table()
+                .Border(TableBorder.Rounded)
+                .BorderColor(Color.Grey)
+                .Title("Meetings today", new Style(Color.Grey))
+                .AddColumn("[grey]#[/]")
+                .AddColumn("[grey]Time[/]")
+                .AddColumn("[grey]Meeting[/]")
+                .AddColumn("[grey]Project[/]");
+            foreach (MeetingRow row in listed)
+            {
+                string at = row.Time.ToString("HH:mm", CultureInfo.InvariantCulture);
+                string name = Markup.Escape(row.Name ?? string.Empty);
+                string project = row.Project is { } picked
+                    ? Markup.Escape($"#{picked.WorkItem.ToString(CultureInfo.InvariantCulture)} {picked.Title}")
+                    : string.Empty;
+                if (row.Status == MeetingStatus.AlreadyBooked)
+                {
+                    table.AddRow(new Markup("[grey]–[/]"), new Markup($"[grey]{at}[/]"), new Markup($"[grey]{name} · already booked[/]"),
+                        new Markup($"[grey]{project}[/]"));
+                }
+                else
+                {
+                    table.AddRow(new Markup($"[steelblue1]{row.Number!.Value.ToString(CultureInfo.InvariantCulture)}[/]"),
+                        new Markup($"[steelblue1]{at}[/]"), new Markup(name), new Markup(project));
+                }
+            }
+
+            parts.Add(table);
+        }
+
+        foreach (MeetingRow row in rows.Where(r => r.Status == MeetingStatus.NotOffered))
+        {
+            string at = row.Time.ToString("HH:mm", CultureInfo.InvariantCulture);
+            parts.Add(new Markup($"[yellow]! Meeting at {at} not offered: {Markup.Escape(row.Reason ?? string.Empty)}[/]"));
+        }
+
+        return parts;
+    }
+
+    // Asks in the input box which meetings to book, below the list. The answer never enters the history; Esc or an empty
+    // answer books none. Returns null if the input ended.
+    private CommandResult? AskMeetings(LineEditor editor, MeetingsRun run)
+    {
+        framePlaceholder = MeetingsPlaceholder;
+        try
+        {
+            Draw(new Rows(run.Parts), new Markup($"[grey]{MeetingsPrompt}[/]"), true);
+            PlaceCursor();
+            int width = console.Profile.Width;
+            string? typed = editor.ReadValue(InputColumn, InputLine, width - InputColumn - 2, framePlaceholder, out bool cancelled,
+                ShowPasteCut, resized: Resize, hidden: TooSmall);
+            if (typed is null)
+            {
+                return null;
+            }
+
+            string answer = cancelled ? string.Empty : typed.Trim();
+            if (answer.Length == 0)
+            {
+                return new CommandResult(new Markup("[grey]No meetings were booked.[/]"));
+            }
+
+            if (ChooseMeetings(answer, run.Offered.Count, out IReadOnlyList<int> chosen) is { } problem)
+            {
+                return new CommandResult(new Rows(run.Parts), hint: new Markup($"[red]{MeetingsName}: {problem} Nothing was booked.[/]"),
+                    hideQuicklist: true, failed: true);
+            }
+
+            return BookMeetings(run, chosen.Select(n => run.Offered[n - 1]).ToList());
+        }
+        finally
+        {
+            framePlaceholder = Placeholder;
+        }
+    }
+
+    /// <summary>
+    /// Reads the answer to <see cref="MeetingsPrompt"/>: <c>all</c> or <c>a</c> (ASCII, any case) for 1..<paramref name="count"/>,
+    /// or numbers separated by spaces or commas (each once, in the order typed). Returns null and the numbers, or the
+    /// reason (escaped markup) and none.
+    /// </summary>
+    internal static string? ChooseMeetings(string answer, int count, out IReadOnlyList<int> chosen)
+    {
+        chosen = [];
+        string[] tokens = answer.Split([' ', ','], StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length == 1 && (string.Equals(tokens[0], "all", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(tokens[0], "a", StringComparison.OrdinalIgnoreCase)))
+        {
+            chosen = Enumerable.Range(1, count).ToList();
+            return null;
+        }
+
+        const string Usage = "type the numbers of the meetings to book (e.g. [bold]1 3[/]) or [bold]all[/].";
+        if (tokens.Length == 0)
+        {
+            return Usage;
+        }
+
+        List<int> numbers = [];
+        foreach (string token in tokens)
+        {
+            if (!token.All(char.IsAsciiDigit))
+            {
+                return Usage;
+            }
+
+            if (!int.TryParse(token, NumberStyles.None, CultureInfo.InvariantCulture, out int number) || number < 1 || number > count)
+            {
+                string shown = token.Length > 10 ? token[..10] + "…" : token;
+                return $"there is no meeting [bold]{Markup.Escape(shown)}[/] on the list.";
+            }
+
+            if (!numbers.Contains(number))
+            {
+                numbers.Add(number);
+            }
+        }
+
+        chosen = numbers;
+        return null;
+    }
+
+    // Adds the chosen meetings to today's file as checkpoints in one save, checked against the stamp the list was built
+    // from and the last redraw. A change on disk, an absence day or a failed write books none of them.
+    private CommandResult BookMeetings(MeetingsRun run, IReadOnlyList<MeetingRow> chosen)
+    {
+        DateOnly day = run.Day;
+        DayRecord current;
+        DayStamp stamp;
+        try
+        {
+            (current, stamp) = LoadForWrite(day);
+        }
+        catch (DayFileChangedException)
+        {
+            return ChangedOnDisk(MeetingsName, day);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{MeetingsName}: {Markup.Escape(ex.Message)} Nothing was booked.");
+        }
+
+        if (stamp != run.Stamp)
+        {
+            return ChangedOnDisk(MeetingsName, day);
+        }
+
+        if (current.Absence is { } absence)
+        {
+            return Hint($"{MeetingsName}: this day is marked as absence ({DayView.AbsenceLabel(absence)}). " +
+                "Use [bold]absence clear[/] first. Nothing was booked.");
+        }
+
+        DayRecord updated = current;
+        foreach (MeetingRow row in chosen)
+        {
+            updated = updated.Add(row.ToEntry());
+        }
+
+        try
+        {
+            Store.Save(day, updated, stamp);
+        }
+        catch (DayFileChangedException)
+        {
+            return ChangedOnDisk(MeetingsName, day);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{MeetingsName}: could not save the day. {Markup.Escape(ex.Message)} Nothing was booked.");
+        }
+
+        // The day view shows the new checkpoints: meetings always books today.
+        dayView.Today();
+        return new CommandResult(new Markup($"[grey]Booked {chosen.Count.ToString(CultureInfo.InvariantCulture)} meeting(s).[/]"));
+    }
+
+    private sealed class MeetingsRun
+    {
+        public MeetingsRun(IReadOnlyList<IRenderable> parts, IReadOnlyList<MeetingRow> offered, DateOnly day, DayStamp stamp)
+        {
+            Parts = parts;
+            Offered = offered;
+            Day = day;
+            Stamp = stamp;
+        }
+
+        public IReadOnlyList<IRenderable> Parts { get; }
+
+        // The offered rows in number order: number n is Offered[n - 1].
+        public IReadOnlyList<MeetingRow> Offered { get; }
+
+        public DateOnly Day { get; }
+
+        // The day file's stamp when the list was built, so a change before the answer books nothing.
+        public DayStamp Stamp { get; }
     }
 
     // The grey note after an export with an open row; a fixed literal, so no escaping is needed.
@@ -4151,6 +4455,17 @@ internal sealed class App
                 }
 
                 result = replaced;
+            }
+
+            if (pendingMeetings is { } meetingsRun)
+            {
+                pendingMeetings = null;
+                if (AskMeetings(editor, meetingsRun) is not { } booked)
+                {
+                    return 0;
+                }
+
+                result = booked;
             }
 
             if (pendingPlan is { } planRun)
