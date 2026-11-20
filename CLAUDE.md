@@ -375,7 +375,8 @@ Every factory agent reads this file before working on Times. Keep it short and a
     `AnsiConsole.*` methods (except in `Program.cs`). Tests use `TestConsole` and assert on `.Output`.
   - Read the clock through an injected `TimeProvider`, never `DateTime.Now` or `DateTimeOffset.Now`.
     Tests use a fixed `TimeProvider` subclass.
-  - Wrap any user or external text in `Markup.Escape` before it goes into markup.
+  - Echo user-typed or file text in a hint through `EchoText.Markup` (drops control and invisible characters with
+    `DataFolder.ForDisplay`, then escapes). Wrap any other user or external text in `Markup.Escape` before it goes into markup.
   - Use Spectre widgets (`Table`, `Panel`, `Rule`, `FigletText`) instead of hand-drawn ASCII.
     Keep the colours consistent with what is already there (`SteelBlue1` accents, `grey` headers).
   - File-scoped namespaces, `internal sealed` unless a type must be public.
