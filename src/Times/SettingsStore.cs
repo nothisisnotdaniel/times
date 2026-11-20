@@ -27,6 +27,7 @@ internal sealed class SettingValues
     {
         this.registry = registry;
         this.entries = entries;
+        Fallbacks = entries.Where(e => e.Value is JsonElement && registry.TryGet(e.Key, out Setting _)).Select(e => e.Key).ToList();
     }
 
     /// <summary>Every registered setting at its default, with nothing to write.</summary>
@@ -36,8 +37,7 @@ internal sealed class SettingValues
     /// The registered names whose value in the file their setting cannot take, in file order. Each has
     /// its default; an empty list when every value could be read.
     /// </summary>
-    public IReadOnlyList<string> Fallbacks =>
-        entries.Where(e => e.Value is JsonElement && registry.TryGet(e.Key, out Setting _)).Select(e => e.Key).ToList();
+    public IReadOnlyList<string> Fallbacks { get; }
 
     /// <summary>
     /// The value of <paramref name="name"/>: a <see cref="bool"/>, <see cref="int"/> or <see cref="string"/> by kind
