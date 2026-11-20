@@ -126,7 +126,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] [#12](backlog/012-dash-test-for-the-prune-script.md) Dash test for the prune script → 313-dash-test-prune-script
 - [x] [#49](backlog/049-safer-day-file-loading.md) Safer day-file loading → 314-safer-day-file-loading
 - [x] [#14](backlog/014-readme-checksum-guidance.md) README checksum guidance → 316-readme-checksum-guidance
-- [ ] [#17](backlog/017-skipped-hint-on-empty-days.md) Skipped hint on empty days
+- [x] [#17](backlog/017-skipped-hint-on-empty-days.md) Skipped hint on empty days → 317-skipped-hint-empty-days
 - [ ] [#19](backlog/019-shared-sanitiser-for-echoed-text.md) Shared sanitiser for echoed text
 - [ ] [#50](backlog/050-csv-export-file-mode-and-failure.md) CSV export file mode and failure test
 - [ ] [#22](backlog/022-progress-line-for-devops-sync.md) Progress line for DevOps sync
