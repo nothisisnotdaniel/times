@@ -151,7 +151,7 @@ internal sealed class DayView
             }
             else if (balance.SkippedFiles > 0)
             {
-                empty.Add(new Markup(SkippedHint(balance.SkippedFiles)[2..]));
+                empty.Add(new Markup(SkippedHint(balance.SkippedFiles)));
             }
 
             AddWeekLine(empty, weekWarnings, 0);
@@ -360,18 +360,18 @@ internal sealed class DayView
         line += $" [grey]· balance[/] [steelblue1]{FormatSigned(balance.Total)}[/]";
         if (balance.SkippedFiles > 0)
         {
-            line += SkippedHint(balance.SkippedFiles);
+            line += "  " + SkippedHint(balance.SkippedFiles);
         }
 
         return line;
     }
 
-    // The yellow skipped hint, with two leading spaces; it holds no user text.
+    // The yellow skipped hint markup; it holds no user text.
     private static string SkippedHint(int skipped)
     {
         string count = skipped.ToString(CultureInfo.InvariantCulture);
         string files = skipped == 1 ? "day file" : "day files";
-        return $"  [yellow]! {count} {files} skipped[/]";
+        return $"[yellow]! {count} {files} skipped[/]";
     }
 
     /// <summary>
