@@ -4305,7 +4305,7 @@ internal sealed class App
             SetTop(SettingsPanel.Render(settings, view.Values, view.Selected, view.Unreadable));
             offset = settings.Settings.Count == 0 || TooSmall
                 ? offset
-                : TopArea.OffsetShowing(SettingsPanel.LineOf(view.Selected, view.Unreadable is not null), topLines.Count, TopHeight, offset);
+                : TopArea.OffsetShowing(SettingsPanel.LineOf(view.Selected, view.Unreadable is not null, view.Values.Fallbacks.Count), topLines.Count, TopHeight, offset);
         }
         else
         {
@@ -4696,7 +4696,7 @@ internal sealed class App
         SetTop(SettingsPanel.Render(settings, values, selected, unreadable));
         offset = settings.Settings.Count == 0 || TooSmall
             ? 0
-            : TopArea.OffsetShowing(SettingsPanel.LineOf(selected, unreadable is not null), topLines.Count, TopHeight, offset);
+            : TopArea.OffsetShowing(SettingsPanel.LineOf(selected, unreadable is not null, values.Fallbacks.Count), topLines.Count, TopHeight, offset);
         if (full)
         {
             DrawFull();

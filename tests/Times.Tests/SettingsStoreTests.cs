@@ -129,7 +129,7 @@ public sealed class SettingsStoreTests
         Assert.Equal("light", store.Load(Registry()).Choice("theme"));
     }
 
-    // AC-10
+    // AC-10; 311 AC-2
     [Theory]
     [InlineData("{not json", "settings.json is not valid JSON.")]
     [InlineData("", "settings.json is not valid JSON.")]
@@ -145,20 +145,6 @@ public sealed class SettingsStoreTests
     [InlineData("{\"settings\":{\"round\":true,\"round\":false}}", "settings.json has a property more than once.")]
     [InlineData("{\"settings\":{\"x\":{\"a\":1,\"a\":2}}}", "settings.json has a property more than once.")]
     [InlineData("{\"settings\":{\"x\":[{\"a\":1,\"a\":2}]}}", "settings.json has a property more than once.")]
-    [InlineData("{\"settings\":{\"round\":1}}", "settings.json has a wrong value for \"round\".")]
-    [InlineData("{\"settings\":{\"round\":\"true\"}}", "settings.json has a wrong value for \"round\".")]
-    [InlineData("{\"settings\":{\"round\":null}}", "settings.json has a wrong value for \"round\".")]
-    [InlineData("{\"settings\":{\"target\":\"5\"}}", "settings.json has a wrong value for \"target\".")]
-    [InlineData("{\"settings\":{\"target\":1.5}}", "settings.json has a wrong value for \"target\".")]
-    [InlineData("{\"settings\":{\"target\":5.0}}", "settings.json has a wrong value for \"target\".")]
-    [InlineData("{\"settings\":{\"target\":721}}", "settings.json has a wrong value for \"target\".")]
-    [InlineData("{\"settings\":{\"target\":-11}}", "settings.json has a wrong value for \"target\".")]
-    [InlineData("{\"settings\":{\"target\":99999999999}}", "settings.json has a wrong value for \"target\".")]
-    [InlineData("{\"settings\":{\"target\":true}}", "settings.json has a wrong value for \"target\".")]
-    [InlineData("{\"settings\":{\"theme\":\"Dark\"}}", "settings.json has a wrong value for \"theme\".")]
-    [InlineData("{\"settings\":{\"theme\":\"blue\"}}", "settings.json has a wrong value for \"theme\".")]
-    [InlineData("{\"settings\":{\"theme\":1}}", "settings.json has a wrong value for \"theme\".")]
-    [InlineData("{\"settings\":{\"theme\":\"\\ud800\"}}", "settings.json has a wrong value for \"theme\".")]
     [InlineData("{\"settings\":{\"\\ud800\":1}}", "settings.json has a property name that cannot be read.")]
     [InlineData("{\"settings\":{\"x\":[{\"\\udc00a\":1}]}}", "settings.json has a property name that cannot be read.")]
     public void Load_InvalidFile_ThrowsInvalidData_AndLeavesFileUnchanged(string contents, string message)
@@ -171,6 +157,106 @@ public sealed class SettingsStoreTests
         AssertRefused(store, message);
 
         Assert.Equal(before, File.ReadAllBytes(store.FilePath));
+    }
+
+    // 311 AC-1
+    [Theory]
+    [InlineData("{\"settings\":{\"round\":1}}", "round")]
+    [InlineData("{\"settings\":{\"round\":\"true\"}}", "round")]
+    [InlineData("{\"settings\":{\"round\":null}}", "round")]
+    [InlineData("{\"settings\":{\"target\":\"5\"}}", "target")]
+    [InlineData("{\"settings\":{\"target\":1.5}}", "target")]
+    [InlineData("{\"settings\":{\"target\":5.0}}", "target")]
+    [InlineData("{\"settings\":{\"target\":721}}", "target")]
+    [InlineData("{\"settings\":{\"target\":-11}}", "target")]
+    [InlineData("{\"settings\":{\"target\":99999999999}}", "target")]
+    [InlineData("{\"settings\":{\"target\":true}}", "target")]
+    [InlineData("{\"settings\":{\"theme\":\"Dark\"}}", "theme")]
+    [InlineData("{\"settings\":{\"theme\":\"blue\"}}", "theme")]
+    [InlineData("{\"settings\":{\"theme\":1}}", "theme")]
+    [InlineData("{\"settings\":{\"theme\":\"\\ud800\"}}", "theme")]
+    public void Load_WrongValue_FallsBackForThatSettingOnly_AndLeavesFileUnchanged(string contents, string name)
+    {
+        using TempFolder temp = new TempFolder();
+        SettingsStore store = new SettingsStore(temp.Path);
+        File.WriteAllText(store.FilePath, contents);
+        byte[] before = File.ReadAllBytes(store.FilePath);
+
+        SettingValues values = store.Load(Registry());
+
+        Assert.Equal([name], values.Fallbacks);
+        Assert.Equal(Registry().Settings.Single(s => s.Name == name).Default, values.Get(name));
+        AssertDefaults(values);
+        Assert.Equal(contents, values.ToJson());
+        Assert.Equal(before, File.ReadAllBytes(store.FilePath));
+    }
+
+    // 311 AC-1
+    [Fact]
+    public void Load_TwoWrongValues_KeepsTheGoodOne_AndListsBothInFileOrder()
+    {
+        using TempFolder temp = new TempFolder();
+        SettingsStore store = new SettingsStore(temp.Path);
+        File.WriteAllText(store.FilePath, "{\"settings\":{\"theme\":\"blue\",\"target\":600,\"round\":1}}");
+
+        SettingValues values = store.Load(Registry());
+
+        Assert.Equal(["theme", "round"], values.Fallbacks);
+        Assert.False(values.IsOn("round"));
+        Assert.Equal("dark", values.Choice("theme"));
+        Assert.Equal(600, values.Number("target"));
+    }
+
+    // 311 AC-1 (the spec's order: on/off, number, choice)
+    [Fact]
+    public void Load_OnOffNumberChoice_WrongOnOffAndChoice_FallBack()
+    {
+        using TempFolder temp = new TempFolder();
+        SettingsStore store = new SettingsStore(temp.Path);
+        File.WriteAllText(store.FilePath, "{\"settings\":{\"round\":1,\"target\":15,\"theme\":\"blue\"}}");
+
+        SettingValues values = store.Load(Registry());
+
+        Assert.Equal(["round", "theme"], values.Fallbacks);
+        Assert.False(values.IsOn("round"));
+        Assert.Equal(15, values.Number("target"));
+        Assert.Equal("dark", values.Choice("theme"));
+    }
+
+    // 311 AC-3
+    [Fact]
+    public void Save_KeepsAFallbackByteForByte_UntilItIsSet_ThenWritesItInPlace()
+    {
+        using TempFolder temp = new TempFolder();
+        SettingsStore store = new SettingsStore(temp.Path);
+        File.WriteAllText(store.FilePath, "{\"settings\":{\"later\":1,\"theme\":  \"bl\\u0075e\" ,\"round\":false}}");
+
+        SettingValues values = store.Load(Registry());
+        SettingValues other = values.With("round", true);
+        store.Save(other);
+
+        Assert.Equal("{\"settings\":{\"later\":1,\"theme\":\"bl\\u0075e\",\"round\":true}}", File.ReadAllText(store.FilePath));
+        Assert.Equal(["theme"], other.Fallbacks);
+        Assert.Equal(["theme"], store.Load(Registry()).Fallbacks);
+
+        SettingValues set = store.Load(Registry()).With("theme", "light");
+        store.Save(set);
+
+        Assert.Empty(set.Fallbacks);
+        Assert.Equal("{\"settings\":{\"later\":1,\"theme\":\"light\",\"round\":true}}", File.ReadAllText(store.FilePath));
+        Assert.Empty(store.Load(Registry()).Fallbacks);
+    }
+
+    // 311 AC-3
+    [Fact]
+    public void Load_WithoutWrongValues_HasNoFallbacks()
+    {
+        using TempFolder temp = new TempFolder();
+        SettingsStore store = new SettingsStore(temp.Path);
+        File.WriteAllText(store.FilePath, "{\"settings\":{\"later\":\"x\",\"round\":true,\"target\":1,\"theme\":\"light\"}}");
+
+        Assert.Empty(store.Load(Registry()).Fallbacks);
+        Assert.Empty(SettingValues.Defaults(Registry()).Fallbacks);
     }
 
     // AC-10

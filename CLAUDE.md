@@ -155,8 +155,12 @@ Every factory agent reads this file before working on Times. Keep it short and a
   is read only by `status --json` for the tray), the way commands use `CommandRegistry`, and never add their own
   command for them. `settings` (`se`) opens the modal `SettingsPanel` in place of the top area. Values
   live in `settings.json` next to the day files (`SettingsStore`, `{"settings":{"<name>":true|1|"opt"}}`),
-  read like `projects.json` through `CappedFile` (regular file, 64 KiB cap); a broken file is shown as
-  unreadable and never overwritten, unknown names are kept on save, and every change is saved at once.
+  read like `projects.json` through `CappedFile` (regular file, 64 KiB cap); a structurally broken file (not JSON, not
+  `{"settings":{…}}`, a duplicate property, an unreadable name, too large, not a regular file) is shown as unreadable and
+  never overwritten. A value a registered setting cannot take (wrong type, out of range, unknown option) falls back to its
+  default for that setting only (`SettingValues.Fallbacks`, file order): the panel shows a yellow
+  `! settings.json has a wrong value for "<name>": its default is used.` line per name above the rows, and the raw value is
+  kept on save byte for byte until that setting is changed. Unknown names are kept on save, and every change is saved at once.
 - **Target and balance:** `DayRecord.TimeLeft(target)` counts down from the target `App.RenderDay`
   reads from `daily-target` in `settings.json` on every redraw (missing, broken or out of range: 480;
   never written). Below the `Breaks` line, `DayView` shows `Target 8:00 · day -0:30 · balance +1:15`
