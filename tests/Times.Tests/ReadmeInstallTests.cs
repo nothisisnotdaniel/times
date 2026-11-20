@@ -57,7 +57,9 @@ public sealed class ReadmeInstallTests
         Assert.Contains("This is safe because NuGet only looks in your download folder", section);
         int install = section.IndexOf(InstallCommand, StringComparison.Ordinal);
         Assert.True(install >= 0);
-        Assert.True(section.IndexOf(OpenSsl, StringComparison.Ordinal) is var check && check >= 0 && check < install);
+        int check = section.IndexOf(OpenSsl, StringComparison.Ordinal);
+        Assert.True(check >= 0);
+        Assert.True(check < install);
     }
 
     // AC-7
