@@ -381,7 +381,7 @@ internal sealed class App
                 clear = true;
                 break;
             default:
-                return Hint($"{Name}: [bold]{Markup.Escape(word)}[/] is not an absence. {Usage}");
+                return Hint($"{Name}: [bold]{EchoText.Markup(word)}[/] is not an absence. {Usage}");
         }
 
         DateOnly day = dayView.Current;
@@ -462,7 +462,7 @@ internal sealed class App
                 clear = true;
                 break;
             default:
-                return Hint($"{Name}: [bold]{Markup.Escape(word)}[/] is not a workplace. {Usage}");
+                return Hint($"{Name}: [bold]{EchoText.Markup(word)}[/] is not a workplace. {Usage}");
         }
 
         DateOnly day = dayView.Current;
@@ -529,7 +529,7 @@ internal sealed class App
 
         if (!BalanceCorrection.TryParseAmount(first, out int minutes))
         {
-            return Hint($"{Name}: [bold]{Markup.Escape(first)}[/] is not an amount. {CorrectionUsage}");
+            return Hint($"{Name}: [bold]{EchoText.Markup(first)}[/] is not an amount. {CorrectionUsage}");
         }
 
         string reason = rest.Trim();
@@ -568,7 +568,7 @@ internal sealed class App
 
         if (!int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out int number))
         {
-            return Hint($"{Name}: [bold]{Markup.Escape(text)}[/] is not a correction number. {CorrectionUsage}");
+            return Hint($"{Name}: [bold]{EchoText.Markup(text)}[/] is not a correction number. {CorrectionUsage}");
         }
 
         return ChangeCorrections(Name, "Nothing was removed.", current =>
@@ -804,11 +804,11 @@ internal sealed class App
             }
             else if (part.StartsWith("--", StringComparison.Ordinal))
             {
-                return $"[bold]{Markup.Escape(part)}[/] is not a report option.";
+                return $"[bold]{EchoText.Markup(part)}[/] is not a report option.";
             }
             else
             {
-                return $"use either two dates or [bold]--from[/] and [bold]--to[/], not both ([bold]{Markup.Escape(part)}[/]).";
+                return $"use either two dates or [bold]--from[/] and [bold]--to[/], not both ([bold]{EchoText.Markup(part)}[/]).";
             }
         }
 
@@ -836,7 +836,7 @@ internal sealed class App
             {
                 from = default;
                 to = default;
-                return Hint($"{name}: [bold]{Markup.Escape(parts[i])}[/] is not a date. {usage}");
+                return Hint($"{name}: [bold]{EchoText.Markup(parts[i])}[/] is not a date. {usage}");
             }
         }
 
@@ -2158,7 +2158,7 @@ internal sealed class App
             if (!int.TryParse(token, NumberStyles.None, CultureInfo.InvariantCulture, out int number) || number < 1 || number > count)
             {
                 string shown = token.Length > 10 ? token[..10] + "…" : token;
-                return $"there is no meeting [bold]{Markup.Escape(shown)}[/] on the list.";
+                return $"there is no meeting [bold]{EchoText.Markup(shown)}[/] on the list.";
             }
 
             if (!numbers.Contains(number))
@@ -2250,8 +2250,8 @@ internal sealed class App
     // The grey note after an export with an open row; a fixed literal, so no escaping is needed.
     internal const string ExportOpenNote = "A row has an open checkpoint: it has no end on its day and counts no time.";
 
-    // Text for markup: without control or invisible characters, then escaped.
-    private static string Shown(string text) => Markup.Escape(DataFolder.ForDisplay(text));
+    // Text for markup through the shared rule in EchoText; internal so a test can check the delegation.
+    internal static string Shown(string text) => EchoText.Markup(text);
 
     // True if anything is at path, a symlink included, even one whose target is missing.
     private static bool TargetExists(string path)
@@ -2432,7 +2432,7 @@ internal sealed class App
     internal static IRenderable FindView(string text, CheckpointSearch search, ProjectList? projects)
     {
         List<IRenderable> parts = [];
-        string shown = Markup.Escape(text);
+        string shown = EchoText.Markup(text);
         if (search.Matches.Count == 0)
         {
             parts.Add(new Markup($"[grey]No checkpoints or projects match \"{shown}\".[/]"));
@@ -2678,7 +2678,7 @@ internal sealed class App
 
             if (!DevOpsCredential.IsValidOrganization(rest))
             {
-                return Hint($"{Name}: [bold]{Markup.Escape(rest)}[/] is not an organization name " +
+                return Hint($"{Name}: [bold]{EchoText.Markup(rest)}[/] is not an organization name " +
                     "(letters, digits and hyphens, as in dev.azure.com/<organization>). Nothing was stored.");
             }
 
@@ -2721,7 +2721,7 @@ internal sealed class App
             return ImportWorkItems();
         }
 
-        return Hint($"{Name}: [bold]{Markup.Escape(sub)}[/] is not something devops can do. {DevOpsUsage}");
+        return Hint($"{Name}: [bold]{EchoText.Markup(sub)}[/] is not something devops can do. {DevOpsUsage}");
     }
 
     // devops import: reads the quicklist first, then the token once, fetches the open work items assigned
@@ -3172,7 +3172,7 @@ internal sealed class App
         bool send = parts.Length == 3;
         if (send && !string.Equals(parts[2], "send", StringComparison.Ordinal))
         {
-            return Hint($"{Name}: [bold]{Markup.Escape(parts[2])}[/] is not [bold]send[/]. {Usage}");
+            return Hint($"{Name}: [bold]{EchoText.Markup(parts[2])}[/] is not [bold]send[/]. {Usage}");
         }
 
         if (ParseRange(Name, Usage, parts[0], parts[1], out DateOnly from, out DateOnly to) is { } hint)
@@ -3469,7 +3469,7 @@ internal sealed class App
         string title = split < 0 ? string.Empty : argument[(split + 1)..].Trim();
         if (!TryParseProjectNumber(numberText, out int number))
         {
-            return Hint($"{Name}: [bold]{Markup.Escape(numberText)}[/] is not a project number. {Usage}");
+            return Hint($"{Name}: [bold]{EchoText.Markup(numberText)}[/] is not a project number. {Usage}");
         }
 
         if (ProjectTitleProblem(Name, title, Usage) is { } titleHint)
@@ -3511,7 +3511,7 @@ internal sealed class App
 
         if (!TryParseProjectNumber(argument, out int number))
         {
-            return Hint($"{Name}: [bold]{Markup.Escape(argument)}[/] is not a project number. {Usage}");
+            return Hint($"{Name}: [bold]{EchoText.Markup(argument)}[/] is not a project number. {Usage}");
         }
 
         if (LoadProjectsFor(Name, "Nothing was removed.", out CommandResult? unreadable) is not { } current)
@@ -3549,7 +3549,7 @@ internal sealed class App
 
         if (!TryParseProjectNumber(parts[0], out int from))
         {
-            return Hint($"{Name}: [bold]{Markup.Escape(parts[0])}[/] is not a project number. {Usage}");
+            return Hint($"{Name}: [bold]{EchoText.Markup(parts[0])}[/] is not a project number. {Usage}");
         }
 
         if (parts.Length == 1)
@@ -3564,7 +3564,7 @@ internal sealed class App
 
         if (!TryParseProjectNumber(parts[1], out int to))
         {
-            return Hint($"{Name}: [bold]{Markup.Escape(parts[1])}[/] is not a project number. {Usage}");
+            return Hint($"{Name}: [bold]{EchoText.Markup(parts[1])}[/] is not a project number. {Usage}");
         }
 
         if (LoadProjectsFor(Name, "Nothing was moved.", out CommandResult? unreadable) is not { } current)
@@ -3614,7 +3614,7 @@ internal sealed class App
         string title = split < 0 ? string.Empty : argument[(split + 1)..].Trim();
         if (!int.TryParse(number, NumberStyles.None, CultureInfo.InvariantCulture, out int workItem) || workItem < 1)
         {
-            return Hint($"{Name}: [bold]{Markup.Escape(number)}[/] is not a work item number. {Usage}");
+            return Hint($"{Name}: [bold]{EchoText.Markup(number)}[/] is not a work item number. {Usage}");
         }
 
         if (ProjectTitleProblem(Name, title, Usage) is { } titleHint)
@@ -3707,7 +3707,7 @@ internal sealed class App
 
         if (!int.TryParse(argument, NumberStyles.None, CultureInfo.InvariantCulture, out int number))
         {
-            return Hint($"{Name}: [bold]{Markup.Escape(argument)}[/] is not an entry number. {Usage}");
+            return Hint($"{Name}: [bold]{EchoText.Markup(argument)}[/] is not an entry number. {Usage}");
         }
 
         DateOnly day = dayView.Current;
@@ -3760,7 +3760,7 @@ internal sealed class App
 
         if (!int.TryParse(argument, NumberStyles.None, CultureInfo.InvariantCulture, out int number))
         {
-            return Hint($"{name}: [bold]{Markup.Escape(argument)}[/] is not an entry number. {usage}");
+            return Hint($"{name}: [bold]{EchoText.Markup(argument)}[/] is not an entry number. {usage}");
         }
 
         DateOnly day = dayView.Current;
@@ -3827,7 +3827,7 @@ internal sealed class App
 
         if (!int.TryParse(parts[0], NumberStyles.None, CultureInfo.InvariantCulture, out int number))
         {
-            return Hint($"{Name}: [bold]{Markup.Escape(parts[0])}[/] is not an entry number. {usage}");
+            return Hint($"{Name}: [bold]{EchoText.Markup(parts[0])}[/] is not an entry number. {usage}");
         }
 
         if (!TryParseTime(Name, parts[1], out TimeOnly at, out CommandResult refused))
@@ -3896,7 +3896,7 @@ internal sealed class App
     private CommandResult Checkpoint(string argument)
     {
         const string Name = "checkpoint";
-        string usage = $"Use [bold]{Markup.Escape($"checkpoint [{TimeInput.ShortForms}] [#project] <name>")}[/], " +
+        string usage = $"Use [bold]{EchoText.Markup($"checkpoint [{TimeInput.ShortForms}] [#project] <name>")}[/], " +
             "where #project is the project's number on the quicklist.";
 
         string rest = argument;
@@ -3925,7 +3925,7 @@ internal sealed class App
             string digits = token[1..];
             if (digits.Length == 0 || !digits.All(char.IsAsciiDigit))
             {
-                return Hint($"{Name}: [bold]{Markup.Escape(token)}[/] is not a project number. {usage}");
+                return Hint($"{Name}: [bold]{EchoText.Markup(token)}[/] is not a project number. {usage}");
             }
 
             // Too many digits for an int can never be a quicklist position: 0 stands for "no such project".
@@ -3968,7 +3968,7 @@ internal sealed class App
 
             if (number < 1 || number > projects.Projects.Count)
             {
-                return Hint($"{Name}: there is no project [bold]{Markup.Escape(token)}[/] on the quicklist.");
+                return Hint($"{Name}: there is no project [bold]{EchoText.Markup(token)}[/] on the quicklist.");
             }
 
             workItem = projects.Projects[number - 1].WorkItem;
@@ -4123,11 +4123,11 @@ internal sealed class App
     }
 
     private static CommandResult NotATime(string name, string text) =>
-        Hint($"{name}: [bold]{Markup.Escape(text)}[/] is not a time. " +
-            $"Use [bold]{Markup.Escape(TimeInput.Forms)}[/].");
+        Hint($"{name}: [bold]{EchoText.Markup(text)}[/] is not a time. " +
+            $"Use [bold]{EchoText.Markup(TimeInput.Forms)}[/].");
 
     private static CommandResult CrossesMidnight(string name, string text) =>
-        Hint($"{name}: [bold]{Markup.Escape(text)}[/] crosses midnight. " +
+        Hint($"{name}: [bold]{EchoText.Markup(text)}[/] crosses midnight. " +
             $"Use a time on this day, from [bold]0:00[/] to [bold]23:59[/].");
 
     // Adds entry to the day being viewed. Nothing is written if the day's file cannot be read.
@@ -4193,7 +4193,7 @@ internal sealed class App
     private static Func<string, CommandResult> NoArguments(string name, Func<CommandResult> handler) =>
         argument => argument.Length == 0
             ? handler()
-            : Hint($"[bold]{Markup.Escape(name)}[/] takes no arguments.");
+            : Hint($"[bold]{EchoText.Markup(name)}[/] takes no arguments.");
 
     public int Run(string[] args)
     {
@@ -4210,14 +4210,14 @@ internal sealed class App
             string reason;
             if (!string.IsNullOrWhiteSpace(Store.Folder) && DayStore.HasEdgeWhitespace(Store.Folder))
             {
-                string shown = Markup.Escape(DataFolder.ForDisplay(Store.Folder));
+                string shown = EchoText.Markup(Store.Folder);
                 reason = folderFromEnvironment
                     ? $"the data folder [bold]\"{shown}\"[/] from {DataFolder.VariableName} starts or ends with whitespace"
                     : $"the data folder [bold]{shown}[/] starts or ends with whitespace";
             }
             else if (folderFromEnvironment)
             {
-                reason = $"the data folder [bold]\"{Markup.Escape(DataFolder.ForDisplay(Store.Folder))}\"[/] from {DataFolder.VariableName} is not an absolute path";
+                reason = $"the data folder [bold]\"{EchoText.Markup(Store.Folder)}\"[/] from {DataFolder.VariableName} is not an absolute path";
             }
             else if (string.IsNullOrWhiteSpace(Store.Folder))
             {
@@ -4225,7 +4225,7 @@ internal sealed class App
             }
             else
             {
-                reason = $"the data folder [bold]{Markup.Escape(DataFolder.ForDisplay(Store.Folder))}[/] is not an absolute path";
+                reason = $"the data folder [bold]{EchoText.Markup(Store.Folder)}[/] is not an absolute path";
             }
 
             console.MarkupLine($"[red]Times cannot start: {reason}. Nothing was saved.[/]");
@@ -4237,14 +4237,14 @@ internal sealed class App
         if (locked.Status == InstanceLockStatus.Held)
         {
             console.MarkupLine("[red]Times is already running with this data folder " +
-                $"[bold]{Markup.Escape(DataFolder.ForDisplay(Store.Folder))}[/]. Close the other copy first, then start Times again.[/]");
+                $"[bold]{EchoText.Markup(Store.Folder)}[/]. Close the other copy first, then start Times again.[/]");
             return 3;
         }
 
         if (locked.Status == InstanceLockStatus.Failed)
         {
-            console.MarkupLine($"[red]Times cannot start: {Markup.Escape(DataFolder.ForDisplay(locked.Reason))} " +
-                $"in the data folder [bold]{Markup.Escape(DataFolder.ForDisplay(Store.Folder))}[/]. Nothing was saved.[/]");
+            console.MarkupLine($"[red]Times cannot start: {EchoText.Markup(locked.Reason)} " +
+                $"in the data folder [bold]{EchoText.Markup(Store.Folder)}[/]. Nothing was saved.[/]");
             return 4;
         }
 
@@ -4328,7 +4328,7 @@ internal sealed class App
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException
             or InvalidOperationException)
         {
-            console.MarkupLine($"[red]status: today's day file cannot be read: {Markup.Escape(DataFolder.ForDisplay(ex.Message))}[/]");
+            console.MarkupLine($"[red]status: today's day file cannot be read: {EchoText.Markup(ex.Message)}[/]");
             return 1;
         }
 
@@ -4514,7 +4514,7 @@ internal sealed class App
         string name = token.StartsWith('/') ? token[1..] : token;
         if (name.Length == 0 || !registry.TryGet(name, out Command? command))
         {
-            return Hint($"Unknown command [bold]{Markup.Escape(token)}[/]. Type [bold]help[/] to see all commands.");
+            return Hint($"Unknown command [bold]{EchoText.Markup(token)}[/]. Type [bold]help[/] to see all commands.");
         }
 
         try
@@ -4551,7 +4551,7 @@ internal sealed class App
     private Markup RenderDataFolder()
     {
         string source = folderFromEnvironment ? $" [grey](from {DataFolder.VariableName})[/]" : string.Empty;
-        return new Markup($"[grey]Data folder:[/] {Markup.Escape(DataFolder.ForDisplay(Store.Folder))}{source}");
+        return new Markup($"[grey]Data folder:[/] {EchoText.Markup(Store.Folder)}{source}");
     }
 
     // While help or projects output is shown (hideQuicklist), the quicklist panel is left out so the
@@ -4893,7 +4893,7 @@ internal sealed class App
                     }
                     else
                     {
-                        hint = Hint($"settings: [bold]{Markup.Escape(setting.Name)}[/] takes a whole number from " +
+                        hint = Hint($"settings: [bold]{EchoText.Markup(setting.Name)}[/] takes a whole number from " +
                             $"{setting.Min.ToString(CultureInfo.InvariantCulture)} to {setting.Max.ToString(CultureInfo.InvariantCulture)}.").Hint;
                     }
                 }

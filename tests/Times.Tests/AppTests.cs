@@ -17737,4 +17737,99 @@ public sealed class AppTests : IDisposable
         Assert.Contains("meetings takes no arguments.", output);
         Assert.Empty(cli.Calls);
     }
+
+    // 318 AC-2: a typed bidi override is dropped from the remove echo.
+    [Fact]
+    public void EchoedText_Remove_DropsBidiOverride()
+    {
+        (int exitCode, string output) = RunWithArgs(data.Path, "remove 1\u202E2");
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains("remove: 12 is not an entry number. Use remove <number>.", output);
+        Assert.DoesNotContain('\u202E', output);
+    }
+
+    // 318 AC-2: change and booked drop a zero-width space from the echoed argument.
+    [Theory]
+    [InlineData("change x\u200By 9:00", "change: xy is not an entry number.")]
+    [InlineData("booked x\u200By", "booked: xy is not an entry number.")]
+    public void EchoedText_ChangeAndBooked_DropZeroWidthSpace(string typed, string expected)
+    {
+        (int exitCode, string output) = RunWithArgs(data.Path, typed);
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains(expected, output);
+        Assert.DoesNotContain('\u200B', output);
+    }
+
+    // 318 AC-3
+    [Fact]
+    public void EchoedText_TimeHint_DropsZeroWidthSpace()
+    {
+        (int exitCode, string output) = RunWithArgs(data.Path, "arrive 8:\u200B1x");
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains("arrive: 8:1x is not a time.", output);
+        Assert.DoesNotContain('\u200B', output);
+    }
+
+    // 318 AC-4
+    [Fact]
+    public void EchoedText_Absence_DropsBidiOverride()
+    {
+        (int exitCode, string output) = RunWithArgs(data.Path, "absence va\u202Ecation");
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains("absence: vacation is not an absence.", output);
+        Assert.DoesNotContain('\u202E', output);
+    }
+
+    // 318 AC-5: an escape sequence in an unknown command is shown literally, without the ESC.
+    [Fact]
+    public void EchoedText_UnknownCommand_DropsEscape_AndIsNotRed()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+
+        int exitCode = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run(["x\u001B[31m"]);
+
+        Assert.Equal(1, exitCode);
+        string plain = Regex.Replace(console.Output, @"\x1b\[[0-9;]*m", string.Empty);
+        Assert.Contains("Unknown command x[31m.", plain);
+        // The echo is one bold red span whose text is the literal x[31m; the user's ESC never reaches the terminal.
+        Assert.Matches(@"\x1b\[[0-9;]*mx\[31m\x1b\[0m", console.Output);
+        Assert.DoesNotContain("x\u001B", console.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain("\u001B[31m.", console.Output, StringComparison.Ordinal);
+    }
+
+    // 318 AC-5: the same line in plain output has no ESC at all.
+    [Fact]
+    public void EchoedText_UnknownCommand_PlainOutputHasNoEscape()
+    {
+        (int exitCode, string output) = RunWithArgs(data.Path, "x\u001B[31m");
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains("Unknown command x[31m.", output);
+        Assert.DoesNotContain('\u001B', output);
+    }
+
+    // 318 AC-6: an echo that is empty after cleaning still prints the rest of the hint.
+    [Fact]
+    public void EchoedText_EmptyAfterCleaning_StillPrintsHint()
+    {
+        (int exitCode, string output) = RunWithArgs(data.Path, "absence \u200B");
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains("absence:  is not an absence.", output);
+        Assert.DoesNotContain('\u200B', output);
+    }
+
+    // 318 AC-7
+    [Fact]
+    public void EchoedText_Markup_IsShownLiterally()
+    {
+        (int exitCode, string output) = RunWithArgs(data.Path, "remove [red]");
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains("remove: [red] is not an entry number.", output);
+    }
 }
