@@ -146,7 +146,8 @@ Every factory agent reads this file before working on Times. Keep it short and a
 - **Settings:** features register their user preferences in the one `SettingsRegistry` (kinds
   `OnOff`, `Number` with min/max, `Choice` with options; registration order is display order;
   `CreateDefault()` registers `daily-target`, a `Number` 0..1440 with default 480, the daily work target
-  in minutes), the way commands use `CommandRegistry`, and never add their own
+  in minutes; `checkin-reminder`, a `Choice` `off`/`7:00`…`11:00` in half hours, default `9:30`, right after `alert-limit`,
+  is read only by `status --json` for the tray), the way commands use `CommandRegistry`, and never add their own
   command for them. `settings` (`se`) opens the modal `SettingsPanel` in place of the top area. Values
   live in `settings.json` next to the day files (`SettingsStore`, `{"settings":{"<name>":true|1|"opt"}}`),
   read like `projects.json` through `CappedFile` (regular file, 64 KiB cap); a broken file is shown as
@@ -268,10 +269,22 @@ Every factory agent reads this file before working on Times. Keep it short and a
   (`create-key --kid`, `issue --kid --name --until [--ledger]`, signing keys in the macOS Keychain, ledger outside any git
   repo; not packable, never referenced by `src/Times`).
 - **Tray app:** `Times.Tray` keeps no data and never reads the data folder: it only runs the installed `tm` one-shots
-  (`status --json`, `arrive`, `break`, `breakend`, `leave`, no time argument). `tm status --json` (`StatusJson.Build`,
-  read-only, raw like `report --json`; properties `schemaVersion` 1, `date`, `state` out/working/break/absent, `since`
-  from `DayRecord.StateEntry`, `checkpoint` (last one with no `CheckpointSummary.EndOf`, only while working),
-  `workedMinutes`, `targetMinutes`, `leftMinutes`); `status` with another argument is a red usage line, exit 1.
+  (`status --json`, `arrive`, `break`, `breakend`, `leave`, no time argument except `arrive H:mm` from the check-in
+  reminder). `tm status --json` (`StatusJson.Build`, read-only, raw like `report --json`; properties `schemaVersion` 1,
+  `date`, `state` out/working/break/absent, `since` from `DayRecord.StateEntry`, `checkpoint` (last one with no
+  `CheckpointSummary.EndOf`, only while working), `workedMinutes`, `targetMinutes`, `leftMinutes`, then the additive
+  `arrival` (first `Arrival` or null), `holiday` (`PublicHolidays.NameOf` from the holiday settings, or null) and `reminder`
+  (`checkin-reminder` as `HH:mm`, null for `off`; missing, broken or unregistered: `09:30`)); `status` with another
+  argument is a red usage line, exit 1. `TrayStatus.Parse` reads those three as optional (absent: null, reminder off),
+  a present mistyped one is `NotUnderstood`.
+  **Check-in reminder:** after each refresh `tm` answered, `TrayController` checks `CheckInReminder.IsDue` (pure: status date
+  is the local date, Monday–Friday, `out`, no arrival, no holiday, at or after `reminder`, last input under
+  `ActiveWithin` 5 min or unknown, from `IIdleSource`) and raises `ReminderDue` (worker thread) with a `CheckInNotice`
+  (date, minute) at most once per date per run; `ArriveFromReminder` runs `tm arrive H:mm` with the notice time (not on
+  another date, not when Arrive is disabled, not during an action). macOS: idle from CoreGraphics
+  `CGEventSourceSecondsSinceLastEventType` (by path), notice through `osascript` (absolute path) with the fixed
+  `CheckInReminder.MacScriptArguments` (no click booking); Windows: `GetLastInputInfo`, `NotifyIcon.ShowBalloonTip`,
+  `BalloonTipClicked` books. Tests use `FakeIdleSource`.
   `TmLocator` takes only absolute paths to existing files (`TIMES_TM`, `~/.dotnet/tools/tm[.exe]`, absolute `PATH`
   entries). `ProcessRunner` uses `ArgumentList` (no shell), the inherited environment, stdin closed, a 64 KiB stdout cap
   and a 10 s tree kill. `TrayStatus.Parse` is strict (fixed `NotUnderstood` text, never the raw output); `TrayText.Clean`

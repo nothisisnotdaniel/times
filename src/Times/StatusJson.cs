@@ -18,9 +18,13 @@ internal static class StatusJson
     /// <summary>
     /// Builds the document for <paramref name="day"/>'s record at <paramref name="now"/>, with a trailing <c>\n</c>.
     /// <c>since</c> is the time of <see cref="DayRecord.StateEntry"/> (null for an empty or absence day), and
-    /// <c>checkpoint</c> is the last checkpoint that has no ending entry, only while working.
+    /// <c>checkpoint</c> is the last checkpoint that has no ending entry, only while working. After
+    /// <c>leftMinutes</c> come <c>arrival</c> (the first <see cref="EntryKind.Arrival"/>, or null), <c>holiday</c>
+    /// (<paramref name="holiday"/>, today's public holiday name, or null) and <c>reminder</c> (the check-in reminder
+    /// time, null when it is off).
     /// </summary>
-    public static string Build(DateOnly day, DayRecord record, TimeSpan target, TimeOnly now)
+    public static string Build(DateOnly day, DayRecord record, TimeSpan target, TimeOnly now, string? holiday = null,
+        TimeOnly? reminder = null)
     {
         string state = State(record);
         using MemoryStream stream = new MemoryStream();
@@ -58,6 +62,17 @@ internal static class StatusJson
             writer.WriteNumber("workedMinutes", Minutes(record.WorkTimeAt(now)));
             writer.WriteNumber("targetMinutes", Minutes(target));
             writer.WriteNumber("leftMinutes", Minutes(record.TimeLeftAt(target, now)));
+            WriteTime(writer, "arrival", FirstArrival(record));
+            if (holiday is not null)
+            {
+                writer.WriteString("holiday", holiday);
+            }
+            else
+            {
+                writer.WriteNull("holiday");
+            }
+
+            WriteTime(writer, "reminder", reminder);
             writer.WriteEndObject();
         }
 
@@ -77,6 +92,20 @@ internal static class StatusJson
         }
 
         return record.IsOnBreak ? "break" : "out";
+    }
+
+    // The time of the day's first arrival, or null.
+    private static TimeOnly? FirstArrival(DayRecord record)
+    {
+        foreach (DayEntry entry in record.Entries)
+        {
+            if (entry.Kind == EntryKind.Arrival)
+            {
+                return entry.Time;
+            }
+        }
+
+        return null;
     }
 
     // The last checkpoint that nothing has ended yet (CheckpointSummary.EndOf), or null.

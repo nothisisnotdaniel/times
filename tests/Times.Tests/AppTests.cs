@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Spectre.Console;
 using Spectre.Console.Testing;
@@ -10434,8 +10435,8 @@ public sealed class AppTests : IDisposable
             console.Profile.Width = 120;
             console.Input.PushTextWithEnter("settings");
             // Past daily-target, alert-target and alert-limit (job 113), the three checks (job 114), the two holiday settings (job 115)
-            // and vacation-days (job 116).
-            for (int down = 0; down < 9; down++)
+            // and vacation-days (job 116), checkin-reminder (job 307).
+            for (int down = 0; down < 10; down++)
             {
                 console.Input.PushKey(ConsoleKey.DownArrow);
             }
@@ -12819,7 +12820,7 @@ public sealed class AppTests : IDisposable
         for (int pass = 0; pass < 2; pass++)
         {
             console.Input.PushTextWithEnter("settings");
-            for (int down = 0; down < 5; down++)
+            for (int down = 0; down < 6; down++)
             {
                 console.Input.PushKey(ConsoleKey.DownArrow);
             }
@@ -12933,7 +12934,7 @@ public sealed class AppTests : IDisposable
         console.Profile.Width = 160;
         console.Profile.Height = 40;
         console.Input.PushTextWithEnter("settings");
-        for (int down = 0; down < 6; down++)
+        for (int down = 0; down < 7; down++)
         {
             console.Input.PushKey(ConsoleKey.DownArrow);
         }
@@ -13143,8 +13144,8 @@ public sealed class AppTests : IDisposable
         console.Profile.Width = 120;
         console.Profile.Height = 40;
         console.Input.PushTextWithEnter("settings");
-        // Past daily-target, the two alerts, the three checks and the two holiday settings.
-        for (int down = 0; down < 8; down++)
+        // Past daily-target, the two alerts, checkin-reminder, the three checks and the two holiday settings.
+        for (int down = 0; down < 9; down++)
         {
             console.Input.PushKey(ConsoleKey.DownArrow);
         }
@@ -13172,7 +13173,7 @@ public sealed class AppTests : IDisposable
         console.Profile.Width = 120;
         console.Profile.Height = 40;
         console.Input.PushTextWithEnter("settings");
-        for (int down = 0; down < 8; down++)
+        for (int down = 0; down < 9; down++)
         {
             console.Input.PushKey(ConsoleKey.DownArrow);
         }
@@ -15385,12 +15386,13 @@ public sealed class AppTests : IDisposable
             c.Input.PushKey(ConsoleKey.DownArrow);
             c.Input.PushKey(ConsoleKey.DownArrow);
             c.Input.PushKey(ConsoleKey.DownArrow);
+            c.Input.PushKey(ConsoleKey.DownArrow);
             c.Input.PushKey(ConsoleKey.Spacebar);
             c.Input.PushKey(ConsoleKey.Escape);
             c.Input.PushTextWithEnter("quit");
-        }, SizeAt(opened + 3, 60, 12));
+        }, SizeAt(opened + 4, 60, 12));
 
-        string redraw = run.AfterKey(opened + 3);
+        string redraw = run.AfterKey(opened + 4);
         Assert.Equal(1, Count(redraw, ClearScreen));
         string[] rows = Assert.Single(ClearFrames(redraw));
         Assert.Equal(12, rows.Length);
@@ -15398,7 +15400,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal("check-breaks", Selected(rows));
         Assert.Contains("\"check-breaks\":false", File.ReadAllText(Path.Combine(data.Path, "settings.json")));
         // Esc closed the panel (the key after it is read along with it): the next frame is the day layout.
-        Assert.Contains(Heading, string.Join('\n', ClearFrames(run.Output[run.OutputAtKey[opened + 5]..run.OutputAtKey[opened + 7]])[0]));
+        Assert.Contains(Heading, string.Join('\n', ClearFrames(run.Output[run.OutputAtKey[opened + 6]..run.OutputAtKey[opened + 8]])[0]));
     }
 
     // AC-4: the token prompt keeps the typed value and stays masked.
@@ -16352,5 +16354,78 @@ public sealed class AppTests : IDisposable
 
         (_, string output) = RunEod(null, "help");
         Assert.Matches(@"│ eod +│ ed +│ End the day", output);
+    }
+
+    // Job 307, AC-2: tm status --json as a one-shot; returns the document's last three properties.
+    private (JsonElement Arrival, JsonElement Holiday, JsonElement Reminder) StatusTail(TimeProvider clock, string? settings)
+    {
+        if (settings is not null)
+        {
+            File.WriteAllText(SettingsPath, settings);
+        }
+
+        List<string> before = Directory.EnumerateFileSystemEntries(data.Path).Order(StringComparer.Ordinal).ToList();
+        TestConsole console = new TestConsole();
+        console.Profile.Width = 400;
+
+        Assert.Equal(0, new App(console, clock, new DayStore(data.Path)).Run(["status", "--json"]));
+
+        Assert.Equal(before, Directory.EnumerateFileSystemEntries(data.Path).Order(StringComparer.Ordinal).ToList());
+        using JsonDocument document = JsonDocument.Parse(console.Output);
+        List<JsonProperty> properties = document.RootElement.EnumerateObject().ToList();
+        Assert.Equal(["leftMinutes", "arrival", "holiday", "reminder"], properties.TakeLast(4).Select(p => p.Name));
+        return (properties[^3].Value.Clone(), properties[^2].Value.Clone(), properties[^1].Value.Clone());
+    }
+
+    // Job 307, AC-2: the first arrival, no holiday on a normal Tuesday, the reminder setting's time.
+    [Fact]
+    public void StatusJson_ArrivalAndReminderFromSettings()
+    {
+        File.WriteAllText(DayFile("2026-10-27"), Entries("arrival 08:15", "leaving 12:00", "arrival 13:00"));
+
+        (JsonElement arrival, JsonElement holiday, JsonElement reminder) = StatusTail(FixedTimeProvider.At20261027(),
+            "{\"settings\":{\"checkin-reminder\":\"10:30\",\"holiday-country\":\"Germany\"}}");
+
+        Assert.Equal("08:15", arrival.GetString());
+        Assert.Equal(JsonValueKind.Null, holiday.ValueKind);
+        Assert.Equal("10:30", reminder.GetString());
+    }
+
+    // Job 307, AC-2: reminder off is null; no arrival is null.
+    [Fact]
+    public void StatusJson_ReminderOff_IsNull()
+    {
+        (JsonElement arrival, _, JsonElement reminder) = StatusTail(FixedTimeProvider.At20261027(),
+            "{\"settings\":{\"checkin-reminder\":\"off\"}}");
+
+        Assert.Equal(JsonValueKind.Null, arrival.ValueKind);
+        Assert.Equal(JsonValueKind.Null, reminder.ValueKind);
+    }
+
+    // Job 307, AC-2: no settings.json, a broken one or a value that is not an option all give 09:30.
+    [Theory]
+    [InlineData(null)]
+    [InlineData("{ broken")]
+    [InlineData("{\"settings\":{\"checkin-reminder\":\"9:45\"}}")]
+    [InlineData("{\"settings\":{\"checkin-reminder\":true}}")]
+    public void StatusJson_ReminderMissingOrBroken_Is0930(string? settings)
+    {
+        (_, _, JsonElement reminder) = StatusTail(FixedTimeProvider.At20261027(), settings);
+
+        Assert.Equal("09:30", reminder.GetString());
+    }
+
+    // Job 307, AC-2: a German holiday is named with holiday-country Germany, and null without it.
+    [Theory]
+    [InlineData("{\"settings\":{\"holiday-country\":\"Germany\"}}", "German Unity Day")]
+    [InlineData("{\"settings\":{\"holiday-country\":\"none\"}}", null)]
+    [InlineData(null, null)]
+    public void StatusJson_Holiday_NamedOnlyWithGermany(string? settings, string? expected)
+    {
+        FixedTimeProvider unityDay = new FixedTimeProvider(new DateTimeOffset(2026, 10, 3, 9, 0, 0, TimeSpan.Zero), TimeZoneInfo.Utc);
+
+        (_, JsonElement holiday, _) = StatusTail(unityDay, settings);
+
+        Assert.Equal(expected, holiday.ValueKind == JsonValueKind.Null ? null : holiday.GetString());
     }
 }

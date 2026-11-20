@@ -101,6 +101,80 @@ public sealed class TrayStatusTests
         Assert.Null(TrayStatus.Parse(text));
     }
 
+    // Job 307: the document with the three optional properties after leftMinutes.
+    private static string WithTail(string arrival, string holiday, string reminder) =>
+        Working[..^1] + $",\"arrival\":{arrival},\"holiday\":{holiday},\"reminder\":{reminder}}}";
+
+    // Job 307, AC-3: an older tm leaves them out: no arrival, no holiday, reminder off.
+    [Fact]
+    public void WithoutTheReminderProperties_ReminderIsOff()
+    {
+        TrayStatus? status = TrayStatus.Parse(Working);
+
+        Assert.NotNull(status);
+        Assert.Null(status.Arrival);
+        Assert.Null(status.Holiday);
+        Assert.Null(status.Reminder);
+    }
+
+    // Job 307, AC-3: present values are read; null stays null.
+    [Fact]
+    public void ReminderProperties_AreRead()
+    {
+        TrayStatus? status = TrayStatus.Parse(WithTail("\"08:15\"", "\"Christmas Day\"", "\"09:30\""));
+        TrayStatus? empty = TrayStatus.Parse(WithTail("null", "null", "null"));
+
+        Assert.NotNull(status);
+        Assert.Equal(new TimeOnly(8, 15), status.Arrival);
+        Assert.Equal("Christmas Day", status.Holiday);
+        Assert.Equal(new TimeOnly(9, 30), status.Reminder);
+        Assert.NotNull(empty);
+        Assert.Null(empty.Arrival);
+        Assert.Null(empty.Holiday);
+        Assert.Null(empty.Reminder);
+    }
+
+    // Job 307, AC-3: what Times writes now, with a reminder and an arrival, is read back.
+    [Fact]
+    public void WhatTimesWrites_WithReminder_IsRead()
+    {
+        DayRecord day = new DayRecord([new DayEntry(EntryKind.Arrival, new TimeOnly(8, 0))]);
+
+        TrayStatus? status = TrayStatus.Parse(StatusJson.Build(new DateOnly(2026, 12, 25), day, TimeSpan.FromHours(8),
+            new TimeOnly(10, 0), "Christmas Day", new TimeOnly(9, 30)));
+
+        Assert.NotNull(status);
+        Assert.Equal(new TimeOnly(8, 0), status.Arrival);
+        Assert.Equal("Christmas Day", status.Holiday);
+        Assert.Equal(new TimeOnly(9, 30), status.Reminder);
+    }
+
+    public static TheoryData<string> BadTail() => new()
+    {
+        WithTail("\"8:15\"", "null", "null"),
+        WithTail("815", "null", "null"),
+        WithTail("\"\"", "null", "null"),
+        WithTail("{}", "null", "null"),
+        WithTail("null", "1", "null"),
+        WithTail("null", "true", "null"),
+        WithTail("null", "[]", "null"),
+        WithTail("null", "\"\\ud800\"", "null"),
+        WithTail("null", "null", "\"9:30\""),
+        WithTail("null", "null", "\"off\""),
+        WithTail("null", "null", "930"),
+        WithTail("null", "null", "false"),
+        Working[..^1] + ",\"arrival\":null,\"holiday\":null,\"reminder\":\"09:30\",\"reminder\":null}",
+    };
+
+    // Job 307, AC-3: a present arrival or reminder that is not null or HH:mm, or a holiday that is not null or a string,
+    // makes the document not understood; so does a repeated one.
+    [Theory]
+    [MemberData(nameof(BadTail))]
+    public void MistypedReminderProperty_IsRefused(string text)
+    {
+        Assert.Null(TrayStatus.Parse(text));
+    }
+
     [Fact]
     public void TheErrorText_IsFixed()
     {

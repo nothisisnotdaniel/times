@@ -588,6 +588,16 @@ Default: `on`.
 While you are working today, Times rings the terminal bell once and shows
 `! 15 minutes left until 10 hours of work.` when your work reaches 9:45.
 
+### `checkin-reminder`
+
+Values: `off`, `7:00`, `7:30`, `8:00`, `8:30`, `9:00`, `9:30`, `10:00`, `10:30` or `11:00`.
+
+Default: `9:30`.
+
+From this time on, on Monday to Friday, the tray app shows one notification when you have not
+booked your arrival yet and are using the computer. It stays quiet on absence days and public
+holidays. `off` turns it off. See [Menu bar and tray app](#menu-bar-and-tray-app).
+
 ### `check-breaks`
 
 Values: `on` or `off`.
@@ -867,6 +877,14 @@ only record, and it uses the same data folder (`TIMES_DATA_DIR` reaches `tm`). W
 in a terminal on the same data folder, the menu says `Times is open in a terminal. Use it there or
 close it.` If `tm` is missing, it says how to install it; if `tm` does not answer within 10
 seconds, it says so. A refused booking shows Times's own first line in the menu.
+
+**Check-in reminder:** if you forgot to arrive, the app shows one notification
+`No arrival booked yet today.` on a Monday to Friday, from the `checkin-reminder` time on
+(default 9:30), while you are not checked in, have no arrival and no absence today, it is not a
+public holiday (`holiday-country`) and you used the keyboard or mouse in the last 5 minutes. On
+Windows, clicking it books your arrival at the time it was shown (`Click to book arrival at 9:32.`);
+on macOS it says `Book it from the Times menu.`. It shows at most once a day while the app runs
+(a restart may show it once more); `checkin-reminder` `off` turns it off.
 
 ## Keyboard shortcuts
 

@@ -3652,7 +3652,11 @@ internal sealed class App
             return 1;
         }
 
-        string json = StatusJson.Build(today, record, DailyTarget(), new TimeOnly(local.Hour, local.Minute));
+        SettingValues? loaded = LoadSettings(out SettingValues values) is null ? values : null;
+        string? holiday = PublicHolidays.NameOf(
+            today, HolidaySetting(loaded, SettingsRegistry.HolidayCountryName), HolidaySetting(loaded, SettingsRegistry.HolidayStateName));
+        string json = StatusJson.Build(today, record, DailyTarget(loaded), new TimeOnly(local.Hour, local.Minute), holiday,
+            CheckInReminder(loaded));
         console.Profile.Out.Writer.Write(json);
         console.Profile.Out.Writer.Flush();
         return 0;
@@ -4399,6 +4403,27 @@ internal sealed class App
         }
 
         return days;
+    }
+
+    // The checkin-reminder setting from already loaded values: null for off, its time otherwise; missing, broken,
+    // unregistered or not a time: 9:30.
+    private TimeOnly? CheckInReminder(SettingValues? values)
+    {
+        string option = SettingsRegistry.CheckInReminderDefault;
+        if (values is not null && settings.TryGet(SettingsRegistry.CheckInReminderName, out Setting setting)
+            && setting.Kind == SettingKind.Choice)
+        {
+            option = values.Choice(SettingsRegistry.CheckInReminderName);
+        }
+
+        if (option == SettingsRegistry.CheckInReminderOff)
+        {
+            return null;
+        }
+
+        return TimeOnly.TryParseExact(option, "H:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out TimeOnly time)
+            ? time
+            : new TimeOnly(9, 30);
     }
 
     // A holiday Choice setting from already loaded values, or none when they are missing, broken or it is not registered.
