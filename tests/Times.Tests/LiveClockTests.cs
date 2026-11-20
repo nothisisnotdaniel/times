@@ -146,4 +146,35 @@ public sealed class LiveClockTests
 
         Assert.Single(time.Timers);
     }
+
+    // 325 AC-8: a tick the full queue refuses clears the pending flag, so the next fire posts again.
+    [Fact]
+    public void Fire_OnAFullQueue_PostsNothing_AndTheNextFireAfterRoomPostsOneTick()
+    {
+        SettableTimeProvider time = ClockAt(18, 30, 20);
+        BackgroundEventQueue events = new BackgroundEventQueue(1);
+        BackgroundEvent filler = new BackgroundEvent(() => false);
+        Assert.True(events.Post(filler));
+        int ticks = 0;
+        using LiveClock clock = new LiveClock(time, events, () =>
+        {
+            ticks++;
+            return true;
+        });
+        clock.Start();
+        ManualTimer timer = time.Timers[0];
+
+        timer.Fire();
+
+        Assert.True(events.TryTake(out BackgroundEvent? taken));
+        Assert.Same(filler, taken);
+        Assert.False(events.TryTake(out _));
+
+        timer.Fire();
+
+        Assert.True(events.TryTake(out BackgroundEvent? tick));
+        Assert.False(events.TryTake(out _));
+        Assert.True(tick!.Apply());
+        Assert.Equal(1, ticks);
+    }
 }

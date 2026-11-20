@@ -52,7 +52,7 @@ public class BackgroundEventsTests
     {
         const int Threads = 4;
         const int PerThread = 250;
-        BackgroundEventQueue queue = new BackgroundEventQueue();
+        BackgroundEventQueue queue = new BackgroundEventQueue(1000);
         Dictionary<BackgroundEvent, (int Thread, int Index)> origin = [];
         BackgroundEvent[][] events = new BackgroundEvent[Threads][];
         for (int t = 0; t < Threads; t++)
@@ -107,7 +107,7 @@ public class BackgroundEventsTests
     [Fact]
     public void TryTake_WhilePosting_YieldsEveryEventOnce()
     {
-        BackgroundEventQueue queue = new BackgroundEventQueue();
+        BackgroundEventQueue queue = new BackgroundEventQueue(1000);
         ConcurrentBag<BackgroundEvent> posted = [];
         Thread poster = new Thread(() =>
         {
@@ -224,11 +224,180 @@ public class BackgroundEventsTests
         Assert.True(watch.Elapsed < Bound);
     }
 
+    // 325 AC-1
+    [Fact]
+    public void Capacity_DefaultsTo64()
+    {
+        Assert.Equal(64, BackgroundEventQueue.DefaultCapacity);
+        Assert.Equal(64, new BackgroundEventQueue().Capacity);
+    }
+
+    // 325 AC-2
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Constructor_BelowOne_Throws(int capacity)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new BackgroundEventQueue(capacity));
+    }
+
+    // 325 AC-2
+    [Fact]
+    public void Constructor_One_Works()
+    {
+        BackgroundEventQueue queue = new BackgroundEventQueue(1);
+
+        Assert.Equal(1, queue.Capacity);
+        Assert.True(queue.Post(new BackgroundEvent(() => true)));
+    }
+
+    // 325 AC-3
+    [Fact]
+    public void Post_OnAFullQueue_IsRefused_AndTheRefusedEventIsNeverReturned()
+    {
+        BackgroundEventQueue queue = new BackgroundEventQueue(3);
+        List<string> applied = [];
+        BackgroundEvent[] events = new[] { "a", "b", "c", "d" }.Select(name => new BackgroundEvent(() =>
+        {
+            applied.Add(name);
+            return true;
+        })).ToArray();
+
+        Assert.True(queue.Post(events[0]));
+        Assert.True(queue.Post(events[1]));
+        Assert.True(queue.Post(events[2]));
+        Assert.False(queue.Post(events[3]));
+
+        List<BackgroundEvent> taken = [];
+        while (queue.TryTake(out BackgroundEvent? e))
+        {
+            taken.Add(e!);
+            e!.Apply();
+        }
+
+        Assert.Equal([events[0], events[1], events[2]], taken);
+        Assert.Equal(["a", "b", "c"], applied);
+    }
+
+    // 325 AC-4
+    [Fact]
+    public void Post_AfterTryTakeFreesASlot_IsQueued_AfterTheOthers()
+    {
+        BackgroundEventQueue queue = new BackgroundEventQueue(2);
+        BackgroundEvent first = new BackgroundEvent(() => true);
+        BackgroundEvent second = new BackgroundEvent(() => true);
+        BackgroundEvent third = new BackgroundEvent(() => true);
+        Assert.True(queue.Post(first));
+        Assert.True(queue.Post(second));
+        Assert.False(queue.Post(third));
+
+        Assert.True(queue.TryTake(out BackgroundEvent? taken));
+        Assert.Same(first, taken);
+        Assert.True(queue.Post(third));
+
+        Assert.True(queue.TryTake(out BackgroundEvent? next));
+        Assert.Same(second, next);
+        Assert.True(queue.TryTake(out BackgroundEvent? last));
+        Assert.Same(third, last);
+        Assert.False(queue.TryTake(out _));
+    }
+
+    // 325 AC-5: the bound holds when many threads post at once.
+    [Fact]
+    public void Post_From8Threads_QueuesExactlyCapacityEvents()
+    {
+        const int Threads = 8;
+        const int PerThread = 200;
+        BackgroundEventQueue queue = new BackgroundEventQueue();
+        ConcurrentBag<BackgroundEvent> accepted = [];
+        using Barrier start = new Barrier(Threads);
+        Thread[] threads = new Thread[Threads];
+        for (int t = 0; t < Threads; t++)
+        {
+            threads[t] = new Thread(() =>
+            {
+                start.SignalAndWait();
+                for (int i = 0; i < PerThread; i++)
+                {
+                    BackgroundEvent e = new BackgroundEvent(() => true);
+                    if (queue.Post(e))
+                    {
+                        accepted.Add(e);
+                    }
+                }
+            });
+            threads[t].Start();
+        }
+
+        foreach (Thread thread in threads)
+        {
+            thread.Join();
+        }
+
+        List<BackgroundEvent> taken = [];
+        while (queue.TryTake(out BackgroundEvent? e))
+        {
+            taken.Add(e!);
+        }
+
+        Assert.Equal(64, accepted.Count);
+        Assert.Equal(64, taken.Count);
+        Assert.Equal(64, taken.Distinct().Count());
+        Assert.True(accepted.ToHashSet().SetEquals(taken));
+        Assert.False(queue.TryTake(out _));
+    }
+
+    // 325 AC-6: a refused post from another thread changes nothing: the full queue still makes the wait return at
+    // once (before any key check) for the queued event only, and once drained the wait ends on the key, not on a
+    // leftover of the refused post.
+    [Fact]
+    public void RefusedPost_FromAnotherThread_LeavesTheWaitAsItWas()
+    {
+        BackgroundEventQueue queue = new BackgroundEventQueue(1);
+        BackgroundEvent filler = new BackgroundEvent(() => true);
+        Assert.True(queue.Post(filler));
+        bool refusedResult = true;
+        Thread poster = new Thread(() => refusedResult = queue.Post(new BackgroundEvent(() => true)));
+        poster.Start();
+        poster.Join();
+        Assert.False(refusedResult);
+
+        int keyChecks = 0;
+        queue.WaitForKeyOrEvent(() =>
+        {
+            keyChecks++;
+            return false;
+        });
+        Assert.Equal(0, keyChecks);
+
+        Assert.True(queue.TryTake(out BackgroundEvent? taken));
+        Assert.Same(filler, taken);
+        Assert.False(queue.TryTake(out _));
+
+        queue.WaitForKeyOrEvent(() =>
+        {
+            keyChecks++;
+            return true;
+        });
+        Assert.Equal(1, keyChecks);
+        Assert.False(queue.TryTake(out _));
+    }
+
     [Fact]
     public void Post_Null_Throws()
     {
         BackgroundEventQueue queue = new BackgroundEventQueue();
 
         Assert.Throws<ArgumentNullException>(() => queue.Post(null!));
+    }
+
+    // 325 AC-7
+    [Fact]
+    public void Post_Null_TakesNoSlot()
+    {
+        BackgroundEventQueue queue = new BackgroundEventQueue(1);
+
+        Assert.Throws<ArgumentNullException>(() => queue.Post(null!));
+        Assert.True(queue.Post(new BackgroundEvent(() => true)));
     }
 }

@@ -26,8 +26,11 @@ internal sealed class BackgroundEvent
 /// </summary>
 internal interface IBackgroundEvents
 {
-    /// <summary>Queues an event. Safe to call from any thread.</summary>
-    public void Post(BackgroundEvent e);
+    /// <summary>
+    /// Queues an event. Safe to call from any thread. Returns <c>true</c> if it was queued, or <c>false</c> if the
+    /// queue is full: the event is then dropped and never applied.
+    /// </summary>
+    public bool Post(BackgroundEvent e);
 
     /// <summary>Takes the oldest queued event (FIFO). Returns <c>false</c> when the queue is empty.</summary>
     public bool TryTake(out BackgroundEvent? e);
@@ -42,29 +45,64 @@ internal interface IBackgroundEvents
 /// <summary>
 /// The production queue: a <see cref="ConcurrentQueue{T}"/> plus a wake signal that
 /// <see cref="Post"/> pulses. Console input has no wait handle, so the wait also polls
-/// <c>keyAvailable</c> every <see cref="PollInterval"/>.
+/// <c>keyAvailable</c> every <see cref="PollInterval"/>. It holds at most <see cref="Capacity"/> unapplied
+/// events: a post to a full queue is refused (the newest event is dropped) and returns <c>false</c>.
 /// </summary>
 internal sealed class BackgroundEventQueue : IBackgroundEvents
 {
     /// <summary>The longest time between two checks of <c>keyAvailable</c> while waiting.</summary>
     public static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(50);
 
+    /// <summary>How many unapplied events the queue holds unless another capacity is given.</summary>
+    public const int DefaultCapacity = 64;
+
     private readonly ConcurrentQueue<BackgroundEvent> queue = new ConcurrentQueue<BackgroundEvent>();
     private readonly object signal = new object();
 
-    public void Post(BackgroundEvent e)
+    // Slots taken: reserved before Enqueue, given back on a refusal and after each successful TryTake, so it
+    // never goes over Capacity or below 0 and is never less than the number of events in the queue.
+    private int count;
+
+    /// <param name="capacity">The most unapplied events the queue holds; at least 1.</param>
+    public BackgroundEventQueue(int capacity = DefaultCapacity)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(capacity, 1);
+        Capacity = capacity;
+    }
+
+    /// <summary>The most unapplied events the queue holds; a post beyond it is refused.</summary>
+    public int Capacity { get; }
+
+    /// <summary>
+    /// Queues <paramref name="e"/> and wakes the wait, or returns <c>false</c> without queuing or waking anything
+    /// when <see cref="Capacity"/> events are already queued.
+    /// </summary>
+    public bool Post(BackgroundEvent e)
     {
         ArgumentNullException.ThrowIfNull(e);
+        if (Interlocked.Increment(ref count) > Capacity)
+        {
+            Interlocked.Decrement(ref count);
+            return false;
+        }
+
         queue.Enqueue(e);
         lock (signal)
         {
             Monitor.PulseAll(signal);
         }
+
+        return true;
     }
 
     public bool TryTake(out BackgroundEvent? e)
     {
         bool taken = queue.TryDequeue(out BackgroundEvent? next);
+        if (taken)
+        {
+            Interlocked.Decrement(ref count);
+        }
+
         e = next;
         return taken;
     }

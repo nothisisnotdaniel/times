@@ -5,7 +5,8 @@ namespace Times;
 /// itself. The timer is a one-shot timer from the injected <see cref="TimeProvider"/>, due at the next local
 /// minute boundary and re-armed from the clock after every fire, so it never drifts. The timer callback only
 /// posts: the tick's work (<c>tick</c>) runs on the loop thread when the line editor applies the event.
-/// At most one tick is ever queued: a fire while a tick is still unapplied posts nothing.
+/// At most one tick is ever queued: a fire while a tick is still unapplied posts nothing. If the queue is full
+/// and refuses the tick, the pending flag is cleared again, so the next fire posts.
 /// </summary>
 internal sealed class LiveClock : IDisposable
 {
@@ -62,7 +63,8 @@ internal sealed class LiveClock : IDisposable
         }
     }
 
-    // On the timer's thread: post a tick unless one is still queued, then re-arm for the next boundary.
+    // On the timer's thread: post a tick unless one is still queued (clearing the flag again if the queue
+    // refuses it), then re-arm for the next boundary.
     private void Fire(object? state)
     {
         lock (gate)
@@ -72,9 +74,10 @@ internal sealed class LiveClock : IDisposable
                 return;
             }
 
-            if (Interlocked.CompareExchange(ref pending, 1, 0) == 0)
+            if (Interlocked.CompareExchange(ref pending, 1, 0) == 0 && !events.Post(new BackgroundEvent(Apply)))
             {
-                events.Post(new BackgroundEvent(Apply));
+                // Refused (queue full): the tick is never applied, so clear the flag here.
+                Interlocked.Exchange(ref pending, 0);
             }
 
             timer.Change(UntilNextMinute(time.GetLocalNow()), Timeout.InfiniteTimeSpan);
