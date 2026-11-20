@@ -172,3 +172,5 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [?] [#77](backlog/077-sync-send-exits-1-when-a.md) Sync send exits 1 when a work item fails
 - [?] [#78](backlog/078-keep-slash-only-first-word-token.md) Keep slash-only first word token lines out of history
 - [?] [#79](backlog/079-no-spurious-refusals-in-the-event.md) No spurious refusals in the event queue
+- [?] [#80](backlog/080-teams-token-file-read-without-following.md) Teams token file read without following links
+- [?] [#81](backlog/081-cap-call-bookings-from-teams.md) Cap Call bookings from Teams
