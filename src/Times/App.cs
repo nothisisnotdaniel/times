@@ -4040,7 +4040,8 @@ internal sealed class App
         return (DateOnly.FromDateTime(local), new TimeOnly(local.Hour, local.Minute));
     }
 
-    // Marks the end-of-day alerts already reached today as given, so a start past a threshold stays silent.
+    // Marks the switched-on end-of-day alerts already reached today as given, so a start past a threshold stays
+    // silent; an alert that is off at start stays unmarked and rings once when it is switched on later.
     // An unreadable day file primes nothing.
     private void PrimeAlerts()
     {
@@ -4050,8 +4051,8 @@ internal sealed class App
             return;
         }
 
-        AlertSettings(out TimeSpan target, out _, out _);
-        alerts.Prime(today, day, target, now);
+        AlertSettings(out TimeSpan target, out bool targetOn, out bool limitOn);
+        alerts.Prime(today, day, target, now, targetOn, limitOn);
     }
 
     // Checks the end-of-day alerts for today; for any that fire, writes one bell and shows their hint in place.

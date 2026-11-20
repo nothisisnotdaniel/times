@@ -23,20 +23,21 @@ internal sealed class EndOfDayAlerts
     private DateOnly? date;
 
     /// <summary>
-    /// Marks every alert already reached on <paramref name="day"/> at <paramref name="now"/> as given, without
-    /// firing it, so starting Times past a threshold rings nothing for it. Reached means the work time is at or
-    /// past the threshold, whether or not the day is still working and whether or not the alert is switched on.
+    /// Marks every alert that is switched on and already reached on <paramref name="day"/> at
+    /// <paramref name="now"/> as given, without firing it, so starting Times past a threshold rings nothing for
+    /// it. Reached means the work time is at or past the threshold, whether or not the day is still working. An
+    /// alert that is switched off is left unmarked, so switching it on later rings once at the next check.
     /// </summary>
-    public void Prime(DateOnly on, DayRecord day, TimeSpan target, TimeOnly now)
+    public void Prime(DateOnly on, DayRecord day, TimeSpan target, TimeOnly now, bool targetOn, bool limitOn)
     {
         MoveTo(on);
         TimeSpan work = day.WorkTimeAt(now);
-        if (target > TimeSpan.Zero && work >= target)
+        if (targetOn && target > TimeSpan.Zero && work >= target)
         {
             given.Add(EndOfDayAlert.Target);
         }
 
-        if (work >= LimitWarning)
+        if (limitOn && work >= LimitWarning)
         {
             given.Add(EndOfDayAlert.Limit);
         }

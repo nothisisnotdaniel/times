@@ -87,7 +87,7 @@ Every factory agent reads this file before working on Times. Keep it short and a
       missing, broken or unregistered: on). While today `IsWorking`, `Target` fires at the target (above 0) and `Limit` at
       `LimitWarning` (9:45), each at most once per date and session; a fire writes one `ControlCode("\a")` and shows the hint
       (green `Daily target H:mm reached.`, yellow `! 15 minutes left until 10 hours of work.`) through `ShowHintInPlace`
-      (shared with the paste-cut hint). `Run` calls `Prime` before the first draw, so a start past a threshold stays silent.
+      (shared with the paste-cut hint). `Run` calls `Prime` (with the two on/off values) before the first draw, so a start past a threshold stays silent for an alert that is on; an alert that is off at start stays unmarked and rings once at the next tick after it is switched on.
   - **Resize:** `LineEditor.ReadLine`/`ReadValue` (callback returns the new `InputGeometry`) and `ReadKey` take a resize callback;
     before each fresh key (where events are applied) the editor compares `console.Profile.Width/Height` with the size it last saw
     and, on a change, calls it once at the latest size, then draws popup and line on top (line, history, popup, Tab list kept).
