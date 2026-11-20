@@ -150,3 +150,5 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [?] [#55](backlog/055-mistyped-pro-command-kept-out-of.md) Mistyped pro command kept out of history
 - [?] [#56](backlog/056-hours-json-reads-day-files-once.md) Hours JSON reads day files once
 - [?] [#57](backlog/057-report-hint-order-for-bad-dates.md) Report hint order for bad dates
+- [?] [#58](backlog/058-show-a-reading-line-before-eod.md) Show a reading line before eod reads Context todos
+- [?] [#59](backlog/059-test-the-real-context-process-path.md) Test the real Context process path in ContextCli
