@@ -160,3 +160,5 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [?] [#65](backlog/065-narrow-the-catch-lists-of-the.md) Narrow the catch lists of the read-only day counters
 - [?] [#66](backlog/066-drop-control-characters-from-timesheet-reasons.md) Drop control characters from timesheet reasons
 - [?] [#67](backlog/067-share-the-balance-rule-between-timesheet.md) Share the balance rule between Timesheet and FlexitimeBalance
+- [?] [#68](backlog/068-size-check-when-a-day-file.md) Size check when a day file is written
+- [?] [#69](backlog/069-keep-the-home-office-mark-when.md) Keep the home-office mark when import replaces a day
