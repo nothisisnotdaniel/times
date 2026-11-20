@@ -851,7 +851,7 @@ exited and writes its output to `update.log` in the data folder; the next start 
 
 `Times.Tray` puts Times in the macOS menu bar or the Windows notification area, so you can check in
 and out without a terminal window. Start it from a copy of the Times source with
-`dotnet run --project src/Times.Tray`. It shows no window and, on macOS, no Dock icon. The icon is
+`dotnet run --project src/Times.Tray` (macOS and Windows only). It shows no window and, on macOS, no Dock icon. The icon is
 a filled circle while you are checked in (working or on a break) and a ring otherwise.
 
 Its menu starts with grey status rows: `Working since 8:15`, `On a break since 12:00`,

@@ -1,6 +1,6 @@
 namespace Times.Tests;
 
-// Job 306, AC-10: the tray's logic library stays free of packages; Avalonia lives only in the shell.
+// Job 306, AC-10: the tray uses no NuGet package at all; the shell talks to each OS's own tray API.
 public sealed class TrayProjectTests
 {
     private static string RepoRoot()
@@ -24,17 +24,33 @@ public sealed class TrayProjectTests
     }
 
     [Fact]
-    public void TrayShell_PinsAvalonia_AndBothProjectsAreInTheSolution()
+    public void TrayShell_ReferencesNoPackage_AndBothProjectsAreInTheSolution()
     {
         string root = RepoRoot();
         string shell = File.ReadAllText(Path.Combine(root, "src", "Times.Tray", "Times.Tray.csproj"));
         string solution = File.ReadAllText(Path.Combine(root, "Times.slnx"));
         string tests = File.ReadAllText(Path.Combine(root, "tests", "Times.Tests", "Times.Tests.csproj"));
 
-        Assert.Matches(@"<PackageReference Include=""Avalonia"" Version=""\[\d+\.\d+\.\d+\]"" />", shell);
-        Assert.Matches(@"<PackageReference Include=""Avalonia.Desktop"" Version=""\[\d+\.\d+\.\d+\]"" />", shell);
+        Assert.DoesNotContain("PackageReference", shell, StringComparison.Ordinal);
+        Assert.DoesNotContain("Avalonia", shell, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("src/Times.Tray.Core/Times.Tray.Core.csproj", solution, StringComparison.Ordinal);
         Assert.Contains("src/Times.Tray/Times.Tray.csproj", solution, StringComparison.Ordinal);
         Assert.DoesNotContain("Times.Tray.csproj", tests, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TrayShell_UsesTheOsTrayApis_NoAvaloniaInItsCode()
+    {
+        string folder = Path.Combine(RepoRoot(), "src", "Times.Tray");
+        string mac = File.ReadAllText(Path.Combine(folder, "MacOS", "MacTray.cs"));
+        string windows = File.ReadAllText(Path.Combine(folder, "Windows", "WindowsTray.cs"));
+        string[] sources = Directory.GetFiles(folder, "*.cs", SearchOption.AllDirectories)
+            .Where(path => !path.Contains(Path.DirectorySeparatorChar + "obj" + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+                && !path.Contains(Path.DirectorySeparatorChar + "bin" + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+            .ToArray();
+
+        Assert.Contains("NSStatusBar", mac, StringComparison.Ordinal);
+        Assert.Contains("NotifyIcon", windows, StringComparison.Ordinal);
+        Assert.All(sources, path => Assert.DoesNotContain("Avalonia", File.ReadAllText(path), StringComparison.Ordinal));
     }
 }

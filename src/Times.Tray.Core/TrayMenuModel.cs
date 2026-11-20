@@ -49,6 +49,15 @@ internal sealed class TrayMenuModel
     /// <summary>The model before the first answer: <see cref="LoadingRow"/> and no action.</summary>
     public static TrayMenuModel Initial { get; } = new([LoadingRow], [], TrayIconState.Out, "Times · " + LoadingRow);
 
+    /// <summary>The action rows in menu order, with the label each shell shows (the command's name).</summary>
+    public static IReadOnlyList<KeyValuePair<TrayAction, string>> Actions { get; } =
+    [
+        new(TrayAction.Arrive, "Arrive"),
+        new(TrayAction.Break, "Break"),
+        new(TrayAction.BreakEnd, "Break end"),
+        new(TrayAction.Leave, "Leave"),
+    ];
+
     /// <summary>True if the action's row is enabled.</summary>
     public bool CanRun(TrayAction action) => enabled.Contains(action);
 

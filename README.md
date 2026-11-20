@@ -435,7 +435,7 @@ To remove the tool, see [Uninstall](#uninstall).
 - `Times.slnx`: the solution.
 - `src/Times/`: the app. `Program.cs` only wires things up; the logic starts in `App.cs`.
 - `src/Times.Tray.Core/`: the menu bar / tray app's logic (no packages).
-- `src/Times.Tray/`: the tray app's Avalonia shell.
+- `src/Times.Tray/`: the tray app's shell on the OS's own tray API (macOS `NSStatusItem`, Windows `NotifyIcon`), no packages.
 - `tests/Times.Tests/`: the tests, one test class per production class.
 - `.github/`: the release workflow (`workflows/release.yml`) and its scripts.
 

@@ -142,4 +142,49 @@ public sealed class TrayMenuModelTests
         Assert.Equal(TrayIconState.In, model.Icon);
         Assert.Equal("Times · Loading… · Left today: 3:12", model.Tooltip);
     }
+
+    [Fact]
+    public void Actions_AreInMenuOrder_WithTheCommandNames()
+    {
+        Assert.Equal(
+            [
+                new KeyValuePair<TrayAction, string>(TrayAction.Arrive, "Arrive"),
+                new KeyValuePair<TrayAction, string>(TrayAction.Break, "Break"),
+                new KeyValuePair<TrayAction, string>(TrayAction.BreakEnd, "Break end"),
+                new KeyValuePair<TrayAction, string>(TrayAction.Leave, "Leave"),
+            ],
+            TrayMenuModel.Actions);
+    }
+
+    [Theory]
+    [InlineData("Design", "Design")]
+    [InlineData("R&D", "R&&D")]
+    [InlineData("&&", "&&&&")]
+    [InlineData("A_b", "A_b")]
+    public void WindowsMenuText_DoublesEveryAmpersand(string text, string expected)
+    {
+        Assert.Equal(expected, TrayText.WindowsMenuText(text));
+    }
+
+    [Fact]
+    public void WindowsTooltip_KeepsShortText_CutsLongTextTo127()
+    {
+        string longText = "Times · " + new string('x', 200);
+
+        Assert.Equal("Times · Working since 8:15", TrayText.WindowsTooltip("Times · Working since 8:15"));
+        string cut = TrayText.WindowsTooltip(longText);
+        Assert.Equal(TrayText.MaxWindowsTooltipLength, cut.Length);
+        Assert.EndsWith("x…", cut, StringComparison.Ordinal);
+        Assert.Equal(longText[..126] + "…", cut);
+    }
+
+    [Fact]
+    public void WindowsTooltip_NeverCutsASurrogatePair()
+    {
+        string text = new string('x', 125) + "\U0001F600" + "tail";
+
+        string cut = TrayText.WindowsTooltip(text);
+
+        Assert.Equal(new string('x', 125) + "…", cut);
+    }
 }

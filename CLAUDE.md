@@ -293,8 +293,12 @@ Every factory agent reads this file before working on Times. Keep it short and a
   - `Times.slnx`: the solution.
   - `src/Times/`: the app. `Program.cs` only wires things up, and the logic starts in `App.cs`.
   - `src/Times.Tray.Core/`: the tray app's logic (net10.0 library, **no packages**, `InternalsVisibleTo` Times.Tests and
-    Times.Tray). `src/Times.Tray/`: the thin Avalonia shell (WinExe; `Avalonia`/`Avalonia.Desktop` pinned exactly, the
-    only place they may be used). Tests reference Times.Tray.Core, never Times.Tray.
+    Times.Tray). `src/Times.Tray/`: the thin shell on each OS's own tray API, **no packages** (WinExe): `MacOS/` is an
+    `NSStatusItem` + `NSMenu` through Objective-C runtime P/Invoke (`ObjC.cs`, AppKit loaded by path, accessory policy so no
+    Dock icon, callbacks via `[UnmanagedCallersOnly]` on a runtime-registered class, model changes posted with
+    `performSelectorOnMainThread`); `Windows/` is WinForms `NotifyIcon` + `ContextMenuStrip` (target `net10.0-windows`, chosen
+    on Windows or with `-p:TrayWindows=true`; elsewhere the project is `net10.0` and `Windows/` is not compiled). Tests
+    reference Times.Tray.Core, never Times.Tray.
   - `tests/Times.Tests/`: one test class per production class (`AppTests.cs` tests `App.cs`).
   - `tools/Times.LicenceIssuer/`: the developer-only licence issuer (in the solution's tools folder).
   - `.github/workflows/release.yml`: on a push to `develop`, a merged `develop` -> `main` pull request

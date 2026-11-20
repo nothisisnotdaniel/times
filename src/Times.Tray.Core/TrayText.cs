@@ -13,6 +13,9 @@ internal static partial class TrayText
     /// <summary>The most characters an error line from <c>tm</c> keeps (with the <c>…</c>).</summary>
     public const int MaxErrorLength = 120;
 
+    /// <summary>The most characters a Windows notification-area tooltip may hold (<c>NotifyIcon.Text</c>).</summary>
+    public const int MaxWindowsTooltipLength = 127;
+
     /// <summary>
     /// Drops ANSI escape sequences, control characters (line breaks included) and bidi marks, overrides and
     /// isolates, trims, then cuts to <paramref name="max"/> characters ending in <c>…</c> (never half a surrogate pair).
@@ -29,19 +32,30 @@ internal static partial class TrayText
             }
         }
 
-        string clean = kept.ToString().Trim();
-        if (clean.Length <= max)
+        return Cut(kept.ToString().Trim(), max);
+    }
+
+    /// <summary>A menu text for Windows: <c>&amp;</c> marks an access key there, so each one is doubled to show as itself.</summary>
+    public static string WindowsMenuText(string text) => text.Replace("&", "&&", StringComparison.Ordinal);
+
+    /// <summary>The tooltip cut to <see cref="MaxWindowsTooltipLength"/> characters, ending in <c>…</c> when cut.</summary>
+    public static string WindowsTooltip(string text) => Cut(text, MaxWindowsTooltipLength);
+
+    // Cuts to max characters ending in "…", never between the two halves of a surrogate pair.
+    private static string Cut(string text, int max)
+    {
+        if (text.Length <= max)
         {
-            return clean;
+            return text;
         }
 
         int cut = max - 1;
-        if (char.IsHighSurrogate(clean[cut - 1]))
+        if (char.IsHighSurrogate(text[cut - 1]))
         {
             cut--;
         }
 
-        return clean[..cut] + "…";
+        return text[..cut] + "…";
     }
 
     /// <summary>A time of day as <c>H:mm</c> (<c>8:15</c>), invariant.</summary>
