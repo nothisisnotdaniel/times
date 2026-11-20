@@ -10652,11 +10652,34 @@ public sealed class AppTests : IDisposable
         Assert.Contains(frame, l => Regex.IsMatch(l, @"│ #1 +│ Fix +│ 0:30 +│ +0\.50 │"));
         Assert.Contains(frame, l => Regex.IsMatch(l, @"│ Total +│ +│ 0:30 +│ +0\.50 │"));
         Assert.Contains("2026-11-02 – 2026-11-02", Joined(frame));
-        Assert.DoesNotContain("rounded", Joined(frame));
+        Assert.DoesNotContain("rounded to", Joined(frame));
         int caption = Array.FindIndex(frame, l => l.Contains("2026-11-02 – 2026-11-02", StringComparison.Ordinal));
         Assert.True(caption >= 0);
         Assert.Equal("Rounded to 15 min", frame[caption + 1].Trim());
-        Assert.DoesNotContain("at an optional", Joined(frame));
+    }
+
+    // 323 AC-2: the note comes before the open footnote and the Home office line.
+    [Fact]
+    public void Report_WithRounding_NoteComesBeforeFootnoteAndHomeOfficeLine()
+    {
+        File.WriteAllText(DayFile(RoundingDay), "{\"workplace\":\"home\",\"entries\":[" + ReportCp("09:00", "Fix", 1) + "]}");
+        WriteRounding("\"5 min\"");
+
+        (_, string[] frame) = RunReport($"report {RoundingDay} {RoundingDay}", "quit");
+
+        int note = Array.FindIndex(frame, l => l.Trim() == "Rounded to 5 min");
+        int footnote = Array.FindIndex(frame, l => l.Trim() == App.OpenFootnote);
+        int home = Array.FindIndex(frame, l => l.Trim() == "Home office: 1 day");
+        Assert.True(note >= 0 && footnote > note && home > footnote, $"{note} {footnote} {home}");
+    }
+
+    // 323 AC-1: the old help wording is gone.
+    [Fact]
+    public void Help_DoesNotUseTheOldOptionalWording()
+    {
+        (_, string output) = RunCommands("help", "quit");
+
+        Assert.DoesNotContain("at an optional", output);
     }
 
     // The frame's non-blank rows, trimmed and joined with one space, so a wrapped caption reads as one line.
@@ -10694,7 +10717,7 @@ public sealed class AppTests : IDisposable
 
         Assert.Equal(withoutFile, with);
         Assert.Contains("2026-11-02 – 2026-11-04", with);
-        Assert.DoesNotContain("rounded", with);
+        Assert.DoesNotContain("rounded", with, StringComparison.OrdinalIgnoreCase);
         Assert.Matches(@"│ #1 +│ Fix +│ 0:23 +│ +0\.38 │", with);
     }
 
@@ -10727,7 +10750,7 @@ public sealed class AppTests : IDisposable
         string path = Path.Combine(target.Path, "times-report-2026-11-02-to-2026-11-02.csv");
         Assert.Equal(Encoding.UTF8.GetBytes("\uFEFFWork item,Title,Hours\r\n1,Fix,0.38\r\n"), File.ReadAllBytes(path));
         Assert.Contains(frame, l => l.TrimEnd().EndsWith($"Exported 1 row to {path}", StringComparison.Ordinal));
-        Assert.DoesNotContain(frame, l => l.Contains("rounded", StringComparison.Ordinal));
+        Assert.DoesNotContain(frame, l => l.Contains("rounded", StringComparison.OrdinalIgnoreCase));
     }
 
     // AC-8 (104)
@@ -10749,7 +10772,7 @@ public sealed class AppTests : IDisposable
 
         Assert.Contains(report, l => Regex.IsMatch(l, @"│ #1 +│ Fix +│ 0:23 +│ +0\.38 │"));
         Assert.Contains(report, l => l.Trim() == "2026-11-02 – 2026-11-02");
-        Assert.DoesNotContain(report, l => l.Contains("rounded", StringComparison.Ordinal));
+        Assert.DoesNotContain(report, l => l.Contains("rounded", StringComparison.OrdinalIgnoreCase));
         Assert.DoesNotContain(export, l => l.Contains("rounded", StringComparison.Ordinal));
         string csv = File.ReadAllText(Path.Combine(target.Path, "times-report-2026-11-02-to-2026-11-02.csv"));
         Assert.EndsWith("1,Fix,0.38\r\n", csv);
@@ -10770,7 +10793,7 @@ public sealed class AppTests : IDisposable
         new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), settings: new SettingsRegistry()).Run([]);
 
         Assert.Matches(@"│ #1 +│ Fix +│ 0:23 +│ +0\.38 │", console.Output);
-        Assert.DoesNotContain("rounded", console.Output);
+        Assert.DoesNotContain("rounded", console.Output, StringComparison.OrdinalIgnoreCase);
     }
 
     // AC-9 (104)
