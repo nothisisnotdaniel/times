@@ -162,3 +162,4 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [?] [#67](backlog/067-share-the-balance-rule-between-timesheet.md) Share the balance rule between Timesheet and FlexitimeBalance
 - [?] [#68](backlog/068-size-check-when-a-day-file.md) Size check when a day file is written
 - [?] [#69](backlog/069-keep-the-home-office-mark-when.md) Keep the home-office mark when import replaces a day
+- [?] [#70](backlog/070-name-the-valid-values-when-a.md) Name the valid values when a setting falls back
