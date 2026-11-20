@@ -1455,7 +1455,17 @@ public class DayViewTests
     {
         string output = HolidayAnsi(DayRecord.Empty, "Corpus Christi");
 
-        Assert.Contains("\u001b[38;5;8mAbsence:\u001b[0m \u001b[38;5;75mPublic holiday · Corpus Christi\u001b[0m", output);
+        Assert.Contains("Absence: Public holiday \u001b[38;5;8m·\u001b[0m \u001b[38;5;75mCorpus Christi\u001b[0m", output);
+    }
+
+    // 323 AC-6: only the name is accented; label and bullet are not steelblue.
+    [Fact]
+    public void Render_HolidayRow_OnlyNameIsSteelBlue()
+    {
+        string output = HolidayAnsi(DayRecord.Empty, "[x]");
+
+        Assert.DoesNotContain("\u001b[38;5;75mPublic holiday", output);
+        Assert.Contains("\u001b[38;5;75m[x]\u001b[0m", output);
     }
 
     // AC-6: the name goes through Markup.Escape.

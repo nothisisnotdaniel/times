@@ -61,10 +61,11 @@ public sealed class SettingsRegistryTests
         Assert.Equal(["daily-target", "alert-target", "alert-limit"], all.Take(3).Select(s => s.Name));
         Assert.Equal(SettingsRegistry.AlertTargetName, all[1].Name);
         Assert.Equal(SettingsRegistry.AlertLimitName, all[2].Name);
-        Assert.Equal("Ring and show a hint when today's work reaches the daily target", all[1].Description);
-        Assert.Equal("Ring and show a hint 15 minutes before 10 hours of work", all[2].Description);
+        Assert.Equal("Ring and show a hint when today's work reaches the daily target (needs the live clock, while working)", all[1].Description);
+        Assert.Equal("Ring and show a hint 15 minutes before 10 hours of work (needs the live clock, while working)", all[2].Description);
         foreach (Setting setting in all.Skip(1).Take(2))
         {
+            Assert.Contains("live clock", setting.Description);
             Assert.Equal(SettingKind.OnOff, setting.Kind);
             Assert.Equal(true, setting.Default);
         }
