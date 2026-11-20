@@ -564,6 +564,23 @@ public sealed class AppTests : IDisposable
         Assert.DoesNotContain("Unknown command", output);
     }
 
+    // AC-5 (317)
+    [Fact]
+    public void EmptyDay_OnlyUnreadableFile_ShowsSkippedHint_AndChangesNothing()
+    {
+        string file = Path.Combine(data.Path, "2026-10-26.json");
+        File.WriteAllText(file, "{ not json");
+        string[] before = Directory.GetFileSystemEntries(data.Path).OrderBy(x => x, StringComparer.Ordinal).ToArray();
+
+        (int exitCode, string output) = RunCommands("quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("! 1 day file skipped", output);
+        Assert.DoesNotContain("2026-10-26", output);
+        Assert.Equal(before, Directory.GetFileSystemEntries(data.Path).OrderBy(x => x, StringComparer.Ordinal).ToArray());
+        Assert.Equal("{ not json", File.ReadAllText(file));
+    }
+
     // AC-12
     [Fact]
     public void UpArrow_RecallsPreviousCommand()
