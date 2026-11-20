@@ -415,6 +415,23 @@ eod --plan Write the release notes
 ed -5m --plan Review pull requests
 ```
 
+### `meetings` (`mt`)
+
+Arguments: none.
+
+Asks Context for today's calendar and lists the meetings that start today (not all-day ones) as
+checkpoints at their start times, numbered by start. In the session the input box then asks which
+to book: type the numbers (`1 3` or `1,3`) or `all`; Esc or Enter books none. The chosen meetings
+are added to today's file in one save. A `#<work item>` in a meeting's title, such as
+`Sprint review #1234`, sets that quicklist project and is left out of the name. A meeting whose title
+breaks the checkpoint name rules is not offered, and a meeting that is already booked shows as
+`already booked`. A one-shot (`times meetings`) only lists them and books nothing. Needs Context.
+
+```text
+meetings
+mt
+```
+
 ### `devops` (`dv`)
 
 Arguments: none, `connect <organization>`, `import` or `disconnect`.
