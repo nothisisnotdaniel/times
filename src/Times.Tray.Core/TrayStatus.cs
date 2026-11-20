@@ -101,9 +101,8 @@ internal sealed class TrayStatus
             using JsonDocument document = JsonDocument.Parse(text, options);
             return Read(document.RootElement);
         }
-        catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+        catch (JsonException)
         {
-            // InvalidOperationException: a string that cannot be decoded (a lone surrogate escape).
             return null;
         }
     }
@@ -130,7 +129,7 @@ internal sealed class TrayStatus
 
         JsonElement dateElement = root.GetProperty("date");
         if (dateElement.ValueKind != JsonValueKind.String
-            || !DateOnly.TryParseExact(dateElement.GetString(), "yyyy-MM-dd", CultureInfo.InvariantCulture,
+            || !DateOnly.TryParseExact(Text(dateElement), "yyyy-MM-dd", CultureInfo.InvariantCulture,
                 DateTimeStyles.None, out DateOnly date))
         {
             return null;
@@ -185,7 +184,11 @@ internal sealed class TrayStatus
                 return null;
             }
 
-            holiday = holidayElement.GetString();
+            holiday = Text(holidayElement);
+            if (holiday is null)
+            {
+                return null;
+            }
         }
 
         return new TrayStatus(date, state.Value, since, checkpoint, worked.Value, target.Value, left.Value, arrival, holiday,
@@ -225,10 +228,23 @@ internal sealed class TrayStatus
             }
         }
 
-        string? text = name.GetString();
+        string? text = Text(name);
         return Time(sinceElement) is { } since && !string.IsNullOrEmpty(text)
             ? new TrayCheckpoint(text, workItem, since)
             : null;
+    }
+
+    // A string element's text, or null when it cannot be decoded (a lone surrogate escape such as \ud800).
+    private static string? Text(JsonElement element)
+    {
+        try
+        {
+            return element.GetString();
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
     }
 
     private static TrayState? ReadState(JsonElement element)
@@ -238,7 +254,7 @@ internal sealed class TrayStatus
             return null;
         }
 
-        return element.GetString() switch
+        return Text(element) switch
         {
             "out" => TrayState.Out,
             "working" => TrayState.Working,
@@ -250,7 +266,7 @@ internal sealed class TrayStatus
 
     private static TimeOnly? Time(JsonElement element) =>
         element.ValueKind == JsonValueKind.String
-        && TimeOnly.TryParseExact(element.GetString(), "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None,
+        && TimeOnly.TryParseExact(Text(element), "HH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None,
             out TimeOnly time)
             ? time
             : null;

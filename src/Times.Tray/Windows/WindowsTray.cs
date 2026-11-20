@@ -49,14 +49,15 @@ internal sealed class WindowsTray : IDisposable
         menu.Opening += (_, _) => controller.MenuOpened();
 
         notifyIcon = new NotifyIcon { ContextMenuStrip = menu, Icon = outIcon, Visible = true };
+        // The notice is taken by the click itself, so the order of Clicked and Closed does not matter.
         notifyIcon.BalloonTipClicked += (_, _) =>
         {
             if (shownNotice is { } notice)
             {
+                shownNotice = null;
                 controller.ArriveFromReminder(notice);
             }
         };
-        notifyIcon.BalloonTipClosed += (_, _) => shownNotice = null;
     }
 
     /// <summary>Runs the notification-area app until Quit.</summary>

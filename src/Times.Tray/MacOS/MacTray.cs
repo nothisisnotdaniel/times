@@ -89,9 +89,11 @@ internal sealed class MacTray
     }
 
     // Shows the check-in notice through osascript: a fixed script as one argument, no shell, no tm text. A click on it
-    // cannot book (that needs a signed app bundle), so the text points to the menu. Its result is not needed.
+    // cannot book (that needs a signed app bundle), so the text points to the menu. Its result is not needed, but a
+    // fault is observed so it never surfaces as an unobserved task exception.
     private static void Notify(ProcessRunner runner) =>
-        _ = runner.RunAsync(Osascript, CheckInReminder.MacScriptArguments());
+        runner.RunAsync(Osascript, CheckInReminder.MacScriptArguments())
+            .ContinueWith(task => _ = task.Exception, TaskContinuationOptions.OnlyOnFaulted);
 
     // Changed comes on a worker thread; AppKit may only be touched on the main thread.
     private void PostApply()
