@@ -182,6 +182,7 @@ required. A booking without a time uses the current time. `remove`, `change`, `b
 | `unbooked` | `ub` | `<number>` | Mark a checkpoint on this day as not yet booked |
 | `summary` | `s` | none | Show the time taken per work item from this day's checkpoints |
 | `absence` | `ab` | `vacation`, `sick`, `holiday` or `clear` | Mark this day as vacation, sick or public holiday (it counts as meeting the daily target), or clear it |
+| `workplace` | `wp` | `home`, `office` or `clear` | Mark this day as home office or office, or clear it; the day view shows the shown month's home-office days and `report` ends with the range's, for the home-office allowance |
 | `correction` | `co` | `+H:mm` or `-H:mm` and a reason, or `remove <number>` | Book a manual correction to the flexitime balance on this day (for example a starting balance or paid-out overtime), or remove one by its number; it shows above the target line and counts in the balance, not in the day |
 | `report` | `rp` | `<from> <to>` or `--from <from> --to <to> [--json]` (`yyyy-MM-dd`; `--json` from the shell only) | Show the checkpoint hours per work item over a date range (both days included), with a total, to copy into Azure DevOps |
 | `export` | `ex` | `<from> <to> <folder>` (`yyyy-MM-dd`, an existing absolute folder, `~` allowed) | Save the same report rows as `times-report-<from>-to-<to>.csv` (UTF-8, comma-separated, decimal hours) in the folder; an existing file is never overwritten |

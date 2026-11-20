@@ -1766,4 +1766,111 @@ public class DayRecordTests
 
         Assert.Equal(record.WorkTime(), record.AddCorrection(Correction(600, "x")).WorkTime());
     }
+
+    // Job 308 ------------------------------------------------------------------------------
+
+    // AC-3
+    [Theory]
+    [InlineData("Home", "{\"workplace\":\"home\",\"entries\":[]}")]
+    [InlineData("Office", "{\"workplace\":\"office\",\"entries\":[]}")]
+    public void Workplace_RoundTripsThroughJson(string kind, string json)
+    {
+        Workplace workplace = Enum.Parse<Workplace>(kind);
+        DayRecord record = DayRecord.Empty.WithWorkplace(workplace);
+
+        Assert.Equal(json, record.ToJson());
+        DayRecord read = DayRecord.FromJson(json);
+        Assert.Equal(workplace, read.Workplace);
+        Assert.Equal(record, read);
+        Assert.False(read.IsEmpty);
+        Assert.Equal(json, read.ToJson());
+    }
+
+    // AC-3
+    [Fact]
+    public void Workplace_IsWrittenBeforeEntries_AndAfterwardsCorrections()
+    {
+        DayRecord record = DayRecord.Empty.Add(Arrival(8, 0)).AddCorrection(Correction(30, "x")).WithWorkplace(Workplace.Office);
+        string json = record.ToJson();
+
+        Assert.Equal(
+            "{\"workplace\":\"office\",\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]," +
+            "\"corrections\":[{\"minutes\":30,\"reason\":\"x\"}]}",
+            json);
+        Assert.Equal(record, DayRecord.FromJson(json));
+    }
+
+    // AC-3
+    [Theory]
+    [InlineData("{\"workplace\":\"Home\",\"entries\":[]}")]
+    [InlineData("{\"workplace\":\"OFFICE\",\"entries\":[]}")]
+    [InlineData("{\"workplace\":\"sofa\",\"entries\":[]}")]
+    [InlineData("{\"workplace\":\"\",\"entries\":[]}")]
+    [InlineData("{\"workplace\":1,\"entries\":[]}")]
+    [InlineData("{\"workplace\":null,\"entries\":[]}")]
+    [InlineData("{\"workplace\":true,\"entries\":[]}")]
+    [InlineData("{\"workplace\":[\"home\"],\"entries\":[]}")]
+    [InlineData("{\"workplace\":\"home\",\"workplace\":\"home\",\"entries\":[]}")]
+    [InlineData("{\"absence\":\"vacation\",\"workplace\":\"home\",\"entries\":[]}")]
+    [InlineData("{\"workplace\":\"office\",\"absence\":\"sick\"}")]
+    [InlineData("{\"workplace\":\"hom\\ud800\"}")]
+    public void FromJson_InvalidWorkplace_ThrowsJsonException(string json)
+    {
+        Assert.Throws<JsonException>(() => DayRecord.FromJson(json));
+    }
+
+    // AC-3
+    [Fact]
+    public void FromJson_WithoutWorkplace_LoadsNull_AndWritesTheSameBytes()
+    {
+        string json = "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:15\"},{\"kind\":\"leaving\",\"time\":\"12:00\"}]," +
+            "\"corrections\":[{\"minutes\":-60,\"reason\":\"Paid out\"}]}";
+        DayRecord read = DayRecord.FromJson(json);
+
+        Assert.Null(read.Workplace);
+        Assert.Equal(json, read.ToJson());
+        Assert.Null(DayRecord.FromJson("{\"absence\":\"sick\",\"entries\":[]}").Workplace);
+        Assert.Equal("{\"absence\":\"sick\",\"entries\":[]}", DayRecord.FromJson("{\"absence\":\"sick\",\"entries\":[]}").ToJson());
+    }
+
+    // AC-3
+    [Fact]
+    public void Workplace_IsKeptThroughEveryChange()
+    {
+        DayRecord marked = DayRecord.Empty.WithWorkplace(Workplace.Home)
+            .Add(Arrival(8, 0))
+            .Add(Checkpoint(9, 0, "x"))
+            .Add(Leaving(12, 0));
+
+        Assert.Equal(Workplace.Home, marked.Workplace);
+        Assert.Equal(Workplace.Home, marked.RemoveAt(3).Workplace);
+        Assert.Equal(Workplace.Home, marked.ChangeTime(1, new TimeOnly(7, 30)).Workplace);
+        Assert.Equal(Workplace.Home, marked.SetBooked(2, true).Workplace);
+        Assert.Equal(Workplace.Home, marked.AddCorrection(Correction(15, "y")).Workplace);
+        Assert.Equal(Workplace.Home, marked.AddCorrection(Correction(15, "y")).RemoveCorrection(1).Workplace);
+        Assert.Null(marked.WithWorkplace(null).Workplace);
+    }
+
+    // AC-1, AC-3
+    [Fact]
+    public void Workplace_IsPartOfEqualityAndIsEmpty()
+    {
+        DayRecord home = DayRecord.Empty.WithWorkplace(Workplace.Home);
+
+        Assert.False(home.IsEmpty);
+        Assert.True(home.WithWorkplace(null).IsEmpty);
+        Assert.Equal("{\"entries\":[]}", home.WithWorkplace(null).ToJson());
+        Assert.NotEqual(DayRecord.Empty, home);
+        Assert.NotEqual(home, DayRecord.Empty.WithWorkplace(Workplace.Office));
+        Assert.Equal(home, DayRecord.Empty.WithWorkplace(Workplace.Home));
+        Assert.Equal(home.GetHashCode(), DayRecord.Empty.WithWorkplace(Workplace.Home).GetHashCode());
+    }
+
+    // AC-2
+    [Fact]
+    public void Workplace_AndAbsence_CannotBeCombined()
+    {
+        Assert.Throws<ArgumentException>(() => DayRecord.Empty.WithWorkplace(Workplace.Home).WithAbsence(AbsenceKind.Vacation));
+        Assert.Throws<ArgumentException>(() => DayRecord.Empty.WithAbsence(AbsenceKind.Sick).WithWorkplace(Workplace.Office));
+    }
 }

@@ -1562,4 +1562,112 @@ public class DayViewTests
         Assert.Equal(AnsiOutput(withEntries, EightHours, FlexitimeBalance.None), AnsiOutput(removed, EightHours, FlexitimeBalance.None));
         Assert.Equal(2, PlainLines(DayRecord.Empty, EightHours, FlexitimeBalance.None).Length);
     }
+
+    // Job 308 ------------------------------------------------------------------------------
+
+    private static string[] WorkplaceLines(DayRecord record, int homeOfficeDays, string? holiday = null)
+    {
+        TestConsole console = new TestConsole();
+        console.Profile.Width = 120;
+        console.Write(new DayView(FixedTimeProvider.At20261027())
+            .Render(record, EightHours, FlexitimeBalance.None, holiday: holiday, homeOfficeDays: homeOfficeDays));
+        return console.Lines.Select(l => l.TrimEnd()).Where(l => l.Trim().Length > 0).ToArray();
+    }
+
+    // AC-4
+    [Theory]
+    [InlineData("Home", 3, "Workplace: Home office · 3 home-office days in October 2026")]
+    [InlineData("Office", 1, "Workplace: Office · 1 home-office day in October 2026")]
+    [InlineData("Office", 0, "Workplace: Office · 0 home-office days in October 2026")]
+    public void Render_MarkedBookedDay_ShowsWorkplaceRowBelowHeading(string kind, int count, string expected)
+    {
+        DayRecord record = MorningDay().WithWorkplace(Enum.Parse<Workplace>(kind));
+        string[] plain = PlainLines(MorningDay(), EightHours, FlexitimeBalance.None);
+        string[] lines = WorkplaceLines(record, count);
+
+        Assert.Equal(expected, lines[1]);
+        Assert.Equal(plain, lines.Take(1).Concat(lines.Skip(2)));
+    }
+
+    // AC-4
+    [Fact]
+    public void Render_UnmarkedDayWithCount_ShowsNotSet()
+    {
+        string[] lines = WorkplaceLines(DayRecord.Empty, 2);
+
+        Assert.Equal("Workplace: not set · 2 home-office days in October 2026", lines[1]);
+        Assert.Equal("No entries yet.", lines[2]);
+    }
+
+    // AC-4
+    [Fact]
+    public void Render_UnmarkedDayWithoutCount_HasNoWorkplaceRow()
+    {
+        Assert.Equal(PlainLines(MorningDay(), EightHours, FlexitimeBalance.None), WorkplaceLines(MorningDay(), 0));
+        Assert.Equal(PlainLines(DayRecord.Empty, EightHours, FlexitimeBalance.None), WorkplaceLines(DayRecord.Empty, 0));
+    }
+
+    // AC-4
+    [Fact]
+    public void Render_MarkedEmptyDay_ShowsRowAboveNoEntries()
+    {
+        string[] lines = WorkplaceLines(DayRecord.Empty.WithWorkplace(Workplace.Home), 1);
+
+        Assert.Equal("Workplace: Home office · 1 home-office day in October 2026", lines[1]);
+        Assert.Equal("No entries yet.", lines[2]);
+    }
+
+    // AC-4
+    [Fact]
+    public void Render_StoredAbsenceDay_HasNoWorkplaceRow()
+    {
+        string[] lines = WorkplaceLines(new DayRecord([], AbsenceKind.Vacation), 4);
+
+        Assert.DoesNotContain(lines, l => l.Contains("Workplace:", StringComparison.Ordinal));
+        Assert.Equal("Absence: Vacation", lines[1]);
+    }
+
+    // AC-4
+    [Fact]
+    public void Render_BookedDayOnHoliday_ShowsWorkplaceRowAfterHolidayLine()
+    {
+        string[] lines = WorkplaceLines(MorningDay().WithWorkplace(Workplace.Office), 0, "Good Friday");
+
+        Assert.Equal("Public holiday: Good Friday", lines[1]);
+        Assert.Equal("Workplace: Office · 0 home-office days in October 2026", lines[2]);
+    }
+
+    // AC-4: grey label, steelblue1 value, grey count, like Absence:.
+    [Fact]
+    public void Render_WorkplaceRow_Colours()
+    {
+        TestConsole console = new TestConsole().EmitAnsiSequences();
+        console.Profile.Width = 120;
+        console.Write(new DayView(FixedTimeProvider.At20261027())
+            .Render(MorningDay().WithWorkplace(Workplace.Home), EightHours, FlexitimeBalance.None, homeOfficeDays: 3));
+
+        Assert.Contains(
+            "\u001b[38;5;8mWorkplace:\u001b[0m \u001b[38;5;75mHome office\u001b[0m\u001b[38;5;8m · 3 home-office days in October 2026\u001b[0m",
+            console.Output);
+    }
+
+    // AC-4: the month name is invariant English.
+    [Fact]
+    public void WorkplaceLine_UsesInvariantMonthName()
+    {
+        System.Globalization.CultureInfo previous = System.Globalization.CultureInfo.CurrentCulture;
+        try
+        {
+            System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("de-DE");
+            Assert.Equal(
+                "[grey]Workplace:[/] [steelblue1]Home office[/][grey] · 1 home-office day in March 2026[/]",
+                DayView.WorkplaceLine(Workplace.Home, 1, new DateOnly(2026, 3, 9)));
+        }
+        finally
+        {
+            System.Globalization.CultureInfo.CurrentCulture = previous;
+        }
+
+        Assert.Null(DayView.WorkplaceLine(null, 0, new DateOnly(2026, 3, 9)));
+    }
 }
