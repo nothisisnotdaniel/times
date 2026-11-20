@@ -161,4 +161,58 @@ public sealed class FileKindTests
         Assert.Null(FileKind.ModeOffset(Architecture.X86));
         Assert.Null(FileKind.ModeOffset(Architecture.Arm));
     }
+
+    // 309 AC-9: OfEntry never follows a link.
+    [Fact]
+    public void OfEntry_RegularMissingAndDirectory()
+    {
+        using TempFolder temp = new TempFolder();
+        string file = Path.Combine(temp.Path, "a.html");
+        File.WriteAllText(file, "x");
+
+        Assert.Equal(FileKindResult.Regular, FileKind.OfEntry(file));
+        Assert.Equal(FileKindResult.Missing, FileKind.OfEntry(Path.Combine(temp.Path, "nope.html")));
+        Assert.Equal(FileKindResult.Missing, FileKind.OfEntry(Path.Combine(temp.Path, "nope", "x.html")));
+        Assert.Equal(FileKindResult.Other, FileKind.OfEntry(temp.Path));
+    }
+
+    // 309 AC-9
+    [Fact]
+    public void OfEntry_LinkToARegularFile_AndADanglingLink_AreOther()
+    {
+        using TempFolder temp = new TempFolder();
+        string file = Path.Combine(temp.Path, "target.html");
+        File.WriteAllText(file, "x");
+        string link = Path.Combine(temp.Path, "link.html");
+        string dangling = Path.Combine(temp.Path, "dangling.html");
+        try
+        {
+            File.CreateSymbolicLink(link, file);
+            File.CreateSymbolicLink(dangling, Path.Combine(temp.Path, "gone.html"));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return; // Links cannot be made here (e.g. Windows without the privilege).
+        }
+
+        Assert.Equal(FileKindResult.Regular, FileKind.Of(link));
+        Assert.Equal(FileKindResult.Other, FileKind.OfEntry(link));
+        Assert.Equal(FileKindResult.Other, FileKind.OfEntry(dangling));
+    }
+
+    // 309 AC-9
+    [Fact]
+    public void OfEntry_Fifo_IsOther()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder temp = new TempFolder();
+        string fifo = Path.Combine(temp.Path, "pipe.html");
+        SpecialFiles.MakeFifo(fifo);
+
+        Assert.Equal(FileKindResult.Other, FileKind.OfEntry(fifo));
+    }
 }

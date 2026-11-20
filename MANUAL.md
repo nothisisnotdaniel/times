@@ -315,6 +315,28 @@ export 2026-11-01 2026-11-30 ~/Documents
 ex 2026-11-01 2026-11-30 "~/My Reports"
 ```
 
+### `timesheet` (`ts`)
+
+Arguments: `<yyyy-MM> <folder>`: a month and an existing absolute folder (`~` allowed, one pair of
+quotes around it is removed).
+
+Saves a printable timesheet for the month as `times-timesheet-yyyy-MM.html` in the folder: one row
+per calendar day with the arrival, leaving, breaks, work time, absence and corrections, then the
+month's total, its balance against `daily-target` and the balance at the end of the month. Day
+files that cannot be read show `Unreadable` and are left out of the totals. The page holds only
+text and one inline style, no scripts and no links, so it is safe to open and share; open it in a
+browser and print it (A4 portrait).
+
+If the file is already there, the session asks before replacing it (type `yes`); anything else
+or Esc keeps it. From the shell (`times timesheet 2026-10 ~/Documents`) an existing file is never
+replaced and the command exits with 1. A link, folder or other special entry at that name is
+refused.
+
+```text
+timesheet 2026-10 ~/Documents
+ts 2026-11 "~/My Timesheets"
+```
+
 ### `find` (`f`)
 
 Arguments: `<text>`.
@@ -779,6 +801,11 @@ checkpoints without a work item) over a date range, as `H:mm` and as decimal hou
 `Work item`, `Title` and `Hours`, ready for a spreadsheet. Export never overwrites an existing
 file. The `report-rounding` setting rounds the times. Day files that cannot be read are skipped
 and counted.
+
+`timesheet <yyyy-MM> <folder>` saves a printable HTML page for one month,
+`times-timesheet-yyyy-MM.html`, with a row per calendar day (arrival, leaving, breaks, work time,
+absence, corrections), the month's total and balance, and the balance at the end of the month. It
+asks before replacing an existing sheet.
 
 ### Search
 

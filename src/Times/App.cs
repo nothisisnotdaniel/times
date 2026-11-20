@@ -87,6 +87,9 @@ internal sealed class App
     // Set by eod in the session without --plan; the loop then asks for the plan for tomorrow.
     private EndOfDayRun? pendingPlan;
 
+    // Set by timesheet when the sheet's file already exists; the loop then asks whether to replace it.
+    private TimesheetRun? pendingTimesheet;
+
     // The start-up update check (started once in Run), whether its hint was shown, and whether its
     // staged package was taken over. The package staged for quit, from that check or from update.
     private Task<UpdateOutcome>? startupCheck;
@@ -328,6 +331,7 @@ internal sealed class App
         registry.Register("correction", "co", "Correct the balance on this day: +H:mm|-H:mm <reason>, or remove <number>", Correction);
         registry.Register("report", "rp", "Show the hours per project over a date range: <from> <to>", Report);
         registry.Register("export", "ex", "Save the project report for a date range as CSV: <from> <to> <folder>", Export);
+        registry.Register("timesheet", "ts", "Save a printable HTML timesheet for a month: <yyyy-MM> <folder>", Timesheet);
         registry.Register("find", "f", "Find days whose checkpoints or projects match: <text>", Find);
         registry.Register("statistics", "st", "Show average arrival, leaving and work time per weekday: <from> <to>", Statistics);
         registry.Register("backup", "bu", "Zip your day files and projects into a folder: <folder>", Backup);
@@ -974,6 +978,260 @@ internal sealed class App
 
         AddSkipped(parts, report);
         return new CommandResult(parts.Count == 1 ? parts[0] : new Rows(parts));
+    }
+
+    /// <summary>The placeholder in the input box while timesheet asks whether to replace an existing sheet.</summary>
+    internal const string TimesheetPlaceholder = "yes replaces · anything else keeps";
+
+    private const string TimesheetName = "timesheet";
+    private const string TimesheetUsage = "Use [bold]timesheet <yyyy-MM> <folder>[/].";
+
+    // Writes a month's printable HTML timesheet into an existing folder the user names. Reads the data folder
+    // only. A new file is created exclusively; an existing regular file is replaced only after the session asks
+    // (AskReplaceTimesheet), through a temp file and a move. A link, directory or other entry at the name is refused.
+    private CommandResult Timesheet(string argument)
+    {
+        const string Name = TimesheetName;
+        string rest = argument.Trim();
+        int split = rest.IndexOfAny([' ', '\t']);
+        if (split < 0)
+        {
+            return Hint($"{Name}: say the month and the folder. {TimesheetUsage}");
+        }
+
+        string typedMonth = rest[..split];
+        string typedFolder = rest[split..].Trim();
+        if (!TryParseMonth(typedMonth, out int year, out int month))
+        {
+            return Hint($"{Name}: [bold]{Shown(typedMonth)}[/] is not a month as [bold]yyyy-MM[/]. {TimesheetUsage}");
+        }
+
+        string folder = ExpandFolder(typedFolder, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+        string shownFolder = Shown(folder);
+        if (!Path.IsPathFullyQualified(folder))
+        {
+            return Hint($"{Name}: [bold]{shownFolder}[/] is not an absolute path.");
+        }
+
+        if (!Directory.Exists(folder))
+        {
+            return File.Exists(folder)
+                ? Hint($"{Name}: [bold]{shownFolder}[/] is a file, not a folder.")
+                : Hint($"{Name}: the folder [bold]{shownFolder}[/] does not exist. Nothing was created.");
+        }
+
+        string path = Path.GetFullPath(Path.Combine(folder, TimesheetHtml.FileName(year, month)));
+        string shownPath = Shown(path);
+        FileKindResult kind = FileKind.OfEntry(path);
+        if (kind == FileKindResult.Other)
+        {
+            return Hint($"{Name}: [bold]{shownPath}[/] is a link, a folder or another special file. Nothing was written.");
+        }
+
+        SettingValues? loaded = LoadSettings(out SettingValues values) is null ? values : null;
+        TimeSpan target = DailyTarget(loaded);
+        string country = HolidaySetting(loaded, SettingsRegistry.HolidayCountryName);
+        string state = HolidaySetting(loaded, SettingsRegistry.HolidayStateName);
+        Timesheet sheet;
+        try
+        {
+            sheet = Times.Timesheet.Calculate(Store, year, month, target, day => PublicHolidays.NameOf(day, country, state));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{Name}: the data folder cannot be listed: {Shown(ex.Message)}");
+        }
+
+        byte[] bytes = TimesheetHtml.ToBytes(TimesheetHtml.Format(sheet, time.GetLocalNow().DateTime));
+        TimesheetRun run = new TimesheetRun(path, bytes, TimesheetHtml.MonthName(year, month), sheet.SkippedFiles);
+        if (kind == FileKindResult.Regular)
+        {
+            if (oneShot)
+            {
+                return Hint($"{Name}: [bold]{shownPath}[/] already exists. Run [bold]timesheet[/] in the session to replace it. Nothing was written.");
+            }
+
+            pendingTimesheet = run;
+            return CommandResult.None;
+        }
+
+        return WriteNewTimesheet(run);
+    }
+
+    /// <summary>True if <paramref name="text"/> is exactly <c>yyyy-MM</c> in ASCII digits, year 0001-9999 and month 01-12.</summary>
+    internal static bool TryParseMonth(string text, out int year, out int month)
+    {
+        year = 0;
+        month = 0;
+        if (text.Length != 7 || text[4] != '-')
+        {
+            return false;
+        }
+
+        for (int i = 0; i < 7; i++)
+        {
+            if (i != 4 && !char.IsAsciiDigit(text[i]))
+            {
+                return false;
+            }
+        }
+
+        int parsedYear = int.Parse(text.AsSpan(0, 4), NumberStyles.None, CultureInfo.InvariantCulture);
+        int parsedMonth = int.Parse(text.AsSpan(5, 2), NumberStyles.None, CultureInfo.InvariantCulture);
+        if (parsedYear < 1 || parsedMonth < 1 || parsedMonth > 12)
+        {
+            return false;
+        }
+
+        year = parsedYear;
+        month = parsedMonth;
+        return true;
+    }
+
+    // Creates the sheet's file exclusively (never over a file or through a link). A failed write deletes it.
+    private CommandResult WriteNewTimesheet(TimesheetRun run)
+    {
+        const string Name = TimesheetName;
+        string shownPath = Shown(run.Path);
+        bool created = false;
+        try
+        {
+            // CreateNew is O_CREAT | O_EXCL: it never overwrites a file or follows a link at the name.
+            using (FileStream stream = new FileStream(run.Path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                created = true;
+                stream.Write(run.Bytes);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            if (!created)
+            {
+                return FileKind.OfEntry(run.Path) == FileKindResult.Missing
+                    ? Hint($"{Name}: could not write [bold]{shownPath}[/]. {Shown(ex.Message)}")
+                    : Hint($"{Name}: [bold]{shownPath}[/] appeared meanwhile. Nothing was written.");
+            }
+
+            return DeleteFailedTimesheet(run.Path, shownPath, ex);
+        }
+
+        return TimesheetSaved(run);
+    }
+
+    // Asks in the input box whether to replace the existing sheet. Only yes or y replaces it; anything else or
+    // Esc keeps it. Returns null if the input ended.
+    private CommandResult? AskReplaceTimesheet(LineEditor editor, TimesheetRun run)
+    {
+        framePlaceholder = TimesheetPlaceholder;
+        try
+        {
+            string shownPath = Shown(run.Path);
+            Draw(null, new Markup($"[grey]{shownPath} already exists. Replace it? Type yes to replace.[/]"), false);
+            PlaceCursor();
+            int width = console.Profile.Width;
+            string? typed = editor.ReadValue(InputColumn, InputLine, width - InputColumn - 2, framePlaceholder, out bool cancelled,
+                ShowPasteCut, resized: Resize, hidden: TooSmall);
+            if (typed is null)
+            {
+                return null;
+            }
+
+            string answer = typed.Trim();
+            bool yes = !cancelled && (string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase));
+            if (!yes)
+            {
+                return new CommandResult(new Markup($"[grey]Kept {shownPath}. Nothing was written.[/]"));
+            }
+
+            return ReplaceTimesheet(run);
+        }
+        finally
+        {
+            framePlaceholder = Placeholder;
+        }
+    }
+
+    // Writes the sheet to a new temp file in the same folder, then moves it over the target. rename(2) replaces
+    // the entry at the name itself and never follows a link there. A failure deletes the temp file.
+    private CommandResult ReplaceTimesheet(TimesheetRun run)
+    {
+        const string Name = TimesheetName;
+        string shownPath = Shown(run.Path);
+        if (FileKind.OfEntry(run.Path) != FileKindResult.Regular)
+        {
+            return Hint($"{Name}: [bold]{shownPath}[/] changed meanwhile. Nothing was written.");
+        }
+
+        string folder = Path.GetDirectoryName(run.Path)!;
+        string temp = Path.Combine(folder, "." + Path.GetFileName(run.Path) + "." + Guid.NewGuid().ToString("N") + ".tmp");
+        bool created = false;
+        try
+        {
+            using (FileStream stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                created = true;
+                stream.Write(run.Bytes);
+            }
+
+            File.Move(temp, run.Path, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            if (!created)
+            {
+                return Hint($"{Name}: could not write [bold]{shownPath}[/]. {Shown(ex.Message)}");
+            }
+
+            return DeleteFailedTimesheet(temp, shownPath, ex);
+        }
+
+        return TimesheetSaved(run);
+    }
+
+    // Removes a partial or temp file after a failed write and gives the red hint.
+    private static CommandResult DeleteFailedTimesheet(string written, string shownPath, Exception failure)
+    {
+        try
+        {
+            File.Delete(written);
+        }
+        catch (Exception deleteFailed) when (deleteFailed is IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{TimesheetName}: could not write [bold]{shownPath}[/] and could not remove the partial file. {Shown(failure.Message)}");
+        }
+
+        return Hint($"{TimesheetName}: could not write [bold]{shownPath}[/]. {Shown(failure.Message)}");
+    }
+
+    private static CommandResult TimesheetSaved(TimesheetRun run)
+    {
+        List<IRenderable> parts =
+        [
+            new Markup($"Saved the timesheet for [steelblue1]{Markup.Escape(run.MonthName)}[/] to [steelblue1]{Shown(run.Path)}[/]"),
+        ];
+        AddSkippedFiles(parts, run.SkippedFiles);
+        return new CommandResult(parts.Count == 1 ? parts[0] : new Rows(parts));
+    }
+
+    // What timesheet keeps while the loop asks whether to replace the existing file.
+    private sealed class TimesheetRun
+    {
+        public TimesheetRun(string path, byte[] bytes, string monthName, int skippedFiles)
+        {
+            Path = path;
+            Bytes = bytes;
+            MonthName = monthName;
+            SkippedFiles = skippedFiles;
+        }
+
+        public string Path { get; }
+
+        public byte[] Bytes { get; }
+
+        public string MonthName { get; }
+
+        public int SkippedFiles { get; }
     }
 
     // Zips every day file and projects.json into a new file in an existing folder outside the data
@@ -3869,6 +4127,17 @@ internal sealed class App
                 }
 
                 result = imported;
+            }
+
+            if (pendingTimesheet is { } sheetRun)
+            {
+                pendingTimesheet = null;
+                if (AskReplaceTimesheet(editor, sheetRun) is not { } replaced)
+                {
+                    return 0;
+                }
+
+                result = replaced;
             }
 
             if (pendingPlan is { } planRun)

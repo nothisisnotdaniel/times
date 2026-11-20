@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -882,7 +883,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(
             ["absence", "addproject", "arrive", "backup", "booked", "break", "breakend", "…"],
             popup.Select(w => w.Text.Split(' ')[0]));
-        Assert.StartsWith("… 29 more", popup[^1].Text);
+        Assert.StartsWith("… 30 more", popup[^1].Text);
         Assert.Contains("Book the end of a break", popup[6].Text);
         Assert.Equal(80, popup[0].Text.Length);
     }
@@ -955,9 +956,9 @@ public sealed class AppTests : IDisposable
         List<string> hintRow = TypingWrites(output, 1).Where(w => w.Row == 21).Select(w => w.Text).ToList();
 
         // popup, restored (Backspace), popup, restored (Esc), popup (quit typing), ...
-        Assert.StartsWith("… 29 more", hintRow[0]);
+        Assert.StartsWith("… 30 more", hintRow[0]);
         Assert.Contains("Unknown command nope", hintRow[1]);
-        Assert.StartsWith("… 29 more", hintRow[2]);
+        Assert.StartsWith("… 30 more", hintRow[2]);
         Assert.Contains("Unknown command nope", hintRow[3]);
         Assert.Contains("Unknown command nope", hintRow[^1]);
         Assert.Contains("\u001b[38;5;9mUnknown command", output[output.LastIndexOf("\u001b[21;1H", StringComparison.Ordinal)..]);
@@ -991,7 +992,7 @@ public sealed class AppTests : IDisposable
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
         // 39 commands: 7 shown, the eighth row counts the other 32.
-        Assert.StartsWith("… 41 more", popup[^1].Text);
+        Assert.StartsWith("… 42 more", popup[^1].Text);
         // Nothing is drawn on row 1 while typing (the final clear on quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
@@ -4851,6 +4852,7 @@ public sealed class AppTests : IDisposable
             ["statistics"] = "st",
             ["summary"] = "s",
             ["sync"] = "sy",
+            ["timesheet"] = "ts",
             ["today"] = "t",
             ["unbooked"] = "ub",
             ["update"] = "up",
@@ -16696,5 +16698,424 @@ public sealed class AppTests : IDisposable
         string plain = Regex.Replace(console.Output, @"\x1b\[[0-9;?]*[A-Za-z]", string.Empty);
 
         Assert.Matches(@"│ workplace +│ wp +│ Mark this day as home office or office, or clear it", plain);
+    }
+
+    // Job 309 ------------------------------------------------------------------------------
+
+    private const string SheetName = "times-timesheet-2026-10.html";
+
+    private const string SheetPrompt = "already exists. Replace it? Type yes to replace.";
+
+    /// <summary>Two October days, one with a correction, and a broken file only when asked.</summary>
+    private void WriteSheetDays(bool broken = false)
+    {
+        File.WriteAllText(DayFile("2026-10-01"),
+            "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"},{\"kind\":\"leaving\",\"time\":\"16:30\"}]}");
+        File.WriteAllText(DayFile("2026-10-02"), "{\"absence\":\"vacation\"}");
+        if (broken)
+        {
+            File.WriteAllText(DayFile("2026-10-05"), "{not json");
+        }
+    }
+
+    /// <summary>The bytes timesheet should write for October 2026 with the default settings at the fixed clock.</summary>
+    private byte[] ExpectedSheet(TimeSpan? target = null, Func<DateOnly, string?>? holiday = null)
+    {
+        Timesheet sheet = Timesheet.Calculate(new DayStore(data.Path), 2026, 10, target ?? TimeSpan.FromHours(8), holiday ?? (_ => null));
+        return TimesheetHtml.ToBytes(TimesheetHtml.Format(sheet, new DateTime(2026, 10, 27, 18, 30, 0)));
+    }
+
+    private static string SheetHint(string[] frame) => HintText(frame, "timesheet:");
+
+    /// <summary>Runs the commands (each a typed line, or null for Esc) then quit, on a wide 40-row console.</summary>
+    private (int ExitCode, string Output, string[] Frame) RunSheet(params string?[] lines)
+    {
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Profile.Height = 40;
+            c.Profile.Width = 250;
+            foreach (string? line in lines)
+            {
+                if (line is null)
+                {
+                    c.Input.PushKey(ConsoleKey.Escape);
+                }
+                else
+                {
+                    c.Input.PushTextWithEnter(line);
+                }
+            }
+
+            c.Input.PushTextWithEnter("quit");
+        });
+        Assert.DoesNotContain("   at ", output);
+        string[] frame = LastLayout(output);
+        AssertLayout(frame, 40);
+        return (exitCode, output, frame);
+    }
+
+    // AC-1
+    [Fact]
+    public void Help_ListsTimesheet_WithAliasTs()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 120;
+        console.Input.PushTextWithEnter("help");
+        PageDown(console, HelpPages);
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+        string plain = Regex.Replace(console.Output, @"\x1b\[[0-9;?]*[A-Za-z]", string.Empty);
+
+        Assert.Matches(@"│ timesheet +│ ts +│ Save a printable HTML timesheet for a month: <yyyy-MM> <folder> +│", plain);
+    }
+
+    // AC-1
+    [Theory]
+    [InlineData("timesheet", "timesheet: say the month and the folder. Use timesheet <yyyy-MM> <folder>.")]
+    [InlineData("ts 2026-10", "timesheet: say the month and the folder. Use timesheet <yyyy-MM> <folder>.")]
+    [InlineData("timesheet 2026-13 {0}", "timesheet: 2026-13 is not a month as yyyy-MM. Use timesheet <yyyy-MM> <folder>.")]
+    [InlineData("timesheet 2026-00 {0}", "timesheet: 2026-00 is not a month as yyyy-MM.")]
+    [InlineData("timesheet 0000-10 {0}", "timesheet: 0000-10 is not a month as yyyy-MM.")]
+    [InlineData("timesheet 2026-1 {0}", "timesheet: 2026-1 is not a month as yyyy-MM.")]
+    [InlineData("timesheet 2026-10-01 {0}", "timesheet: 2026-10-01 is not a month as yyyy-MM.")]
+    [InlineData("timesheet 2026/10 {0}", "timesheet: 2026/10 is not a month as yyyy-MM.")]
+    [InlineData("timesheet 2026-10 relative-folder", "timesheet: relative-folder is not an absolute path.")]
+    [InlineData("timesheet 2026-10 {0}/missing", "timesheet: the folder {0}/missing does not exist. Nothing was created.")]
+    [InlineData("timesheet 2026-10 {0}/plain.txt", "timesheet: {0}/plain.txt is a file, not a folder.")]
+    public void Timesheet_BadArguments_ShowRedHint_AndWriteNothing(string typed, string hint)
+    {
+        using TempFolder target = new TempFolder();
+        File.WriteAllText(Path.Combine(target.Path, "plain.txt"), "x");
+        WriteSheetDays();
+        Dictionary<string, (DateTime Written, byte[] Bytes)> before = DataSnapshot();
+        string[] cwdBefore = WorkingDirectoryEntries();
+
+        (int exitCode, _, string[] frame) = RunSheet(string.Format(CultureInfo.InvariantCulture, typed, target.Path));
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains(string.Format(CultureInfo.InvariantCulture, hint, target.Path), SheetHint(frame));
+        Assert.Equal(["plain.txt"], Listing(target.Path));
+        AssertSameSnapshot(before);
+        Assert.Equal(cwdBefore, WorkingDirectoryEntries());
+    }
+
+    // AC-1: exactly yyyy-MM in ASCII digits, month 01-12.
+    [Theory]
+    [InlineData("2026-10", true)]
+    [InlineData("0001-01", true)]
+    [InlineData("9999-12", true)]
+    [InlineData("0000-01", false)]
+    [InlineData("2026-13", false)]
+    [InlineData("2026-00", false)]
+    [InlineData("\uFF12026-10", false)]
+    [InlineData("2026-1\u0663", false)]
+    [InlineData("+026-10", false)]
+    [InlineData(" 2026-10", false)]
+    [InlineData("2026-10 ", false)]
+    [InlineData("", false)]
+    public void TryParseMonth_AcceptsOnlyYearDashMonth(string text, bool valid)
+    {
+        Assert.Equal(valid, App.TryParseMonth(text, out int year, out int month));
+        if (valid)
+        {
+            Assert.Equal(text, $"{year:0000}-{month:00}");
+        }
+    }
+
+    // AC-1: the hints are red.
+    [Fact]
+    public void Timesheet_UsageHint_IsRed()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 120;
+        console.Input.PushTextWithEnter("timesheet");
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)(;1)?m(\x1b\[[0-9;]*m)*timesheet: say the month", console.Output);
+    }
+
+    // AC-2, AC-3
+    [Theory]
+    [InlineData("timesheet")]
+    [InlineData("ts")]
+    [InlineData("/timesheet")]
+    public void Timesheet_WritesTheSheet_AndSaysWhere(string command)
+    {
+        using TempFolder target = new TempFolder();
+        WriteSheetDays();
+        byte[] expected = ExpectedSheet();
+        Dictionary<string, (DateTime Written, byte[] Bytes)> before = DataSnapshot();
+
+        (int exitCode, _, string[] frame) = RunSheet($"{command} 2026-10 {target.Path}");
+
+        Assert.Equal(0, exitCode);
+        string path = Path.Combine(target.Path, SheetName);
+        Assert.Equal(expected, File.ReadAllBytes(path));
+        Assert.Contains(frame, l => l.Contains($"Saved the timesheet for October 2026 to {path}", StringComparison.Ordinal));
+        Assert.Equal([SheetName], Listing(target.Path));
+        AssertSameSnapshot(before);
+        string html = File.ReadAllText(path);
+        Assert.Contains("<td>2026-10-01 Thu</td><td class=\"time\">08:00</td><td class=\"time\">16:30</td>", html);
+        Assert.Contains("<td>Vacation</td>", html);
+    }
+
+    // AC-2: a quoted folder with spaces and ~ work like export.
+    [Fact]
+    public void Timesheet_QuotedFolderWithSpaces_IsTheRestOfTheLine()
+    {
+        using TempFolder target = new TempFolder();
+        string folder = Path.Combine(target.Path, "my  sheets");
+        Directory.CreateDirectory(folder);
+
+        (int exitCode, _, string[] frame) = RunSheet($"timesheet   2026-10   \"{folder}\"   ");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal([SheetName], Listing(folder));
+        Assert.Contains(frame, l => l.Contains("Saved the timesheet for October 2026", StringComparison.Ordinal));
+    }
+
+    // AC-4: daily-target and the holiday settings are read like the day view reads them.
+    [Fact]
+    public void Timesheet_UsesTheTargetAndHolidaySettings()
+    {
+        using TempFolder target = new TempFolder();
+        WriteSheetDays();
+        File.WriteAllText(Path.Combine(data.Path, "settings.json"),
+            "{\"settings\":{\"daily-target\":420,\"holiday-country\":\"Germany\",\"holiday-state\":\"none\"}}");
+        byte[] expected = ExpectedSheet(TimeSpan.FromMinutes(420), d => PublicHolidays.NameOf(d, PublicHolidays.Germany, PublicHolidays.None));
+
+        RunSheet($"timesheet 2026-10 {target.Path}");
+
+        byte[] written = File.ReadAllBytes(Path.Combine(target.Path, SheetName));
+        Assert.Equal(expected, written);
+        string html = Encoding.UTF8.GetString(written);
+        Assert.Contains("<p>Daily target 7:00</p>", html);
+        Assert.Contains("<td>Public holiday · German Unity Day</td>", html);
+        Assert.Contains("<p>Month balance +1:30</p>", html);
+    }
+
+    // AC-6
+    [Fact]
+    public void Timesheet_UnreadableDay_IsSkipped_AndCounted()
+    {
+        using TempFolder target = new TempFolder();
+        WriteSheetDays(broken: true);
+
+        (_, _, string[] frame) = RunSheet($"timesheet 2026-10 {target.Path}");
+
+        int saved = Array.FindIndex(frame, l => l.Contains("Saved the timesheet for October 2026", StringComparison.Ordinal));
+        Assert.True(saved >= 0);
+        Assert.Equal("! 1 file skipped", frame[saved + 1].Trim());
+        string html = File.ReadAllText(Path.Combine(target.Path, SheetName));
+        Assert.Contains("<td>Unreadable</td>", html);
+        Assert.Contains("! 1 day file could not be read and is left out of the totals.", html);
+        Assert.Contains("<p>Total 8:30</p>", html);
+    }
+
+    // AC-8
+    [Theory]
+    [InlineData("yes")]
+    [InlineData(" Y ")]
+    [InlineData("YES")]
+    public void Timesheet_ExistingFile_AnsweredYes_IsReplaced(string answer)
+    {
+        using TempFolder target = new TempFolder();
+        string path = Path.Combine(target.Path, SheetName);
+        File.WriteAllBytes(path, [1, 2, 3]);
+        WriteSheetDays();
+        byte[] expected = ExpectedSheet();
+        Dictionary<string, (DateTime Written, byte[] Bytes)> before = DataSnapshot();
+
+        (int exitCode, string output, string[] frame) = RunSheet($"timesheet 2026-10 {target.Path}", answer);
+
+        Assert.Equal(0, exitCode);
+        int prompt = output.IndexOf($"{path} {SheetPrompt}", StringComparison.Ordinal);
+        int saved = output.IndexOf("Saved the timesheet for October 2026", StringComparison.Ordinal);
+        Assert.True(prompt >= 0 && saved > prompt);
+        Assert.Contains(App.TimesheetPlaceholder, output);
+        Assert.Equal(expected, File.ReadAllBytes(path));
+        Assert.Equal([SheetName], Listing(target.Path));
+        Assert.Contains(frame, l => l.Contains($"Saved the timesheet for October 2026 to {path}", StringComparison.Ordinal));
+        AssertSameSnapshot(before);
+    }
+
+    // AC-8
+    [Theory]
+    [InlineData("no")]
+    [InlineData("")]
+    [InlineData("yess")]
+    [InlineData(null)]
+    public void Timesheet_ExistingFile_AnsweredOtherwise_IsKept(string? answer)
+    {
+        using TempFolder target = new TempFolder();
+        string path = Path.Combine(target.Path, SheetName);
+        File.WriteAllBytes(path, [1, 2, 3]);
+        WriteSheetDays();
+
+        (_, string output, string[] frame) = RunSheet($"timesheet 2026-10 {target.Path}", answer);
+
+        int prompt = output.IndexOf($"{path} {SheetPrompt}", StringComparison.Ordinal);
+        int kept = output.IndexOf($"Kept {path}. Nothing was written.", StringComparison.Ordinal);
+        Assert.True(prompt >= 0 && kept > prompt);
+        Assert.Equal([1, 2, 3], File.ReadAllBytes(path));
+        Assert.Equal([SheetName], Listing(target.Path));
+        Assert.Contains(frame, l => l.Contains($"Kept {path}. Nothing was written.", StringComparison.Ordinal));
+        Assert.DoesNotContain("Saved the timesheet", output);
+    }
+
+    // AC-9
+    [Fact]
+    public void Timesheet_DirectoryAtTheName_IsRefused_WithoutAsking()
+    {
+        using TempFolder target = new TempFolder();
+        string path = Path.Combine(target.Path, SheetName);
+        Directory.CreateDirectory(path);
+
+        (_, string output, string[] frame) = RunSheet($"timesheet 2026-10 {target.Path}");
+
+        Assert.Equal($"timesheet: {path} is a link, a folder or another special file. Nothing was written.", SheetHint(frame));
+        Assert.DoesNotContain(SheetPrompt, output);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(path));
+        Assert.Equal([SheetName], Listing(target.Path));
+    }
+
+    // AC-9: a link to a regular file and a dangling link are refused; neither target is touched.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Timesheet_SymlinkAtTheName_IsRefused_AndNotFollowed(bool dangling)
+    {
+        using TempFolder target = new TempFolder();
+        using TempFolder elsewhere = new TempFolder();
+        string link = Path.Combine(target.Path, SheetName);
+        string pointsTo = Path.Combine(elsewhere.Path, "victim.html");
+        if (!dangling)
+        {
+            File.WriteAllBytes(pointsTo, [7, 8, 9]);
+        }
+
+        try
+        {
+            File.CreateSymbolicLink(link, pointsTo);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return; // Links cannot be made here (e.g. Windows without the privilege).
+        }
+
+        (_, string output, string[] frame) = RunSheet($"timesheet 2026-10 {target.Path}");
+
+        Assert.Equal($"timesheet: {link} is a link, a folder or another special file. Nothing was written.", SheetHint(frame));
+        Assert.DoesNotContain(SheetPrompt, output);
+        Assert.Equal(pointsTo, new FileInfo(link).LinkTarget);
+        if (dangling)
+        {
+            Assert.Empty(Listing(elsewhere.Path));
+        }
+        else
+        {
+            Assert.Equal([7, 8, 9], File.ReadAllBytes(pointsTo));
+        }
+
+        Assert.Equal([SheetName], Listing(target.Path));
+    }
+
+    // AC-9: a FIFO at the name is refused and never opened.
+    [Fact]
+    public void Timesheet_FifoAtTheName_IsRefused()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder target = new TempFolder();
+        string fifo = Path.Combine(target.Path, SheetName);
+        SpecialFiles.MakeFifo(fifo);
+
+        (_, _, string[] frame) = RunSheet($"timesheet 2026-10 {target.Path}");
+
+        Assert.Equal($"timesheet: {fifo} is a link, a folder or another special file. Nothing was written.", SheetHint(frame));
+        Assert.True(SpecialFiles.IsFifo(fifo));
+    }
+
+    // AC-9: a failed write leaves no file, new or temp, and says could not write.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Timesheet_UnwritableFolder_ShowsCouldNotWrite_AndLeavesNoFile(bool existing)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using TempFolder target = new TempFolder();
+        string path = Path.Combine(target.Path, SheetName);
+        if (existing)
+        {
+            File.WriteAllBytes(path, [1, 2, 3]);
+        }
+
+        File.SetUnixFileMode(target.Path, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        try
+        {
+            (_, _, string[] frame) = RunSheet(existing ? [$"timesheet 2026-10 {target.Path}", "yes"] : [$"timesheet 2026-10 {target.Path}"]);
+
+            Assert.Contains($"timesheet: could not write {path}.", SheetHint(frame));
+            Assert.Equal(existing ? [SheetName] : [], Listing(target.Path));
+            if (existing)
+            {
+                Assert.Equal([1, 2, 3], File.ReadAllBytes(path));
+            }
+        }
+        finally
+        {
+            File.SetUnixFileMode(target.Path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
+    // AC-10
+    [Fact]
+    public void Timesheet_OneShot_WritesTheFile_AndExitsZero()
+    {
+        using TempFolder target = new TempFolder();
+        WriteSheetDays();
+        byte[] expected = ExpectedSheet();
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 250;
+
+        int exit = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), instanceLock: sideLock)
+            .Run(["timesheet", "2026-10", target.Path]);
+
+        Assert.Equal(0, exit);
+        string path = Path.Combine(target.Path, SheetName);
+        Assert.Equal(expected, File.ReadAllBytes(path));
+        Assert.Contains($"Saved the timesheet for October 2026 to {path}", console.Output);
+        Assert.Equal([SheetName], Listing(target.Path));
+    }
+
+    // AC-10
+    [Fact]
+    public void Timesheet_OneShot_ExistingFile_ChangesNothing_AndExitsOne()
+    {
+        using TempFolder target = new TempFolder();
+        string path = Path.Combine(target.Path, SheetName);
+        File.WriteAllBytes(path, [1, 2, 3]);
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 250;
+
+        int exit = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), instanceLock: sideLock)
+            .Run(["ts", "2026-10", target.Path]);
+
+        Assert.Equal(1, exit);
+        string plain = Regex.Replace(console.Output, @"\x1b\[[0-9;?]*[A-Za-z]", string.Empty);
+        Assert.Contains($"timesheet: {path} already exists. Run timesheet in the session to replace it. Nothing was written.", plain);
+        Assert.DoesNotContain(SheetPrompt, plain);
+        Assert.Equal([1, 2, 3], File.ReadAllBytes(path));
+        Assert.Equal([SheetName], Listing(target.Path));
     }
 }
