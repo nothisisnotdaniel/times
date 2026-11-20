@@ -144,3 +144,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [h] [#43](backlog/043-open-the-shop.md) Open the shop (after: ReviewPack#1; #39; #41; Context#399)
 - [ ] [#44](backlog/044-one-shot-help.md) One-shot help
 - [x] [#47](backlog/047-windows-prerelease-update-check.md) Windows prerelease update check
+- [?] [#52](backlog/052-unknown-key-reason-on-pro-activate.md) Unknown key reason on pro activate
+- [?] [#53](backlog/053-pack-test-builds-on-its-own.md) Pack test builds on its own
+- [?] [#54](backlog/054-signing-key-stored-as-raw-bytes.md) Signing key stored as raw bytes
+- [?] [#55](backlog/055-mistyped-pro-command-kept-out-of.md) Mistyped pro command kept out of history
