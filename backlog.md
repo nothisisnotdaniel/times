@@ -152,3 +152,5 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [?] [#57](backlog/057-report-hint-order-for-bad-dates.md) Report hint order for bad dates
 - [?] [#58](backlog/058-show-a-reading-line-before-eod.md) Show a reading line before eod reads Context todos
 - [?] [#59](backlog/059-test-the-real-context-process-path.md) Test the real Context process path in ContextCli
+- [?] [#60](backlog/060-tray-no-left-today-row-on.md) Tray: no Left today row on an absent day
+- [?] [#61](backlog/061-tray-windows-icon-check-and-handle.md) Tray: Windows icon check and handle cleanup
