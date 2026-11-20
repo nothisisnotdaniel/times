@@ -85,7 +85,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] [#46](backlog/046-prerelease-update-fails.md) Prerelease update fails → 127-prerelease-update-fix
 - [x] [#45](backlog/045-redraw-on-terminal-resize.md) Redraw on terminal resize → 128-redraw-on-resize
 - [x] [#39](backlog/039-signed-licence-keys-and-pro-gate.md) Signed licence keys and Pro gate → 302-signed-licence-keys
-- [ ] [#37](backlog/037-hours-per-work-item-as-json.md) Hours per work item as JSON
+- [x] [#37](backlog/037-hours-per-work-item-as-json.md) Hours per work item as JSON → 303-work-item-hours-json
 - [ ] [#51](backlog/051-no-prerelease-for-backlog-only-pushes.md) No prerelease for backlog-only pushes
 - [ ] [#38](backlog/038-end-of-day-ritual.md) End-of-day ritual (after: #37; Context#17)
 - [ ] [#6](backlog/006-menu-bar-and-tray-app.md) Menu bar and tray app
