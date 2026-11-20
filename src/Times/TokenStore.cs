@@ -90,7 +90,9 @@ internal sealed class UnsupportedTokenStore : ITokenStore
 /// launcher or the build's <c>Times</c> executable, symlinks resolved), never the shared
 /// <c>dotnet</c> host (by name, or by the <c>host/fxr</c> folder next to it), so other .NET programs
 /// cannot read it without a macOS prompt; when Times itself runs through such a host, nothing is
-/// stored. The access object is built before the old item is removed, so a failure there keeps it. Buffers the framework returns are freed with <c>SecKeychainItemFreeContent</c>, references
+/// stored. The access object is built first, then an existing item gets that access list and is updated in
+/// place (the Keychain refuses a second item for the same account); duplicates are deleted only after the
+/// update, so a failed save keeps the old token. Buffers the framework returns are freed with <c>SecKeychainItemFreeContent</c>, references
 /// with <c>CFRelease</c>, and managed byte copies of the token are zeroed after use.
 /// </summary>
 internal sealed partial class MacKeychainTokenStore : ITokenStore
@@ -113,8 +115,10 @@ internal sealed partial class MacKeychainTokenStore : ITokenStore
     public const string SharedHostRefused =
         "The token is stored only when Times runs as its own program (tm), not through dotnet.";
 
-    // Delete removes duplicates too, but never loops forever.
+    // Delete removes duplicates too, but never loops forever; Write finds at most this many items.
     private const int MaxItems = 16;
+
+    private const string SaveFailed = "The token could not be saved in the macOS Keychain.";
 
     // The executable the item's access list trusts, or null when Times runs through the shared host.
     private readonly string? trustedPath;
@@ -221,14 +225,34 @@ internal sealed partial class MacKeychainTokenStore : ITokenStore
         // Built first: if it fails, the earlier item is still there.
         IntPtr access = writer.CreateAccess(trustedPath);
         byte[] password = Encoding.UTF8.GetBytes(pat);
+        IReadOnlyList<IntPtr> items = [];
         try
         {
-            writer.DeleteAll();
-            writer.AddItem(organization, password, access);
+            items = writer.FindItems();
+            if (items.Count == 0)
+            {
+                writer.AddItem(organization, password, access);
+                return;
+            }
+
+            // The Keychain refuses a second item for the same account, so the first item is updated in
+            // place. Its access list changes first, so the new token is never stored under an older list;
+            // nothing is deleted until the new token is stored.
+            writer.SetAccess(items[0], access);
+            writer.UpdateItem(items[0], organization, password);
+            for (int i = 1; i < items.Count; i++)
+            {
+                writer.DeleteItem(items[i]);
+            }
         }
         finally
         {
             Array.Clear(password);
+            foreach (IntPtr item in items)
+            {
+                writer.Release(item);
+            }
+
             writer.Release(access);
         }
     }
@@ -239,13 +263,25 @@ internal sealed partial class MacKeychainTokenStore : ITokenStore
         /// <summary>An access object trusting only <paramref name="path"/>; throws <see cref="TokenStoreException"/>.</summary>
         public IntPtr CreateAccess(string path);
 
-        /// <summary>Removes every Times item; throws <see cref="TokenStoreException"/>.</summary>
-        public bool DeleteAll();
+        /// <summary>
+        /// References to every Times item (at most <see cref="MaxItems"/>), password never copied out; the
+        /// caller releases each. Throws <see cref="TokenStoreException"/>.
+        /// </summary>
+        public IReadOnlyList<IntPtr> FindItems();
+
+        /// <summary>Gives the item the access object's access list; throws <see cref="TokenStoreException"/>.</summary>
+        public void SetAccess(IntPtr item, IntPtr access);
+
+        /// <summary>Sets the item's account and password data; throws <see cref="TokenStoreException"/>.</summary>
+        public void UpdateItem(IntPtr item, string organization, byte[] password);
+
+        /// <summary>Removes the item from its keychain (the reference stays to be released); throws <see cref="TokenStoreException"/>.</summary>
+        public void DeleteItem(IntPtr item);
 
         /// <summary>Adds the item with the given access; throws <see cref="TokenStoreException"/>.</summary>
         public void AddItem(string organization, byte[] password, IntPtr access);
 
-        /// <summary>Releases a reference from <see cref="CreateAccess"/>.</summary>
+        /// <summary>Releases a reference from <see cref="CreateAccess"/> or <see cref="FindItems"/>.</summary>
         public void Release(IntPtr reference);
     }
 
@@ -253,7 +289,26 @@ internal sealed partial class MacKeychainTokenStore : ITokenStore
     {
         public IntPtr CreateAccess(string path) => MacKeychainTokenStore.CreateAccess(path);
 
-        public bool DeleteAll() => MacKeychainTokenStore.DeleteAll();
+        public IReadOnlyList<IntPtr> FindItems() => MacKeychainTokenStore.FindItems();
+
+        public void SetAccess(IntPtr item, IntPtr access)
+        {
+            if (SecKeychainItemSetAccess(item, access) != ErrSecSuccess)
+            {
+                throw new TokenStoreException(SaveFailed);
+            }
+        }
+
+        public void UpdateItem(IntPtr item, string organization, byte[] password) =>
+            MacKeychainTokenStore.UpdateItem(item, organization, password);
+
+        public void DeleteItem(IntPtr item)
+        {
+            if (SecKeychainItemDelete(item) != ErrSecSuccess)
+            {
+                throw new TokenStoreException("The token could not be removed from the macOS Keychain.");
+            }
+        }
 
         public void AddItem(string organization, byte[] password, IntPtr access) =>
             MacKeychainTokenStore.AddItem(organization, password, access);
@@ -261,10 +316,80 @@ internal sealed partial class MacKeychainTokenStore : ITokenStore
         public void Release(IntPtr reference) => ReleaseIfSet(reference);
     }
 
+    // Every Times generic-password item, found by service without copying a password out. On a failure
+    // the references found so far are released; on success the caller releases them.
+    private static unsafe IReadOnlyList<IntPtr> FindItems()
+    {
+        const string ReadFailed = "The macOS Keychain could not be read.";
+        byte[] service = Encoding.UTF8.GetBytes(Service);
+        List<IntPtr> items = [];
+        IntPtr search = IntPtr.Zero;
+        bool found = false;
+        try
+        {
+            fixed (byte* servicePointer = service)
+            {
+                Attribute attribute = new Attribute { Tag = ServiceAttribute, Length = (uint)service.Length, Data = (IntPtr)servicePointer };
+                AttributeList list = new AttributeList { Count = 1, Attributes = (IntPtr)(&attribute) };
+                if (SecKeychainSearchCreateFromAttributes(IntPtr.Zero, GenericPasswordClass, ref list, out search) != ErrSecSuccess
+                    || search == IntPtr.Zero)
+                {
+                    throw new TokenStoreException(ReadFailed);
+                }
+            }
+
+            while (true)
+            {
+                int status = SecKeychainSearchCopyNext(search, out IntPtr item);
+                if (status == ErrSecItemNotFound)
+                {
+                    break;
+                }
+
+                if (status != ErrSecSuccess || item == IntPtr.Zero)
+                {
+                    throw new TokenStoreException(ReadFailed);
+                }
+
+                items.Add(item);
+                if (items.Count > MaxItems)
+                {
+                    throw new TokenStoreException("The macOS Keychain holds too many Times items.");
+                }
+            }
+
+            found = true;
+            return items;
+        }
+        finally
+        {
+            ReleaseIfSet(search);
+            if (!found)
+            {
+                items.ForEach(ReleaseIfSet);
+            }
+        }
+    }
+
+    // The item's account attribute and password data, changed in place (its access list stays as set).
+    private static unsafe void UpdateItem(IntPtr item, string organization, byte[] password)
+    {
+        byte[] account = Encoding.UTF8.GetBytes(organization);
+        fixed (byte* accountPointer = account)
+        fixed (byte* passwordPointer = password)
+        {
+            Attribute attribute = new Attribute { Tag = AccountAttribute, Length = (uint)account.Length, Data = (IntPtr)accountPointer };
+            AttributeList list = new AttributeList { Count = 1, Attributes = (IntPtr)(&attribute) };
+            if (SecKeychainItemModifyAttributesAndData(item, ref list, (uint)password.Length, (IntPtr)passwordPointer) != ErrSecSuccess)
+            {
+                throw new TokenStoreException(SaveFailed);
+            }
+        }
+    }
+
     // An access object whose access list trusts only the given executable. The caller releases it.
     private static IntPtr CreateAccess(string path)
     {
-        const string Failed = "The token could not be saved in the macOS Keychain.";
         IntPtr application = IntPtr.Zero;
         IntPtr list = IntPtr.Zero;
         IntPtr descriptor = IntPtr.Zero;
@@ -272,19 +397,19 @@ internal sealed partial class MacKeychainTokenStore : ITokenStore
         {
             if (SecTrustedApplicationCreateFromPath(path, out application) != ErrSecSuccess || application == IntPtr.Zero)
             {
-                throw new TokenStoreException(Failed);
+                throw new TokenStoreException(SaveFailed);
             }
 
             list = CreateArray(application);
             descriptor = CFStringCreateWithCString(IntPtr.Zero, Service, CFStringEncodingUtf8);
             if (list == IntPtr.Zero || descriptor == IntPtr.Zero)
             {
-                throw new TokenStoreException(Failed);
+                throw new TokenStoreException(SaveFailed);
             }
 
             if (SecAccessCreate(descriptor, list, out IntPtr access) != ErrSecSuccess || access == IntPtr.Zero)
             {
-                throw new TokenStoreException(Failed);
+                throw new TokenStoreException(SaveFailed);
             }
 
             return access;
@@ -325,7 +450,7 @@ internal sealed partial class MacKeychainTokenStore : ITokenStore
                 (IntPtr)passwordPointer, IntPtr.Zero, access, out IntPtr item);
             if (status != ErrSecSuccess)
             {
-                throw new TokenStoreException("The token could not be saved in the macOS Keychain.");
+                throw new TokenStoreException(SaveFailed);
             }
 
             ReleaseIfSet(item);
@@ -464,6 +589,20 @@ internal sealed partial class MacKeychainTokenStore : ITokenStore
 
     [LibraryImport(Security)]
     private static partial int SecKeychainItemDelete(IntPtr itemRef);
+
+    [LibraryImport(Security)]
+    private static partial int SecKeychainSearchCreateFromAttributes(IntPtr keychainOrArray, uint itemClass,
+        ref AttributeList attrList, out IntPtr searchRef);
+
+    [LibraryImport(Security)]
+    private static partial int SecKeychainSearchCopyNext(IntPtr searchRef, out IntPtr itemRef);
+
+    [LibraryImport(Security)]
+    private static partial int SecKeychainItemSetAccess(IntPtr itemRef, IntPtr access);
+
+    [LibraryImport(Security)]
+    private static partial int SecKeychainItemModifyAttributesAndData(IntPtr itemRef, ref AttributeList attrList,
+        uint length, IntPtr data);
 
     [LibraryImport(Security)]
     private static partial int SecKeychainItemCopyContent(IntPtr itemRef, IntPtr itemClass, ref AttributeList attrList,
