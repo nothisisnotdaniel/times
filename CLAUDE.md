@@ -277,7 +277,8 @@ Every factory agent reads this file before working on Times. Keep it short and a
 - **Azure DevOps:** `devops` (`dv`) shows, sets (`connect <org>`, masked `LineEditor` prompt, never in history) or
   removes (`disconnect`) the link; the PAT lives only in the OS store (`ITokenStore`: macOS Keychain generic password
   service `Times Azure DevOps` whose access list (`SecAccessCreate`, built first; a stored item gets it and is updated in
-  place, and nothing is deleted before the new token is stored: duplicates go only after the update) trusts only the
+  place, and nothing is deleted before the new token is stored: duplicates go only after the update; a
+  failed duplicate delete shows an error and may leave a stale item until the next `connect` or `disconnect`) trusts only the
   apphost at `Environment.ProcessPath` (symlinks resolved), never a .NET host (named `dotnet` or next to `host/fxr`);
   `ITokenStore.WriteRefusal` says so before the masked prompt; Windows Credential Manager target `Times/AzureDevOps`; `UnsupportedTokenStore` elsewhere
   and in tests unless injected), never in a file, output or exception. A `devops`/`dv` line with an argument never enters

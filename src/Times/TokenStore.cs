@@ -390,7 +390,6 @@ internal sealed partial class MacKeychainTokenStore : ITokenStore
     // An access object whose access list trusts only the given executable. The caller releases it.
     private static IntPtr CreateAccess(string path)
     {
-        const string Failed = SaveFailed;
         IntPtr application = IntPtr.Zero;
         IntPtr list = IntPtr.Zero;
         IntPtr descriptor = IntPtr.Zero;
@@ -398,19 +397,19 @@ internal sealed partial class MacKeychainTokenStore : ITokenStore
         {
             if (SecTrustedApplicationCreateFromPath(path, out application) != ErrSecSuccess || application == IntPtr.Zero)
             {
-                throw new TokenStoreException(Failed);
+                throw new TokenStoreException(SaveFailed);
             }
 
             list = CreateArray(application);
             descriptor = CFStringCreateWithCString(IntPtr.Zero, Service, CFStringEncodingUtf8);
             if (list == IntPtr.Zero || descriptor == IntPtr.Zero)
             {
-                throw new TokenStoreException(Failed);
+                throw new TokenStoreException(SaveFailed);
             }
 
             if (SecAccessCreate(descriptor, list, out IntPtr access) != ErrSecSuccess || access == IntPtr.Zero)
             {
-                throw new TokenStoreException(Failed);
+                throw new TokenStoreException(SaveFailed);
             }
 
             return access;
