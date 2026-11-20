@@ -137,7 +137,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] [#29](backlog/029-bound-the-background-event-queue.md) Bound the background event queue → 325-bound-event-queue
 - [x] [#30](backlog/030-end-of-day-alert-when-switched.md) End-of-day alert when switched on later → 326-alert-switched-on-later
 - [x] [#31](backlog/031-remove-unused-prime-parameters.md) Remove unused Prime parameters → 208-remove-prime-params
-- [ ] [#36](backlog/036-teams-call-tracking.md) Teams call tracking
+- [x] [#36](backlog/036-teams-call-tracking.md) Teams call tracking → 327-teams-call-tracking
 - [ ] [#40](backlog/040-devops-sync-becomes-pro.md) DevOps sync becomes Pro (after: #39)
 - [ ] [#41](backlog/041-suite-landing-page.md) Suite landing page (after: #39; Context#109)
 - [x] [#42](backlog/042-choose-a-source-licence.md) Choose a source licence
