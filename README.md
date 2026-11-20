@@ -30,10 +30,38 @@ macOS/Linux, `%USERPROFILE%\.dotnet\tools` on Windows) is on your `PATH`.
 Each release on GitHub has the package `Times.<version>.nupkg` attached. You install it from a
 folder on your machine; nothing else needs to be downloaded or built.
 
-1. Download `Times.<version>.nupkg` from the release into an empty folder, for example
-   `~/Downloads/times`.
+1. Download `Times.<version>.nupkg` and its signature `Times.<version>.nupkg.sig` from the release
+   into an empty folder, for example `~/Downloads/times`.
 
-2. In that same folder, create a file named `nuget.config` with this content:
+2. Check the package before you install it. Run the commands in that folder.
+
+   The checksum: print the SHA-256 of the package and compare it with the SHA-256 digest GitHub
+   shows for that asset on the release page (or run `gh release view <tag> --json assets`).
+
+   ```sh
+   shasum -a 256 Times.<version>.nupkg
+   ```
+
+   On Windows, use `certutil -hashfile Times.<version>.nupkg SHA256` or, in PowerShell,
+   `Get-FileHash Times.<version>.nupkg -Algorithm SHA256`.
+
+   The signature: save `src/Times/update-key.pem` from the repository (the public key Times embeds)
+   as `update-key.pem` in the same folder, then run:
+
+   ```sh
+   openssl dgst -sha256 -verify update-key.pem -signature Times.<version>.nupkg.sig Times.<version>.nupkg
+   ```
+
+   The expected output is `Verified OK`.
+
+   What the checks prove: the digest comparison only catches a damaged or swapped download if you
+   read the digest from GitHub and not from the same place as the file. The signature shows that
+   the package was made by the release workflow's key, which is the stronger check.
+
+   Install only when both checks pass. If a check fails or the digest differs, delete the files
+   and do not install.
+
+3. In that same folder, create a file named `nuget.config` with this content:
 
    ```xml
    <?xml version="1.0" encoding="utf-8"?>
@@ -48,7 +76,7 @@ folder on your machine; nothing else needs to be downloaded or built.
    `<clear />` removes every other package source, and `value="."` means the folder that holds
    this `nuget.config`, so it does not matter which folder your terminal is in.
 
-3. Install the tool with that file, pinning the version you downloaded (`<folder>` is the folder
+4. Install the tool with that file, pinning the version you downloaded (`<folder>` is the folder
    from step 1):
 
    ```sh
@@ -63,13 +91,13 @@ folder on your machine; nothing else needs to be downloaded or built.
 
    On Windows, use a path like `%USERPROFILE%\Downloads\times\nuget.config`.
 
-4. Check the install. This prints the installed version, for example `Times 1.2.3`:
+5. Check the install. This prints the installed version, for example `Times 1.2.3`:
 
    ```sh
    tm --version
    ```
 
-5. Start Times from any terminal:
+6. Start Times from any terminal:
 
    ```sh
    tm
