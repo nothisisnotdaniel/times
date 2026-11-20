@@ -121,7 +121,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] Second instance guard: on start, take a lock file in the data folder (removed on every exit; a lock left by a crashed run is detected and taken over). If another Times already holds it, show a red line and exit with a non-zero code instead of letting two copies overwrite each other's day files. Also refuse to save a day file that changed on disk since it was loaded, with a red hint to reload. → 117-second-instance-guard
 - [x] Balance corrections: a command with an alias books a manual adjustment to the flexitime balance on the current day (plus or minus hours and minutes, with a reason checked like other names), for example a starting balance or paid-out overtime. The day view shows it and the balance includes it; old day files without corrections load as before. Builds on the daily target and flexitime balance. (after: Daily target and flexitime balance) → 121-balance-corrections
 - [ ] [#10](backlog/010-checkpoint-opens-context-note.md) Checkpoint opens Context note (after: Context#101)
-- [ ] [#11](backlog/011-calendar-to-checkpoints.md) Calendar to checkpoints (after: Context#17)
+- [x] [#11](backlog/011-calendar-to-checkpoints.md) Calendar to checkpoints (after: Context#17) → 312-calendar-to-checkpoints
 - [x] Old data examples: put example files of the old time data (anonymised if needed; they become test fixtures) into `Times/import-samples/` and describe the old format or tool in `Times/import-samples/README.md`.
 - [ ] [#12](backlog/012-dash-test-for-the-prune-script.md) Dash test for the prune script
 - [ ] [#49](backlog/049-safer-day-file-loading.md) Safer day-file loading
