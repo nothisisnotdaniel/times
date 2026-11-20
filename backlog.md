@@ -88,7 +88,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] [#37](backlog/037-hours-per-work-item-as-json.md) Hours per work item as JSON → 303-work-item-hours-json
 - [x] [#51](backlog/051-no-prerelease-for-backlog-only-pushes.md) No prerelease for backlog-only pushes → 304-no-prerelease-backlog-pushes
 - [x] [#38](backlog/038-end-of-day-ritual.md) End-of-day ritual (after: #37; Context#17) → 305-end-of-day-ritual
-- [ ] [#6](backlog/006-menu-bar-and-tray-app.md) Menu bar and tray app
+- [x] [#6](backlog/006-menu-bar-and-tray-app.md) Menu bar and tray app → 306-menu-bar-tray-app
 - [ ] [#7](backlog/007-check-in-reminder.md) Check-in reminder (after: #6)
 - [x] [#1](backlog/001-windows-terminal-check.md) Windows terminal check
 - [x] [#2](backlog/002-terminal-layout-check.md) Terminal layout check
