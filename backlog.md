@@ -124,7 +124,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] [#11](backlog/011-calendar-to-checkpoints.md) Calendar to checkpoints (after: Context#17) → 312-calendar-to-checkpoints
 - [x] Old data examples: put example files of the old time data (anonymised if needed; they become test fixtures) into `Times/import-samples/` and describe the old format or tool in `Times/import-samples/README.md`.
 - [x] [#12](backlog/012-dash-test-for-the-prune-script.md) Dash test for the prune script → 313-dash-test-prune-script
-- [ ] [#49](backlog/049-safer-day-file-loading.md) Safer day-file loading
+- [x] [#49](backlog/049-safer-day-file-loading.md) Safer day-file loading → 314-safer-day-file-loading
 - [ ] [#14](backlog/014-readme-checksum-guidance.md) README checksum guidance
 - [ ] [#17](backlog/017-skipped-hint-on-empty-days.md) Skipped hint on empty days
 - [ ] [#19](backlog/019-shared-sanitiser-for-echoed-text.md) Shared sanitiser for echoed text
