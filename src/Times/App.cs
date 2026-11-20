@@ -92,6 +92,9 @@ internal sealed class App
 
     // Set by the settings command; the loop then runs the settings panel until Esc.
     private bool openSettings;
+
+    // True while RunOneShot runs a line from the shell, so report can answer with raw JSON.
+    private bool oneShot;
     private string framePlaceholder = Placeholder;
 
     // The last drawn frame, one entry per screen row, so rows the command popup covered can be restored.
@@ -579,28 +582,135 @@ internal sealed class App
 
     // Shows the checkpoint time per work item (and per name without one) over an inclusive date range,
     // as one table with a total row, or a grey note if the range holds no checkpoints. Read-only.
+    // With --from/--to (any order) the same; with --json, from the shell only, the hours as raw JSON (HoursJson).
     private CommandResult Report(string argument)
     {
         const string Name = "report";
         const string Usage = "Use [bold]report <from> <to>[/] with dates as [bold]yyyy-MM-dd[/].";
+        const string FlagUsage = "Use [bold]report --from <from> --to <to> [[--json]][/] with dates as [bold]yyyy-MM-dd[/].";
         string[] parts = argument.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length != 2)
+        if (!oneShot && parts.Contains(JsonFlag, StringComparer.Ordinal))
+        {
+            return Hint($"{Name}: [bold]{JsonFlag}[/] works only from the shell ([bold]times report …[/]). Nothing was written.");
+        }
+
+        string first;
+        string last;
+        bool json = false;
+        string usage = Usage;
+        if (parts.Any(p => p.StartsWith("--", StringComparison.Ordinal)))
+        {
+            usage = FlagUsage;
+            if (ParseReportFlags(parts, out string? fromText, out string? toText, out json) is { } problem)
+            {
+                return Hint($"{Name}: {problem} {usage}");
+            }
+
+            first = fromText!;
+            last = toText!;
+        }
+        else if (parts.Length == 2)
+        {
+            first = parts[0];
+            last = parts[1];
+        }
+        else
         {
             return Hint($"{Name}: say the first and the last day. {Usage}");
         }
 
-        if (ParseRange(Name, Usage, parts[0], parts[1], out DateOnly from, out DateOnly to) is { } hint)
+        if (ParseRange(Name, usage, first, last, out DateOnly from, out DateOnly to) is { } hint)
         {
             return hint;
         }
 
         int step = ReportRounding();
+        if (json)
+        {
+            try
+            {
+                string text = HoursJson.Build(Store, from, to, DateOnly.FromDateTime(time.GetLocalNow().DateTime), Now(), step,
+                    LoadProjectsOrNull());
+                return new CommandResult(raw: text);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return Hint($"{Name}: the data folder cannot be listed: {Markup.Escape(ex.Message)}");
+            }
+        }
+
         if (CalculateReport(Name, from, to, step, out ProjectReport report) is { } failed)
         {
             return failed;
         }
 
         return new CommandResult(ReportView(from, to, report, LoadProjectsOrNull(), step), hideQuicklist: true);
+    }
+
+    private const string JsonFlag = "--json";
+
+    // Reads report's flags: --from <d> and --to <d> exactly once each, --json at most once, in any order,
+    // and nothing else. Returns the problem as escaped markup, or null.
+    private static string? ParseReportFlags(string[] parts, out string? from, out string? to, out bool json)
+    {
+        from = null;
+        to = null;
+        json = false;
+        for (int i = 0; i < parts.Length; i++)
+        {
+            string part = parts[i];
+            if (part == JsonFlag)
+            {
+                if (json)
+                {
+                    return $"[bold]{JsonFlag}[/] is given twice.";
+                }
+
+                json = true;
+            }
+            else if (part is "--from" or "--to")
+            {
+                if ((part == "--from" ? from : to) is not null)
+                {
+                    return $"[bold]{part}[/] is given twice.";
+                }
+
+                if (i + 1 >= parts.Length || parts[i + 1].StartsWith("--", StringComparison.Ordinal))
+                {
+                    return $"[bold]{part}[/] needs a date.";
+                }
+
+                i++;
+                if (part == "--from")
+                {
+                    from = parts[i];
+                }
+                else
+                {
+                    to = parts[i];
+                }
+            }
+            else if (part.StartsWith("--", StringComparison.Ordinal))
+            {
+                return $"[bold]{Markup.Escape(part)}[/] is not a report option.";
+            }
+            else
+            {
+                return $"use either two dates or [bold]--from[/] and [bold]--to[/], not both ([bold]{Markup.Escape(part)}[/]).";
+            }
+        }
+
+        if (from is null)
+        {
+            return "[bold]--from[/] is missing.";
+        }
+
+        if (to is null)
+        {
+            return "[bold]--to[/] is missing.";
+        }
+
+        return null;
     }
 
     // Parses the two report dates; a red hint (prefixed with name) if either is not a date or from is after to.
@@ -3173,7 +3283,16 @@ internal sealed class App
             return 1;
         }
 
+        oneShot = true;
         CommandResult result = Dispatch(text);
+        if (result.Raw is { } raw)
+        {
+            // Raw for tools: never rendered, wrapped or marked up (report --json).
+            console.Profile.Out.Writer.Write(raw);
+            console.Profile.Out.Writer.Flush();
+            return result.Failed ? 1 : 0;
+        }
+
         foreach (IRenderable? part in new[] { result.Message, result.Hint })
         {
             if (part is not null)

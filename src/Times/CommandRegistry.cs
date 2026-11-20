@@ -21,13 +21,19 @@ internal sealed record CommandResult
     /// True to leave out the quicklist panel while <paramref name="message"/> is shown, so long
     /// command output such as help has room.
     /// </param>
+    /// <param name="raw">
+    /// Text a one-shot command writes as is to the console's output writer (no rendering, markup or
+    /// wrapping), or <c>null</c> for none. Only <c>report --json</c> sets it.
+    /// </param>
     public CommandResult(
         IRenderable? message = null,
         bool quit = false,
         IRenderable? hint = null,
         bool hideQuicklist = false,
-        bool failed = false)
+        bool failed = false,
+        string? raw = null)
     {
+        Raw = raw;
         Failed = failed;
         Message = message;
         Quit = quit;
@@ -67,6 +73,9 @@ internal sealed record CommandResult
 
     /// <summary>True for an error result (<see cref="Error"/>); a one-shot command then exits with 1.</summary>
     public bool Failed { get; }
+
+    /// <summary>Text a one-shot command writes raw to the output, or <c>null</c> for none.</summary>
+    public string? Raw { get; }
 }
 
 /// <summary>

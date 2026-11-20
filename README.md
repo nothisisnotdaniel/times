@@ -114,6 +114,33 @@ times status
 
 `status` prints today's day view. Several words are joined, so `times checkpoint 8:30 #1 Design review` works. Commands that need the session (`quit`, `settings`, `prev`, `next`, `today`, `update`, `import`, `devops connect`) are refused with a red line. Exit codes: 0 done, 1 command error, 2 bad data folder, 3 another Times is open on the data folder, 4 the lock could not be taken. With no arguments, or an argument starting with `-`, Times starts the interactive session.
 
+### Hours as JSON
+
+`times report --from <from> --to <to> --json` (the flags in any order, dates `yyyy-MM-dd`) prints the hours over the range as one JSON document for other tools and scripts, and nothing else: no table, colours or line wrapping. Without `--json`, `times report --from <from> --to <to>` prints the same table as `times report <from> <to>`. `--json` works only from the shell, not in the session. The report only reads the data folder. Property names are fixed; `schemaVersion` changes only on a breaking change.
+
+| Property | Type | Meaning |
+|----------|------|---------|
+| `schemaVersion` | number | The version of this shape, now `1` |
+| `from` | string | The first day of the range, `yyyy-MM-dd` |
+| `to` | string | The last day of the range, `yyyy-MM-dd` (both days included) |
+| `roundedToMinutes` | number | The `report-rounding` step the work item minutes are rounded to: `0` (off), `5`, `10` or `15` |
+| `skippedFiles` | number | Day files in the range that could not be read; they are left out of `days` and `workItems` |
+| `days` | array | One object per readable day file in the range, by ascending date |
+| `days[].date` | string | The day, `yyyy-MM-dd` |
+| `days[].absence` | string or null | `vacation`, `sick`, `publicHoliday`, or `null` for a working day |
+| `days[].arrival` | string or null | The first arrival as `HH:mm`, or `null` |
+| `days[].leaving` | string or null | The last leaving as `HH:mm`, or `null` |
+| `days[].breaks` | array | One object per break start: `start` (`HH:mm`) and `end` (the break end or the leaving that closes it, `HH:mm`, or `null` while open) |
+| `days[].breakMinutes` | number | The break time in minutes, lunch gaps between leaving and arriving again included |
+| `days[].workMinutes` | number | The work time in minutes; on today it counts a running span up to now |
+| `workItems` | array | The rows of `report` in the same order: work items ascending, then checkpoint names without a work item |
+| `workItems[].workItem` | number or null | The work item number, or `null` for a row of one checkpoint name |
+| `workItems[].title` | string | The quicklist title of the work item, otherwise its checkpoint names joined with `, ` |
+| `workItems[].minutes` | number | The booked minutes, rounded per day like `report` |
+| `workItems[].open` | boolean | `true` if a checkpoint of the row has no end on a day before today (it counts no time) |
+| `workItems[].checkpoints` | array of strings | The distinct checkpoint names in the row, in first-booked order |
+| `totalMinutes` | number | The sum of every row's `minutes` |
+
 ## Commands
 
 Every command has a short alias that does exactly the same, with the same arguments: `a 8:15`
@@ -139,7 +166,7 @@ required. A booking without a time uses the current time. `remove`, `change`, `b
 | `summary` | `s` | none | Show the time taken per work item from this day's checkpoints |
 | `absence` | `ab` | `vacation`, `sick`, `holiday` or `clear` | Mark this day as vacation, sick or public holiday (it counts as meeting the daily target), or clear it |
 | `correction` | `co` | `+H:mm` or `-H:mm` and a reason, or `remove <number>` | Book a manual correction to the flexitime balance on this day (for example a starting balance or paid-out overtime), or remove one by its number; it shows above the target line and counts in the balance, not in the day |
-| `report` | `rp` | `<from> <to>` (`yyyy-MM-dd`) | Show the checkpoint hours per work item over a date range (both days included), with a total, to copy into Azure DevOps |
+| `report` | `rp` | `<from> <to>` or `--from <from> --to <to> [--json]` (`yyyy-MM-dd`; `--json` from the shell only) | Show the checkpoint hours per work item over a date range (both days included), with a total, to copy into Azure DevOps |
 | `export` | `ex` | `<from> <to> <folder>` (`yyyy-MM-dd`, an existing absolute folder, `~` allowed) | Save the same report rows as `times-report-<from>-to-<to>.csv` (UTF-8, comma-separated, decimal hours) in the folder; an existing file is never overwritten |
 | `find` | `f` | `<text>` | Find every day whose checkpoint names or quicklist project titles contain the text (ignoring case), with the date and the time taken |
 | `statistics` | `st` | `<from> <to>` (`yyyy-MM-dd`) | Show per weekday (Monday to Sunday) how many days you worked and your average arrival, leaving and work time over a date range (both days included), plus an `All days` row; reads only |
