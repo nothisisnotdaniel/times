@@ -52,6 +52,68 @@ internal static class FileKind
     }
 
     /// <summary>
+    /// The kind of the entry at <paramref name="path"/> itself, <b>never following a link</b> (lstat-style): a
+    /// symbolic link (dangling or not), a Windows reparse point, a directory, FIFO, device or socket is
+    /// <see cref="FileKindResult.Other"/>; only a plain regular file is <see cref="FileKindResult.Regular"/>.
+    /// Never opens the path.
+    /// </summary>
+    public static FileKindResult OfEntry(string path)
+    {
+        FileInfo entry = new FileInfo(path);
+        try
+        {
+            if (entry.LinkTarget is not null)
+            {
+                return FileKindResult.Other;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return FileKindResult.Other;
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            if (!entry.Exists && !Directory.Exists(path))
+            {
+                return FileKindResult.Missing;
+            }
+
+            FileAttributes attributes = entry.Attributes;
+            return (attributes & (FileAttributes.Directory | FileAttributes.Device | FileAttributes.ReparsePoint)) == 0
+                ? FileKindResult.Regular
+                : FileKindResult.Other;
+        }
+
+        int? modeOffset = CurrentModeOffset;
+        if (modeOffset is null)
+        {
+            return FileKindResult.Other;
+        }
+
+        byte[] buffer = new byte[StatBufferBytes];
+        int result;
+        int error;
+        try
+        {
+            result = LinkStat(path, buffer);
+            error = Marshal.GetLastPInvokeError();
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+        {
+            return FileKindResult.Other;
+        }
+
+        if (result != 0)
+        {
+            return error == ENOENT || error == ENOTDIR ? FileKindResult.Missing : FileKindResult.Other;
+        }
+
+        int mode = BitConverter.ToUInt16(buffer, modeOffset.Value);
+        return (mode & TypeMask) == RegularType ? FileKindResult.Regular : FileKindResult.Other;
+    }
+
+    /// <summary>
     /// The <c>st_mode</c> offset for this process. The layout libc fills depends on the
     /// <b>process</b> ABI, not the OS: an x64 process under Rosetta 2 on Apple Silicon (OS arm64)
     /// gets the legacy x64 <c>struct stat</c>, and an x86 process on x64 Linux the i386 one. So this
@@ -171,4 +233,7 @@ internal static class FileKind
 
     [DllImport("libc", EntryPoint = "stat", SetLastError = true)]
     private static extern int Stat([MarshalAs(UnmanagedType.LPUTF8Str)] string path, [Out] byte[] buffer);
+
+    [DllImport("libc", EntryPoint = "lstat", SetLastError = true)]
+    private static extern int LinkStat([MarshalAs(UnmanagedType.LPUTF8Str)] string path, [Out] byte[] buffer);
 }

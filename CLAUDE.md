@@ -203,6 +203,18 @@ Every factory agent reads this file before working on Times. Keep it short and a
   `Utf8JsonWriter`, fixed camelCase names, `schemaVersion` 1) gives `days` (arrival, leaving, breaks, break/work minutes) and
   `workItems` (the `ProjectReport` rows), passed as `CommandResult.Raw` and written by `RunOneShot` straight to
   `console.Profile.Out.Writer` (the one exception to Spectre rendering), ending in `\n`.
+- **Timesheet:** `timesheet <yyyy-MM> <folder>` (`ts`, month exactly `yyyy-MM` via `App.TryParseMonth`, folder through `ExpandFolder`
+  with `export`'s hints) runs `Timesheet.Calculate(store, year, month, target, holiday)` (read-only; one `TimesheetDay` per calendar day:
+  first `Arrival`, last `Leaving`, `BreakTime`/`WorkTime` when booked, absence, holiday name, corrections, unreadable flag; `MonthWork`,
+  `MonthBalance` by the `FlexitimeBalance` rule over the month, `EndBalance` = `FlexitimeBalance.Compute` to the month's last day; no live
+  minute) with `daily-target` and the holiday settings read like `RenderDay`. `TimesheetHtml.Format(sheet, created)` gives one
+  self-contained page (every text through `TimesheetHtml.Escape`, a CSP `meta` allowing only the inline `<style>`, `@media print` A4, no
+  script, link or `url(`, footer `Created yyyy-MM-dd HH:mm` from the `TimeProvider`), written UTF-8 without BOM as
+  `times-timesheet-yyyy-MM.html`. The target is checked with `FileKind.OfEntry` (lstat, never follows a link): a link, directory or other
+  non-regular entry is a red hint; a missing one is created with `CreateNew`; a regular one is asked about in the loop (`pendingTimesheet`,
+  grey `… already exists. Replace it? Type yes to replace.`, only `yes`/`y`), then a `CreateNew` temp file in the same folder is moved over
+  it; anything else or Esc is a grey `Kept <path>. Nothing was written.` The one-shot never replaces (red line, exit 1). A failed write
+  deletes its file.
 - **End of day:** `eod [<time>] [--plan <text…>]` (`ed`, today only) books a `Leaving` through `Save`, shows `SummaryView`, Context's
   todos, saves the plan via `context capture` and prints a plain stand-up draft. `IContextCli` (`ContextCli.cs`; `null` = not installed,
   nothing shown); the session asks for the plan (`pendingPlan`); only a refused booking fails. Tests use `FakeContextCli`.
