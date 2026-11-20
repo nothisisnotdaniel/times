@@ -802,7 +802,7 @@ While Times runs and you are working today, it rings the terminal bell and shows
 day when your work reaches the daily target (`alert-target`) and when 15 minutes are left until
 10 hours of work (`alert-limit`). If you start Times after a threshold has passed, that alert
 stays silent. An alert that is switched off when you start, and that you switch on later, rings at the
-next minute tick once its threshold is reached, once.
+next minute tick, once, when its threshold is reached and you are working today.
 
 ### Vacation
 
