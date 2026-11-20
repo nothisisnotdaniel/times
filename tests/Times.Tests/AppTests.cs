@@ -13001,7 +13001,7 @@ public sealed class AppTests : IDisposable
     /// Returns the output and the output length right before each applied tick.
     /// </summary>
     private (string Output, List<int> AppliedAt, List<bool> Results) RunAlerts(TimeOnly start, Dictionary<int, TimeOnly> ticks,
-        Action<TestConsole> input, DayRecord? today = null, int width = 80)
+        Action<TestConsole> input, DayRecord? today = null, int width = 80, Action<int>? beforeTick = null)
     {
         if (today is not null)
         {
@@ -13016,6 +13016,7 @@ public sealed class AppTests : IDisposable
         List<int> appliedAt = [];
         scripted.OnWait = call =>
         {
+            beforeTick?.Invoke(call);
             if (ticks.TryGetValue(call, out TimeOnly at))
             {
                 Tick(time, new DateTimeOffset(2026, 10, 27, at.Hour, at.Minute, 5, TimeSpan.Zero));
@@ -13223,6 +13224,31 @@ public sealed class AppTests : IDisposable
         Assert.Equal(0, Count(output, Bell));
         Assert.DoesNotContain(TargetReached, output);
         Assert.DoesNotContain(LimitWarning, output);
+    }
+
+    // AC-6 (job 326): an alert that is off at start rings once, at the next tick after it is switched on.
+    [Fact]
+    public void Alert_TargetOffAtStart_RingsOnceAfterItIsSwitchedOn()
+    {
+        File.WriteAllText(SettingsPath, "{\"settings\":{\"alert-target\":false}}");
+
+        (string output, List<int> appliedAt, List<bool> results) = RunAlerts(new TimeOnly(16, 30),
+            new Dictionary<int, TimeOnly> { [1] = new TimeOnly(16, 31), [2] = new TimeOnly(16, 32), [3] = new TimeOnly(16, 33) },
+            c => c.Input.PushTextWithEnter("quit"),
+            Arrived(8),
+            beforeTick: call =>
+            {
+                if (call == 2)
+                {
+                    File.WriteAllText(SettingsPath, "{\"settings\":{\"alert-target\":true}}");
+                }
+            });
+
+        Assert.Equal([true, true, true], results);
+        Assert.Equal(1, Count(output, Bell));
+        Assert.DoesNotContain(TargetReached, output[..appliedAt[1]]);
+        Assert.Contains(TargetReached, output[appliedAt[1]..appliedAt[2]]);
+        Assert.Equal(0, Count(output[appliedAt[2]..], Bell));
     }
 
     // AC-9: a broken settings.json counts as both on.

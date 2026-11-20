@@ -801,7 +801,8 @@ line such as `! Working-time warnings this week: Mon, Wed` names the days of the
 While Times runs and you are working today, it rings the terminal bell and shows a hint once per
 day when your work reaches the daily target (`alert-target`) and when 15 minutes are left until
 10 hours of work (`alert-limit`). If you start Times after a threshold has passed, that alert
-stays silent.
+stays silent. An alert that is switched off when you start, and that you switch on later, rings at the
+next minute tick once its threshold is reached, once.
 
 ### Vacation
 

@@ -122,7 +122,7 @@ public sealed class EndOfDayAlertsTests
     public void Prime_PastBothThresholds_LaterChecksFireNothing()
     {
         EndOfDayAlerts alerts = new EndOfDayAlerts();
-        alerts.Prime(Day, Working(), Target, T(18, 0));
+        alerts.Prime(Day, Working(), Target, T(18, 0), true, true);
 
         Assert.Empty(Check(alerts, Working(), T(18, 1)));
         Assert.Empty(Check(alerts, Working(), T(20, 0)));
@@ -133,7 +133,7 @@ public sealed class EndOfDayAlertsTests
     public void Prime_PastTheTargetOnly_TheLimitStillFiresLater()
     {
         EndOfDayAlerts alerts = new EndOfDayAlerts();
-        alerts.Prime(Day, Working(), Target, T(16, 30));
+        alerts.Prime(Day, Working(), Target, T(16, 30), true, true);
 
         Assert.Empty(Check(alerts, Working(), T(16, 31)));
         Assert.Equal([EndOfDayAlert.Limit], Check(alerts, Working(), T(17, 45)));
@@ -144,7 +144,7 @@ public sealed class EndOfDayAlertsTests
     public void Prime_BeforeBothThresholds_MarksNothing()
     {
         EndOfDayAlerts alerts = new EndOfDayAlerts();
-        alerts.Prime(Day, Working(), Target, T(9, 0));
+        alerts.Prime(Day, Working(), Target, T(9, 0), true, true);
 
         Assert.Equal([EndOfDayAlert.Target], Check(alerts, Working(), T(16, 0)));
     }
@@ -155,7 +155,7 @@ public sealed class EndOfDayAlertsTests
     {
         EndOfDayAlerts alerts = new EndOfDayAlerts();
         DayRecord left = new DayRecord([At(EntryKind.Arrival, 8), At(EntryKind.Leaving, 16, 30)]);
-        alerts.Prime(Day, left, Target, T(17, 0));
+        alerts.Prime(Day, left, Target, T(17, 0), true, true);
 
         DayRecord back = left.Add(At(EntryKind.Arrival, 17));
         Assert.Empty(Check(alerts, back, T(17, 5)));
@@ -167,9 +167,63 @@ public sealed class EndOfDayAlertsTests
     public void Prime_OnAnotherDate_DoesNotCountForToday()
     {
         EndOfDayAlerts alerts = new EndOfDayAlerts();
-        alerts.Prime(Day.AddDays(-1), Working(), Target, T(18, 0));
+        alerts.Prime(Day.AddDays(-1), Working(), Target, T(18, 0), true, true);
 
         Assert.Equal([EndOfDayAlert.Target, EndOfDayAlert.Limit], Check(alerts, Working(), T(18, 0)));
+    }
+
+    // AC-1
+    [Fact]
+    public void Prime_TargetOff_PastTarget_FiresOnceWhenSwitchedOn()
+    {
+        EndOfDayAlerts alerts = new EndOfDayAlerts();
+        alerts.Prime(Day, Working(), Target, T(16, 30), false, true);
+
+        Assert.Equal([EndOfDayAlert.Target], Check(alerts, Working(), T(16, 31)));
+        Assert.Empty(Check(alerts, Working(), T(16, 32)));
+    }
+
+    // AC-2
+    [Fact]
+    public void Prime_LimitOff_PastLimit_FiresOnceWhenSwitchedOn()
+    {
+        EndOfDayAlerts alerts = new EndOfDayAlerts();
+        alerts.Prime(Day, Working(), Target, T(18, 0), true, false);
+
+        Assert.Equal([EndOfDayAlert.Limit], Check(alerts, Working(), T(18, 1)));
+        Assert.Empty(Check(alerts, Working(), T(18, 2)));
+    }
+
+    // AC-3
+    [Fact]
+    public void Prime_BothOn_PastBoth_StaysSilent()
+    {
+        EndOfDayAlerts alerts = new EndOfDayAlerts();
+        alerts.Prime(Day, Working(), Target, T(18, 0), true, true);
+
+        Assert.Empty(Check(alerts, Working(), T(18, 1)));
+    }
+
+    // AC-4
+    [Fact]
+    public void Prime_TargetOffLimitOn_LeavesOnlyTargetUnmarked()
+    {
+        EndOfDayAlerts alerts = new EndOfDayAlerts();
+        alerts.Prime(Day, Working(), Target, T(18, 0), false, true);
+
+        Assert.Equal([EndOfDayAlert.Target], Check(alerts, Working(), T(18, 1)));
+    }
+
+    // AC-5
+    [Fact]
+    public void LateSwitchedOn_FiresOncePerDate_NewDateStartsFresh()
+    {
+        EndOfDayAlerts alerts = new EndOfDayAlerts();
+        alerts.Prime(Day, Working(), Target, T(18, 0), false, false);
+
+        Assert.Equal([EndOfDayAlert.Target, EndOfDayAlert.Limit], Check(alerts, Working(), T(18, 1)));
+        Assert.Empty(Check(alerts, Working(), T(18, 2)));
+        Assert.Equal([EndOfDayAlert.Target, EndOfDayAlert.Limit], Check(alerts, Working(), T(18, 0), on: Day.AddDays(1)));
     }
 
     // AC-4
