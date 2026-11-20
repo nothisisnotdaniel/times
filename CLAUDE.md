@@ -65,8 +65,8 @@ Every factory agent reads this file before working on Times. Keep it short and a
   - **Background events:** `IBackgroundEvents` (`BackgroundEvents.cs`; production `BackgroundEventQueue`,
     `ConcurrentQueue` plus a wake signal, polling `keyAvailable` at most every 50 ms) lets other threads `Post` a
     `BackgroundEvent`. The queue is bounded (`DefaultCapacity` 64, exact `Interlocked` count): a post to a full queue
-    is refused (the newest event is dropped, never applied, no wake) and `Post` returns `false`. Only `LineEditor.ReadLine` (given `events` and `applied`) drains it, on the loop thread, before
-    each fresh key: wait, apply all in FIFO order (a throwing event is dropped), call `applied` for those that
+    is refused (the newest event is dropped, never applied, no wake) and `Post` returns `false`. Only
+    `LineEditor.ReadLine` (given `events` and `applied`) drains it, on the loop thread, before each fresh key: wait, apply all in FIFO order (a throwing event is dropped), call `applied` for those that
     changed the view, then redraw popup and line. `App.ApplyEvent` re-renders the top area with the last message and
     hidden-quicklist flag and rewrites only its rows in place (offset kept, clamped). `ReadValue`, `ReadKey`, the
     settings panel and the token prompt never apply events. `App` takes an optional `events`; `Program.cs` passes
@@ -74,9 +74,8 @@ Every factory agent reads this file before working on Times. Keep it short and a
     blocks), `ObservedEvents` (records each applied event's result) and `HookedInput`.
     - **Live clock:** `LiveClock` (started by `App.Run` only with `events` and `liveClock`, disposed in its `finally`) arms a
       one-shot `TimeProvider.CreateTimer` due at the next local minute boundary, re-armed from the clock on each fire, and
-      posts one tick per fire; an `Interlocked` pending flag keeps at most one tick queued (cleared again when the queue refuses the tick, so the
-      next fire posts). A tick returns `true` (so
-      `ApplyEvent` redraws the top area in place) only while `dayView.Current` is today; after midnight the shown day stays
+      posts one tick per fire; an `Interlocked` pending flag keeps at most one tick queued (cleared again when the
+      queue refuses the tick, so the next fire posts). A tick returns `true` (so `ApplyEvent` redraws the top area in place) only while `dayView.Current` is today; after midnight the shown day stays
       and stops ticking. On today, `App.RenderDay` passes the current minute to `DayView.Render` and `FlexitimeBalance.Compute`:
       while `DayRecord.IsWorking` (and the minute is not before the last entry) a `now` row (grey `now`, steelblue1 `HH:mm`,
       `left` from `TimeLeftAt`) follows the last entry, and `day`/`balance` use `WorkTimeAt(now)`; otherwise the view is as
