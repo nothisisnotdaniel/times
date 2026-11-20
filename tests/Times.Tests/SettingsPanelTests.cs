@@ -139,7 +139,61 @@ public sealed class SettingsPanelTests
         Assert.Equal("› round   off   Round times", Inner(lines[3]));
         Assert.Matches(@"\x1b\[38;5;9mThe settings cannot be read:", output);
         Assert.Matches(@"\x1b\[(90|38;5;8)mFix or delete settings\.json", output);
-        Assert.Equal(3, SettingsPanel.LineOf(0, unreadable: true));
-        Assert.Equal(2, SettingsPanel.LineOf(1, unreadable: false));
+        Assert.Equal(3, SettingsPanel.LineOf(0, unreadable: true, fallbacks: 0));
+        Assert.Equal(2, SettingsPanel.LineOf(1, unreadable: false, fallbacks: 0));
+        Assert.DoesNotContain("wrong value for \"round\"", output);
+    }
+
+    // 311 AC-6
+    [Fact]
+    public void Fallback_ShowsYellowLineAboveTheRows_TheDefault_AndNoRedLine()
+    {
+        SettingsRegistry registry = SettingsRegistry.CreateDefault();
+        SettingValues values = SettingValues.FromJson(registry,
+            "{\"settings\":{\"daily-target\":600,\"holiday-country\":\"Germany\",\"holiday-state\":\"XX\"}}");
+        int row = registry.Settings.ToList().FindIndex(s => s.Name == "holiday-state");
+
+        string[] lines = Render(SettingsPanel.Render(registry, values, row, null));
+        string output = RenderAnsi(SettingsPanel.Render(registry, values, row, null));
+
+        Assert.Equal("! settings.json has a wrong value for \"holiday-state\": its default is used.", Inner(lines[1]));
+        Assert.StartsWith("  daily-target", Inner(lines[2]));
+        Assert.Matches(@"^› holiday-state +none ", Inner(lines[SettingsPanel.LineOf(row, false, 1)]));
+        Assert.Matches(@"\x1b\[(33|93|38;5;11)m! settings\.json has a wrong value", output);
+        Assert.DoesNotContain("cannot be read", output);
+        Assert.Equal(1 + 1 + row, SettingsPanel.LineOf(row, false, 1));
+    }
+
+    // 311 AC-6
+    [Fact]
+    public void TwoFallbacks_GiveTwoLines_InFileOrder_AndLineOfCountsThem()
+    {
+        SettingValues values = SettingValues.FromJson(SettingsStoreTests.Registry(), "{\"settings\":{\"theme\":\"blue\",\"round\":1}}");
+
+        string[] lines = Render(SettingsPanel.Render(SettingsStoreTests.Registry(), values, 0, null));
+
+        Assert.Equal("! settings.json has a wrong value for \"theme\": its default is used.", Inner(lines[1]));
+        Assert.Equal("! settings.json has a wrong value for \"round\": its default is used.", Inner(lines[2]));
+        Assert.Equal("› round   off   Round times", Inner(lines[SettingsPanel.LineOf(0, false, 2)]));
+        Assert.Equal("  theme   dark  Theme", Inner(lines[SettingsPanel.LineOf(2, false, 2)]));
+        Assert.Equal(3, SettingsPanel.LineOf(0, false, 2));
+        Assert.Equal(5, SettingsPanel.LineOf(2, false, 2));
+    }
+
+    // 311 AC-6
+    [Fact]
+    public void FallbackLine_IsCutNeverWrapped()
+    {
+        SettingsRegistry registry = new SettingsRegistry();
+        string name = new string('n', 40);
+        registry.RegisterOnOff(name, "x", false);
+        SettingValues values = SettingValues.FromJson(registry, $"{{\"settings\":{{\"{name}\":1}}}}");
+
+        string[] lines = Render(SettingsPanel.Render(registry, values, 0, null));
+
+        Assert.Equal(5, lines.Length);
+        Assert.StartsWith("│ ! settings.json has a wrong value for \"nnn", lines[1]);
+        Assert.EndsWith("… │", lines[1]);
+        Assert.Equal(Width, lines[1].Length);
     }
 }

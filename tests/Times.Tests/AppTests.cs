@@ -6682,12 +6682,10 @@ public sealed class AppTests : IDisposable
         Assert.Equal([SettingsPath], Directory.EnumerateFileSystemEntries(data.Path));
     }
 
-    // AC-10
+    // AC-10; 311 AC-8
     [Theory]
     [InlineData("{not json", "settings.json is not valid JSON.")]
-    [InlineData("{\"settings\":{\"round\":1}}", "settings.json has a wrong value for \"round\".")]
-    [InlineData("{\"settings\":{\"target\":721}}", "settings.json has a wrong value for \"target\".")]
-    [InlineData("{\"settings\":{\"theme\":\"blue\"}}", "settings.json has a wrong value for \"theme\".")]
+    [InlineData("{\"settings\":{},\"other\":1}", "settings.json does not hold {\"settings\":{…}}.")]
     [InlineData("{\"settings\":{\"a\":1,\"a\":1}}", "settings.json has a property more than once.")]
     public void UnreadableFile_ShowsWhy_ListsDefaults_AndEveryChangeSavesNothing(string contents, string reason)
     {
@@ -6714,6 +6712,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal("480", ValueOf(first, "target"));
         Assert.Equal("dark", ValueOf(first, "theme"));
         Assert.Contains("\u001b[38;5;9mThe settings cannot be read:", output);
+        Assert.DoesNotContain("its default is used", output);
         // Enter on round, Space on target (no edit opens), Enter on theme: each shows the hint.
         foreach (string[] changed in new[] { screens[1], screens[3], screens[5] })
         {
@@ -13009,14 +13008,100 @@ public sealed class AppTests : IDisposable
         Assert.Equal(settingsJson is null ? [] : ["settings.json"], DataEntryNames());
     }
 
-    // AC-7: an unknown option makes settings.json broken, so both settings are none (no holidays at all).
-    [Fact]
-    public void Holiday_UnknownStateInSettings_NoHolidays()
-    {
-        File.WriteAllText(SettingsPath, "{\"settings\":{\"holiday-country\":\"Germany\",\"holiday-state\":\"XX\"}}");
+    private const string WrongState = "{\"settings\":{\"daily-target\":600,\"holiday-country\":\"Germany\",\"holiday-state\":\"XX\"}}";
 
-        Assert.Contains("No entries yet.", LastFrame(RunOn(HolidayClock(6, 4), "quit").Output));
-        Assert.Contains("No entries yet.", LastFrame(RunOn(HolidayClock(4, 3), "quit").Output));
+    // 311 AC-4: an unknown state falls back to none for that setting only: Germany and the target still count.
+    [Fact]
+    public void Holiday_UnknownStateInSettings_FallsBackToNationwide_AndKeepsTheOtherSettings()
+    {
+        File.WriteAllText(SettingsPath, WrongState);
+        File.WriteAllText(DayFile("2026-04-03"),
+            "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"},{\"kind\":\"leaving\",\"time\":\"12:00\"}]}");
+
+        string corpusChristi = RunOn(HolidayClock(6, 4), "quit").Output;
+        string booked = RunOn(HolidayClock(4, 4), "prev", "quit").Output;
+        File.Delete(DayFile("2026-04-03"));
+        string goodFriday = RunOn(HolidayClock(4, 3), "quit").Output;
+
+        Assert.Contains("Absence: Public holiday · Good Friday", LastFrame(goodFriday));
+        Assert.Contains("No entries yet.", LastFrame(corpusChristi));
+        Assert.DoesNotContain("Public holiday", LastFrame(corpusChristi));
+        string frame = LastFrame(booked);
+        string[] lines = frame.Split('\n').Select(l => l.Trim('│', ' ', '\r')).ToArray();
+        int heading = Array.FindIndex(lines, l => l.Contains("Friday, 2026-04-03", StringComparison.Ordinal));
+        Assert.Equal("Public holiday: Good Friday", lines[heading + 1]);
+        Assert.Contains("Target 10:00", frame);
+        Assert.All(new[] { goodFriday, corpusChristi, booked }, o => Assert.DoesNotContain("cannot be read", o));
+        Assert.Equal(WrongState, File.ReadAllText(SettingsPath));
+    }
+
+    // 311 AC-7: the panel names the fallback; another change keeps it byte for byte; changing it clears it.
+    [Fact]
+    public void Settings_WrongState_ShowsYellowLine_KeptOnOtherChange_ClearedWhenChanged()
+    {
+        SettingsRegistry registry = SettingsRegistry.CreateDefault();
+        int alertTarget = registry.Settings.ToList().FindIndex(x => x.Name == "alert-target");
+        int state = registry.Settings.ToList().FindIndex(x => x.Name == "holiday-state");
+        string nextState = registry.Settings[state].Options[1];
+        const string Yellow = "! settings.json has a wrong value for \"holiday-state\": its default is used.";
+        File.WriteAllText(SettingsPath, WrongState);
+        byte[] before = File.ReadAllBytes(SettingsPath);
+
+        (_, string untouched) = RunSettings(c =>
+        {
+            c.Profile.Width = 160;
+            c.Input.PushTextWithEnter("settings");
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        }, SettingsRegistry.CreateDefault(), height: 40);
+
+        string[] opened = Assert.Single(PanelScreens(untouched, 40));
+        Assert.Contains(Yellow, opened[1]);
+        Assert.Equal("none", ValueOf(opened, "holiday-state"));
+        Assert.Matches(@"\x1b\[(33|93|38;5;11)m! settings\.json has a wrong value", untouched);
+        Assert.DoesNotContain("cannot be read", untouched);
+        Assert.Equal(before, File.ReadAllBytes(SettingsPath));
+
+        (_, string other) = RunSettings(c =>
+        {
+            c.Profile.Width = 160;
+            c.Input.PushTextWithEnter("settings");
+            for (int i = 0; i < alertTarget; i++)
+            {
+                c.Input.PushKey(ConsoleKey.DownArrow);
+            }
+
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        }, SettingsRegistry.CreateDefault(), height: 40);
+
+        string[] changed = PanelScreens(other, 40)[^1];
+        Assert.Equal("off", ValueOf(changed, "alert-target"));
+        Assert.Contains(Yellow, changed[1]);
+        Assert.Equal(WrongState[..^2] + ",\"alert-target\":false}}", File.ReadAllText(SettingsPath));
+
+        (_, string fixedIt) = RunSettings(c =>
+        {
+            c.Profile.Width = 160;
+            c.Input.PushTextWithEnter("settings");
+            for (int i = 0; i < state; i++)
+            {
+                c.Input.PushKey(ConsoleKey.DownArrow);
+            }
+
+            c.Input.PushKey(ConsoleKey.Enter);
+            c.Input.PushKey(ConsoleKey.Escape);
+            c.Input.PushTextWithEnter("quit");
+        }, SettingsRegistry.CreateDefault(), height: 40);
+
+        List<string[]> screens = PanelScreens(fixedIt, 40);
+        Assert.Contains(Yellow, screens[0][1]);
+        Assert.Equal(nextState, ValueOf(screens[^1], "holiday-state"));
+        Assert.DoesNotContain(screens[^1], r => r.Contains("wrong value", StringComparison.Ordinal));
+        Assert.Equal(
+            $"{{\"settings\":{{\"daily-target\":600,\"holiday-country\":\"Germany\",\"holiday-state\":\"{nextState}\",\"alert-target\":false}}}}",
+            File.ReadAllText(SettingsPath));
     }
 
     // AC-4: Germany with state none gives the nationwide holidays only.
@@ -16604,6 +16689,15 @@ public sealed class AppTests : IDisposable
         (_, JsonElement holiday, _) = StatusTail(unityDay, settings);
 
         Assert.Equal(expected, holiday.ValueKind == JsonValueKind.Null ? null : holiday.GetString());
+    }
+
+    // Job 311, AC-5: a wrong holiday-state falls back to none, so Germany's nationwide holiday is still named.
+    [Fact]
+    public void StatusJson_WrongState_StillNamesTheNationwideHoliday()
+    {
+        (_, JsonElement holiday, _) = StatusTail(HolidayClock(4, 3), WrongState);
+
+        Assert.Equal("Good Friday", holiday.GetString());
     }
 
     // Job 308 ------------------------------------------------------------------------------

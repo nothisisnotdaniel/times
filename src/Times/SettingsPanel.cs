@@ -29,7 +29,9 @@ internal static class SettingsPanel
     /// The panel for <paramref name="values"/> of <paramref name="registry"/>'s settings with row
     /// <paramref name="selected"/> marked. When <paramref name="unreadableReason"/> (plain text, escaped
     /// here) is not null, a red <c>The settings cannot be read: …</c> line and a grey line with what to
-    /// do come first.
+    /// do come first. Each name in <see cref="SettingValues.Fallbacks"/> gets a yellow
+    /// <c>! settings.json has a wrong value for "&lt;name&gt;": its default is used.</c> line next, in
+    /// file order (see <see cref="FallbackLine"/>).
     /// </summary>
     public static IRenderable Render(SettingsRegistry registry, SettingValues values, int selected, string? unreadableReason)
     {
@@ -38,6 +40,11 @@ internal static class SettingsPanel
         {
             lines.Add(new OneLine(new Markup($"[red]The settings cannot be read: {Markup.Escape(unreadableReason)}[/]")));
             lines.Add(new OneLine(new Markup($"[grey]{Markup.Escape(UnreadableNextStep)}[/]")));
+        }
+
+        foreach (string fallback in values.Fallbacks)
+        {
+            lines.Add(new OneLine(new Markup($"[yellow]{Markup.Escape(FallbackLine(fallback))}[/]")));
         }
 
         IReadOnlyList<Setting> settings = registry.Settings;
@@ -67,9 +74,13 @@ internal static class SettingsPanel
 
     /// <summary>
     /// The panel line (0-based, the top border is line 0) that shows setting <paramref name="index"/>,
-    /// so the caller can keep the selected row in view.
+    /// with the two unreadable lines and <paramref name="fallbacks"/> yellow fallback lines above the
+    /// rows counted, so the caller can keep the selected row in view.
     /// </summary>
-    public static int LineOf(int index, bool unreadable) => 1 + (unreadable ? 2 : 0) + index;
+    public static int LineOf(int index, bool unreadable, int fallbacks) => 1 + (unreadable ? 2 : 0) + fallbacks + index;
+
+    /// <summary>The plain text of the yellow line for a setting whose value in the file fell back to its default.</summary>
+    public static string FallbackLine(string name) => $"! {SettingsStore.FileName} has a wrong value for \"{name}\": its default is used.";
 
     /// <summary>How a value is shown: <c>on</c>/<c>off</c>, an invariant number, or the option's text.</summary>
     public static string FormatValue(object value) => value switch

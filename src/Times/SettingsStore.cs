@@ -7,7 +7,10 @@ namespace Times;
 /// <summary>
 /// The values of the registered settings, as read from <c>settings.json</c>. A registered setting the
 /// file does not mention has its default. Names the file holds that no registered setting has are
-/// kept as they were (raw JSON), so saving never loses them. Immutable: <see cref="With"/> returns a copy.
+/// kept as they were (raw JSON), so saving never loses them. A registered name whose value its setting
+/// cannot take (wrong type, out of range, unknown option) is kept as raw JSON too: it has its default,
+/// is listed in <see cref="Fallbacks"/>, and is written back unchanged until it is set with
+/// <see cref="With"/>. Immutable: <see cref="With"/> returns a copy.
 /// </summary>
 internal sealed class SettingValues
 {
@@ -15,8 +18,9 @@ internal sealed class SettingValues
 
     private readonly SettingsRegistry registry;
 
-    // The settings object's entries in file order: a registered name maps to its typed value, any
-    // other name to its raw JSON. Registered names set later are appended.
+    // The settings object's entries in file order: a registered name maps to its typed value (or to
+    // its raw JSON when its setting cannot take it), any other name to its raw JSON. Registered names
+    // set later are appended.
     private readonly List<KeyValuePair<string, object>> entries;
 
     private SettingValues(SettingsRegistry registry, List<KeyValuePair<string, object>> entries)
@@ -28,7 +32,17 @@ internal sealed class SettingValues
     /// <summary>Every registered setting at its default, with nothing to write.</summary>
     public static SettingValues Defaults(SettingsRegistry registry) => new(registry, []);
 
-    /// <summary>The value of <paramref name="name"/>: a <see cref="bool"/>, <see cref="int"/> or <see cref="string"/> by kind.</summary>
+    /// <summary>
+    /// The registered names whose value in the file their setting cannot take, in file order. Each has
+    /// its default; an empty list when every value could be read.
+    /// </summary>
+    public IReadOnlyList<string> Fallbacks =>
+        entries.Where(e => e.Value is JsonElement && registry.TryGet(e.Key, out Setting _)).Select(e => e.Key).ToList();
+
+    /// <summary>
+    /// The value of <paramref name="name"/>: a <see cref="bool"/>, <see cref="int"/> or <see cref="string"/> by kind
+    /// (the default when the file does not mention it or holds a value it cannot take).
+    /// </summary>
     public object Get(string name)
     {
         Setting setting = Find(name);
@@ -36,7 +50,7 @@ internal sealed class SettingValues
         {
             if (string.Equals(entry.Key, name, StringComparison.Ordinal))
             {
-                return entry.Value;
+                return entry.Value is JsonElement ? setting.Default : entry.Value;
             }
         }
 
@@ -53,7 +67,8 @@ internal sealed class SettingValues
     public string Choice(string name) => (string)Get(Expect(name, SettingKind.Choice));
 
     /// <summary>
-    /// A copy with <paramref name="name"/> set to <paramref name="value"/>. Throws
+    /// A copy with <paramref name="name"/> set to <paramref name="value"/>, at the name's place in the
+    /// file (so a fallback is replaced in place and leaves <see cref="Fallbacks"/>). Throws
     /// <see cref="ArgumentException"/> if the setting is not registered or cannot hold the value.
     /// </summary>
     public SettingValues With(string name, object value)
@@ -80,7 +95,7 @@ internal sealed class SettingValues
 
     /// <summary>
     /// Writes <c>{"settings":{…}}</c> with the names in file order (registered names set later at
-    /// the end) and unknown names' values exactly as they were read.
+    /// the end) and the values of unknown names and of <see cref="Fallbacks"/> exactly as they were read.
     /// </summary>
     public string ToJson()
     {
@@ -104,7 +119,7 @@ internal sealed class SettingValues
                         writer.WriteStringValue(option);
                         break;
                     case JsonElement raw:
-                        // Exactly the text that was read, so an unknown setting is kept unchanged.
+                        // Exactly the text that was read, so an unknown setting or a fallback is kept unchanged.
                         writer.WriteRawValue(raw.GetRawText());
                         break;
                     default:
@@ -122,9 +137,9 @@ internal sealed class SettingValues
     /// <summary>
     /// Reads the contents of <c>settings.json</c>. Throws <see cref="JsonException"/> if they are not
     /// JSON, and <see cref="InvalidDataException"/> if they are not exactly <c>{"settings":{…}}</c>,
-    /// hold a property more than once (at any depth) or a property name that is not valid text, or
-    /// hold a value a registered setting cannot take (wrong type, out of range, unknown option).
-    /// Never returns partial values.
+    /// hold a property more than once (at any depth) or a property name that is not valid text.
+    /// A value a registered setting cannot take (wrong type, out of range, unknown option) does not
+    /// throw: that setting falls back to its default and is listed in <see cref="Fallbacks"/>.
     /// </summary>
     public static SettingValues FromJson(SettingsRegistry registry, string json)
     {
@@ -158,16 +173,16 @@ internal sealed class SettingValues
         List<KeyValuePair<string, object>> entries = [];
         foreach (JsonProperty property in settings.EnumerateObject())
         {
-            object value = registry.TryGet(property.Name, out Setting setting)
-                ? Read(setting, property.Value)
-                : property.Value.Clone();
+            object? read = registry.TryGet(property.Name, out Setting setting) ? Read(setting, property.Value) : null;
+            object value = read ?? property.Value.Clone();
             entries.Add(new KeyValuePair<string, object>(property.Name, value));
         }
 
         return new SettingValues(registry, entries);
     }
 
-    private static object Read(Setting setting, JsonElement value)
+    // The typed value, or null when the setting cannot take it (the caller keeps the raw JSON).
+    private static object? Read(Setting setting, JsonElement value)
     {
         object? read = setting.Kind switch
         {
@@ -182,12 +197,7 @@ internal sealed class SettingValues
             _ => null,
         };
 
-        if (read is null || !setting.Accepts(read))
-        {
-            throw new InvalidDataException($"{SettingsStore.FileName} has a wrong value for \"{setting.Name}\".");
-        }
-
-        return read;
+        return read is not null && setting.Accepts(read) ? read : null;
     }
 
     // An escaped lone surrogate such as \ud800 cannot be turned into a string: no option matches it.
