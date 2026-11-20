@@ -56,8 +56,9 @@ internal static class TimesheetHtml
         html.Append("</head>\n<body>\n");
         html.Append("<h1>Timesheet ").Append(Escape(month)).Append("</h1>\n");
         html.Append("<p>Daily target ").Append(Escape(DayView.FormatTimeLeft(sheet.Target))).Append("</p>\n");
-        html.Append("<table>\n<thead>\n<tr><th>Date</th><th>Arrival</th><th>Leaving</th><th>Breaks</th><th>Work time</th>")
-            .Append("<th>Absence</th><th>Correction</th></tr>\n</thead>\n<tbody>\n");
+        html.Append("<table>\n<thead>\n<tr><th scope=\"col\">Date</th><th scope=\"col\">Arrival</th><th scope=\"col\">Leaving</th>")
+            .Append("<th scope=\"col\">Breaks</th><th scope=\"col\">Work time</th><th scope=\"col\">Absence</th>")
+            .Append("<th scope=\"col\">Correction</th></tr>\n</thead>\n<tbody>\n");
         foreach (TimesheetDay day in sheet.Days)
         {
             AppendRow(html, day);

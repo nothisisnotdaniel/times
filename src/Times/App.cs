@@ -1028,6 +1028,11 @@ internal sealed class App
             return Hint($"{Name}: [bold]{shownPath}[/] is a link, a folder or another special file. Nothing was written.");
         }
 
+        if (kind == FileKindResult.Regular && oneShot)
+        {
+            return Hint($"{Name}: [bold]{shownPath}[/] already exists. Run [bold]timesheet[/] in the session to replace it. Nothing was written.");
+        }
+
         SettingValues? loaded = LoadSettings(out SettingValues values) is null ? values : null;
         TimeSpan target = DailyTarget(loaded);
         string country = HolidaySetting(loaded, SettingsRegistry.HolidayCountryName);
@@ -1046,11 +1051,6 @@ internal sealed class App
         TimesheetRun run = new TimesheetRun(path, bytes, TimesheetHtml.MonthName(year, month), sheet.SkippedFiles);
         if (kind == FileKindResult.Regular)
         {
-            if (oneShot)
-            {
-                return Hint($"{Name}: [bold]{shownPath}[/] already exists. Run [bold]timesheet[/] in the session to replace it. Nothing was written.");
-            }
-
             pendingTimesheet = run;
             return CommandResult.None;
         }
@@ -1158,6 +1158,8 @@ internal sealed class App
     {
         const string Name = TimesheetName;
         string shownPath = Shown(run.Path);
+        // Advisory only: the entry can still change before the move, which is harmless because rename(2) replaces
+        // the name itself (never writing through a link), and a directory there makes the move fail.
         if (FileKind.OfEntry(run.Path) != FileKindResult.Regular)
         {
             return Hint($"{Name}: [bold]{shownPath}[/] changed meanwhile. Nothing was written.");
