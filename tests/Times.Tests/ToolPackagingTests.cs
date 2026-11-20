@@ -269,6 +269,30 @@ public sealed class ToolPackagingTests
         Assert.Contains("backlog.md", workflow[..name], StringComparison.Ordinal);
     }
 
+    // AC-3 (304)
+    [Fact]
+    public void ReleaseWorkflow_HeaderCommentCoversBacklogFilesAndTags()
+    {
+        string workflow = ReadWorkflow();
+        string header = Regex.Replace(workflow[..workflow.IndexOf("\nname: Release\n", StringComparison.Ordinal)], @"\s*\n#\s*", " ");
+
+        Assert.Contains("only `backlog.md` and/or files under `backlog/`", header, StringComparison.Ordinal);
+        Assert.Contains("Path filters do not apply to pushed vX.Y.Z tags", header, StringComparison.Ordinal);
+    }
+
+    // AC-1, AC-2 (304)
+    [Fact]
+    public void ReleaseWorkflow_PushIgnoresBacklogAndStoriesWithoutAllowList()
+    {
+        YamlMapping on = Map(Map(WorkflowYaml.Parse(ReadWorkflow()))["on"]);
+        YamlMapping push = Map(on["push"]);
+
+        Assert.Equal(["backlog.md", "backlog/**"], Strings(push["paths-ignore"]));
+        Assert.False(push.ContainsKey("paths"));
+        Assert.Equal(["closed"], Strings(Map(on["pull_request"])["types"]));
+        Assert.Equal(["main"], Strings(Map(on["pull_request"])["branches"]));
+    }
+
     // AC-2 (070)
     [Fact]
     public void ReleaseWorkflow_TestsBeforePack_AndPacksWithVersionFromTag()
@@ -1044,6 +1068,7 @@ public sealed class ToolPackagingTests
         string note = Regex.Replace(end < 0 ? claude[start..] : claude[start..end], @"\s+", " ");
 
         Assert.Contains("backlog.md", note, StringComparison.Ordinal);
+        Assert.Contains("backlog/", note, StringComparison.Ordinal);
         Assert.Contains("paths-ignore", note, StringComparison.Ordinal);
     }
 
@@ -1059,6 +1084,7 @@ public sealed class ToolPackagingTests
         Assert.True(develop >= 0, "README '## Releasing' does not say 'Every push to `develop`'");
         Assert.True(backlog > develop, "README '## Releasing' does not mention backlog.md after the develop builds");
         Assert.True(pr > backlog, "backlog.md must be mentioned before the gh pr create command");
+        Assert.Contains("`backlog/`", flat[backlog..pr], StringComparison.Ordinal);
     }
 
     // AC-1, AC-2, AC-3 (081)
@@ -1337,7 +1363,7 @@ public sealed class ToolPackagingTests
         Assert.Equal(["branches", "paths-ignore", "tags"], Sorted(push.Keys));
         Assert.Equal(["develop"], Strings(push["branches"]));
         Assert.Equal(["v*"], Strings(push["tags"]));
-        Assert.Equal(["backlog.md"], Strings(push["paths-ignore"]));
+        Assert.Equal(["backlog.md", "backlog/**"], Strings(push["paths-ignore"]));
         YamlMapping pullRequest = Map(on["pull_request"]);
         Assert.Equal(["branches", "types"], Sorted(pullRequest.Keys));
         Assert.Equal(["closed"], Strings(pullRequest["types"]));

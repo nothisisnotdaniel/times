@@ -283,7 +283,7 @@ Every factory agent reads this file before working on Times. Keep it short and a
     `-p:Version` (the `ValidateVersion` target in `Times.csproj` refuses non-SemVer), smoke-installs the
     tool and creates the GitHub release with the `.nupkg`. A `develop` push makes a prerelease versioned
     `X.Y.(Z+1)-develop.<run number>` (next patch after the highest release tag, computed by
-    `.github/scripts/develop-version.sh`); a `develop` push that changes only `backlog.md` runs no
+    `.github/scripts/develop-version.sh`); a `develop` push that changes only `backlog.md` or files under `backlog/` runs no
     workflow (`paths-ignore`) and makes no prerelease; a release tag takes its version from the tag
     and must be on `main` (its commit an ancestor of `origin/main`), and a pushed `-develop` tag fails. A release PR
     takes its version from the title (`.github/scripts/release-pr-version.sh`: exactly `release vX.Y.Z`,
