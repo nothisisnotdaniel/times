@@ -158,3 +158,5 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [?] [#63](backlog/063-tray-remind-again-after-a-missed.md) Tray: remind again after a missed check-in balloon
 - [?] [#64](backlog/064-cache-the-month-s-home-office.md) Cache the month's home-office count
 - [?] [#65](backlog/065-narrow-the-catch-lists-of-the.md) Narrow the catch lists of the read-only day counters
+- [?] [#66](backlog/066-drop-control-characters-from-timesheet-reasons.md) Drop control characters from timesheet reasons
+- [?] [#67](backlog/067-share-the-balance-rule-between-timesheet.md) Share the balance rule between Timesheet and FlexitimeBalance
