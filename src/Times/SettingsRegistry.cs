@@ -88,6 +88,21 @@ internal sealed partial class SettingsRegistry
     /// <summary>The name of the on/off setting that rings and shows a hint 15 minutes before 10 hours of work.</summary>
     public const string AlertLimitName = "alert-limit";
 
+    /// <summary>The name of the setting that picks from what time on the tray reminds the user to book the arrival.</summary>
+    public const string CheckInReminderName = "checkin-reminder";
+
+    /// <summary>No check-in reminder.</summary>
+    public const string CheckInReminderOff = "off";
+
+    /// <summary>The check-in reminder time when none is set (or the setting cannot be read).</summary>
+    public const string CheckInReminderDefault = "9:30";
+
+    /// <summary>The <see cref="CheckInReminderName"/> options: off, then 7:00 to 11:00 in half-hour steps.</summary>
+    public static IReadOnlyList<string> CheckInReminderOptions { get; } =
+    [
+        CheckInReminderOff, "7:00", "7:30", "8:00", "8:30", "9:00", "9:30", "10:00", "10:30", "11:00",
+    ];
+
     /// <summary>The name of the on/off setting that warns when breaks are shorter than the law requires.</summary>
     public const string CheckBreaksName = "check-breaks";
 
@@ -161,6 +176,8 @@ internal sealed partial class SettingsRegistry
         registry.RegisterNumber(DailyTargetName, "Daily work target in minutes (480 = 8:00)", DailyTargetDefault, 0, DailyTargetMax);
         registry.RegisterOnOff(AlertTargetName, "Ring and show a hint when today's work reaches the daily target", true);
         registry.RegisterOnOff(AlertLimitName, "Ring and show a hint 15 minutes before 10 hours of work", true);
+        registry.RegisterChoice(CheckInReminderName, "Remind me to book my arrival from this time on workdays",
+            CheckInReminderDefault, CheckInReminderOptions);
         registry.RegisterOnOff(CheckBreaksName, "Warn when breaks are shorter than the law requires", true);
         registry.RegisterOnOff(CheckMaxWorkName, "Warn when a day has more than 10 hours of work", true);
         registry.RegisterOnOff(CheckRestName, "Warn when the rest between two working days is under 11 hours", true);

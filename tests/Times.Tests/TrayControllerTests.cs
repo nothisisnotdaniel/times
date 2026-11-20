@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Times.Tray;
 
 namespace Times.Tests;
@@ -11,11 +12,12 @@ public sealed class TrayControllerTests : IDisposable
 
     private readonly FakeProcessRunner runner = new();
     private readonly SettableTimeProvider time = new(new DateTimeOffset(2026, 10, 27, 10, 0, 0, TimeSpan.Zero));
+    private readonly FakeIdleSource idle = new();
     private readonly TrayController controller;
 
     public TrayControllerTests()
     {
-        controller = new TrayController(runner, () => Tm, time);
+        controller = new TrayController(runner, () => Tm, time, idle);
     }
 
     public void Dispose() => controller.Dispose();
@@ -211,7 +213,7 @@ public sealed class TrayControllerTests : IDisposable
     [Fact]
     public async Task TmNotFound_SaysHowToInstall_AndRunsNothing()
     {
-        using TrayController missing = new TrayController(runner, () => null, time);
+        using TrayController missing = new TrayController(runner, () => null, time, idle);
 
         await Done(missing.Start());
 
@@ -296,5 +298,162 @@ public sealed class TrayControllerTests : IDisposable
         await Done(controller.Run(TrayAction.Break));
 
         Assert.Equal(3, Volatile.Read(ref changes));
+    }
+
+    // Job 307: an out status for the clock's date with no arrival, no holiday and the reminder at 9:30.
+    private string DueStatus(string state = "out", string arrival = "null") =>
+        $"{{\"schemaVersion\":1,\"date\":\"{time.GetUtcNow():yyyy-MM-dd}\",\"state\":\"{state}\",\"since\":null," +
+        $"\"checkpoint\":null,\"workedMinutes\":0,\"targetMinutes\":480,\"leftMinutes\":480,\"arrival\":{arrival}," +
+        "\"holiday\":null,\"reminder\":\"09:30\"}";
+
+    private ConcurrentQueue<CheckInNotice> Reminders()
+    {
+        ConcurrentQueue<CheckInNotice> notices = new();
+        controller.ReminderDue += (_, notice) => notices.Enqueue(notice);
+        return notices;
+    }
+
+    private void AnswerDue() =>
+        runner.Answer = arguments => ProcessResult.Exited(0, arguments == "status --json" ? DueStatus() : string.Empty);
+
+    // Job 307, AC-5: once for a due refresh, with the date and the clock's minute; not again that date.
+    [Fact]
+    public async Task DueRefresh_RaisesReminderOnce_PerDate()
+    {
+        time.UtcNow = new DateTimeOffset(2026, 10, 27, 9, 32, 40, TimeSpan.Zero);
+        AnswerDue();
+        ConcurrentQueue<CheckInNotice> notices = Reminders();
+
+        await Done(controller.Start());
+        CheckInNotice notice = Assert.Single(notices);
+        Assert.Equal(new DateOnly(2026, 10, 27), notice.Date);
+        Assert.Equal(new TimeOnly(9, 32), notice.Time);
+
+        time.UtcNow += TimeSpan.FromSeconds(60);
+        time.Timers[0].Fire();
+        await Done(controller.RefreshCompleted);
+        await Done(controller.MenuOpened());
+
+        Assert.Equal(3, runner.Calls.Count);
+        Assert.Single(notices);
+    }
+
+    // Job 307, AC-5: on the next due date it raises again.
+    [Fact]
+    public async Task NextDueDate_RaisesAgain()
+    {
+        time.UtcNow = new DateTimeOffset(2026, 10, 27, 9, 32, 0, TimeSpan.Zero);
+        AnswerDue();
+        ConcurrentQueue<CheckInNotice> notices = Reminders();
+        await Done(controller.Start());
+
+        time.UtcNow = new DateTimeOffset(2026, 10, 28, 9, 45, 0, TimeSpan.Zero);
+        time.Timers[0].Fire();
+        await Done(controller.RefreshCompleted);
+
+        Assert.Equal(
+            [(new DateOnly(2026, 10, 27), new TimeOnly(9, 32)), (new DateOnly(2026, 10, 28), new TimeOnly(9, 45))],
+            notices.Select(n => (n.Date, n.Time)));
+    }
+
+    // Job 307, AC-5: a refresh that is not due (idle, before the time) raises nothing; once due, it does.
+    [Fact]
+    public async Task NotDue_RaisesNothing_UntilItIs()
+    {
+        time.UtcNow = new DateTimeOffset(2026, 10, 27, 9, 29, 0, TimeSpan.Zero);
+        AnswerDue();
+        ConcurrentQueue<CheckInNotice> notices = Reminders();
+        await Done(controller.Start());
+        Assert.Empty(notices);
+
+        time.UtcNow = new DateTimeOffset(2026, 10, 27, 9, 31, 0, TimeSpan.Zero);
+        idle.Since = TimeSpan.FromMinutes(5);
+        time.Timers[0].Fire();
+        await Done(controller.RefreshCompleted);
+        Assert.Empty(notices);
+
+        idle.Since = TimeSpan.FromSeconds(10);
+        time.Timers[0].Fire();
+        await Done(controller.RefreshCompleted);
+        Assert.Equal(new TimeOnly(9, 31), Assert.Single(notices).Time);
+    }
+
+    // Job 307, AC-5: a failed refresh (the error model) never raises.
+    [Theory]
+    [MemberData(nameof(Failures))]
+    public async Task FailedRefresh_NeverRaisesReminder(int index)
+    {
+        time.UtcNow = new DateTimeOffset(2026, 10, 27, 9, 32, 0, TimeSpan.Zero);
+        runner.Answer = _ => FailureCases[index].Result;
+        ConcurrentQueue<CheckInNotice> notices = Reminders();
+
+        await Done(controller.Start());
+
+        Assert.Equal([FailureCases[index].Row], controller.Model.InfoRows);
+        Assert.Empty(notices);
+    }
+
+    // Job 307, AC-6: books exactly the notice's time, then refreshes.
+    [Fact]
+    public async Task ArriveFromReminder_RunsArriveAtTheNoticeTime_ThenRefreshes()
+    {
+        time.UtcNow = new DateTimeOffset(2026, 10, 27, 9, 32, 0, TimeSpan.Zero);
+        AnswerDue();
+        ConcurrentQueue<CheckInNotice> notices = Reminders();
+        await Done(controller.Start());
+        CheckInNotice notice = Assert.Single(notices);
+        time.UtcNow = new DateTimeOffset(2026, 10, 27, 9, 50, 0, TimeSpan.Zero);
+
+        await Done(controller.ArriveFromReminder(notice));
+
+        Assert.Equal(["status --json", "arrive 9:32", "status --json"], runner.CommandLines);
+        Assert.All(runner.Calls, c => Assert.Equal(Tm, c.FileName));
+        Assert.Equal(["arrive", "9:32"], runner.Calls[1].Arguments);
+    }
+
+    // Job 307, AC-6: a notice from another date books nothing.
+    [Fact]
+    public async Task ArriveFromReminder_OnAnotherDate_RunsNothing()
+    {
+        time.UtcNow = new DateTimeOffset(2026, 10, 28, 9, 32, 0, TimeSpan.Zero);
+        AnswerDue();
+        await Done(controller.Start());
+
+        await Done(controller.ArriveFromReminder(new CheckInNotice(new DateOnly(2026, 10, 27), new TimeOnly(9, 32))));
+
+        Assert.Equal(["status --json"], runner.CommandLines);
+    }
+
+    // Job 307, AC-6: already arrived (Arrive disabled in the model) books nothing.
+    [Fact]
+    public async Task ArriveFromReminder_AlreadyArrived_RunsNothing()
+    {
+        time.UtcNow = new DateTimeOffset(2026, 10, 27, 9, 32, 0, TimeSpan.Zero);
+        runner.Answer = _ => ProcessResult.Exited(0, DueStatus("working", "\"08:00\""));
+        await Done(controller.Start());
+        Assert.False(controller.Model.CanRun(TrayAction.Arrive));
+
+        await Done(controller.ArriveFromReminder(new CheckInNotice(new DateOnly(2026, 10, 27), new TimeOnly(9, 32))));
+
+        Assert.Equal(["status --json"], runner.CommandLines);
+    }
+
+    // Job 307, AC-6: while another action runs, it books nothing.
+    [Fact]
+    public async Task ArriveFromReminder_WhileAnActionRuns_RunsNothing()
+    {
+        time.UtcNow = new DateTimeOffset(2026, 10, 27, 9, 32, 0, TimeSpan.Zero);
+        AnswerDue();
+        await Done(controller.Start());
+        TaskCompletionSource<ProcessResult> hold = runner.Hold();
+        Task action = controller.Run(TrayAction.Arrive);
+        await Done(runner.WhenCalls(2));
+
+        Task fromReminder = controller.ArriveFromReminder(new CheckInNotice(new DateOnly(2026, 10, 27), new TimeOnly(9, 32)));
+
+        Assert.Same(action, fromReminder);
+        hold.SetResult(ProcessResult.Exited(0, string.Empty));
+        await Done(action);
+        Assert.Equal(["status --json", "arrive", "status --json"], runner.CommandLines);
     }
 }

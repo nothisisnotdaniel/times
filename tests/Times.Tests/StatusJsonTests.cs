@@ -31,7 +31,8 @@ public sealed class StatusJsonTests : IDisposable
             ? $"{{\"kind\":\"checkpoint\",\"time\":\"{time}\",\"name\":{JsonSerializer.Serialize(name)},\"workItem\":{w}}}"
             : $"{{\"kind\":\"checkpoint\",\"time\":\"{time}\",\"name\":{JsonSerializer.Serialize(name)}}}";
 
-    private static string Expected(string state, string since, string checkpoint, int worked, int target, int left) =>
+    private static string Expected(string state, string since, string checkpoint, int worked, int target, int left,
+        string arrival = "null", string holiday = "null", string reminder = "\"09:30\"") =>
         "{\n" +
         "  \"schemaVersion\": 1,\n" +
         "  \"date\": \"2026-10-27\",\n" +
@@ -40,7 +41,10 @@ public sealed class StatusJsonTests : IDisposable
         $"  \"checkpoint\": {checkpoint},\n" +
         $"  \"workedMinutes\": {worked},\n" +
         $"  \"targetMinutes\": {target},\n" +
-        $"  \"leftMinutes\": {left}\n" +
+        $"  \"leftMinutes\": {left},\n" +
+        $"  \"arrival\": {arrival},\n" +
+        $"  \"holiday\": {holiday},\n" +
+        $"  \"reminder\": {reminder}\n" +
         "}\n";
 
     // AC-1: out, on a day with no file.
@@ -62,7 +66,7 @@ public sealed class StatusJsonTests : IDisposable
         (int exit, string output) = Shot(data.Path, "status", "--json");
 
         Assert.Equal(0, exit);
-        Assert.Equal(Expected("out", "\"16:00\"", "null", 480, 480, 0), output);
+        Assert.Equal(Expected("out", "\"16:00\"", "null", 480, 480, 0, "\"08:00\""), output);
     }
 
     // AC-1: working, counted up to now, left negative past the target.
@@ -74,7 +78,7 @@ public sealed class StatusJsonTests : IDisposable
         (int exit, string output) = Shot(data.Path, "status", "--json");
 
         Assert.Equal(0, exit);
-        Assert.Equal(Expected("working", "\"08:15\"", "null", 615, 480, -135), output);
+        Assert.Equal(Expected("working", "\"08:15\"", "null", 615, 480, -135, "\"08:15\""), output);
     }
 
     // AC-1: on a break since its start, with the daily-target setting.
@@ -87,7 +91,7 @@ public sealed class StatusJsonTests : IDisposable
         (int exit, string output) = Shot(data.Path, "status", "--json");
 
         Assert.Equal(0, exit);
-        Assert.Equal(Expected("break", "\"12:00\"", "null", 240, 420, 180), output);
+        Assert.Equal(Expected("break", "\"12:00\"", "null", 240, 420, 180, "\"08:00\""), output);
     }
 
     // AC-1: working with a running checkpoint.
@@ -100,7 +104,7 @@ public sealed class StatusJsonTests : IDisposable
 
         string checkpoint = "{\n    \"name\": \"Design \\u0022review\\u0022\",\n    \"workItem\": 1234,\n    \"since\": \"09:00\"\n  }";
         Assert.Equal(0, exit);
-        Assert.Equal(Expected("working", "\"08:00\"", checkpoint, 630, 480, -150), output);
+        Assert.Equal(Expected("working", "\"08:00\"", checkpoint, 630, 480, -150, "\"08:00\""), output);
         using JsonDocument document = JsonDocument.Parse(output);
         Assert.Equal("Design \"review\"", document.RootElement.GetProperty("checkpoint").GetProperty("name").GetString());
     }
@@ -112,12 +116,12 @@ public sealed class StatusJsonTests : IDisposable
         WriteToday(Entry("arrival", "08:00"), Checkpoint("09:00", "Mail", null));
         (_, string running) = Shot(data.Path, "status", "--json");
         string checkpoint = "{\n    \"name\": \"Mail\",\n    \"workItem\": null,\n    \"since\": \"09:00\"\n  }";
-        Assert.Equal(Expected("working", "\"08:00\"", checkpoint, 630, 480, -150), running);
+        Assert.Equal(Expected("working", "\"08:00\"", checkpoint, 630, 480, -150, "\"08:00\""), running);
 
         WriteToday(Entry("arrival", "08:00"), Checkpoint("09:00", "Mail", null), Entry("breakStart", "12:00"),
             Entry("breakEnd", "12:30"));
         (_, string ended) = Shot(data.Path, "status", "--json");
-        Assert.Equal(Expected("working", "\"12:30\"", "null", 600, 480, -120), ended);
+        Assert.Equal(Expected("working", "\"12:30\"", "null", 600, 480, -120, "\"08:00\""), ended);
     }
 
     // AC-1: an absence day.
@@ -145,7 +149,8 @@ public sealed class StatusJsonTests : IDisposable
         Assert.EndsWith("}\n", output, StringComparison.Ordinal);
         using JsonDocument document = JsonDocument.Parse(output);
         Assert.Equal(
-            ["schemaVersion", "date", "state", "since", "checkpoint", "workedMinutes", "targetMinutes", "leftMinutes"],
+            ["schemaVersion", "date", "state", "since", "checkpoint", "workedMinutes", "targetMinutes", "leftMinutes",
+                "arrival", "holiday", "reminder"],
             document.RootElement.EnumerateObject().Select(p => p.Name));
         Assert.Equal("[bold]x[/]", document.RootElement.GetProperty("checkpoint").GetProperty("name").GetString());
     }
@@ -219,6 +224,36 @@ public sealed class StatusJsonTests : IDisposable
         Assert.Equal(0, exit);
         Assert.Contains("08:15", output, StringComparison.Ordinal);
         Assert.DoesNotContain("schemaVersion", output, StringComparison.Ordinal);
+    }
+
+    // Job 307, AC-2: Build ends with arrival (the first one), holiday and reminder, in that order.
+    [Fact]
+    public void Build_AppendsArrivalHolidayReminder()
+    {
+        DayRecord day = new DayRecord([
+            new DayEntry(EntryKind.Arrival, new TimeOnly(8, 15)),
+            new DayEntry(EntryKind.Leaving, new TimeOnly(12, 0)),
+            new DayEntry(EntryKind.Arrival, new TimeOnly(13, 0)),
+        ]);
+
+        string json = StatusJson.Build(new DateOnly(2026, 10, 3), day, TimeSpan.FromHours(8), new TimeOnly(14, 0),
+            "German Unity Day", new TimeOnly(10, 30));
+
+        Assert.EndsWith(
+            "  \"leftMinutes\": 195,\n  \"arrival\": \"08:15\",\n  \"holiday\": \"German Unity Day\",\n" +
+            "  \"reminder\": \"10:30\"\n}\n",
+            json,
+            StringComparison.Ordinal);
+    }
+
+    // Job 307, AC-2: no arrival, no holiday and the reminder off are each null.
+    [Fact]
+    public void Build_NullArrivalHolidayReminder()
+    {
+        string json = StatusJson.Build(new DateOnly(2026, 10, 27), DayRecord.Empty, TimeSpan.FromHours(8), new TimeOnly(9, 0),
+            null, null);
+
+        Assert.EndsWith("  \"arrival\": null,\n  \"holiday\": null,\n  \"reminder\": null\n}\n", json, StringComparison.Ordinal);
     }
 
     // DayRecord.StateEntry and IsOnBreak, which the document uses.

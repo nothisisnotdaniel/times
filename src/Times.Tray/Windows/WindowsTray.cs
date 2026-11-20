@@ -19,6 +19,7 @@ internal sealed class WindowsTray : IDisposable
     private readonly Icon outIcon;
     private readonly List<ToolStripMenuItem> infoItems = [];
     private readonly Dictionary<TrayAction, ToolStripMenuItem> actionItems = [];
+    private CheckInNotice? shownNotice;
 
     private WindowsTray(TrayController controller, SynchronizationContext ui)
     {
@@ -48,6 +49,14 @@ internal sealed class WindowsTray : IDisposable
         menu.Opening += (_, _) => controller.MenuOpened();
 
         notifyIcon = new NotifyIcon { ContextMenuStrip = menu, Icon = outIcon, Visible = true };
+        notifyIcon.BalloonTipClicked += (_, _) =>
+        {
+            if (shownNotice is { } notice)
+            {
+                controller.ArriveFromReminder(notice);
+            }
+        };
+        notifyIcon.BalloonTipClosed += (_, _) => shownNotice = null;
     }
 
     /// <summary>Runs the notification-area app until Quit.</summary>
@@ -57,9 +66,11 @@ internal sealed class WindowsTray : IDisposable
         Application.SetCompatibleTextRenderingDefault(false);
         using WindowsFormsSynchronizationContext ui = new WindowsFormsSynchronizationContext();
         SynchronizationContext.SetSynchronizationContext(ui);
-        using TrayController controller = new TrayController(new ProcessRunner(), TmLocator.Find, TimeProvider.System);
+        using TrayController controller = new TrayController(
+            new ProcessRunner(), TmLocator.Find, TimeProvider.System, new WindowsIdleSource());
         using WindowsTray tray = new WindowsTray(controller, ui);
         controller.Changed += (_, _) => tray.ui.Post(_ => tray.Apply(), null);
+        controller.ReminderDue += (_, notice) => tray.ui.Post(_ => tray.ShowReminder(notice), null);
         tray.Apply();
         controller.Start();
         Application.Run();
@@ -73,6 +84,13 @@ internal sealed class WindowsTray : IDisposable
         menu.Dispose();
         inIcon.Dispose();
         outIcon.Dispose();
+    }
+
+    // Shows the check-in notice as a balloon; a click on it books the arrival at the notice's time.
+    private void ShowReminder(CheckInNotice notice)
+    {
+        shownNotice = notice;
+        notifyIcon.ShowBalloonTip(0, CheckInReminder.Title, CheckInReminder.Text(notice, canBook: true), ToolTipIcon.Info);
     }
 
     // Puts the current model on the menu: as many disabled info items as rows, the enabled actions, icon and tooltip.

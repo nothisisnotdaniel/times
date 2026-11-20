@@ -5,6 +5,8 @@ namespace Times.Tray;
 /// <see cref="Start"/>, every <see cref="RefreshInterval"/> (a <see cref="TimeProvider"/> timer), when the menu opens
 /// and after every action, and runs the actions. Only one operation runs at a time: a refresh asked for while one runs
 /// joins it, and a second action while one runs is ignored. <see cref="Changed"/> is raised on a worker thread.
+/// After each refresh that <c>tm</c> answered, <see cref="CheckInReminder.IsDue"/> is checked against the clock and the
+/// <see cref="IIdleSource"/>; <see cref="ReminderDue"/> is raised at most once per date while the tray runs.
 /// </summary>
 internal sealed class TrayController : IDisposable
 {
@@ -20,24 +22,34 @@ internal sealed class TrayController : IDisposable
     private readonly IProcessRunner runner;
     private readonly Func<string?> locate;
     private readonly TimeProvider time;
+    private readonly IIdleSource idle;
     private readonly object gate = new();
     private ITimer? timer;
     private Task current = Task.CompletedTask;
     private bool actionRunning;
     private bool started;
     private bool disposed;
+    private DateOnly? remindedOn;
     private TrayMenuModel model = TrayMenuModel.Initial;
 
     /// <param name="locate">Finds <c>tm</c> before every run (<see cref="TmLocator.Find()"/>), <c>null</c> if it is missing.</param>
-    public TrayController(IProcessRunner runner, Func<string?> locate, TimeProvider time)
+    /// <param name="idle">Tells how long the user has been away from keyboard and mouse.</param>
+    public TrayController(IProcessRunner runner, Func<string?> locate, TimeProvider time, IIdleSource idle)
     {
         this.runner = runner;
         this.locate = locate;
         this.time = time;
+        this.idle = idle;
     }
 
     /// <summary>Raised after <see cref="Model"/> changed, never after <see cref="Dispose"/>.</summary>
     public event EventHandler? Changed;
+
+    /// <summary>
+    /// Raised on a worker thread when the check-in reminder is due, at most once per date while the tray runs, after
+    /// <see cref="Changed"/>; never after <see cref="Dispose"/>. The shell shows the notice.
+    /// </summary>
+    public event EventHandler<CheckInNotice>? ReminderDue;
 
     public TrayMenuModel Model
     {
@@ -102,21 +114,30 @@ internal sealed class TrayController : IDisposable
     /// <see cref="Dispose"/>, or when the model has the action disabled. Shows <see cref="TrayMenuModel.LoadingRow"/>
     /// until it is done; a refresh that is running is waited for first.
     /// </summary>
-    public Task Run(TrayAction action)
+    public Task Run(TrayAction action) => RunAction(action, Arguments(action), null);
+
+    /// <summary>
+    /// Books the arrival at the time <paramref name="notice"/> was shown (<c>tm arrive H:mm</c>), then refreshes, like
+    /// <see cref="Run"/> with <see cref="TrayAction.Arrive"/>. Runs nothing when the clock's date is not the notice's,
+    /// when Arrive is disabled (already arrived), while another action runs, or after <see cref="Dispose"/>.
+    /// </summary>
+    public Task ArriveFromReminder(CheckInNotice notice) =>
+        RunAction(TrayAction.Arrive, ["arrive", CheckInReminder.Time(notice.Time)], notice.Date);
+
+    private Task RunAction(TrayAction action, string[] arguments, DateOnly? onlyOn)
     {
-        TrayMenuModel loading;
         lock (gate)
         {
-            if (disposed || actionRunning || !model.CanRun(action))
+            if (disposed || actionRunning || !model.CanRun(action)
+                || (onlyOn is { } date && DateOnly.FromDateTime(time.GetLocalNow().DateTime) != date))
             {
                 return current;
             }
 
             actionRunning = true;
             Task previous = current;
-            loading = model.Loading();
-            model = loading;
-            current = Task.Run(() => ActionCoreAsync(previous, action));
+            model = model.Loading();
+            current = Task.Run(() => ActionCoreAsync(previous, arguments));
         }
 
         Changed?.Invoke(this, EventArgs.Empty);
@@ -135,20 +156,20 @@ internal sealed class TrayController : IDisposable
 
     private async Task RefreshCoreAsync()
     {
-        TrayMenuModel next = await StatusAsync().ConfigureAwait(false);
-        Publish(next, fromAction: false);
+        (TrayMenuModel next, TrayStatus? status) = await StatusAsync().ConfigureAwait(false);
+        Publish(next, status, fromAction: false);
     }
 
-    private async Task ActionCoreAsync(Task previous, TrayAction action)
+    private async Task ActionCoreAsync(Task previous, string[] arguments)
     {
         try
         {
             await previous.ConfigureAwait(false);
-            string? error = await RunTm(Arguments(action)).ConfigureAwait(false);
-            TrayMenuModel next = error is null
+            string? error = await RunTm(arguments).ConfigureAwait(false);
+            (TrayMenuModel next, TrayStatus? status) = error is null
                 ? await StatusAsync().ConfigureAwait(false)
-                : TrayMenuModel.FromError(error);
-            Publish(next, fromAction: true);
+                : (TrayMenuModel.FromError(error), null);
+            Publish(next, status, fromAction: true);
         }
         finally
         {
@@ -159,8 +180,9 @@ internal sealed class TrayController : IDisposable
         }
     }
 
-    // Sets the model and raises Changed, unless disposed. A refresh never replaces an action's Loading row.
-    private void Publish(TrayMenuModel next, bool fromAction)
+    // Sets the model and raises Changed, unless disposed. A refresh never replaces an action's Loading row. With a
+    // status that was published, then checks the reminder and raises ReminderDue once per date.
+    private void Publish(TrayMenuModel next, TrayStatus? status, bool fromAction)
     {
         lock (gate)
         {
@@ -173,25 +195,53 @@ internal sealed class TrayController : IDisposable
         }
 
         Changed?.Invoke(this, EventArgs.Empty);
+        if (status is not null && DueNotice(status) is { } notice)
+        {
+            ReminderDue?.Invoke(this, notice);
+        }
     }
 
-    private async Task<TrayMenuModel> StatusAsync()
+    // The notice when the reminder is due now and was not raised for its date yet (then marks the date), or null.
+    private CheckInNotice? DueNotice(TrayStatus status)
+    {
+        DateTime localNow = time.GetLocalNow().DateTime;
+        if (!CheckInReminder.IsDue(status, localNow, idle.SinceLastInput()))
+        {
+            return null;
+        }
+
+        CheckInNotice notice = CheckInReminder.Notice(localNow);
+        lock (gate)
+        {
+            if (disposed || remindedOn == notice.Date)
+            {
+                return null;
+            }
+
+            remindedOn = notice.Date;
+        }
+
+        return notice;
+    }
+
+    // The model for tm status --json, with the parsed status when tm answered with one.
+    private async Task<(TrayMenuModel Model, TrayStatus? Status)> StatusAsync()
     {
         string? tm = locate();
         if (tm is null)
         {
-            return TrayMenuModel.FromError(NotFound);
+            return (TrayMenuModel.FromError(NotFound), null);
         }
 
         ProcessResult result = await runner.RunAsync(tm, StatusArguments).ConfigureAwait(false);
         if (Failure(result) is { } error)
         {
-            return TrayMenuModel.FromError(error);
+            return (TrayMenuModel.FromError(error), null);
         }
 
         return TrayStatus.Parse(result.Output) is { } status
-            ? TrayMenuModel.FromStatus(status)
-            : TrayMenuModel.FromError(TrayStatus.NotUnderstood);
+            ? (TrayMenuModel.FromStatus(status), status)
+            : (TrayMenuModel.FromError(TrayStatus.NotUnderstood), null);
     }
 
     // Runs tm with the arguments; the error row, or null on exit 0.

@@ -17,6 +17,7 @@ internal sealed class MacTray
     private const long RefreshTag = 100;
     private const long QuitTag = 101;
     private const string AppKit = "/System/Library/Frameworks/AppKit.framework/AppKit";
+    private const string Osascript = "/usr/bin/osascript";
 
     private static MacTray? current;
 
@@ -72,11 +73,13 @@ internal sealed class MacTray
             return 1;
         }
 
-        using TrayController controller = new TrayController(new ProcessRunner(), TmLocator.Find, TimeProvider.System);
+        ProcessRunner runner = new ProcessRunner();
+        using TrayController controller = new TrayController(runner, TmLocator.Find, TimeProvider.System, new MacIdleSource());
         IntPtr pool = ObjC.PoolPush();
         MacTray tray = new MacTray(controller);
         current = tray;
         controller.Changed += (_, _) => tray.PostApply();
+        controller.ReminderDue += (_, _) => Notify(runner);
         tray.Apply();
         controller.Start();
         ObjC.PoolPop(pool);
@@ -84,6 +87,11 @@ internal sealed class MacTray
         ObjC.Send(tray.application, "run");
         return 0;
     }
+
+    // Shows the check-in notice through osascript: a fixed script as one argument, no shell, no tm text. A click on it
+    // cannot book (that needs a signed app bundle), so the text points to the menu. Its result is not needed.
+    private static void Notify(ProcessRunner runner) =>
+        _ = runner.RunAsync(Osascript, CheckInReminder.MacScriptArguments());
 
     // Changed comes on a worker thread; AppKit may only be touched on the main thread.
     private void PostApply()
