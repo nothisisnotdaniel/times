@@ -1083,6 +1083,59 @@ public class DayViewTests
         Assert.DoesNotContain(lines, l => l.Contains("Target", StringComparison.Ordinal));
     }
 
+    // AC-1 (317)
+    [Fact]
+    public void Render_EmptyDay_NoCountedDay_OneSkippedFile_ShowsYellowHint()
+    {
+        FlexitimeBalance balance = new(TimeSpan.Zero, 0, 1);
+        string[] lines = PlainLines(DayRecord.Empty, EightHours, balance);
+
+        Assert.Equal(3, lines.Length);
+        Assert.Equal("No entries yet.", lines[1]);
+        Assert.Equal("! 1 day file skipped", lines[2].Trim());
+        Assert.DoesNotContain(lines, l => l.Contains("Target", StringComparison.Ordinal));
+        Assert.Contains("\u001b[38;5;11m! 1 day file skipped\u001b[0m", AnsiOutput(DayRecord.Empty, EightHours, balance));
+    }
+
+    // AC-2 (317)
+    [Fact]
+    public void Render_EmptyDay_NoCountedDay_ThreeSkippedFiles_IsPlural()
+    {
+        string[] lines = PlainLines(DayRecord.Empty, EightHours, new FlexitimeBalance(TimeSpan.Zero, 0, 3));
+
+        Assert.Equal("! 3 day files skipped", lines[^1].Trim());
+    }
+
+    // AC-3 (317)
+    [Fact]
+    public void Render_EmptyDay_NoCountedDay_NoSkippedFiles_IsUnchanged()
+    {
+        string[] lines = PlainLines(DayRecord.Empty, EightHours, new FlexitimeBalance(TimeSpan.Zero, 0, 0));
+
+        Assert.Equal(2, lines.Length);
+        Assert.DoesNotContain(lines, l => l.Contains("skipped", StringComparison.Ordinal));
+    }
+
+    // AC-4 (317)
+    [Fact]
+    public void Render_EmptyDay_WithCountedDay_SkippedPartStaysOnTargetLineOnly()
+    {
+        string[] lines = PlainLines(DayRecord.Empty, EightHours, new FlexitimeBalance(TimeSpan.FromMinutes(30), 2, 1));
+
+        Assert.Equal(3, lines.Length);
+        Assert.Equal("Target 8:00 · balance +0:30  ! 1 day file skipped", lines[2].Trim());
+        Assert.Single(lines, l => l.Contains("skipped", StringComparison.Ordinal));
+    }
+
+    // AC-6 (317)
+    [Fact]
+    public void Render_EmptyDay_SkippedHint_HoldsNoUserText()
+    {
+        string[] lines = PlainLines(DayRecord.Empty, EightHours, new FlexitimeBalance(TimeSpan.Zero, 0, 2));
+
+        Assert.Equal(new[] { "No entries yet.", "! 2 day files skipped" }, lines.Skip(1).Select(l => l.Trim()).ToArray());
+    }
+
     // AC-7 (091)
     [Fact]
     public void Render_SkippedFiles_EndTheTargetLineInYellow()

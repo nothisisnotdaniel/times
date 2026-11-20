@@ -168,7 +168,7 @@ Every factory agent reads this file before working on Times. Keep it short and a
   reads from `daily-target` in `settings.json` on every redraw (missing, broken or out of range: 480;
   never written). Below the `Breaks` line, `DayView` shows `Target 8:00 · day -0:30 · balance +1:15`
   (signed values via `DayView.FormatSigned`; an empty day shows it without `day`, only when a day
-  counts). `FlexitimeBalance.Compute` sums `WorkTime() - target` over every day file (`DayStore.Days()`:
+  counts; with no counted day and unreadable files it shows the yellow skipped hint alone). `FlexitimeBalance.Compute` sums `WorkTime() - target` over every day file (`DayStore.Days()`:
   names `yyyy-MM-dd.json`, folder listing only; `.JSON`/`.Json` in any ASCII case only when the lower-case path
   exists or is a link, so on a case-insensitive file system; each day once; `TryParseName` stays strict) on or before
   the shown day that holds an arrival; unreadable files are skipped and counted (yellow `! N day file(s) skipped`, no names).
