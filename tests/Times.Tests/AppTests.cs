@@ -14451,6 +14451,180 @@ public sealed class AppTests : IDisposable
         Assert.Contains("! 2026-10-28: the day file changed on disk, not written", LastLayout(output).Select(l => l.Trim()));
     }
 
+    // Job 310 ------------------------------------------------------------------------------
+
+    private static readonly DateOnly ImportDate = new DateOnly(2026, 10, 28);
+
+    private static readonly BalanceCorrection CorrectionA = new BalanceCorrection(60, "a");
+
+    private static readonly BalanceCorrection CorrectionB = new BalanceCorrection(-30, "b");
+
+    /// <summary>The sample's record as the import parses it.</summary>
+    private static DayRecord SampleRecord() => OldDataImport.Parse(ImportDate, OldDataImportTests.Sample()).Record!;
+
+    /// <summary>Saves the import day through <see cref="DayStore"/>: one arrival at 06:00 plus <paramref name="corrections"/>.</summary>
+    private void SaveOtherDay(params BalanceCorrection[] corrections) =>
+        new DayStore(data.Path).Save(ImportDate, new DayRecord([new DayEntry(EntryKind.Arrival, new TimeOnly(6, 0))], null, corrections));
+
+    /// <summary>Runs import of <paramref name="source"/>, then each answer (null is Esc), then quit.</summary>
+    private (int ExitCode, string Output) ImportAnswering(TempFolder source, params string?[] answers) => RunImport(c =>
+    {
+        c.Input.PushTextWithEnter($"import {source.Path}");
+        foreach (string? answer in answers)
+        {
+            if (answer is null)
+            {
+                c.Input.PushKey(ConsoleKey.Escape);
+            }
+            else
+            {
+                c.Input.PushTextWithEnter(answer);
+            }
+        }
+
+        c.Input.PushTextWithEnter("quit");
+    });
+
+    // AC-1 (310)
+    [Fact]
+    public void Import_Replace_KeepsTheExistingCorrections_InOrder()
+    {
+        using TempFolder source = SampleSource();
+        SaveOtherDay(CorrectionA, CorrectionB);
+
+        (int exitCode, string output) = ImportAnswering(source, "yes");
+
+        Assert.Equal(0, exitCode);
+        DayRecord saved = new DayStore(data.Path).Load(ImportDate);
+        Assert.Equal(SampleRecord().Entries, saved.Entries);
+        Assert.Equal([CorrectionA, CorrectionB], saved.Corrections);
+        Assert.Null(saved.Absence);
+        string[] frame = LastLayout(output).Select(l => l.Trim()).ToArray();
+        Assert.Contains($"Imported 1 day from {source.Path}", frame);
+        Assert.Contains("0 already there · 0 kept", frame);
+    }
+
+    // AC-2 (310)
+    [Theory]
+    [InlineData(2, " Its 2 balance corrections are kept.")]
+    [InlineData(1, " Its 1 balance correction is kept.")]
+    [InlineData(0, "")]
+    public void Import_ReplaceQuestion_SaysHowManyCorrectionsAreKept(int count, string sentence)
+    {
+        using TempFolder source = SampleSource();
+        SaveOtherDay(new[] { CorrectionA, CorrectionB }.Take(count).ToArray());
+
+        (_, string output) = ImportAnswering(source, "no");
+
+        Assert.Contains(
+            $"{ImportDay} already has a different day. Replace it with the imported one?{sentence} Type yes to replace.",
+            output);
+        if (count == 0)
+        {
+            Assert.Contains($"{ImportDay} {ReplacePrompt}", output);
+            Assert.DoesNotContain("balance correction", output);
+        }
+    }
+
+    // AC-3 (310)
+    [Fact]
+    public void Import_SameEntriesWithCorrections_IsAlreadyThere_AndUntouched()
+    {
+        using TempFolder source = SampleSource();
+        new DayStore(data.Path).Save(ImportDate, new DayRecord(SampleRecord().Entries, null, [CorrectionA, CorrectionB]));
+        Dictionary<string, (DateTime Written, byte[] Bytes)> before = DataSnapshot();
+
+        (_, string output) = ImportAnswering(source);
+
+        Assert.DoesNotContain("already has a different day", output);
+        AssertSameSnapshot(before);
+        string[] frame = LastLayout(output).Select(l => l.Trim()).ToArray();
+        Assert.Contains($"Imported 0 days from {source.Path}", frame);
+        Assert.Contains("1 already there · 0 kept", frame);
+    }
+
+    // AC-4 (310)
+    [Fact]
+    public void Import_ReplacedAbsenceDay_KeepsItsCorrection_AndDropsTheAbsence()
+    {
+        using TempFolder source = SampleSource();
+        new DayStore(data.Path).Save(ImportDate, new DayRecord([], AbsenceKind.Vacation, [CorrectionA]));
+
+        (_, string output) = ImportAnswering(source, "y");
+
+        Assert.Contains($"{ImportDay} already has a different day. Replace it with the imported one? Its 1 balance correction is kept.", output);
+        DayRecord saved = new DayStore(data.Path).Load(ImportDate);
+        Assert.Equal(SampleRecord().Entries, saved.Entries);
+        Assert.Null(saved.Absence);
+        Assert.Equal([CorrectionA], saved.Corrections);
+    }
+
+    // AC-5 (310)
+    [Theory]
+    [InlineData("no")]
+    [InlineData(null)]
+    public void Import_NotReplaced_LeavesTheCorrectionsAlone(string? answer)
+    {
+        using TempFolder source = SampleSource();
+        SaveOtherDay(CorrectionA, CorrectionB);
+        Dictionary<string, (DateTime Written, byte[] Bytes)> before = DataSnapshot();
+
+        (_, string output) = ImportAnswering(source, answer);
+
+        AssertSameSnapshot(before);
+        Assert.Contains("0 already there · 1 kept", LastLayout(output).Select(l => l.Trim()));
+    }
+
+    // AC-6 (310): a correction added to the file while asking is never overwritten.
+    [Fact]
+    public void Import_CorrectionAddedWhileAsking_IsNotOverwritten()
+    {
+        using TempFolder source = SampleSource();
+        SaveOtherDay(CorrectionA);
+        string command = $"import {source.Path}";
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Height = 60;
+        console.Profile.Width = 250;
+        HookedInput input = new HookedInput(console.Input);
+        string? rewritten = null;
+        // Keys 1 to command.Length are the command, the next is its Enter; the one after is the answer's first.
+        input.BeforeKey = key =>
+        {
+            if (key == command.Length + 2)
+            {
+                SaveOtherDay(CorrectionA, CorrectionB);
+                rewritten = ReadDay(ImportDay);
+            }
+        };
+        console.Input.PushTextWithEnter(command);
+        console.Input.PushTextWithEnter("yes");
+        console.Input.PushTextWithEnter("quit");
+
+        int exitCode = new App(new InputOverrideConsole(console, input), FixedTimeProvider.At20261027(), new DayStore(data.Path), instanceLock: sideLock).Run([]);
+
+        Assert.Equal(0, exitCode);
+        Assert.NotNull(rewritten);
+        Assert.Equal(rewritten, ReadDay(ImportDay));
+        Assert.Equal([CorrectionA, CorrectionB], new DayStore(data.Path).Load(ImportDate).Corrections);
+        string[] frame = LastLayout(console.Output).Select(l => l.Trim()).ToArray();
+        Assert.Contains("! 2026-10-28: the day file changed on disk, not written", frame);
+        Assert.Contains($"Imported 0 days from {source.Path}", frame);
+    }
+
+    // AC-7 (310)
+    [Fact]
+    public void Import_NewDay_HasNoCorrections()
+    {
+        using TempFolder source = SampleSource();
+
+        ImportAnswering(source);
+
+        DayRecord saved = new DayStore(data.Path).Load(ImportDate);
+        Assert.Equal(SampleRecord().Entries, saved.Entries);
+        Assert.Empty(saved.Corrections);
+        Assert.DoesNotContain("\"corrections\"", ReadDay(ImportDay));
+    }
+
     // AC-10: a failed save is a yellow line, and the remaining days continue.
     [Fact]
     public void Import_FailedSave_IsAYellowLine_AndTheRestContinue()
