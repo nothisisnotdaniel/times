@@ -32,8 +32,20 @@
     <EmbeddedResource Include="update-key.pem" LogicalName="Times.update-key.pem" />
   </ItemGroup>
 
+  <!-- The UTC build date, which Suite Pro licence keys are checked against (AppVersion.BuildDate).
+       -p:BuildDate=yyyy-MM-dd overrides it; without a usable value Pro stays locked. -->
+  <PropertyGroup>
+    <BuildDate Condition="'$(BuildDate)' == ''">$([System.DateTime]::UtcNow.ToString('yyyy-MM-dd'))</BuildDate>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="BuildDate" Value="$(BuildDate)" />
+  </ItemGroup>
+
   <ItemGroup>
     <InternalsVisibleTo Include="Times.Tests" />
+    <!-- The licence issuer (tools/Times.LicenceIssuer) reuses the token rules; it is never packed with Times. -->
+    <InternalsVisibleTo Include="Times.LicenceIssuer" />
   </ItemGroup>
 
   <!-- Release builds pass -p:Version from the git tag (vX.Y.Z without the v); refuse anything that is not SemVer. -->

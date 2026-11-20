@@ -243,6 +243,22 @@ Every factory agent reads this file before working on Times. Keep it short and a
   fetches the open work items assigned to the user (`GetAssignedWorkItemsAsync`: constant `Wiql` POST, then one titles GET for at most
   200 parsed Int32 ids) and appends the new ones whose trimmed title passes `IsValidTitle` in one save (skipped items are named by
   number only; refused if `projects.json` would pass 64 KiB). Tests use `FakeTokenStore` and `FakeDevOpsClient`.
+- **Suite Pro:** one licence for Times and Context. Keys are `CTX1-<b64url(payload)>.<b64url(sig)>` (`LicenceKey`, at most
+  1024 characters, strict unpadded base64url, ECDSA P-256 SHA-256 P1363 over the exact payload bytes, signature checked
+  before the strict JSON parse; payload `v`, `kid`, `lid`, `name`, `ed`, `until`, `issued`, each once). Failures carry one
+  fixed reason, never the key. Public keys live only in `LicencePublicKeys.Compiled` (a PEM holding `PRIVATE KEY` empties
+  the table), revoked `lid`s in `LicenceRevocations.Compiled`. `Pro.IsUnlocked` is the one gate: the stored key verifies,
+  is not revoked, and `until` >= the build date (`AppVersion.BuildDate`, MSBuild `BuildDate`, UTC, `-p:BuildDate=`
+  overrides; missing: locked); any failure is locked and it never reads the activation file. A Pro command wraps its
+  handler in `pro.Gate(name, handler)` (red `Pro.LockedHint`). `pro` (`po`): `status`, `activate <key>`, `deactivate`;
+  the key is stored in `ILicenceStore` (Keychain service `Suite Pro licence` trusting the apphost like DevOps, Windows target
+  `Suite/ProLicence`, `UnsupportedLicenceStore` elsewhere), then `LicenceActivationFile` writes
+  `<ApplicationData>/SuitePro/activation.json` (0700/0600, temp file and move, shown only); a failed file write removes the
+  store entry again. A `pro` line with an argument other than `status`/`deactivate` never enters history. `App` takes
+  `licenceStore`, `pro` and `activationFolder` (a store without a folder throws); tests use `FakeLicenceStore` and
+  `TestLicences` (a fresh key per test, never a real one). Signing lives only in `tools/Times.LicenceIssuer`
+  (`create-key --kid`, `issue --kid --name --until [--ledger]`, signing keys in the macOS Keychain, ledger outside any git
+  repo; not packable, never referenced by `src/Times`).
 - **Days:** the app always shows one "current" day, starting at today. The user can move to
   the previous or next day or jump to a date. Navigating to a day with no file shows it as an
   empty day **without creating a file**. The day's file is created only when the first
@@ -256,6 +272,7 @@ Every factory agent reads this file before working on Times. Keep it short and a
   - `Times.slnx`: the solution.
   - `src/Times/`: the app. `Program.cs` only wires things up, and the logic starts in `App.cs`.
   - `tests/Times.Tests/`: one test class per production class (`AppTests.cs` tests `App.cs`).
+  - `tools/Times.LicenceIssuer/`: the developer-only licence issuer (in the solution's tools folder).
   - `.github/workflows/release.yml`: on a push to `develop`, a merged `develop` -> `main` pull request
     titled `release vX.Y.Z`, or a pushed `vX.Y.Z` tag, tests, packs with
     `-p:Version` (the `ValidateVersion` target in `Times.csproj` refuses non-SemVer), smoke-installs the
