@@ -114,6 +114,11 @@ internal sealed class ProcessRunner : IProcessRunner
         using CancellationTokenSource deadline = new CancellationTokenSource(timeout, time);
         using CancellationTokenRegistration onTimeout = deadline.Token.Register(() =>
         {
+            if (HasExited(process))
+            {
+                return;
+            }
+
             timedOut = true;
             Kill(process);
         });
@@ -167,6 +172,19 @@ internal sealed class ProcessRunner : IProcessRunner
         catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException)
         {
             // Nothing more to collect.
+        }
+    }
+
+    // A deadline that fires just after a normal exit must not turn the run into a timeout.
+    private static bool HasExited(Process process)
+    {
+        try
+        {
+            return process.HasExited;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or Win32Exception or NotSupportedException)
+        {
+            return false;
         }
     }
 

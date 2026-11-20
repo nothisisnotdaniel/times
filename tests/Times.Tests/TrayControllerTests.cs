@@ -223,7 +223,7 @@ public sealed class TrayControllerTests : IDisposable
     [Fact]
     public async Task ActionExitOne_ShowsTheFirstLine_Cleaned()
     {
-        string message = "\u001b[31mbreak: you are‮ not working " + new string('x', 200) + "\u001b[0m";
+        string message = "\u001b[31mbreak: you are\u202E not working " + new string('x', 200) + "\u001b[0m";
         runner.Answer = arguments => arguments == "status --json"
             ? ProcessResult.Exited(0, TrayStatusTests.Working)
             : ProcessResult.Exited(1, "\n  \n" + message + "\nsecond line\n");

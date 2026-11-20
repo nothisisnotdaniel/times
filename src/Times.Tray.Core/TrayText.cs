@@ -56,7 +56,7 @@ internal static partial class TrayText
 
     // U+061C, LRM/RLM, the embeddings and overrides U+202A-U+202E, and the isolates U+2066-U+2069.
     private static bool IsBidi(char c) =>
-        c is '؜' or '‎' or '‏' or (>= '‪' and <= '‮') or (>= '⁦' and <= '⁩');
+        c is '\u061C' or '\u200E' or '\u200F' or (>= '\u202A' and <= '\u202E') or (>= '\u2066' and <= '\u2069');
 
     [GeneratedRegex(@"\x1B(\[[0-?]*[ -/]*[@-~]|\][^\x07\x1B]*(\x07|\x1B\\)?|[@-Z\\-_])")]
     private static partial Regex AnsiSequence();

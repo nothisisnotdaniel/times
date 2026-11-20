@@ -104,7 +104,7 @@ public sealed class TrayMenuModelTests
     [Fact]
     public void ControlAndBidiCharacters_AreRemoved()
     {
-        string name = "Ev‮il⁦‏\n\tName\u001b[31m";
+        string name = "Ev\u202Eil\u2066\u200F\n\tName\u001b[31m";
         TrayMenuModel model = TrayMenuModel.FromStatus(
             Status(TrayState.Working, new TimeOnly(8, 0), 0, new TrayCheckpoint(name, 7, new TimeOnly(9, 0))));
 
