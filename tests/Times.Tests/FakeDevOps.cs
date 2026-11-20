@@ -136,3 +136,27 @@ internal sealed class FakeDevOpsClient : IDevOpsClient, IDisposable
         return Task.FromResult<IReadOnlyList<(int Id, string? Title)>>(Assigned.ToList());
     }
 }
+
+/// <summary>A client that runs a callback at the start of every Completed Work read.</summary>
+internal sealed class RecordingDevOpsClient : IDevOpsClient
+{
+    private readonly Action onGet;
+
+    public RecordingDevOpsClient(Action onGet)
+    {
+        this.onGet = onGet;
+    }
+
+    public IDevOpsClient For(DevOpsCredential credential) => this;
+
+    public Task<(double? Completed, int Rev)> GetCompletedWorkAsync(int id)
+    {
+        onGet();
+        return Task.FromResult(((double?)null, 1));
+    }
+
+    public Task SetCompletedWorkAsync(int id, int rev, double value) => Task.CompletedTask;
+
+    public Task<IReadOnlyList<(int Id, string? Title)>> GetAssignedWorkItemsAsync() =>
+        Task.FromResult<IReadOnlyList<(int Id, string? Title)>>([]);
+}

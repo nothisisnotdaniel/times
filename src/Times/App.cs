@@ -3274,6 +3274,7 @@ internal sealed class App
         int failed = 0;
         foreach (SyncItem item in plan.Items)
         {
+            console.MarkupLine($"[grey]Sending #{item.WorkItem.ToString(CultureInfo.InvariantCulture)} {EchoText.Markup(item.Title(projects))} …[/]");
             string result;
             try
             {

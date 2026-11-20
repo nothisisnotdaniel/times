@@ -9627,6 +9627,110 @@ public sealed class AppTests : IDisposable
         Assert.DoesNotContain("send to write these hours", output);
     }
 
+    private static List<string> SendingLines(string output) =>
+        Regex.Matches(output, @"Sending #\d+ [^\r\n]*?…").Select(m => m.Value).ToList();
+
+    // 320 AC-1, AC-3
+    [Fact]
+    public void SyncSend_WritesOneSendingLinePerItem_InOrder_WithTitles_AndMarkupShownLiterally()
+    {
+        WriteSyncDays();
+        File.WriteAllText(Path.Combine(data.Path, "projects.json"), "{\"projects\":[{\"workItem\":12,\"title\":\"[red]Plan [x]\"}]}");
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+
+        (_, string output) = RunDevOps(store, new FakeDevOpsClient(), "sync 2026-11-02 2026-11-04 send", "quit");
+
+        Assert.Equal(["Sending #7 Call …", "Sending #12 [red]Plan [x] …"], SendingLines(output));
+    }
+
+    // 320 AC-2
+    [Fact]
+    public void SyncSend_SendingLineIsWritten_BeforeTheItemsFirstClientCall()
+    {
+        WriteSyncDays();
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Height = 40;
+        console.Profile.Width = 140;
+        console.Input.PushTextWithEnter("sync 2026-11-02 2026-11-04 send");
+        console.Input.PushTextWithEnter("quit");
+        List<List<string>> seen = [];
+        RecordingDevOpsClient client = new RecordingDevOpsClient(() => seen.Add(SendingLines(console.Output)));
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), tokenStore: store, devOpsClient: client.For).Run([]);
+
+        Assert.Equal(2, seen.Count);
+        Assert.Equal(["Sending #7 Call …"], seen[0]);
+        Assert.Equal(["Sending #7 Call …", "Sending #12 Review, Fix …"], seen[1]);
+    }
+
+    // 320 AC-4
+    [Fact]
+    public void SyncSend_FailingItem_StillGetsItsLine_AndLaterItemsToo()
+    {
+        WriteSyncDays();
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+        client.GetFailures[7] = "The test failure.";
+
+        (_, string output) = RunDevOps(store, client, "sync 2026-11-02 2026-11-04 send", "quit");
+
+        Assert.Equal(["Sending #7 Call …", "Sending #12 Review, Fix …"], SendingLines(output));
+        Assert.Contains("failed: The test failure.", output);
+        Assert.Contains("1 of 2 work items failed", LastHint(output));
+    }
+
+    // 320 AC-5
+    [Theory]
+    [InlineData("preview")]
+    [InlineData("empty")]
+    [InlineData("notconnected")]
+    [InlineData("unsupported")]
+    [InlineData("noclient")]
+    public void Sync_PreviewEmptyAndRefusals_WriteNoSendingLine(string kind)
+    {
+        WriteSyncDays();
+        FakeTokenStore store = kind switch
+        {
+            "notconnected" => new FakeTokenStore(),
+            "unsupported" => new FakeTokenStore(supported: false),
+            _ => new FakeTokenStore(stored: ("contoso", DevOpsPat)),
+        };
+        string command = kind switch
+        {
+            "preview" => "sync 2026-11-02 2026-11-04",
+            "empty" => "sync 2026-12-01 2026-12-02 send",
+            _ => "sync 2026-11-02 2026-11-04 send",
+        };
+
+        (_, string output) = RunDevOps(store, kind == "noclient" ? null : new FakeDevOpsClient(), command, "quit");
+
+        Assert.Empty(SendingLines(output));
+    }
+
+    // 320 AC-6
+    [Theory]
+    [InlineData(false, 0)]
+    [InlineData(true, 0)]
+    public void SyncSend_OneShot_PrintsTheSameLines_AndKeepsTheExitCode(bool fail, int expectedExit)
+    {
+        WriteSyncDays();
+        FakeDevOpsClient client = new FakeDevOpsClient();
+        if (fail)
+        {
+            client.GetFailures[12] = "The test failure.";
+        }
+
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 140;
+        int exit = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path),
+            tokenStore: new FakeTokenStore(stored: ("contoso", DevOpsPat)), devOpsClient: client.For)
+            .Run(["sync", "2026-11-02", "2026-11-04", "send"]);
+
+        Assert.Equal(expectedExit, exit);
+        Assert.Equal(["Sending #7 Call …", "Sending #12 Review, Fix …"], SendingLines(console.Output));
+    }
+
     // AC-7, AC-8
     [Fact]
     public void SyncSend_AddsHoursWithRevTest_MarksBooked_AndASecondSendSendsNothing()

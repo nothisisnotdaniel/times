@@ -284,7 +284,7 @@ Every factory agent reads this file before working on Times. Keep it short and a
   `DevOpsSync.Plan` (ended, unbooked checkpoints with a work item, per work item) with no store read or network;
   `sync <from> <to> send` reads the store once, then per work item GETs Completed Work and PATCHes
   `round(old + hours, 2)` with a rev test (`AzureDevOpsClient`: no redirects, 15 s, 1 MiB cap, fixed error texts),
-  then marks those checkpoints booked; failures stay per item. `devops import` reads `projects.json` first, then the store once,
+  then marks those checkpoints booked; failures stay per item. Before each item's calls it writes a grey `Sending #<id> <title> …` line (title through `EchoText.Markup`). `devops import` reads `projects.json` first, then the store once,
   fetches the open work items assigned to the user (`GetAssignedWorkItemsAsync`: constant `Wiql` POST, then one titles GET for at most
   200 parsed Int32 ids) and appends the new ones whose trimmed title passes `IsValidTitle` in one save (skipped items are named by
   number only; refused if `projects.json` would pass 64 KiB). Tests use `FakeTokenStore` and `FakeDevOpsClient`.
