@@ -1087,22 +1087,28 @@ public sealed class ToolPackagingTests
         Assert.Contains("`backlog/`", flat[backlog..pr], StringComparison.Ordinal);
     }
 
-    // AC-1, AC-2, AC-3 (081)
+    // The 081 case table for old-prereleases.sh: release argument, stdin tags, expected stdout, success.
+    public static TheoryData<string, string, string, bool> OldPrereleaseCases => new()
+    {
+        { "1.2.3", "v1.2.3-develop.5\nv1.2.2-develop.1\nv0.9.10-develop.3\nv1.2.4-develop.9\nv1.3.0-develop.2\nv2.0.0-develop.1\n", "v1.2.3-develop.5\nv1.2.2-develop.1\nv0.9.10-develop.3", true },
+        { "1.2.3", "v1.2.2-develop.1", "v1.2.2-develop.1", true },
+        { "1.2.3", "v1.2.2\nv1.2.3\nv1.0.0-beta.1\nv1.2.2-develop\nv1.2.2-develop.0\nv1.2.2-develop.01\nv1.2.2-develop.1.x\nv01.2.2-develop.1\nx v1.2.2-develop.1\nv1.2.2-develop.1;rm\n\n \n", "", true },
+        { "0.10.0", "v0.9.3-develop.1\nv0.10.1-develop.1\n", "v0.9.3-develop.1", true },
+        { "1.2.3", "v1.2.3-develop.5\r\n", "", true },
+        { "1.2.3", "", "", true },
+        { "", "v1.2.2-develop.1\n", "", false },
+        { "1.2", "v1.2.2-develop.1\n", "", false },
+        { "1.2.3-beta.1", "v1.2.2-develop.1\n", "", false },
+        { "1.2.3-develop.4", "v1.2.2-develop.1\n", "", false },
+        { "v1.2.3", "v1.2.2-develop.1\n", "", false },
+        { "01.2.3", "v1.2.2-develop.1\n", "", false },
+        { "1.2.3;x", "v1.2.2-develop.1\n", "", false },
+        { "1.2.3\n", "v1.2.2-develop.1\n", "", false },
+    };
+
+    // AC-1, AC-2, AC-3 (081); AC-2 (313): the bash run of the table.
     [Theory]
-    [InlineData("1.2.3", "v1.2.3-develop.5\nv1.2.2-develop.1\nv0.9.10-develop.3\nv1.2.4-develop.9\nv1.3.0-develop.2\nv2.0.0-develop.1\n", "v1.2.3-develop.5\nv1.2.2-develop.1\nv0.9.10-develop.3", true)]
-    [InlineData("1.2.3", "v1.2.2-develop.1", "v1.2.2-develop.1", true)]
-    [InlineData("1.2.3", "v1.2.2\nv1.2.3\nv1.0.0-beta.1\nv1.2.2-develop\nv1.2.2-develop.0\nv1.2.2-develop.01\nv1.2.2-develop.1.x\nv01.2.2-develop.1\nx v1.2.2-develop.1\nv1.2.2-develop.1;rm\n\n \n", "", true)]
-    [InlineData("0.10.0", "v0.9.3-develop.1\nv0.10.1-develop.1\n", "v0.9.3-develop.1", true)]
-    [InlineData("1.2.3", "v1.2.3-develop.5\r\n", "", true)]
-    [InlineData("1.2.3", "", "", true)]
-    [InlineData("", "v1.2.2-develop.1\n", "", false)]
-    [InlineData("1.2", "v1.2.2-develop.1\n", "", false)]
-    [InlineData("1.2.3-beta.1", "v1.2.2-develop.1\n", "", false)]
-    [InlineData("1.2.3-develop.4", "v1.2.2-develop.1\n", "", false)]
-    [InlineData("v1.2.3", "v1.2.2-develop.1\n", "", false)]
-    [InlineData("01.2.3", "v1.2.2-develop.1\n", "", false)]
-    [InlineData("1.2.3;x", "v1.2.2-develop.1\n", "", false)]
-    [InlineData("1.2.3\n", "v1.2.2-develop.1\n", "", false)]
+    [MemberData(nameof(OldPrereleaseCases))]
     public async Task OldPrereleasesScript_PrintsOnlyOlderDevelopTags(string release, string tags, string expected, bool succeeds)
     {
         if (OperatingSystem.IsWindows())
@@ -1110,42 +1116,100 @@ public sealed class ToolPackagingTests
             return;
         }
 
-        ProcessStartInfo startInfo = new ProcessStartInfo("bash")
-        {
-            WorkingDirectory = RepoRoot,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-        };
-        startInfo.ArgumentList.Add(Path.Combine(".github", "scripts", "old-prereleases.sh"));
-        startInfo.ArgumentList.Add(release);
+        await AssertOldPrereleases("bash", release, tags, expected, succeeds);
+    }
 
-        using Process process = Process.Start(startInfo)!;
+    // AC-1 (313): the same table under dash, the runner's POSIX sh.
+    [Theory]
+    [MemberData(nameof(OldPrereleaseCases))]
+    public async Task OldPrereleasesScript_UnderDash_PrintsOnlyOlderDevelopTags(string release, string tags, string expected, bool succeeds)
+    {
+        string? dash = DashOrSkip();
+        if (dash == null)
+        {
+            return;
+        }
+
+        await AssertOldPrereleases(dash, release, tags, expected, succeeds);
+    }
+
+    // AC-3 (313): the dash runner really runs dash, so a bash-only construct fails there.
+    [Fact]
+    public async Task ShellRunner_DashRejectsBashOnlySyntax()
+    {
+        string? dash = DashOrSkip();
+        if (dash == null)
+        {
+            return;
+        }
+
+        DirectoryInfo folder = Directory.CreateTempSubdirectory("times-dash-");
         try
         {
-            Stream input = process.StandardInput.BaseStream;
-            await input.WriteAsync(System.Text.Encoding.UTF8.GetBytes(tags));
-            input.Close();
-        }
-        catch (IOException)
-        {
-            // The script refuses a bad argument before it reads stdin, so the pipe can already be closed.
-        }
-        Task<string> error = process.StandardError.ReadToEndAsync();
-        string output = await process.StandardOutput.ReadToEndAsync();
-        await error;
-        await process.WaitForExitAsync();
+            string script = Path.Combine(folder.FullName, "bash-only.sh");
+            File.WriteAllText(script, "[[ 1 == 1 ]] && echo ok\n");
 
-        Assert.Equal(expected, output.TrimEnd('\n'));
-        if (succeeds)
-        {
-            Assert.True(process.ExitCode == 0, "old-prereleases.sh exit " + process.ExitCode + ": " + await error);
+            ShellRun underDash = await RunShell(dash, script, [], "");
+            Assert.NotEqual(0, underDash.ExitCode);
+            Assert.DoesNotContain("ok", underDash.Output, StringComparison.Ordinal);
+
+            ShellRun underBash = await RunShell("bash", script, [], "");
+            Assert.Equal("ok\n", underBash.Output);
+            Assert.Equal("", underBash.Error);
+            Assert.Equal(0, underBash.ExitCode);
         }
-        else
+        finally
         {
-            Assert.NotEqual(0, process.ExitCode);
+            folder.Delete(true);
         }
+    }
+
+    // AC-4 (313): the lookup takes the first executable file named dash, skipping a folder and a 0644 file.
+    [Fact]
+    public void FindDash_ReturnsFirstExecutableFileOnPath()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        DirectoryInfo root = Directory.CreateTempSubdirectory("times-dash-path-");
+        try
+        {
+            string folderDash = Directory.CreateDirectory(Path.Combine(root.FullName, "a")).FullName;
+            Directory.CreateDirectory(Path.Combine(folderDash, "dash"));
+            string plainDash = Directory.CreateDirectory(Path.Combine(root.FullName, "b")).FullName;
+            File.WriteAllText(Path.Combine(plainDash, "dash"), "#!/bin/sh\n");
+            File.SetUnixFileMode(Path.Combine(plainDash, "dash"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+            string realDash = Directory.CreateDirectory(Path.Combine(root.FullName, "c")).FullName;
+            File.WriteAllText(Path.Combine(realDash, "dash"), "#!/bin/sh\n");
+            File.SetUnixFileMode(Path.Combine(realDash, "dash"), (UnixFileMode)Convert.ToInt32("755", 8));
+            string secondDash = Directory.CreateDirectory(Path.Combine(root.FullName, "d")).FullName;
+            File.WriteAllText(Path.Combine(secondDash, "dash"), "#!/bin/sh\n");
+            File.SetUnixFileMode(Path.Combine(secondDash, "dash"), (UnixFileMode)Convert.ToInt32("755", 8));
+            string empty = Directory.CreateDirectory(Path.Combine(root.FullName, "e")).FullName;
+            char sep = Path.PathSeparator;
+
+            Assert.Equal(Path.Combine(realDash, "dash"), FindDash(string.Join(sep, "", folderDash, plainDash, realDash, secondDash)));
+            Assert.Null(FindDash(string.Join(sep, folderDash, plainDash, empty)));
+            Assert.Null(FindDash(""));
+            Assert.Null(FindDash(null));
+        }
+        finally
+        {
+            root.Delete(true);
+        }
+    }
+
+    // AC-5 (313): a missing dash only passes locally; under GitHub Actions it fails the test.
+    [Fact]
+    public void DashDecision_MissingDashFailsOnlyInCi()
+    {
+        Assert.Null(RequireDash(null, githubActions: false));
+        Assert.Equal("/bin/dash", RequireDash("/bin/dash", githubActions: true));
+
+        XunitException failure = Assert.ThrowsAny<XunitException>(() => RequireDash(null, githubActions: true));
+        Assert.Contains(DashMissingMessage, failure.Message, StringComparison.Ordinal);
     }
 
     // AC-4 (081): tag names are only compared, never evaluated.
@@ -1213,6 +1277,20 @@ public sealed class ToolPackagingTests
 
         Assert.Contains("deletes older `-develop` prereleases with their tags", note, StringComparison.Ordinal);
         Assert.Contains("old-prereleases.sh", note, StringComparison.Ordinal);
+    }
+
+    // AC-6 (313)
+    [Fact]
+    public void ClaudeMd_ReleaseWorkflowNoteSaysPruneScriptRunsUnderDash()
+    {
+        string claude = File.ReadAllText(Path.Combine(RepoRoot, "CLAUDE.md")).ReplaceLineEndings("\n");
+        int start = claude.IndexOf("`.github/workflows/release.yml`:", StringComparison.Ordinal);
+        Assert.True(start >= 0, "CLAUDE.md has no release.yml layout note");
+        int end = claude.IndexOf("\n  - ", start, StringComparison.Ordinal);
+        string note = Regex.Replace(end < 0 ? claude[start..] : claude[start..end], @"\s+", " ");
+
+        Assert.Contains("The prune script's tests run it under both bash and dash", note, StringComparison.Ordinal);
+        Assert.Contains("dash is required in CI", note, StringComparison.Ordinal);
     }
 
     /// <summary>The <c>#</c> to <c>###</c> heading lines of <paramref name="text"/> outside fenced code (fences may be indented).</summary>
@@ -1615,6 +1693,110 @@ public sealed class ToolPackagingTests
         {
             Assert.True(signer.Signature.Verify(package, File.ReadAllBytes(packagePath + ".sig")));
         }
+    }
+
+    private const string DashMissingMessage = "dash not found on PATH; the prune script must be tested under POSIX sh";
+
+    private sealed record ShellRun(int ExitCode, string Output, string Error);
+
+    // Runs old-prereleases.sh with the given shell and checks its stdout and exit code against one table row.
+    private static async Task AssertOldPrereleases(string shell, string release, string tags, string expected, bool succeeds)
+    {
+        ShellRun run = await RunShell(shell, Path.Combine(".github", "scripts", "old-prereleases.sh"), [release], tags);
+
+        Assert.Equal(expected, run.Output.TrimEnd('\n'));
+        if (succeeds)
+        {
+            Assert.True(run.ExitCode == 0, "old-prereleases.sh under " + shell + " exit " + run.ExitCode + ": " + run.Error);
+        }
+        else
+        {
+            Assert.NotEqual(0, run.ExitCode);
+        }
+    }
+
+    // Starts `<shell> <script> <args...>` in the repo root, feeds stdin, and waits for both streams and the exit.
+    private static async Task<ShellRun> RunShell(string shell, string script, string[] args, string stdin)
+    {
+        ProcessStartInfo startInfo = new ProcessStartInfo(shell)
+        {
+            WorkingDirectory = RepoRoot,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        startInfo.ArgumentList.Add(script);
+        foreach (string arg in args)
+        {
+            startInfo.ArgumentList.Add(arg);
+        }
+
+        using Process process = Process.Start(startInfo)!;
+        Task<string> error = process.StandardError.ReadToEndAsync();
+        Task<string> output = process.StandardOutput.ReadToEndAsync();
+        try
+        {
+            Stream input = process.StandardInput.BaseStream;
+            await input.WriteAsync(System.Text.Encoding.UTF8.GetBytes(stdin));
+            input.Close();
+        }
+        catch (IOException)
+        {
+            // The script can exit (a refused argument) before it reads stdin, so the pipe can already be closed.
+        }
+        string stdout = await output;
+        string stderr = await error;
+        await process.WaitForExitAsync();
+        return new ShellRun(process.ExitCode, stdout, stderr);
+    }
+
+    // The dash to test with, or null to skip: always null on Windows; a missing dash fails under GitHub Actions.
+    private static string? DashOrSkip()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
+        return RequireDash(FindDash(Environment.GetEnvironmentVariable("PATH")), Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true");
+    }
+
+    // Decides on a lookup result: the path when found; null (skip) locally; a test failure in CI.
+    private static string? RequireDash(string? dash, bool githubActions)
+    {
+        if (dash == null && githubActions)
+        {
+            Assert.Fail(DashMissingMessage);
+        }
+
+        return dash;
+    }
+
+    // The first executable regular file named dash in the PATH entries, or null.
+    private static string? FindDash(string? path)
+    {
+        const UnixFileMode AnyExecute = UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute;
+        if (OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
+        foreach (string folder in (path ?? "").Split(Path.PathSeparator))
+        {
+            if (folder.Length == 0)
+            {
+                continue;
+            }
+
+            string candidate = Path.Combine(folder, "dash");
+            if (File.Exists(candidate) && (File.GetUnixFileMode(candidate) & AnyExecute) != 0)
+            {
+                return candidate;
+            }
+        }
+
+        return null;
     }
 
     private static bool OnPath(string tool) =>
