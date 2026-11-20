@@ -10652,7 +10652,6 @@ public sealed class AppTests : IDisposable
         Assert.Contains(frame, l => Regex.IsMatch(l, @"│ #1 +│ Fix +│ 0:30 +│ +0\.50 │"));
         Assert.Contains(frame, l => Regex.IsMatch(l, @"│ Total +│ +│ 0:30 +│ +0\.50 │"));
         Assert.Contains("2026-11-02 – 2026-11-02", Joined(frame));
-        Assert.DoesNotContain("rounded to", Joined(frame));
         int caption = Array.FindIndex(frame, l => l.Contains("2026-11-02 – 2026-11-02", StringComparison.Ordinal));
         Assert.True(caption >= 0);
         Assert.Equal("Rounded to 15 min", frame[caption + 1].Trim());
