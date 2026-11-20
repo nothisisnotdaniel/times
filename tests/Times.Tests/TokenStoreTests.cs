@@ -145,9 +145,23 @@ public class TokenStoreTests
         Assert.Equal(UnsupportedTokenStore.NotAvailable, new UnsupportedTokenStore().WriteRefusal);
     }
 
-    // Round 3: the access object is built before the old item is removed, then added and released.
+    // Round 3, job 322: the access object is built first; an existing item gets it, then is updated in place.
     [Fact]
     public void MacWrite_BuildsAccessFirst_ThenReplacesTheItem_AndReleasesIt()
+    {
+        using TempTree tree = new TempTree();
+        string tm = tree.File("tools/tm");
+        FakeKeychainWriter writer = new FakeKeychainWriter(101);
+
+        new MacKeychainTokenStore(tm, writer).Write("contoso", "PAT-MARKER-1");
+
+        Assert.Equal(["CreateAccess " + tm, "FindItems", "SetAccess 101", "UpdateItem contoso", "Release 101", "Release 42"], writer.Calls);
+        Assert.All(writer.Password!, b => Assert.Equal(0, b));
+    }
+
+    // Job 322 AC-1: with no stored item, a new one is added and nothing is deleted.
+    [Fact]
+    public void MacWrite_NoStoredItem_AddsOne_AndDeletesNothing()
     {
         using TempTree tree = new TempTree();
         string tm = tree.File("tools/tm");
@@ -155,8 +169,140 @@ public class TokenStoreTests
 
         new MacKeychainTokenStore(tm, writer).Write("contoso", "PAT-MARKER-1");
 
-        Assert.Equal(["CreateAccess " + tm, "DeleteAll", "AddItem contoso", "Release"], writer.Calls);
+        Assert.Equal(["CreateAccess " + tm, "FindItems", "AddItem contoso", "Release 42"], writer.Calls);
+        Assert.DoesNotContain(writer.Calls, c => c.StartsWith("Delete", StringComparison.Ordinal));
         Assert.All(writer.Password!, b => Assert.Equal(0, b));
+    }
+
+    // Job 322 AC-2: with one stored item, it is updated in place: no add and no delete.
+    [Fact]
+    public void MacWrite_OneStoredItem_UpdatesItInPlace_WithoutAddOrDelete()
+    {
+        using TempTree tree = new TempTree();
+        FakeKeychainWriter writer = new FakeKeychainWriter(101);
+
+        new MacKeychainTokenStore(tree.File("tools/tm"), writer).Write("fabrikam", "PAT-MARKER-1");
+
+        Assert.Equal(["FindItems", "SetAccess 101", "UpdateItem fabrikam", "Release 101", "Release 42"], writer.Calls[1..]);
+        Assert.Equal(new IntPtr(101), writer.UpdatedItem);
+        Assert.DoesNotContain(writer.Calls, c => c.StartsWith("AddItem", StringComparison.Ordinal) || c.StartsWith("Delete", StringComparison.Ordinal));
+    }
+
+    // Job 322 AC-3: a failed update keeps the old item, says so with a fixed message and releases everything.
+    [Fact]
+    public void MacWrite_UpdateFails_DeletesNothing_AndReleasesEverything()
+    {
+        using TempTree tree = new TempTree();
+        FakeKeychainWriter writer = new FakeKeychainWriter(101) { FailUpdate = true };
+
+        TokenStoreException ex = Assert.Throws<TokenStoreException>(() => new MacKeychainTokenStore(tree.File("tools/tm"), writer).Write("contoso", "PAT-MARKER-1"));
+
+        Assert.Equal("The token could not be saved in the macOS Keychain.", ex.Message);
+        Assert.Equal(["FindItems", "SetAccess 101", "UpdateItem contoso", "Release 101", "Release 42"], writer.Calls[1..]);
+        Assert.DoesNotContain(writer.Calls, c => c.StartsWith("Delete", StringComparison.Ordinal));
+        writer.AssertEveryReferenceReleasedOnce();
+    }
+
+    // Job 322 AC-4: a failed access change keeps the old token under its old list: no update, no delete.
+    [Fact]
+    public void MacWrite_SetAccessFails_NeverUpdatesOrDeletes_AndReleasesEverything()
+    {
+        using TempTree tree = new TempTree();
+        FakeKeychainWriter writer = new FakeKeychainWriter(101, 102) { FailSetAccess = true };
+
+        TokenStoreException ex = Assert.Throws<TokenStoreException>(() => new MacKeychainTokenStore(tree.File("tools/tm"), writer).Write("contoso", "PAT-MARKER-1"));
+
+        Assert.Equal("The token could not be saved in the macOS Keychain.", ex.Message);
+        Assert.Equal(["FindItems", "SetAccess 101", "Release 101", "Release 102", "Release 42"], writer.Calls[1..]);
+        writer.AssertEveryReferenceReleasedOnce();
+    }
+
+    // Job 322 AC-5: duplicates are deleted only after the first item was updated.
+    [Fact]
+    public void MacWrite_Duplicates_UpdatesTheFirst_ThenDeletesTheOthers()
+    {
+        using TempTree tree = new TempTree();
+        FakeKeychainWriter writer = new FakeKeychainWriter(101, 102, 103);
+
+        new MacKeychainTokenStore(tree.File("tools/tm"), writer).Write("contoso", "PAT-MARKER-1");
+
+        Assert.Equal(
+            ["FindItems", "SetAccess 101", "UpdateItem contoso", "DeleteItem 102", "DeleteItem 103", "Release 101", "Release 102", "Release 103", "Release 42"],
+            writer.Calls[1..]);
+        writer.AssertEveryReferenceReleasedOnce();
+    }
+
+    // Job 322 AC-5: if the update of the first fails, no duplicate is deleted.
+    [Fact]
+    public void MacWrite_Duplicates_UpdateFails_DeletesNone()
+    {
+        using TempTree tree = new TempTree();
+        FakeKeychainWriter writer = new FakeKeychainWriter(101, 102) { FailUpdate = true };
+
+        Assert.Throws<TokenStoreException>(() => new MacKeychainTokenStore(tree.File("tools/tm"), writer).Write("contoso", "PAT-MARKER-1"));
+
+        Assert.Equal(["FindItems", "SetAccess 101", "UpdateItem contoso", "Release 101", "Release 102", "Release 42"], writer.Calls[1..]);
+        writer.AssertEveryReferenceReleasedOnce();
+    }
+
+    // Job 322 AC-6: an unreadable keychain changes nothing and says so.
+    [Fact]
+    public void MacWrite_FindFails_MakesNoFurtherChange()
+    {
+        using TempTree tree = new TempTree();
+        FakeKeychainWriter writer = new FakeKeychainWriter(101) { FailFind = true };
+
+        TokenStoreException ex = Assert.Throws<TokenStoreException>(() => new MacKeychainTokenStore(tree.File("tools/tm"), writer).Write("contoso", "PAT-MARKER-1"));
+
+        Assert.Equal("The macOS Keychain could not be read.", ex.Message);
+        Assert.Equal(["FindItems", "Release 42"], writer.Calls[1..]);
+    }
+
+    // Job 322 AC-7: the token bytes are zeroed and no message holds the PAT, whatever step fails.
+    [Theory]
+    [InlineData(0, "")]
+    [InlineData(0, "add")]
+    [InlineData(1, "")]
+    [InlineData(1, "update")]
+    [InlineData(2, "")]
+    [InlineData(2, "update")]
+    [InlineData(2, "setaccess")]
+    [InlineData(1, "find")]
+    public void MacWrite_ZeroesTheTokenBytes_AndNeverShowsThePat(int storedItems, string fail)
+    {
+        using TempTree tree = new TempTree();
+        FakeKeychainWriter writer = new FakeKeychainWriter(Enumerable.Range(101, storedItems).Select(i => new IntPtr(i)).ToArray())
+        {
+            FailAdd = fail == "add",
+            FailUpdate = fail == "update",
+            FailSetAccess = fail == "setaccess",
+            FailFind = fail == "find",
+        };
+        MacKeychainTokenStore store = new MacKeychainTokenStore(tree.File("tools/tm"), writer);
+
+        Exception? ex = Record.Exception(() => store.Write("contoso", "PAT-MARKER-1"));
+
+        if (fail.Length == 0)
+        {
+            Assert.Null(ex);
+        }
+        else
+        {
+            Assert.IsType<TokenStoreException>(ex);
+            Assert.DoesNotContain("PAT-MARKER-1", ex.ToString());
+        }
+
+        if (writer.Password is not null)
+        {
+            Assert.NotEmpty(writer.Password);
+            Assert.All(writer.Password, b => Assert.Equal(0, b));
+        }
+        else
+        {
+            Assert.True(fail is "find" or "setaccess");
+        }
+
+        writer.AssertEveryReferenceReleasedOnce();
     }
 
     // Round 3: a failed access build keeps the stored token (nothing is deleted or added).
@@ -164,7 +310,7 @@ public class TokenStoreTests
     public void MacWrite_AccessBuildFails_KeepsTheEarlierItem()
     {
         using TempTree tree = new TempTree();
-        FakeKeychainWriter writer = new FakeKeychainWriter { FailAccess = true };
+        FakeKeychainWriter writer = new FakeKeychainWriter(101) { FailAccess = true };
 
         Assert.Throws<TokenStoreException>(() => new MacKeychainTokenStore(tree.File("tools/tm"), writer).Write("contoso", "PAT-MARKER-1"));
 
@@ -180,51 +326,121 @@ public class TokenStoreTests
 
         Assert.Throws<TokenStoreException>(() => new MacKeychainTokenStore(tree.File("tools/tm"), writer).Write("contoso", "PAT-MARKER-1"));
 
-        Assert.Equal("Release", writer.Calls[^1]);
+        Assert.Equal("Release 42", writer.Calls[^1]);
         Assert.All(writer.Password!, b => Assert.Equal(0, b));
     }
 
+    // Records every native step as a string; item handles are preset, the access object is 42.
     private sealed class FakeKeychainWriter : MacKeychainTokenStore.IKeychainWriter
     {
+        private const string SaveFailed = "The token could not be saved in the macOS Keychain.";
+
+        private static readonly IntPtr Access = new IntPtr(42);
+
+        private readonly IntPtr[] items;
+
+        private readonly List<IntPtr> handedOut = [];
+
+        public FakeKeychainWriter(params int[] items)
+            : this(items.Select(i => new IntPtr(i)).ToArray())
+        {
+        }
+
+        public FakeKeychainWriter(IntPtr[] items)
+        {
+            this.items = items;
+        }
+
         public List<string> Calls { get; } = [];
 
         public bool FailAccess { get; set; }
 
+        public bool FailFind { get; set; }
+
+        public bool FailSetAccess { get; set; }
+
+        public bool FailUpdate { get; set; }
+
         public bool FailAdd { get; set; }
 
         public byte[]? Password { get; private set; }
+
+        public IntPtr? UpdatedItem { get; private set; }
 
         public IntPtr CreateAccess(string path)
         {
             Calls.Add("CreateAccess " + path);
             if (FailAccess)
             {
-                throw new TokenStoreException("The token could not be saved in the macOS Keychain.");
+                throw new TokenStoreException(SaveFailed);
             }
 
-            return new IntPtr(42);
+            handedOut.Add(Access);
+            return Access;
         }
 
-        public bool DeleteAll()
+        public IReadOnlyList<IntPtr> FindItems()
         {
-            Calls.Add("DeleteAll");
-            return true;
+            Calls.Add("FindItems");
+            if (FailFind)
+            {
+                throw new TokenStoreException("The macOS Keychain could not be read.");
+            }
+
+            handedOut.AddRange(items);
+            return items;
+        }
+
+        public void SetAccess(IntPtr item, IntPtr access)
+        {
+            Assert.Equal(Access, access);
+            Calls.Add("SetAccess " + item);
+            if (FailSetAccess)
+            {
+                throw new TokenStoreException(SaveFailed);
+            }
+        }
+
+        public void UpdateItem(IntPtr item, string organization, byte[] password)
+        {
+            Calls.Add("UpdateItem " + organization);
+            UpdatedItem = item;
+            Password = password;
+            if (FailUpdate)
+            {
+                throw new TokenStoreException(SaveFailed);
+            }
+        }
+
+        public void DeleteItem(IntPtr item)
+        {
+            Calls.Add("DeleteItem " + item);
         }
 
         public void AddItem(string organization, byte[] password, IntPtr access)
         {
+            Assert.Equal(Access, access);
             Calls.Add("AddItem " + organization);
             Password = password;
             if (FailAdd)
             {
-                throw new TokenStoreException("The token could not be saved in the macOS Keychain.");
+                throw new TokenStoreException(SaveFailed);
             }
         }
 
         public void Release(IntPtr reference)
         {
-            Assert.Equal(new IntPtr(42), reference);
-            Calls.Add("Release");
+            Assert.Contains(reference, handedOut);
+            Calls.Add("Release " + reference);
+        }
+
+        // Every reference the fake handed out is released exactly once.
+        public void AssertEveryReferenceReleasedOnce()
+        {
+            foreach (IntPtr reference in handedOut)
+            {
+                Assert.Single(Calls, c => c == "Release " + reference);
+            }
         }
     }
 
