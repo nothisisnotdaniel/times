@@ -9083,6 +9083,8 @@ public sealed class AppTests : IDisposable
         };
 
         (int exitCode, string[] frame) = RunExport(factory, $"export 2026-11-02 2026-11-04 {target.Path}", "report 2026-11-02 2026-11-04");
+        // A second session reads the hint from its last frame. It only gets past "already exists" because the first
+        // session deleted its partial file.
         (_, string[] hintFrame) = RunExport(factory, $"export 2026-11-02 2026-11-04 {target.Path}");
 
         Assert.Equal(0, exitCode);
@@ -9126,6 +9128,7 @@ public sealed class AppTests : IDisposable
         bool root = false;
         Func<string, Stream> factory = p => new FailingExportStream(App.OpenExportFile(p), () =>
         {
+            // Never true here (the test returned on Windows), but the analyzer cannot see that guard inside a lambda (CA1416).
             if (OperatingSystem.IsWindows())
             {
                 return;
