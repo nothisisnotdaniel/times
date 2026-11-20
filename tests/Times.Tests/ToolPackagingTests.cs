@@ -1179,14 +1179,11 @@ public sealed class ToolPackagingTests
             string folderDash = Directory.CreateDirectory(Path.Combine(root.FullName, "a")).FullName;
             Directory.CreateDirectory(Path.Combine(folderDash, "dash"));
             string plainDash = Directory.CreateDirectory(Path.Combine(root.FullName, "b")).FullName;
-            File.WriteAllText(Path.Combine(plainDash, "dash"), "#!/bin/sh\n");
-            File.SetUnixFileMode(Path.Combine(plainDash, "dash"), UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+            WriteFakeDash(plainDash, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
             string realDash = Directory.CreateDirectory(Path.Combine(root.FullName, "c")).FullName;
-            File.WriteAllText(Path.Combine(realDash, "dash"), "#!/bin/sh\n");
-            File.SetUnixFileMode(Path.Combine(realDash, "dash"), (UnixFileMode)Convert.ToInt32("755", 8));
+            WriteFakeDash(realDash, Executable);
             string secondDash = Directory.CreateDirectory(Path.Combine(root.FullName, "d")).FullName;
-            File.WriteAllText(Path.Combine(secondDash, "dash"), "#!/bin/sh\n");
-            File.SetUnixFileMode(Path.Combine(secondDash, "dash"), (UnixFileMode)Convert.ToInt32("755", 8));
+            WriteFakeDash(secondDash, Executable);
             string empty = Directory.CreateDirectory(Path.Combine(root.FullName, "e")).FullName;
             char sep = Path.PathSeparator;
 
@@ -1199,6 +1196,19 @@ public sealed class ToolPackagingTests
         {
             root.Delete(true);
         }
+    }
+
+    // 0755: read and execute for everyone, write for the owner.
+    private const UnixFileMode Executable = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+        | UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
+
+    // Writes a fake file named dash into the folder with the given mode.
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    private static void WriteFakeDash(string folder, UnixFileMode mode)
+    {
+        string file = Path.Combine(folder, "dash");
+        File.WriteAllText(file, "#!/bin/sh\n");
+        File.SetUnixFileMode(file, mode);
     }
 
     // AC-5 (313): a missing dash only passes locally; under GitHub Actions it fails the test.
