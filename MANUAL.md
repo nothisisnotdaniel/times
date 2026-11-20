@@ -253,6 +253,22 @@ ab holiday
 ab clear
 ```
 
+### `workplace` (`wp`)
+
+Arguments: `home`, `office` or `clear`.
+
+Marks the shown day as a home-office day or an office day, or clears the mark. The mark sits next
+to the day's entries and corrections; an absence day cannot be marked. The day view shows
+`Workplace: Home office · 3 home-office days in November 2026`, counting the marked home-office
+days of the shown month, and `report` ends with the home-office days in its range, ready for the
+home-office allowance (Homeoffice-Pauschale). Unmarked days count as neither.
+
+```text
+workplace home
+workplace office
+wp clear
+```
+
 ### `correction` (`co`)
 
 Arguments: `+H:mm <reason>` or `-H:mm <reason>`, or `remove <number>`.
@@ -713,6 +729,9 @@ refused (emoji are fine).
 removes the mark. The day view then shows `Absence: Vacation` (or `Sick`, `Public holiday`), and
 the day counts with `day +0:00`. With the `holiday-country` and `holiday-state` settings, Times
 knows Germany's public holidays itself and shows them by name, without writing anything.
+
+`workplace home` and `workplace office` mark the shown day as home office or office, and
+`workplace clear` removes the mark. A day cannot be both an absence and marked; clear one first.
 
 ### Target and flexitime balance
 

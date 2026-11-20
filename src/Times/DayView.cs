@@ -97,6 +97,10 @@ internal sealed class DayView
     /// target line, indented like it (see <see cref="CorrectionLine"/>). The <c>day</c> part never includes them. A day
     /// with corrections but no entries or absence shows <c>No entries yet.</c>, the correction rows and the target line
     /// without <c>day</c>; on a public holiday it shows as that absence day, with the correction rows above its target line.
+    /// The day's workplace mark (<see cref="DayRecord.Workplace"/>) and <paramref name="homeOfficeDays"/> (the shown
+    /// month's home-office days) add one <see cref="WorkplaceLine"/> row directly below the heading (after the
+    /// <c>Public holiday:</c> or computed <c>Absence: Public holiday</c> line). It is left out when the day is unmarked and
+    /// the count is 0, and on a stored absence day.
     /// </summary>
     public IRenderable Render(
         DayRecord day,
@@ -105,7 +109,8 @@ internal sealed class DayView
         TimeOnly? now = null,
         WorkingTimeChecks? checks = null,
         IReadOnlyList<DateOnly>? weekWarnings = null,
-        string? holiday = null)
+        string? holiday = null,
+        int homeOfficeDays = 0)
     {
         // A stored absence wins; an empty day on a holiday shows as a public holiday absence (no file is written).
         bool nothingBooked = day.Entries.Count == 0 && day.Absence is null;
@@ -123,6 +128,11 @@ internal sealed class DayView
                 HeadingRule(),
                 new Markup($"[grey]Absence:[/] [steelblue1]{label}[/]"),
             ];
+            if (day.Absence is null)
+            {
+                AddWorkplace(absent, day, homeOfficeDays);
+            }
+
             AddCorrections(absent, day, 0);
             absent.Add(new Markup(TargetLineWith(target, "+0:00", balance)));
             AddWeekLine(absent, weekWarnings, 0);
@@ -131,7 +141,9 @@ internal sealed class DayView
 
         if (nothingBooked)
         {
-            List<IRenderable> empty = [HeadingRule(), new Markup("[grey]No entries yet.[/]")];
+            List<IRenderable> empty = [HeadingRule()];
+            AddWorkplace(empty, day, homeOfficeDays);
+            empty.Add(new Markup("[grey]No entries yet.[/]"));
             AddCorrections(empty, day, 0);
             if (balance.CountedDays > 0 || day.Corrections.Count > 0)
             {
@@ -223,6 +235,8 @@ internal sealed class DayView
             rows.Add(new Markup($"[grey]Public holiday: {Markup.Escape(holiday)}[/]"));
         }
 
+        AddWorkplace(rows, day, homeOfficeDays);
+
         rows.AddRange(
         [
             Text.Empty,
@@ -239,6 +253,42 @@ internal sealed class DayView
     }
 
     private static readonly WorkingTimeCheckOptions BreaksOnly = new(true, false, false);
+
+    /// <summary>
+    /// The workplace row's markup: grey <c>Workplace:</c>, then a <c>SteelBlue1</c> <c>Home office</c>, <c>Office</c> or
+    /// <c>not set</c>, then a grey <c> · 3 home-office days in November 2026</c> (<c>1 home-office day</c>, invariant
+    /// English month) for <paramref name="month"/>'s calendar month. Null when <paramref name="workplace"/> is null and
+    /// <paramref name="homeOfficeDays"/> is 0. It holds no user text.
+    /// </summary>
+    internal static string? WorkplaceLine(Workplace? workplace, int homeOfficeDays, DateOnly month)
+    {
+        if (workplace is null && homeOfficeDays == 0)
+        {
+            return null;
+        }
+
+        string value = workplace is { } w ? WorkplaceLabel(w) : "not set";
+        string unit = homeOfficeDays == 1 ? "home-office day" : "home-office days";
+        string count = homeOfficeDays.ToString(CultureInfo.InvariantCulture);
+        string monthName = month.ToString("MMMM yyyy", CultureInfo.InvariantCulture);
+        return $"[grey]Workplace:[/] [steelblue1]{value}[/][grey] · {count} {unit} in {monthName}[/]";
+    }
+
+    /// <summary>The workplace's display name: <c>Home office</c> or <c>Office</c>. Fixed text, no markup.</summary>
+    internal static string WorkplaceLabel(Workplace workplace) => workplace switch
+    {
+        Workplace.Home => "Home office",
+        Workplace.Office => "Office",
+        _ => throw new ArgumentOutOfRangeException(nameof(workplace)),
+    };
+
+    private void AddWorkplace(List<IRenderable> rows, DayRecord day, int homeOfficeDays)
+    {
+        if (WorkplaceLine(day.Workplace, homeOfficeDays, Current) is { } line)
+        {
+            rows.Add(new Markup(line));
+        }
+    }
 
     /// <summary>
     /// One correction row's markup: grey <c>Correction 1</c>, the <c>SteelBlue1</c> signed amount

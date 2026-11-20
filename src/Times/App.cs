@@ -324,6 +324,7 @@ internal sealed class App
             SetBooked("unbooked", argument, false));
         registry.Register("summary", "s", "Show the time taken per work item from this day's checkpoints", NoArguments("summary", Summary));
         registry.Register("absence", "ab", "Mark this day as vacation, sick or holiday, or clear it", Absence);
+        registry.Register("workplace", "wp", "Mark this day as home office or office, or clear it", WorkplaceMark);
         registry.Register("correction", "co", "Correct the balance on this day: +H:mm|-H:mm <reason>, or remove <number>", Correction);
         registry.Register("report", "rp", "Show the hours per project over a date range: <from> <to>", Report);
         registry.Register("export", "ex", "Save the project report for a date range as CSV: <from> <to> <folder>", Export);
@@ -397,9 +398,91 @@ internal sealed class App
             return Hint($"{Name}: this day has entries. Remove them first with [bold]remove <number>[/].");
         }
 
+        if (!clear && current.Workplace is { } workplace)
+        {
+            return Hint($"{Name}: this day is marked as {DayView.WorkplaceLabel(workplace)}. " +
+                "Use [bold]workplace clear[/] first. Nothing was changed.");
+        }
+
         try
         {
             Store.Save(day, current.WithAbsence(wanted), stamp);
+        }
+        catch (DayFileChangedException)
+        {
+            return ChangedOnDisk(Name, day);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{Name}: could not save the day. {Markup.Escape(ex.Message)}");
+        }
+
+        return CommandResult.None;
+    }
+
+    // Marks the day being viewed as home office or office, or clears the mark. Nothing is written if the argument
+    // is not one of the three words, the day's file cannot be read or changed on disk since it was shown, the day
+    // is an absence day, or (for clear) the day has no mark.
+    private CommandResult WorkplaceMark(string argument)
+    {
+        const string Name = "workplace";
+        const string Usage = "Use [bold]workplace home|office|clear[/].";
+        string word = argument.Trim();
+        if (word.Length == 0)
+        {
+            return Hint($"{Name}: say where you work. {Usage}");
+        }
+
+        // ASCII only, so no culture or Unicode case folding can turn a word into one of ours.
+        string key = word.All(char.IsAscii) ? word.ToLowerInvariant() : string.Empty;
+        Workplace? wanted;
+        bool clear = false;
+        switch (key)
+        {
+            case "home":
+                wanted = Workplace.Home;
+                break;
+            case "office":
+                wanted = Workplace.Office;
+                break;
+            case "clear":
+                wanted = null;
+                clear = true;
+                break;
+            default:
+                return Hint($"{Name}: [bold]{Markup.Escape(word)}[/] is not a workplace. {Usage}");
+        }
+
+        DateOnly day = dayView.Current;
+        DayRecord current;
+        DayStamp stamp;
+        try
+        {
+            (current, stamp) = LoadForWrite(day);
+        }
+        catch (DayFileChangedException)
+        {
+            return ChangedOnDisk(Name, day);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{Name}: {Markup.Escape(ex.Message)} Nothing was changed.");
+        }
+
+        if (current.Absence is { } absence)
+        {
+            return Hint($"{Name}: this day is marked as absence ({DayView.AbsenceLabel(absence)}). " +
+                "Use [bold]absence clear[/] first. Nothing was changed.");
+        }
+
+        if (clear && current.Workplace is null)
+        {
+            return Hint($"{Name}: this day has no workplace mark.");
+        }
+
+        try
+        {
+            Store.Save(day, current.WithWorkplace(wanted), stamp);
         }
         catch (DayFileChangedException)
         {
@@ -651,7 +734,17 @@ internal sealed class App
             return failed;
         }
 
-        return new CommandResult(ReportView(from, to, report, LoadProjectsOrNull(), step), hideQuicklist: true);
+        int homeOffice;
+        try
+        {
+            homeOffice = HomeOfficeCount.Calculate(Store, from, to);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return Hint($"{Name}: the data folder cannot be listed: {Markup.Escape(ex.Message)}");
+        }
+
+        return new CommandResult(ReportView(from, to, report, LoadProjectsOrNull(), step, homeOffice), hideQuicklist: true);
     }
 
     private const string JsonFlag = "--json";
@@ -1670,9 +1763,11 @@ internal sealed class App
     /// The report table captioned with the range, with a <c>Total</c> row, or a grey note if
     /// <paramref name="report"/> has no rows; then the open footnote and the yellow skipped line when
     /// they apply. Titles come from <paramref name="projects"/> (<c>null</c>: none), otherwise the names.
-    /// A <paramref name="step"/> above 0 adds <c> · rounded to &lt;n&gt; min</c> to the caption.
+    /// A <paramref name="step"/> above 0 adds <c> · rounded to &lt;n&gt; min</c> to the caption. When
+    /// <paramref name="homeOfficeDays"/> is set, the view ends with a grey <c>Home office: N day(s)</c> line.
     /// </summary>
-    internal static IRenderable ReportView(DateOnly from, DateOnly to, ProjectReport report, ProjectList? projects, int step = 0)
+    internal static IRenderable ReportView(
+        DateOnly from, DateOnly to, ProjectReport report, ProjectList? projects, int step = 0, int? homeOfficeDays = null)
     {
         List<IRenderable> parts = [];
         if (report.Rows.Count == 0)
@@ -1715,6 +1810,12 @@ internal sealed class App
         }
 
         AddSkipped(parts, report);
+        if (homeOfficeDays is { } days)
+        {
+            string unit = days == 1 ? "day" : "days";
+            parts.Add(new Markup($"[grey]Home office: {days.ToString(CultureInfo.InvariantCulture)} {unit}[/]"));
+        }
+
         return parts.Count == 1 ? parts[0] : new Rows(parts);
     }
 
@@ -4459,7 +4560,11 @@ internal sealed class App
                 shown, date => date == shown ? day : TryLoadDayQuietly(date), options, now);
             string? holiday = PublicHolidays.NameOf(
                 shown, HolidaySetting(loaded, SettingsRegistry.HolidayCountryName), HolidaySetting(loaded, SettingsRegistry.HolidayStateName));
-            return dayView.Render(day, target, FlexitimeBalance.Compute(Store, shown, target, now), now, checks, week, holiday);
+            DateOnly monthStart = new DateOnly(shown.Year, shown.Month, 1);
+            DateOnly monthEnd = monthStart.AddDays(DateTime.DaysInMonth(shown.Year, shown.Month) - 1);
+            int homeOffice = HomeOfficeCount.Calculate(Store, monthStart, monthEnd);
+            return dayView.Render(
+                day, target, FlexitimeBalance.Compute(Store, shown, target, now), now, checks, week, holiday, homeOffice);
         }
         catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
         {

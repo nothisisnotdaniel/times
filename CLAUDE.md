@@ -131,6 +131,11 @@ Every factory agent reads this file before working on Times. Keep it short and a
   A day file may instead hold `"absence":"vacation"|"sick"|"publicHoliday"` (written before `"entries"`,
   left out when none; never together with entries or the legacy properties, otherwise unreadable), set by
   `absence` (`ab`) on the shown day; booking commands refuse an absence day.
+  A day that is not an absence may hold `"workplace":"home"|"office"` (after `"absence"`, before `"entries"`, left out
+  when none; any other value, or together with `absence`, is unreadable), set by `workplace` (`wp`, `home|office|clear`)
+  on the shown day; `absence` refuses a marked day. `HomeOfficeCount.Calculate` (read-only, unreadable files skipped)
+  counts `home` days in a range: `DayView` shows `Workplace: Home office · N home-office days in <Month yyyy>` (shown
+  month) below the heading, and `report` ends with a grey `Home office: N day(s)` line (not in `--json` or CSV).
   - **Single instance:** `App.Run` (after the folder check and `--version`, before anything else) creates the data folder
     if missing and takes `InstanceLock` on `<folder>/times.lock` (`FileShare.None`: `flock` on Unix, share mode/`DeleteOnClose`
     on Windows; file holds `pid=<pid>`, deleted then released on every exit, also from `Program.cs`'s Ctrl+C/exit handlers).

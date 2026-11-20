@@ -882,7 +882,7 @@ public sealed class AppTests : IDisposable
         Assert.Equal(
             ["absence", "addproject", "arrive", "backup", "booked", "break", "breakend", "…"],
             popup.Select(w => w.Text.Split(' ')[0]));
-        Assert.StartsWith("… 28 more", popup[^1].Text);
+        Assert.StartsWith("… 29 more", popup[^1].Text);
         Assert.Contains("Book the end of a break", popup[6].Text);
         Assert.Equal(80, popup[0].Text.Length);
     }
@@ -955,9 +955,9 @@ public sealed class AppTests : IDisposable
         List<string> hintRow = TypingWrites(output, 1).Where(w => w.Row == 21).Select(w => w.Text).ToList();
 
         // popup, restored (Backspace), popup, restored (Esc), popup (quit typing), ...
-        Assert.StartsWith("… 28 more", hintRow[0]);
+        Assert.StartsWith("… 29 more", hintRow[0]);
         Assert.Contains("Unknown command nope", hintRow[1]);
-        Assert.StartsWith("… 28 more", hintRow[2]);
+        Assert.StartsWith("… 29 more", hintRow[2]);
         Assert.Contains("Unknown command nope", hintRow[3]);
         Assert.Contains("Unknown command nope", hintRow[^1]);
         Assert.Contains("\u001b[38;5;9mUnknown command", output[output.LastIndexOf("\u001b[21;1H", StringComparison.Ordinal)..]);
@@ -991,7 +991,7 @@ public sealed class AppTests : IDisposable
         List<AnsiWrite> popup = TypingWrites(output, 0).Take(8).ToList();
         Assert.Equal(Enumerable.Range(14, 8), popup.Select(w => w.Row));
         // 39 commands: 7 shown, the eighth row counts the other 32.
-        Assert.StartsWith("… 40 more", popup[^1].Text);
+        Assert.StartsWith("… 41 more", popup[^1].Text);
         // Nothing is drawn on row 1 while typing (the final clear on quit homes the cursor there, writing nothing).
         Assert.DoesNotContain(TypingWrites(output, 0), w => w.Row == 1 && w.Text.Length > 0);
     }
@@ -4822,6 +4822,7 @@ public sealed class AppTests : IDisposable
         Dictionary<string, string> expected = new Dictionary<string, string>
         {
             ["absence"] = "ab",
+            ["workplace"] = "wp",
             ["addproject"] = "ap",
             ["arrive"] = "a",
             ["backup"] = "bu",
@@ -16427,5 +16428,273 @@ public sealed class AppTests : IDisposable
         (_, JsonElement holiday, _) = StatusTail(unityDay, settings);
 
         Assert.Equal(expected, holiday.ValueKind == JsonValueKind.Null ? null : holiday.GetString());
+    }
+
+    // Job 308 ------------------------------------------------------------------------------
+
+    private const string WorkplaceDay = "2026-10-27";
+
+    // AC-1
+    [Theory]
+    [InlineData("workplace home")]
+    [InlineData("wp HOME")]
+    [InlineData("/wp home")]
+    [InlineData("workplace  Home ")]
+    public void Workplace_OnDayWithoutFile_CreatesFileWithMark(string command)
+    {
+        (int exitCode, string output) = RunCommands(command, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("{\"workplace\":\"home\",\"entries\":[]}", ReadDay(WorkplaceDay));
+        Assert.Contains("Workplace: Home office · 1 home-office day in October 2026", LastFrame(output));
+    }
+
+    // AC-1
+    [Fact]
+    public void Workplace_MarksTheShownDay_NotToday()
+    {
+        (int exitCode, _) = RunCommands("prev", "workplace office", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.False(File.Exists(DayFile(WorkplaceDay)));
+        Assert.Equal("{\"workplace\":\"office\",\"entries\":[]}", ReadDay("2026-10-26"));
+    }
+
+    // AC-1
+    [Fact]
+    public void Workplace_Office_OnDayWithEntries_KeepsEntriesAndCorrections()
+    {
+        File.WriteAllText(DayFile(WorkplaceDay),
+            "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}],\"corrections\":[{\"minutes\":30,\"reason\":\"x\"}]}");
+
+        (int exitCode, string output) = RunCommands("workplace office", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(
+            "{\"workplace\":\"office\",\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}],\"corrections\":[{\"minutes\":30,\"reason\":\"x\"}]}",
+            ReadDay(WorkplaceDay));
+        Assert.Contains("Workplace: Office · 0 home-office days in October 2026", LastFrame(output));
+    }
+
+    // AC-1
+    [Fact]
+    public void Workplace_Home_ReplacesOffice()
+    {
+        File.WriteAllText(DayFile(WorkplaceDay), "{\"workplace\":\"office\",\"entries\":[]}");
+
+        (int exitCode, _) = RunCommands("wp home", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal("{\"workplace\":\"home\",\"entries\":[]}", ReadDay(WorkplaceDay));
+    }
+
+    // AC-1
+    [Theory]
+    [InlineData("{\"workplace\":\"home\",\"entries\":[]}", "{\"entries\":[]}")]
+    [InlineData(
+        "{\"workplace\":\"office\",\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}",
+        "{\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}")]
+    public void WorkplaceClear_RemovesTheMark(string initial, string expected)
+    {
+        File.WriteAllText(DayFile(WorkplaceDay), initial);
+
+        (int exitCode, string output) = RunCommands("workplace clear", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(expected, ReadDay(WorkplaceDay));
+        Assert.DoesNotContain("Workplace:", LastFrame(output));
+    }
+
+    // AC-2
+    [Theory]
+    [InlineData("workplace", "workplace: say where you work. Use workplace home|office|clear.")]
+    [InlineData("wp", "workplace: say where you work. Use workplace home|office|clear.")]
+    [InlineData("workplace sofa", "workplace: sofa is not a workplace. Use workplace home|office|clear.")]
+    [InlineData("workplace home office", "workplace: home office is not a workplace.")]
+    [InlineData("workplace [bold]x[/]", "workplace: [bold]x[/] is not a workplace.")]
+    [InlineData("workplace clear", "workplace: this day has no workplace mark.")]
+    public void Workplace_Refused_ShowsHint_AndWritesNothing(string command, string hint)
+    {
+        (int exitCode, string output) = RunCommands(command, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.False(File.Exists(DayFile(WorkplaceDay)));
+        string[] frame = LastLayout(output);
+        AssertLayout(frame);
+        Assert.Contains(hint, HintText(frame, "workplace:"));
+    }
+
+    // AC-2: only ASCII letters match, so a dotted capital I (which can fold to i) is no "office".
+    [Fact]
+    public void Workplace_NonAsciiLookalike_IsUnknown_AndWritesNothing()
+    {
+        (int exitCode, string output) = Run(c =>
+        {
+            c.Input.PushText("workplace off");
+            c.Input.PushKey(new ConsoleKeyInfo('İ', ConsoleKey.NoName, false, false, false));
+            c.Input.PushTextWithEnter("ce");
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        Assert.Equal(0, exitCode);
+        Assert.False(File.Exists(DayFile(WorkplaceDay)));
+        Assert.Contains("workplace home|office|clear", HintText(LastLayout(output), "workplace:"));
+    }
+
+    // AC-2
+    [Fact]
+    public void Workplace_Hint_IsRed()
+    {
+        Assert.Matches(@"\x1b\[38;5;9mworkplace: ", RunAnsiCommands("workplace sofa"));
+    }
+
+    // AC-2
+    [Theory]
+    [InlineData("workplace home")]
+    [InlineData("workplace clear")]
+    public void Workplace_OnAbsenceDay_ShowsHint_AndLeavesFileUnchanged(string command)
+    {
+        File.WriteAllText(DayFile(WorkplaceDay), "{\"absence\":\"vacation\",\"entries\":[]}");
+        byte[] before = File.ReadAllBytes(DayFile(WorkplaceDay));
+
+        (int exitCode, string output) = RunCommands(command, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(before, File.ReadAllBytes(DayFile(WorkplaceDay)));
+        string hint = HintText(LastLayout(output), "workplace:");
+        Assert.Contains("Vacation", hint);
+        Assert.Contains("absence clear", hint);
+    }
+
+    // AC-2
+    [Theory]
+    [InlineData("absence vacation")]
+    [InlineData("absence sick")]
+    [InlineData("ab holiday")]
+    public void Absence_OnMarkedDay_ShowsHint_AndLeavesFileUnchanged(string command)
+    {
+        File.WriteAllText(DayFile(WorkplaceDay), "{\"workplace\":\"home\",\"entries\":[]}");
+        byte[] before = File.ReadAllBytes(DayFile(WorkplaceDay));
+
+        (int exitCode, string output) = RunCommands(command, "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(before, File.ReadAllBytes(DayFile(WorkplaceDay)));
+        string hint = HintText(LastLayout(output), "absence:");
+        Assert.Contains("Home office", hint);
+        Assert.Contains("workplace clear", hint);
+        Assert.Matches(@"\x1b\[38;5;9mabsence: this day is marked as Home office",
+            RunAnsiCommands("absence vacation"));
+    }
+
+    // AC-2
+    [Fact]
+    public void StaleDay_Workplace_IsRefused_AndTheRetryWorks()
+    {
+        (string output, string? beforeRetry) = RunStale("workplace home", StaleFile, EditedFile);
+
+        List<string[]> frames = Frames(output);
+        Assert.Equal(3, frames.Count);
+        AssertOnHintRow(frames[1], ChangedHint("workplace"));
+        Assert.Equal(EditedFile, beforeRetry);
+        Assert.Contains("\"workplace\":\"home\"", ReadDay(WorkplaceDay));
+        Assert.Contains("Edited outside", ReadDay(WorkplaceDay));
+    }
+
+    // AC-2
+    [Fact]
+    public void Workplace_UnreadableFile_ShowsHint_AndLeavesFileUnchanged()
+    {
+        File.WriteAllText(DayFile(WorkplaceDay), "{\"workplace\":\"sofa\",\"entries\":[]}");
+        byte[] before = File.ReadAllBytes(DayFile(WorkplaceDay));
+
+        (int exitCode, string output) = RunCommands("workplace home", "quit");
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(before, File.ReadAllBytes(DayFile(WorkplaceDay)));
+        Assert.Contains("is not a valid day file. Nothing was changed.", HintText(LastLayout(output), "workplace:"));
+    }
+
+    // AC-4
+    [Fact]
+    public void DayView_CountsTheShownMonthsHomeOfficeDays()
+    {
+        File.WriteAllText(DayFile("2026-10-30"), "{\"workplace\":\"home\",\"entries\":[]}");
+        File.WriteAllText(DayFile("2026-11-02"), "{\"workplace\":\"home\",\"entries\":[]}");
+        File.WriteAllText(DayFile("2026-11-03"), "{\"workplace\":\"home\",\"entries\":[{\"kind\":\"arrival\",\"time\":\"08:00\"}]}");
+        File.WriteAllText(DayFile("2026-11-04"), "{\"workplace\":\"office\",\"entries\":[]}");
+        File.WriteAllText(DayFile("2026-11-19"), "{\"workplace\":\"home\",\"entries\":[]}");
+
+        (int exitCode, string output) = RunOn(HolidayClock(11, 20), "quit");
+
+        Assert.Equal(0, exitCode);
+        string frame = LastFrame(output);
+        Assert.Contains("Workplace: not set · 3 home-office days in November 2026", frame);
+        Assert.True(frame.IndexOf("Workplace:", StringComparison.Ordinal) < frame.IndexOf("No entries yet.", StringComparison.Ordinal));
+
+        (_, string marked) = RunOn(HolidayClock(11, 20), "workplace home", "quit");
+        Assert.Contains("Workplace: Home office · 4 home-office days in November 2026", LastFrame(marked));
+    }
+
+    // AC-4
+    [Fact]
+    public void DayView_UnmarkedMonth_HasNoWorkplaceRow()
+    {
+        File.WriteAllText(DayFile("2026-09-30"), "{\"workplace\":\"home\",\"entries\":[]}");
+
+        (_, string output) = RunCommands("quit");
+
+        Assert.DoesNotContain("Workplace:", LastFrame(output));
+    }
+
+    // AC-5
+    [Fact]
+    public void Report_EndsWithHomeOfficeLine_ForTheRange()
+    {
+        WriteReportDays();
+        File.WriteAllText(DayFile("2026-11-02"), File.ReadAllText(DayFile("2026-11-02")).Replace("{\"entries\"", "{\"workplace\":\"home\",\"entries\"", StringComparison.Ordinal));
+        File.WriteAllText(DayFile("2026-11-03"), File.ReadAllText(DayFile("2026-11-03")).Replace("{\"entries\"", "{\"workplace\":\"office\",\"entries\"", StringComparison.Ordinal));
+        File.WriteAllText(DayFile("2026-11-04"), File.ReadAllText(DayFile("2026-11-04")).Replace("{\"entries\"", "{\"workplace\":\"home\",\"entries\"", StringComparison.Ordinal));
+        File.WriteAllText(DayFile("2026-11-05"), File.ReadAllText(DayFile("2026-11-05")).Replace("{\"entries\"", "{\"workplace\":\"home\",\"entries\"", StringComparison.Ordinal));
+
+        (int exitCode, string[] frame) = RunReport("report 2026-11-02 2026-11-04", "quit");
+        (_, string[] flags) = RunReport("report --to 2026-11-04 --from 2026-11-02", "quit");
+
+        Assert.Equal(0, exitCode);
+        int total = Array.FindIndex(frame, l => l.Contains("│ Total", StringComparison.Ordinal));
+        int home = Array.FindIndex(frame, l => l.Trim() == "Home office: 2 days");
+        Assert.True(total > 0 && home > total, string.Join("\n", frame));
+        Assert.Contains(flags, l => l.Trim() == "Home office: 2 days");
+        Assert.Matches(@"\x1b\[(90|38;5;8)mHome office: 2 days", RunAnsiCommands("report 2026-11-02 2026-11-04"));
+    }
+
+    // AC-5
+    [Fact]
+    public void Report_NoCheckpoints_EndsWithHomeOfficeLine_BelowNoteAndSkipped()
+    {
+        File.WriteAllText(DayFile("2026-11-02"), "{\"workplace\":\"home\",\"entries\":[]}");
+        File.WriteAllText(DayFile("2026-11-03"), "{not json");
+
+        (_, string[] frame) = RunReport("report 2026-11-02 2026-11-04", "quit");
+
+        int note = Array.FindIndex(frame, l => l.Contains("No checkpoints between", StringComparison.Ordinal));
+        int skipped = Array.FindIndex(frame, l => l.Contains("! 1 day file skipped", StringComparison.Ordinal));
+        int home = Array.FindIndex(frame, l => l.Trim() == "Home office: 1 day");
+        Assert.True(note > 0 && skipped > note && home > skipped, string.Join("\n", frame));
+    }
+
+    // AC-8
+    [Fact]
+    public void Help_ListsWorkplace_WithAlias()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Input.PushTextWithEnter("help");
+        PageDown(console, HelpPages);
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run([]);
+        string plain = Regex.Replace(console.Output, @"\x1b\[[0-9;?]*[A-Za-z]", string.Empty);
+
+        Assert.Matches(@"│ workplace +│ wp +│ Mark this day as home office or office, or clear it", plain);
     }
 }

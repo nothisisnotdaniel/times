@@ -22,6 +22,13 @@ internal enum AbsenceKind
     PublicHoliday,
 }
 
+/// <summary>Where a day was worked, for the home-office allowance. A day without a mark counts as neither.</summary>
+internal enum Workplace
+{
+    Home,
+    Office,
+}
+
 /// <summary>
 /// One booking on a day at a local wall-clock time. Only a <see cref="EntryKind.Checkpoint"/> has a
 /// <see cref="Name"/> (always valid, see <see cref="ProjectList.IsValidTitle"/>) and optionally the
@@ -207,6 +214,9 @@ internal sealed record BalanceCorrection
 /// A record holds an absence or entries, never both. Either way it may also hold balance corrections
 /// (<see cref="Corrections"/>, in booking order), saved as a top-level
 /// <c>"corrections":[{"minutes":150,"reason":"Starting balance"}]</c> after <c>"entries"</c> and left out when empty.
+/// A day that is not an absence may also carry a workplace mark (<see cref="Workplace"/>), saved as a top-level
+/// <c>"workplace"</c> (<c>"home"</c> or <c>"office"</c>) after <c>"absence"</c> and before <c>"entries"</c>; it is left
+/// out when there is none.
 /// </summary>
 internal sealed record DayRecord
 {
@@ -227,6 +237,9 @@ internal sealed record DayRecord
     private const string SickName = "sick";
     private const string PublicHolidayName = "publicHoliday";
     private const string CorrectionsProperty = "corrections";
+    private const string WorkplaceProperty = "workplace";
+    private const string HomeName = "home";
+    private const string OfficeName = "office";
     private const string MinutesProperty = "minutes";
     private const string ReasonProperty = "reason";
 
@@ -257,6 +270,20 @@ internal sealed record DayRecord
     /// in the given order). Throws <see cref="ArgumentException"/> if it would hold both an absence and entries.
     /// </summary>
     public DayRecord(IEnumerable<DayEntry> entries, AbsenceKind? absence, IEnumerable<BalanceCorrection> corrections)
+        : this(entries, absence, corrections, null)
+    {
+    }
+
+    /// <summary>
+    /// A record with <paramref name="entries"/>, <paramref name="absence"/>, <paramref name="corrections"/> (kept in
+    /// the given order) and <paramref name="workplace"/>. Throws <see cref="ArgumentException"/> if it would hold both an
+    /// absence and entries, or both an absence and a workplace.
+    /// </summary>
+    public DayRecord(
+        IEnumerable<DayEntry> entries,
+        AbsenceKind? absence,
+        IEnumerable<BalanceCorrection> corrections,
+        Workplace? workplace)
     {
         DayEntry[] ordered = Order(entries);
         if (absence is not null && ordered.Length > 0)
@@ -264,9 +291,15 @@ internal sealed record DayRecord
             throw new ArgumentException("A day holds an absence or entries, never both.", nameof(absence));
         }
 
+        if (absence is not null && workplace is not null)
+        {
+            throw new ArgumentException("A day holds an absence or a workplace, never both.", nameof(workplace));
+        }
+
         this.entries = ordered;
         this.corrections = corrections.ToArray();
         Absence = absence;
+        Workplace = workplace;
     }
 
     // Sorts by time, stable. Then, within each group with the same time, every checkpoint before the
@@ -345,8 +378,8 @@ internal sealed record DayRecord
     /// </summary>
     public IReadOnlyList<DayEntry> Entries => entries;
 
-    /// <summary>True if the day has no entries, no absence and no corrections.</summary>
-    public bool IsEmpty => entries.Length == 0 && Absence is null && corrections.Length == 0;
+    /// <summary>True if the day has no entries, no absence, no corrections and no workplace.</summary>
+    public bool IsEmpty => entries.Length == 0 && Absence is null && corrections.Length == 0 && Workplace is null;
 
     /// <summary>The balance corrections in booking order. Correction number <c>n</c> is <c>Corrections[n - 1]</c>.</summary>
     public IReadOnlyList<BalanceCorrection> Corrections => corrections;
@@ -356,7 +389,7 @@ internal sealed record DayRecord
 
     /// <summary>Returns the same day with <paramref name="correction"/> added after the other corrections.</summary>
     public DayRecord AddCorrection(BalanceCorrection correction) =>
-        new(entries, Absence, corrections.Append(correction));
+        new(entries, Absence, corrections.Append(correction), Workplace);
 
     /// <summary>
     /// Returns the same day without correction <paramref name="number"/> (1-based, the numbering of
@@ -366,7 +399,7 @@ internal sealed record DayRecord
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(number, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(number, corrections.Length);
-        return new DayRecord(entries, Absence, corrections.Where((_, i) => i != number - 1));
+        return new DayRecord(entries, Absence, corrections.Where((_, i) => i != number - 1), Workplace);
     }
 
     /// <summary>The day's absence, or <c>null</c> if it is not marked as one.</summary>
@@ -376,7 +409,16 @@ internal sealed record DayRecord
     /// Returns the same day with <paramref name="absence"/> as its absence (<c>null</c> clears it). Throws
     /// <see cref="ArgumentException"/> if an absence is set on a day that has entries.
     /// </summary>
-    public DayRecord WithAbsence(AbsenceKind? absence) => new(entries, absence, corrections);
+    public DayRecord WithAbsence(AbsenceKind? absence) => new(entries, absence, corrections, Workplace);
+
+    /// <summary>The day's workplace mark, or <c>null</c> if it is not marked.</summary>
+    public Workplace? Workplace { get; }
+
+    /// <summary>
+    /// Returns the same day with <paramref name="workplace"/> as its mark (<c>null</c> clears it). Throws
+    /// <see cref="ArgumentException"/> if a mark is set on an absence day.
+    /// </summary>
+    public DayRecord WithWorkplace(Workplace? workplace) => new(entries, Absence, corrections, workplace);
 
     /// <summary>
     /// Returns the work time left at each entry's time, parallel to <see cref="Entries"/>. Walking the
@@ -682,7 +724,7 @@ internal sealed record DayRecord
     /// already at that time (see <see cref="DayRecord"/>). Throws <see cref="ArgumentException"/> on an
     /// absence day.
     /// </summary>
-    public DayRecord Add(DayEntry entry) => new(entries.Append(entry), Absence, corrections);
+    public DayRecord Add(DayEntry entry) => new(entries.Append(entry), Absence, corrections, Workplace);
 
     /// <summary>
     /// Returns a new record without entry <paramref name="number"/> (1-based, the numbering of
@@ -693,7 +735,7 @@ internal sealed record DayRecord
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(number, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(number, entries.Length);
-        return new DayRecord(entries.Where((_, i) => i != number - 1), Absence, corrections);
+        return new DayRecord(entries.Where((_, i) => i != number - 1), Absence, corrections, Workplace);
     }
 
     /// <summary>
@@ -729,17 +771,19 @@ internal sealed record DayRecord
 
         DayEntry[] changed = (DayEntry[])entries.Clone();
         changed[number - 1] = entry.WithBooked(booked);
-        return new DayRecord(changed, Absence, corrections);
+        return new DayRecord(changed, Absence, corrections, Workplace);
     }
 
     public bool Equals(DayRecord? other) =>
-        other is not null && Absence == other.Absence && entries.SequenceEqual(other.entries)
+        other is not null && Absence == other.Absence && Workplace == other.Workplace
+        && entries.SequenceEqual(other.entries)
         && corrections.SequenceEqual(other.corrections);
 
     public override int GetHashCode()
     {
         HashCode hash = new HashCode();
         hash.Add(Absence);
+        hash.Add(Workplace);
         foreach (DayEntry entry in entries)
         {
             hash.Add(entry);
@@ -762,6 +806,11 @@ internal sealed record DayRecord
             if (Absence is { } absence)
             {
                 writer.WriteString(AbsenceProperty, AbsenceName(absence));
+            }
+
+            if (Workplace is { } workplace)
+            {
+                writer.WriteString(WorkplaceProperty, WorkplaceName(workplace));
             }
 
             writer.WriteStartArray(EntriesProperty);
@@ -827,6 +876,26 @@ internal sealed record DayRecord
         _ => throw new ArgumentOutOfRangeException(nameof(absence)),
     };
 
+    private static string WorkplaceName(Workplace workplace) => workplace switch
+    {
+        Times.Workplace.Home => HomeName,
+        Times.Workplace.Office => OfficeName,
+        _ => throw new ArgumentOutOfRangeException(nameof(workplace)),
+    };
+
+    // Strict: exactly the string "home" or "office" (ordinal); null, another kind or any other text is unreadable.
+    private static Workplace ReadWorkplace(JsonElement value)
+    {
+        const string Unknown = "The day file has an unknown workplace.";
+        string? text = ReadStringOrNull(value, Unknown);
+        return text switch
+        {
+            HomeName => Times.Workplace.Home,
+            OfficeName => Times.Workplace.Office,
+            _ => throw new JsonException(Unknown),
+        };
+    }
+
     private static AbsenceKind ReadAbsence(JsonElement value)
     {
         string? text = ReadStringOrNull(value, "The day file has an unknown absence.");
@@ -854,6 +923,7 @@ internal sealed record DayRecord
 
         JsonElement? entriesElement = null;
         AbsenceKind? absence = null;
+        Workplace? workplace = null;
         List<BalanceCorrection> corrections = [];
         TimeOnly? arrival = null;
         TimeOnly? leaving = null;
@@ -875,6 +945,9 @@ internal sealed record DayRecord
                 case AbsenceProperty:
                     absence = ReadAbsence(property.Value);
                     break;
+                case WorkplaceProperty:
+                    workplace = ReadWorkplace(property.Value);
+                    break;
                 case CorrectionsProperty:
                     corrections = ReadCorrections(property.Value);
                     break;
@@ -894,6 +967,11 @@ internal sealed record DayRecord
 
         if (absence is { } kind)
         {
+            if (workplace is not null)
+            {
+                throw new JsonException("The day file mixes an absence with a workplace.");
+            }
+
             if (hasLegacy)
             {
                 throw new JsonException("The day file mixes an absence with a legacy arrival or leaving.");
@@ -914,7 +992,7 @@ internal sealed record DayRecord
                 throw new JsonException("The day file mixes entries with a legacy arrival or leaving.");
             }
 
-            return new DayRecord(ReadEntries(list), null, corrections);
+            return new DayRecord(ReadEntries(list), null, corrections, workplace);
         }
 
         List<DayEntry> legacy = [];
@@ -928,7 +1006,7 @@ internal sealed record DayRecord
             legacy.Add(new DayEntry(EntryKind.Leaving, l));
         }
 
-        return new DayRecord(legacy, null, corrections);
+        return new DayRecord(legacy, null, corrections, workplace);
     }
 
     private static List<BalanceCorrection> ReadCorrections(JsonElement list)

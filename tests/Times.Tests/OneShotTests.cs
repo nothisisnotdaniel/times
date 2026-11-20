@@ -976,4 +976,37 @@ public sealed class OneShotTests : IDisposable
         Assert.DoesNotContain("Todos", output);
         Assert.Contains("- Ship", output);
     }
+
+    // Job 308 ------------------------------------------------------------------------------
+
+    // AC-7
+    [Fact]
+    public void Workplace_MarksToday_PrintsNoLayout_AndExitsZero()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 120;
+
+        int exit = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run(["workplace", "home"]);
+
+        Assert.Equal(0, exit);
+        Assert.Equal("{\"workplace\":\"home\",\"entries\":[]}", File.ReadAllText(TodayFile(data.Path)));
+        Assert.DoesNotContain("│ > ", console.Output);
+        Assert.DoesNotContain("\u001b[2J", console.Output);
+        Assert.DoesNotMatch(@"\x1b\[\d*;\d*H", console.Output);
+    }
+
+    // AC-7
+    [Fact]
+    public void Workplace_UnknownWord_ExitsOne_WithRedUsage_AndWritesNothing()
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 120;
+
+        int exit = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path)).Run(["wp", "sofa"]);
+
+        Assert.Equal(1, exit);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)mworkplace: ", console.Output);
+        Assert.Contains("workplace home|office|clear", console.Output);
+        Assert.False(File.Exists(TodayFile(data.Path)));
+    }
 }
