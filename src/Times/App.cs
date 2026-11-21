@@ -2684,10 +2684,17 @@ internal sealed class App
     private const string DevOpsUsage =
         "Use [bold]devops[/], [bold]devops connect <organization>[/], [bold]devops import[/] or [bold]devops disconnect[/].";
 
+    /// <summary>The help row of devops: connect and import need Suite Pro.</summary>
+    internal const string DevOpsDescription =
+        "Show or set the Azure DevOps link: [connect <org> | import | disconnect] (connect, import: Pro)";
+
+    /// <summary>The help row of sync: all of it needs Suite Pro.</summary>
+    internal const string SyncDescription = "Send unbooked hours to Azure DevOps: <from> <to> [send] (Pro)";
+
     private void RegisterDevOps()
     {
-        registry.Register("devops", "dv", "Show or set the Azure DevOps link: [connect <org> | import | disconnect]", DevOps);
-        registry.Register("sync", "sy", "Send unbooked hours to Azure DevOps: <from> <to> [send]", Sync);
+        registry.Register("devops", "dv", DevOpsDescription, DevOps);
+        registry.Register("sync", "sy", SyncDescription, pro.Gate("sync", Sync));
     }
 
     // devops shows the connection, devops connect <org> asks for the token (in the loop, masked), and
@@ -2702,7 +2709,16 @@ internal sealed class App
             return DevOpsStatus();
         }
 
-        if (string.Equals(sub, "connect", StringComparison.OrdinalIgnoreCase))
+        // connect and import need Suite Pro: checked first, so a locked user is never asked for a token
+        // and the store is never read. Status and disconnect stay free (a stored token can always go).
+        bool connect = string.Equals(sub, "connect", StringComparison.OrdinalIgnoreCase);
+        bool import = string.Equals(sub, "import", StringComparison.OrdinalIgnoreCase);
+        if ((connect || import) && !pro.IsUnlocked)
+        {
+            return Pro.Locked(connect ? "devops connect" : "devops import");
+        }
+
+        if (connect)
         {
             if (!tokenStore.IsSupported)
             {
@@ -2761,7 +2777,7 @@ internal sealed class App
             return new CommandResult(hint: new Markup(deleted ? "[grey]Disconnected[/]" : "[grey]Nothing to remove[/]"));
         }
 
-        if (string.Equals(sub, "import", StringComparison.OrdinalIgnoreCase))
+        if (import)
         {
             if (rest.Length > 0)
             {
@@ -4573,7 +4589,7 @@ internal sealed class App
 
     internal const string StatusHelpDescription = "Print today's day view, or today's state as JSON with --json";
 
-    internal const string DevOpsOneShotDescription = "Show or set the Azure DevOps link: [import | disconnect]";
+    internal const string DevOpsOneShotDescription = "Show or set the Azure DevOps link: [import | disconnect] (import: Pro)";
 
     // help from the shell: only what runs as a one-shot (the SessionOnly rule), a status row (status is not
     // registered, so the session still refuses it) and devops without connect. With an argument, only that

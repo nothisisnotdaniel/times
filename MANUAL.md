@@ -451,7 +451,8 @@ tc disconnect
 Arguments: none, `connect <organization>`, `import` or `disconnect`.
 
 Shows the Azure DevOps connection, connects (asks for your token in a masked prompt), adds your
-open work items to the quicklist, or removes the stored token.
+open work items to the quicklist, or removes the stored token. `devops connect` and `devops import`
+need Suite Pro (see [Suite Pro](#suite-pro)); `devops` and `devops disconnect` stay free.
 
 ```text
 devops
@@ -466,6 +467,8 @@ Arguments: `<from> <to> [send]`: two dates as `yyyy-MM-dd`, and `send` to really
 
 Without `send`, previews the unbooked checkpoint hours per work item over the range. With `send`,
 adds them to each work item's Completed Work in Azure DevOps and marks those checkpoints booked.
+Needs Suite Pro, also for the preview (see [Suite Pro](#suite-pro)); `report` shows the hours per
+work item without it.
 
 ```text
 sync 2026-11-01 2026-11-30
@@ -907,6 +910,12 @@ deletes `teams.json`; to pair again, run `teams connect` and allow Times in your
 `sync` sends the hours of the checkpoints you have not yet booked into the **Completed Work**
 field of their work items, so you no longer copy numbers from `report` and run `booked` by hand.
 
+`sync`, `devops connect` and `devops import` need **Suite Pro** (see [Suite Pro](#suite-pro)); without
+it they show one red line saying so, never ask for a token and change nothing. `devops` and
+`devops disconnect` stay free, so you can always see and remove a stored token. Versions of Times
+that are already released keep DevOps sync working as they are; only new releases need a Suite Pro
+key for it.
+
 1. In Azure DevOps, open *User settings → Personal access tokens* and create a token with the
    scope **Work Items: Read & write**.
 2. In Times, type `devops connect <organization>`, where `<organization>` is the name in
@@ -930,12 +939,13 @@ On macOS, the Keychain item trusts only the `tm` launcher that started Times. Wh
 through the shared `dotnet` host instead, `devops connect` says so and stores nothing; start it
 with `tm`. After an update, macOS may ask once for permission to read the item; choose
 *Always Allow*, or run `devops connect` again. On Linux there is no supported credential store
-yet, so `devops connect` and `sync … send` say so (the preview still works).
+yet, so `devops connect` and `sync … send` say so (the preview still works, with Suite Pro).
 
 ### Suite Pro
 
 Suite Pro is one licence for Times and Context. It unlocks the Pro features of both; a Pro
-command used without it shows one red line saying what it needs and how to unlock it.
+command used without it shows one red line saying what it needs and how to unlock it. In Times, the
+Pro features are `sync`, `devops connect` and `devops import` (see [Azure DevOps](#azure-devops)).
 
 1. Type `pro activate <key>` with the licence key you received (it starts with `CTX1-`). Times
    checks the key's signature on this computer; nothing is sent anywhere. A key that cannot be

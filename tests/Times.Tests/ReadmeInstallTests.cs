@@ -80,6 +80,21 @@ public sealed class ReadmeInstallTests
         }
     }
 
+    private const string ReleasedVersions =
+        "Versions of Times that are already released keep DevOps sync working as they are; only new releases need a Suite Pro key for it.";
+
+    // Job 328 AC-8: README and MANUAL say which DevOps parts need Suite Pro, and that released versions keep working.
+    [Theory]
+    [InlineData("README.md")]
+    [InlineData("MANUAL.md")]
+    public void Docs_MarkDevOpsSyncAsPro_AndKeepReleasedVersionsWorking(string name)
+    {
+        string text = string.Join(' ', ReadRepoFile(name).ReplaceLineEndings("\n").Split('\n').Select(l => l.Trim()));
+
+        Assert.Contains(ReleasedVersions, text);
+        Assert.Contains("`sync`, `devops connect` and `devops import` need **Suite Pro**", text);
+    }
+
     private static string Section()
     {
         string readme = ReadRepoFile("README.md").ReplaceLineEndings("\n");

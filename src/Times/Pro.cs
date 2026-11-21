@@ -121,5 +121,8 @@ internal sealed class Pro
     /// (a failed one-shot) and never runs the handler.
     /// </summary>
     public Func<string, CommandResult> Gate(string command, Func<string, CommandResult> handler) =>
-        argument => IsUnlocked ? handler(argument) : CommandResult.Error(Markup.Escape(LockedHint(command)));
+        argument => IsUnlocked ? handler(argument) : Locked(command);
+
+    /// <summary>The red <see cref="LockedHint"/> line (escaped, a failed one-shot) for a locked Pro command.</summary>
+    public static CommandResult Locked(string command) => CommandResult.Error(Markup.Escape(LockedHint(command)));
 }

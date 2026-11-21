@@ -47,6 +47,33 @@ internal sealed class TestLicences : IDisposable
         return LicenceKey.Prefix + LicenceKey.Encode(payload) + "." + LicenceKey.Encode(signature);
     }
 
+    /// <summary>The build date the unlocked and expired helpers check against.</summary>
+    public static readonly DateOnly BuildDate = new(2026, 10, 27);
+
+    /// <summary>
+    /// A <see cref="Pro"/> that is unlocked: a fresh test key (until 2027-12-31) in a fake store, on a table
+    /// holding only that key, checked against <see cref="BuildDate"/>.
+    /// </summary>
+    public static Pro Unlocked() => WithStored(until: "2027-12-31");
+
+    /// <summary>A <see cref="Pro"/> whose stored, verifying key ended before <see cref="BuildDate"/>: locked.</summary>
+    public static Pro Expired() => WithStored(until: "2026-10-26");
+
+    /// <summary>A <see cref="Pro"/> with nothing stored: locked.</summary>
+    public static Pro Locked(FakeLicenceStore? store = null)
+    {
+        using TestLicences licences = new TestLicences();
+        return licences.Pro(store ?? new FakeLicenceStore(), BuildDate);
+    }
+
+    // Disposing the TestLicences only frees its private signing key: the Pro keeps the public key table, which is
+    // plain data built from the PEM, so it still verifies the token after the using block ends.
+    private static Pro WithStored(string until)
+    {
+        using TestLicences licences = new TestLicences();
+        return licences.Pro(new FakeLicenceStore(stored: licences.Token(until: until)), BuildDate);
+    }
+
     /// <summary>A <see cref="Pro"/> on this key table, with the given revocations and build date.</summary>
     public Pro Pro(ILicenceStore store, DateOnly? buildDate, params string[] revoked) =>
         new(store, Keys, new LicenceRevocations(revoked), buildDate);

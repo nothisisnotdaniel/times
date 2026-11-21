@@ -223,8 +223,8 @@ required. A booking without a time uses the current time. `remove`, `change`, `b
 | `eod` | `ed` | optional time (`H:mm`, `now`, `-<n>m`, `+<n>m`), optional `--plan <text>` | End today: book the leaving (unless the day already ends in one), show today's time per work item and Context's open todos, save the plan for tomorrow to Context (asked for in the session without `--plan`) and print a stand-up draft; Context is optional |
 | `meetings` | `mt` | none | Offer today's calendar meetings from Context as checkpoints at their start times and book the ones you pick (the numbers, or `all`; Esc books none); a `#<work item>` in a meeting's title sets the quicklist project; a one-shot only lists them |
 | `teams` | `tc` | none, `connect` or `disconnect` | Show, turn on or turn off Teams call tracking: while the session runs, a Teams meeting start books a `Call` checkpoint and its end the checkpoint before it (needs Teams' third-party app API; the pairing key is kept in `teams.json`, never shown) |
-| `sync` | `sy` | `<from> <to> [send]` (`yyyy-MM-dd`) | Preview the unbooked checkpoint hours per work item over a date range; with `send`, add them to each work item's Completed Work in Azure DevOps and mark those checkpoints booked (see [Azure DevOps](#azure-devops)) |
-| `devops` | `dv` | none, `connect <organization>` or `disconnect` | Show the Azure DevOps connection, connect (asks for the token in a masked prompt), or remove the stored token |
+| `sync` | `sy` | `<from> <to> [send]` (`yyyy-MM-dd`) | **Suite Pro.** Preview the unbooked checkpoint hours per work item over a date range; with `send`, add them to each work item's Completed Work in Azure DevOps and mark those checkpoints booked (see [Azure DevOps](#azure-devops)) |
+| `devops` | `dv` | none, `connect <organization>`, `import` or `disconnect` | Show the Azure DevOps connection, connect (asks for the token in a masked prompt; Suite Pro), add your open work items to the quicklist (`import`; Suite Pro), or remove the stored token |
 | `pro` | `po` | none, `status`, `activate <key>` or `deactivate` | Show your Suite Pro licence (the licence for Times and Context), activate a licence key offline, or remove it from this computer (see the [manual](MANUAL.md#suite-pro)) |
 | `prev` | `p` | none | Go to the previous day |
 | `next` | `n` | none | Go to the next day |
@@ -262,6 +262,11 @@ panel says why, shows the defaults and saves nothing until the file is fixed or 
 Work** field of their work items, so you no longer copy numbers from `report` and run `booked` by
 hand.
 
+`sync`, `devops connect` and `devops import` need **Suite Pro** (see the [manual](MANUAL.md#suite-pro));
+without it they show one red line saying so and touch nothing. `devops` and `devops disconnect` stay
+free, so you can always see and remove a stored token. Versions of Times that are already released
+keep DevOps sync working as they are; only new releases need a Suite Pro key for it.
+
 1. In Azure DevOps, open *User settings → Personal access tokens* and create a token with the scope
    **Work Items: Read & write** (nothing else is needed).
 2. In Times, type `devops connect <organization>`, where `<organization>` is the name in
@@ -297,7 +302,7 @@ A `devops` line with anything after it (such as `devops connect contoso`) is nev
 input history, so ↑ cannot bring back a token typed on that line by mistake.
 
 **Linux is not supported** yet: there is no credential
-store Times can use there, so `devops connect` and `sync … send` say so (the preview still works).
+store Times can use there, so `devops connect` and `sync … send` say so (the preview still works, with Suite Pro).
 
 To check the stores by hand: connect, look for the item in *Keychain Access* (macOS) or with
 `cmdkey /list:Times/AzureDevOps` (Windows), run `devops`, then `devops disconnect` and check it is gone.

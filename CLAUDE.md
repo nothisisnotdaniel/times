@@ -306,7 +306,10 @@ Every factory agent reads this file before working on Times. Keep it short and a
   then marks those checkpoints booked; failures stay per item. Before each item's calls it writes a grey `Sending #<id> <title> …` line (title through `EchoText.Markup`). `devops import` reads `projects.json` first, then the store once,
   fetches the open work items assigned to the user (`GetAssignedWorkItemsAsync`: constant `Wiql` POST, then one titles GET for at most
   200 parsed Int32 ids) and appends the new ones whose trimmed title passes `IsValidTitle` in one save (skipped items are named by
-  number only; refused if `projects.json` would pass 64 KiB). Tests use `FakeTokenStore` and `FakeDevOpsClient`.
+  number only; refused if `projects.json` would pass 64 KiB). Suite Pro gates `sync` (all of it, also the preview:
+`pro.Gate("sync", Sync)`) and `devops connect`/`devops import` (`pro.IsUnlocked` checked first in `DevOps`, before any
+store call, prompt or argument check; red `Pro.Locked`); `devops` and `devops disconnect` stay free. Tests use
+`FakeTokenStore` and `FakeDevOpsClient`, and pass `pro: TestLicences.Unlocked()` (or `Locked()`/`Expired()`).
 - **Suite Pro:** one licence for Times and Context. Keys are `CTX1-<b64url(payload)>.<b64url(sig)>` (`LicenceKey`, at most
   1024 characters, strict unpadded base64url, ECDSA P-256 SHA-256 P1363 over the exact payload bytes, signature checked
   before the strict JSON parse; payload `v`, `kid`, `lid`, `name`, `ed`, `until`, `issued`, each once). Failures carry one
