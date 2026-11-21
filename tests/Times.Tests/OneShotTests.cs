@@ -1249,4 +1249,129 @@ public sealed class OneShotTests : IDisposable
         Assert.Matches(@"│ demo +│ dm +│ A command from the test +│", output);
         Assert.DoesNotContain("│ quit ", output);
     }
+
+    // Job 328 ------------------------------------------------------------------------------
+
+    private const string Pat = "PAT-MARKER-328";
+
+    private (int Exit, string Output) DevOpsShot(Pro pro, FakeTokenStore store, FakeDevOpsClient client, params string[] args)
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 160;
+        int exit = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path),
+            tokenStore: store, devOpsClient: client.For, pro: pro).Run(args);
+        Assert.DoesNotContain(Pat, console.Output, StringComparison.Ordinal);
+        return (exit, console.Output);
+    }
+
+    private void WriteSyncDay() =>
+        File.WriteAllText(Path.Combine(data.Path, "2026-11-02.json"),
+            "{\"entries\":[{\"kind\":\"checkpoint\",\"time\":\"09:00\",\"name\":\"Review\",\"workItem\":12}," +
+            "{\"kind\":\"leaving\",\"time\":\"10:30\"}]}");
+
+    private Dictionary<string, string> Files() =>
+        Directory.GetFiles(data.Path).ToDictionary(f => Path.GetFileName(f), File.ReadAllText);
+
+    // AC-1: as a one-shot, a locked sync is a red line and exit 1; nothing is read, called or written.
+    [Theory]
+    [InlineData("sync", "2026-11-02", "2026-11-04")]
+    [InlineData("sync", "2026-11-02", "2026-11-04", "send")]
+    [InlineData("sy", "2026-11-02", "2026-11-04")]
+    [InlineData("sy", "2026-11-02", "2026-11-04", "send")]
+    public void Sync_ProLocked_ExitsOne_WithTheRedProLine(params string[] args)
+    {
+        WriteSyncDay();
+        Dictionary<string, string> before = Files();
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", Pat));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+
+        (int exit, string output) = DevOpsShot(TestLicences.Locked(), store, client, args);
+
+        Assert.Equal(1, exit);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)m" + Regex.Escape(Pro.LockedHint("sync")), output);
+        Assert.Equal(0, store.Calls);
+        Assert.Empty(client.Credentials);
+        Assert.Empty(client.Sets);
+        Assert.Equal(before, Files());
+    }
+
+    // AC-6: an expired key locks sync send as a one-shot too.
+    [Fact]
+    public void Sync_ExpiredKey_ExitsOne()
+    {
+        WriteSyncDay();
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", Pat));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+
+        (int exit, string output) = DevOpsShot(TestLicences.Expired(), store, client, "sync", "2026-11-02", "2026-11-04", "send");
+
+        Assert.Equal(1, exit);
+        Assert.Contains(Pro.LockedHint("sync"), output);
+        Assert.Equal(0, store.Calls);
+    }
+
+    // AC-5: unlocked, the one-shot sync send still sends and exits 0.
+    [Fact]
+    public void Sync_ProUnlocked_SendsAndExitsZero()
+    {
+        WriteSyncDay();
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", Pat));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+
+        (int exit, string output) = DevOpsShot(TestLicences.Unlocked(), store, client, "sync", "2026-11-02", "2026-11-04", "send");
+
+        Assert.Equal(0, exit);
+        Assert.DoesNotContain("needs Suite Pro", output);
+        Assert.Equal([12], client.Gets);
+    }
+
+    // AC-2: as a one-shot, a locked import is a red line and exit 1; projects.json is not created.
+    [Theory]
+    [InlineData("devops")]
+    [InlineData("dv")]
+    public void Import_ProLocked_ExitsOne_WithTheRedProLine(string name)
+    {
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", Pat));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+        client.Assigned.Add((2, "Two"));
+
+        (int exit, string output) = DevOpsShot(TestLicences.Locked(), store, client, name, "import");
+
+        Assert.Equal(1, exit);
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)m" + Regex.Escape(Pro.LockedHint("devops import")), output);
+        Assert.Equal(0, store.Calls);
+        Assert.Equal(0, client.AssignedCalls);
+        Assert.False(File.Exists(Path.Combine(data.Path, "projects.json")));
+    }
+
+    // AC-4: as a one-shot, devops and devops disconnect stay free.
+    [Fact]
+    public void StatusAndDisconnect_ProLocked_ExitZero()
+    {
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", Pat));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+
+        (int statusExit, string status) = DevOpsShot(TestLicences.Locked(), store, client, "devops");
+        (int disconnectExit, string disconnect) = DevOpsShot(TestLicences.Locked(), store, client, "devops", "disconnect");
+
+        Assert.Equal(0, statusExit);
+        Assert.Contains("contoso", status);
+        Assert.Equal(0, disconnectExit);
+        Assert.Contains("Disconnected", disconnect);
+        Assert.Null(store.Stored);
+        Assert.DoesNotContain("needs Suite Pro", status + disconnect);
+    }
+
+    // AC-7: one-shot help marks import as Pro.
+    [Fact]
+    public void Help_MarksImportAsPro()
+    {
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 180;
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), pro: TestLicences.Locked()).Run(["help"]);
+
+        Assert.Contains(App.DevOpsOneShotDescription, console.Output);
+        Assert.Contains("(import: Pro)", App.DevOpsOneShotDescription, StringComparison.Ordinal);
+        Assert.Contains(App.SyncDescription, console.Output);
+    }
 }

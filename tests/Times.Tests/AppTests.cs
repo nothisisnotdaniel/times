@@ -68,12 +68,12 @@ public sealed class AppTests : IDisposable
     }
 
     private (int ExitCode, string Output) Run(Action<TestConsole> input, CommandRegistry? registry = null, TimeProvider? time = null, string? dataFolder = null,
-        Func<string, Stream>? exportStream = null)
+        Func<string, Stream>? exportStream = null, Pro? pro = null)
     {
         TestConsole console = new TestConsole().Interactive();
         input(console);
         int exitCode = new App(console, time ?? FixedTimeProvider.At20261027(), new DayStore(dataFolder ?? data.Path), registry,
-            instanceLock: sideLock, exportStream: exportStream).Run([]);
+            instanceLock: sideLock, exportStream: exportStream, pro: pro).Run([]);
         return (exitCode, console.Output);
     }
 
@@ -9233,6 +9233,9 @@ public sealed class AppTests : IDisposable
 
     private const string DevOpsPat = "PAT-MARKER-5e2d";
 
+    /// <summary>The Pro gate <see cref="RunDevOps(FakeTokenStore, FakeDevOpsClient?, string[])"/> uses; null is unlocked.</summary>
+    private Pro? devOpsPro;
+
     private const string NotAvailable =
         "Azure DevOps needs the macOS Keychain or Windows Credential Manager; not available on this system";
 
@@ -9253,7 +9256,7 @@ public sealed class AppTests : IDisposable
         console.Profile.Width = 140;
         input(console);
         App app = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path),
-            tokenStore: store, devOpsClient: client is null ? null : client.For);
+            tokenStore: store, devOpsClient: client is null ? null : client.For, pro: devOpsPro ?? TestLicences.Unlocked());
         int exitCode = app.Run([]);
         Assert.DoesNotContain(DevOpsPat, console.Output, StringComparison.Ordinal);
         Assert.DoesNotContain("   at ", console.Output, StringComparison.Ordinal);
@@ -9609,7 +9612,7 @@ public sealed class AppTests : IDisposable
         console.Input.PushTextWithEnter("devops connect contoso");
         console.Input.PushTextWithEnter("quit");
 
-        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), tokenStore: new FakeTokenStore(supported: false)).Run([]);
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), tokenStore: new FakeTokenStore(supported: false), pro: TestLicences.Unlocked()).Run([]);
 
         Assert.Matches(@"\x1b\[(31|91|38;5;9)mAzure DevOps needs the macOS Keychain", console.Output);
     }
@@ -9627,7 +9630,7 @@ public sealed class AppTests : IDisposable
         console.Input.PushTextWithEnter("devops");
         console.Input.PushTextWithEnter("quit");
 
-        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), tokenStore: store).Run([]);
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), tokenStore: store, pro: TestLicences.Unlocked()).Run([]);
 
         Assert.Empty(store.Writes);
         Assert.DoesNotContain("Paste or type the personal access token", console.Output);
@@ -9645,7 +9648,7 @@ public sealed class AppTests : IDisposable
             c.Profile.Width = 140;
             c.Input.PushTextWithEnter("devops connect contoso");
             c.Input.PushTextWithEnter("quit");
-        });
+        }, pro: TestLicences.Unlocked());
 
         Assert.Contains(NotAvailable, output);
     }
@@ -9815,7 +9818,7 @@ public sealed class AppTests : IDisposable
         List<List<string>> seen = [];
         RecordingDevOpsClient client = new RecordingDevOpsClient(() => seen.Add(SendingLines(console.Output)));
 
-        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), tokenStore: store, devOpsClient: client.For).Run([]);
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), tokenStore: store, devOpsClient: client.For, pro: TestLicences.Unlocked()).Run([]);
 
         Assert.Equal(2, seen.Count);
         Assert.Equal(["Sending #7 Call …"], seen[0]);
@@ -9882,7 +9885,7 @@ public sealed class AppTests : IDisposable
         TestConsole console = new TestConsole().Interactive();
         console.Profile.Width = 140;
         int exit = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path),
-            tokenStore: new FakeTokenStore(stored: ("contoso", DevOpsPat)), devOpsClient: client.For)
+            tokenStore: new FakeTokenStore(stored: ("contoso", DevOpsPat)), devOpsClient: client.For, pro: TestLicences.Unlocked())
             .Run(["sync", "2026-11-02", "2026-11-04", "send"]);
 
         Assert.Equal(expectedExit, exit);
@@ -10936,7 +10939,7 @@ public sealed class AppTests : IDisposable
         }
 
         new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path),
-            tokenStore: store, devOpsClient: client is null ? null : client.For, instanceLock: sideLock).Run([]);
+            tokenStore: store, devOpsClient: client is null ? null : client.For, instanceLock: sideLock, pro: devOpsPro ?? TestLicences.Unlocked()).Run([]);
         Assert.DoesNotContain(DevOpsPat, console.Output, StringComparison.Ordinal);
         Assert.DoesNotContain("   at ", console.Output, StringComparison.Ordinal);
         return console.Output;
@@ -14655,7 +14658,7 @@ public sealed class AppTests : IDisposable
         console.Input.PushTextWithEnter("quit");
 
         new App(console, FixedTimeProvider.At20261027(), store,
-            tokenStore: new FakeTokenStore(stored: ("contoso", DevOpsPat)), devOpsClient: client.For).Run([]);
+            tokenStore: new FakeTokenStore(stored: ("contoso", DevOpsPat)), devOpsClient: client.For, pro: TestLicences.Unlocked()).Run([]);
         string output = console.Output;
 
         Assert.Contains("#12: the hours were sent, but 2026-11-03 could not be saved. Run booked 1 on 2026-11-03 by hand.", output);
@@ -15978,7 +15981,8 @@ public sealed class AppTests : IDisposable
         };
         setup?.Invoke(run);
         App app = new App(new InputOverrideConsole(console, hooked), FixedTimeProvider.At20261027(), new DayStore(folder ?? data.Path),
-            tokenStore: tokenStore, events: events, instanceLock: folder is null ? sideLock : null, watchResize: watchResize);
+            tokenStore: tokenStore, events: events, instanceLock: folder is null ? sideLock : null, watchResize: watchResize,
+            pro: TestLicences.Unlocked());
         Assert.Equal(0, app.Run([]));
         return run;
     }
@@ -18939,5 +18943,208 @@ public sealed class AppTests : IDisposable
         Assert.True(cancelledAfterDisconnect);
         Assert.Single(teams.Uris);
         Assert.False(File.Exists(Path.Combine(data.Path, TeamsPairing.FileName)));
+    }
+
+    // Job 328 ------------------------------------------------------------------------------
+
+    private static string RedLocked(string command) =>
+        @"\x1b\[(31|91|38;5;9)m" + Regex.Escape(Pro.LockedHint(command));
+
+    // AC-1: sync, also the preview and the alias, is gated; nothing is read, called or written.
+    [Theory]
+    [InlineData("sync 2026-11-02 2026-11-04")]
+    [InlineData("sync 2026-11-02 2026-11-04 send")]
+    [InlineData("sy 2026-11-02 2026-11-04")]
+    [InlineData("sy 2026-11-02 2026-11-04 send")]
+    public void Sync_ProLocked_ShowsTheRedProLine_AndTouchesNothing(string command)
+    {
+        WriteSyncDays();
+        Dictionary<string, string> before = DataFiles();
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+        devOpsPro = TestLicences.Locked();
+
+        string output = RunDevOpsAnsi(store, client, command, "quit");
+
+        Assert.Matches(RedLocked("sync"), output);
+        Assert.Equal(0, store.Calls);
+        Assert.Empty(client.Credentials);
+        Assert.Empty(client.Gets);
+        Assert.Empty(client.Sets);
+        Assert.Equal(before, DataFiles());
+    }
+
+    // AC-1: the plain text of the line is exactly the gate's hint.
+    [Fact]
+    public void Sync_ProLocked_HintIsExactlyTheLockedHint()
+    {
+        WriteSyncDays();
+        devOpsPro = TestLicences.Locked();
+
+        (_, string output) = RunDevOps(new FakeTokenStore(), null, "sync 2026-11-02 2026-11-04", "quit");
+
+        Assert.Equal("sync needs Suite Pro, the licence for Times and Context. Unlock it with: pro activate <key>", LastHint(output).Trim());
+        Assert.DoesNotContain(LastLayout(output), l => Regex.IsMatch(l, @"│ #12 +│"));
+    }
+
+    // AC-2: devops import is gated before the quicklist or the store is read.
+    [Theory]
+    [InlineData("devops import")]
+    [InlineData("dv import")]
+    [InlineData("devops import extra")]
+    public void Import_ProLocked_ShowsTheRedProLine_AndTouchesNothing(string command)
+    {
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+        client.Assigned.Add((2, "Two"));
+        devOpsPro = TestLicences.Locked();
+
+        string output = RunDevOpsAnsi(store, client, command, "quit");
+
+        Assert.Matches(RedLocked("devops import"), output);
+        Assert.Equal(0, store.Calls);
+        Assert.Empty(client.Credentials);
+        Assert.Equal(0, client.AssignedCalls);
+        Assert.False(File.Exists(ProjectsFile));
+    }
+
+    // AC-2: an existing projects.json stays as it is.
+    [Fact]
+    public void Import_ProLocked_LeavesProjectsUnchanged()
+    {
+        File.WriteAllText(ProjectsFile, "{\"projects\":[{\"workItem\":1,\"title\":\"One\"}]}");
+        byte[]? before = ProjectsBytes();
+        FakeDevOpsClient client = new FakeDevOpsClient();
+        client.Assigned.Add((2, "Two"));
+        devOpsPro = TestLicences.Locked();
+
+        RunDevOps(new FakeTokenStore(stored: ("contoso", DevOpsPat)), client, "devops import", "quit");
+
+        Assert.Equal(before, ProjectsBytes());
+        Assert.Equal(0, client.AssignedCalls);
+    }
+
+    // AC-3: devops connect is gated before every other check; no prompt opens and the next line is a command.
+    [Theory]
+    [InlineData("devops connect contoso")]
+    [InlineData("dv connect contoso")]
+    [InlineData("devops connect")]
+    [InlineData("devops connect -bad!")]
+    [InlineData("devops connect contoso extra")]
+    public void Connect_ProLocked_ShowsTheRedProLine_OpensNoPrompt(string command)
+    {
+        FakeTokenStore store = new FakeTokenStore { WriteRefusal = "The test store refuses." };
+        devOpsPro = TestLicences.Locked();
+
+        string output = RunDevOpsAnsi(store, null, command, "help", "quit");
+
+        Assert.Matches(RedLocked("devops connect"), output);
+        Assert.DoesNotContain(App.TokenPlaceholder, output);
+        Assert.DoesNotContain("The test store refuses.", output);
+        Assert.Matches(@"│ help +│ h +│", Regex.Replace(output, @"\x1b\[[0-9;?]*[A-Za-z]", string.Empty));
+        Assert.Equal(0, store.Calls);
+        Assert.Empty(store.Writes);
+    }
+
+    // AC-4: status and disconnect stay free.
+    [Fact]
+    public void StatusAndDisconnect_ProLocked_WorkAsBefore()
+    {
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+        devOpsPro = TestLicences.Locked();
+
+        (_, string status) = RunDevOps(store, null, "devops", "quit");
+        Assert.Contains("Azure DevOps: contoso · token stored", LastLayout(status)[^4]);
+
+        (_, string disconnect) = RunDevOps(store, null, "dv disconnect", "quit");
+        Assert.Contains("Disconnected", LastLayout(disconnect)[^4]);
+        Assert.Null(store.Stored);
+        Assert.Equal(1, store.Deletes);
+        Assert.DoesNotContain("needs Suite Pro", status + disconnect);
+    }
+
+    // AC-6: an expired, revoked or invalid stored key is locked for all three.
+    [Theory]
+    [InlineData("expired")]
+    [InlineData("revoked")]
+    [InlineData("invalid")]
+    public void ProNotCovering_LocksSyncImportAndConnect(string kind)
+    {
+        WriteSyncDays();
+        Dictionary<string, string> before = DataFiles();
+        using TestLicences licences = new TestLicences();
+        FakeLicenceStore licenceStore = new FakeLicenceStore(stored: kind switch
+        {
+            "expired" => licences.Token(until: "2026-10-26"),
+            "invalid" => "CTX1-not-a-key",
+            _ => licences.Token(),
+        });
+        devOpsPro = kind == "revoked"
+            ? licences.Pro(licenceStore, TestLicences.BuildDate, TestLicences.LicenceId)
+            : licences.Pro(licenceStore, TestLicences.BuildDate);
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+
+        string output = RunDevOpsAnsi(store, client, "sync 2026-11-02 2026-11-04 send", "devops import", "devops connect contoso", "quit");
+
+        Assert.Matches(RedLocked("sync"), output);
+        Assert.Matches(RedLocked("devops import"), output);
+        Assert.Matches(RedLocked("devops connect"), output);
+        Assert.DoesNotContain(App.TokenPlaceholder, output);
+        Assert.Equal(0, store.Calls);
+        Assert.Empty(client.Credentials);
+        Assert.Equal(before, DataFiles());
+    }
+
+    // AC-6: the shared expired helper locks sync send too.
+    [Fact]
+    public void Sync_ExpiredKey_IsLocked()
+    {
+        WriteSyncDays();
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+        devOpsPro = TestLicences.Expired();
+
+        string output = RunDevOpsAnsi(store, client, "sync 2026-11-02 2026-11-04 send", "quit");
+
+        Assert.Matches(RedLocked("sync"), output);
+        Assert.Equal(0, store.Calls);
+        Assert.Empty(client.Sets);
+    }
+
+    // AC-5: unlocked, sync send still sends and books.
+    [Fact]
+    public void Sync_ProUnlocked_SendsAsBefore()
+    {
+        WriteSyncDays();
+        FakeTokenStore store = new FakeTokenStore(stored: ("contoso", DevOpsPat));
+        FakeDevOpsClient client = new FakeDevOpsClient();
+        devOpsPro = TestLicences.Unlocked();
+
+        (_, string output) = RunDevOps(store, client, "sync 2026-11-02 2026-11-04 send", "quit");
+
+        Assert.DoesNotContain("needs Suite Pro", output);
+        Assert.Equal(1, store.Reads);
+        Assert.NotEmpty(client.Sets);
+        Assert.Contains("\"booked\":true", File.ReadAllText(DayFile("2026-11-03")));
+    }
+
+    // AC-7: help says which DevOps parts need Suite Pro.
+    [Fact]
+    public void Help_MarksSyncImportAndConnectAsPro()
+    {
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 180;
+        console.Profile.Height = 80;
+        console.Input.PushTextWithEnter("help");
+        console.Input.PushTextWithEnter("quit");
+
+        new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), instanceLock: sideLock,
+            pro: TestLicences.Locked()).Run([]);
+
+        Assert.Matches(@"│ sync +│ sy +│ " + Regex.Escape(App.SyncDescription), console.Output);
+        Assert.Matches(@"│ devops +│ dv +│ " + Regex.Escape(App.DevOpsDescription), console.Output);
+        Assert.EndsWith("(Pro)", App.SyncDescription, StringComparison.Ordinal);
+        Assert.Contains("(connect, import: Pro)", App.DevOpsDescription, StringComparison.Ordinal);
     }
 }
