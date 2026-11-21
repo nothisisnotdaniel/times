@@ -164,7 +164,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [?] [#69](backlog/069-keep-the-home-office-mark-when.md) Keep the home-office mark when import replaces a day
 - [?] [#70](backlog/070-name-the-valid-values-when-a.md) Name the valid values when a setting falls back
 - [?] [#71](backlog/071-cap-the-number-of-calendar-meetings.md) Cap the number of calendar meetings read
-- [?] [#72](backlog/072-run-the-windows-and-linux-file.md) Run the Windows and Linux file checks in CI
+- [ ] [#72](backlog/072-run-the-windows-and-linux-file.md) Run the Windows and Linux file checks in CI
 - [?] [#73](backlog/073-drop-cache-entries-for-deleted-day.md) Drop cache entries for deleted day files
 - [?] [#74](backlog/074-readme-take-the-signing-key-from.md) README: take the signing key from the release tag
 - [?] [#75](backlog/075-test-the-skipped-hint-order-on.md) Test the skipped hint order on empty days
