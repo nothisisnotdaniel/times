@@ -2,6 +2,8 @@
 
 As a maintainer, I want a post to the background event queue refused only when the queue is really full, so that a live-clock tick is never dropped by a race.
 
+Category: bug
+
 ## What
 
 In BackgroundEventQueue.Post, a refused post briefly increments the count before undoing it, so a concurrent post on a queue that has just freed a slot can be refused spuriously. Replace the increment-then-undo with a compare-and-swap loop that only reserves a slot when one is free, and add a concurrency test.

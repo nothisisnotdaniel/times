@@ -2,6 +2,8 @@
 
 As the user, I want the full-height layout checked in a real terminal, so that the screen doesn't jump a row and the cursor sits where I type.
 
+Category: test
+
 ## What
 
 Verify in a real terminal (macOS Terminal, Windows Terminal) that the full-height layout doesn't scroll by one row and the cursor sits in the input box; fix it if it does.

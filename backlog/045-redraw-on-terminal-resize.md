@@ -2,6 +2,8 @@
 
 As a Times user, I want the screen to redraw cleanly when I resize the terminal window, so that the layout doesn't break while I work.
 
+Category: ui
+
 ## What
 
 - Detect a change of the terminal size while the interactive session runs (on macOS and Linux and on Windows) and redraw the full-height layout at the new size, with the input box and cursor in the right place.

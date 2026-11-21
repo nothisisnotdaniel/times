@@ -2,6 +2,8 @@
 
 As a Times user, I want the tray menu to leave out the Left today row on an absence day, so that it does not suggest I still owe a full day.
 
+Category: ui
+
 ## What
 
 On a day booked as absent, the tray menu shows no 'Left today' row (or shows the absence instead). Change AC-1 of the tray job's menu model and its tests to match.

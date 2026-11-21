@@ -2,6 +2,8 @@
 
 As the Times maintainer, I want pushes that only change the backlog or its user stories to build no prerelease, so that the releases list holds real builds only and no runner time is spent on text edits.
 
+Category: ci
+
 ## What
 
 In .github/workflows/release.yml, the develop push trigger already skips a push that changes only the root backlog.md (paths-ignore). Extend it so a push whose changes are all in backlog.md and/or backlog/** (the numbered user stories) makes no prerelease either. Any push that also touches anything else still builds as today; version tags and the release pull request behaviour stay unchanged (check that the paths filter never skips a pushed vX.Y.Z tag). Update the comment at the top of release.yml (and CLAUDE.md, if it describes this) to match.

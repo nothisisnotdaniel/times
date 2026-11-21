@@ -2,6 +2,8 @@
 
 As a Times user, I want to mark a day as home office or office and see the month's home-office count, so that I can claim the German home-office allowance without keeping a separate list.
 
+Category: feature
+
 ## What
 
 A command with an alias marks the current day as home office or office, saved in the day file and shown in the day view. A month count of home-office days is shown in the month or report output, for the German home-office allowance. Unmarked days count as neither.

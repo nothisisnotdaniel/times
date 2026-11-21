@@ -2,6 +2,8 @@
 
 As the maker, I want the issuer to keep the private signing key as raw PKCS#8 bytes in the Keychain, so that the key never sits in managed strings that cannot be wiped.
 
+Category: security
+
 ## What
 
 Change SigningKeyStore to write and read the raw PKCS#8 bytes instead of base64 text, clearing every buffer after use; read the old base64 form once and rewrite it, so an existing key keeps working.

@@ -2,6 +2,8 @@
 
 As a script author, I want `report --json` to build `days` and `workItems` from the same loaded day files, so that the two parts of one output always agree.
 
+Category: bug
+
 ## What
 
 Let ProjectReport.Calculate take day records that are already loaded (keep the current overload for other callers), and have HoursJson.Build load the days once and pass them to both parts. Add a test that both parts come from one read.

@@ -2,6 +2,8 @@
 
 As a Times user, I want a printable HTML timesheet for a month, so that I can hand in or file my hours without copying them over.
 
+Category: feature
+
 ## What
 
 A command with an alias writes a printable timesheet for a month (one row per day with arrival, leaving, breaks, working time and absences, plus the month's total and balance) as a self-contained HTML file into a folder the user names, never overwriting without asking. All text HTML-escaped; no scripts or external resources in the file.

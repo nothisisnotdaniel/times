@@ -2,6 +2,8 @@
 
 As a Times user, I want `times help` from the shell to list only the commands I can run as one-shots, so that I'm not shown commands that would just be refused.
 
+Category: ux
+
 ## What
 
 - `times help` (one-shot) lists only commands that work as one-shots, including `status`, and leaves out the session-only ones (quit, settings, prev, next, today, update, import, devops connect).

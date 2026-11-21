@@ -2,6 +2,8 @@
 
 As a Times user who scripts the one-shot sync, I want sync send to exit with code 1 when any work item fails, so that a script can tell a partial failure from success.
 
+Category: bug
+
 ## What
 
 Make a failed work item during the one-shot Azure DevOps sync send set CommandResult.Failed, so the process exits 1; update the test that pins exit 0 for a failing item.

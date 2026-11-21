@@ -2,6 +2,8 @@
 
 As a maintainer, I want the unused `targetOn` and `limitOn` parameters removed from `Prime`, so that the code says what it actually does.
 
+Category: tidy-up
+
 ## What
 
 Remove the unused targetOn/limitOn parameters from Prime (review-code 1)

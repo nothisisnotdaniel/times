@@ -2,6 +2,8 @@
 
 As a Times user, I want CSV exports created with a deliberate file mode and the clean-up after a failed write tested, so that my exports are safe and never left half-written.
 
+Category: security
+
 ## What
 
 - CSV export failure test (was #20): Add an injectable stream factory so a test can check that a partial CSV file is deleted after a mid-write failure

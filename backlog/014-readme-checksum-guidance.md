@@ -2,6 +2,8 @@
 
 As a Times user, I want the README to tell me how to check a download's checksum or origin, so that I can be sure the package I install is the real one.
 
+Category: docs
+
 ## What
 
 Tell users in the README how to check the downloaded package's checksum or origin before installing.

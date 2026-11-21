@@ -2,6 +2,8 @@
 
 As a Pro buyer, I want a mistyped `pro activate <key>` line to stay out of the command history, so that my licence key is not kept where I didn't expect it.
 
+Category: security
+
 ## What
 
 Extend IsProLineWithKey (and the DevOps token check) to treat a line whose second word is `activate` followed by a key-like token as secret even when the command name is mistyped, and leave it out of the in-memory history.

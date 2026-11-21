@@ -2,6 +2,8 @@
 
 As a Times user, I want the help texts and colours to read naturally and look intentional, so that the screen is clear.
 
+Category: ui
+
 ## What
 
 - Clearer time help text (was #25): Reword the arrive/leave/break/breakend help ("now, or at an optional H:mm, -10m or +5m") so it reads naturally; update the help tests to match.

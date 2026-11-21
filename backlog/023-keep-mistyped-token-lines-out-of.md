@@ -2,6 +2,8 @@
 
 As a Times user, I want mistyped lines like `//devops connect x <token>` kept out of the in-memory history, so that a token never shows up when I press ↑.
 
+Category: security
+
 ## What
 
 Keep mistyped lines such as '//devops connect x <token>' (rejected as unknown commands) out of the in-memory history too

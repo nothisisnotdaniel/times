@@ -2,6 +2,8 @@
 
 As a Times developer, I want a test that checks where the skipped hint sits among the other day-view lines, so that a later change can not move it out of place unnoticed.
 
+Category: test
+
 ## What
 
 Add a DayView test for an empty day with no counted day and skipped files that also has week warnings, a workplace line and correction rows, and check that the skipped hint keeps the target line slot and the other lines keep their order.

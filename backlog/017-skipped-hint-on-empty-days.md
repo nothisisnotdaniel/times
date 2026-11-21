@@ -2,6 +2,8 @@
 
 As a Times user, I want the skipped hint on an empty day where no day counts, so that I understand why the balance doesn't change.
 
+Category: ux
+
 ## What
 
 Show the skipped hint on an empty day where no day counts. This changes AC-6 of 091.

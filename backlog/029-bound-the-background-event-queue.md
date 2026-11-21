@@ -2,6 +2,8 @@
 
 As a maintainer, I want the background event queue bounded or coalesced once there's a real event source, so that a noisy source can't grow memory without limit.
 
+Category: tidy-up
+
 ## What
 
 Review-security 1 — bounding or coalescing the unbounded queue changes behaviour (dropping or merging events) and has no producer to design it against yet; belongs in the job that adds the first real event source (Teams, live clock).

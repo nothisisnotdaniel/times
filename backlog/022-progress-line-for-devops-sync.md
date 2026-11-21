@@ -2,6 +2,8 @@
 
 As a Times user, I want a "Sending …" line per work item during Azure DevOps sync, so that a slow network doesn't look like a hang.
 
+Category: ux
+
 ## What
 
 Show a 'Sending ...' progress line per work item during sync send, so a slow network does not look like a hang

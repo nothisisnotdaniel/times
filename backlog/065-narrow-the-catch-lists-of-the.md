@@ -2,6 +2,8 @@
 
 As the developer, I want the read-only counters to catch only the exceptions DayStore.Load documents, so that a real bug isn't silently counted as a skipped file.
 
+Category: tidy-up
+
 ## What
 
 HomeOfficeCount, VacationAllowance and the other read-only counters catch InvalidOperationException along with the IO and format errors when loading day files. Check which exceptions DayStore.Load can actually throw, narrow every counter's catch list to those together, and add a test for each.

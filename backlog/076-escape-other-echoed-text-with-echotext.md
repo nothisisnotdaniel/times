@@ -2,6 +2,8 @@
 
 As a maintainer, I want titles, error messages and file names shown in hints to go through EchoText.Markup too, so that every echo of outside text is escaped in one place.
 
+Category: security
+
 ## What
 
 Route the remaining Markup.Escape uses on titles, ex.Message and file names (DayView, Pro and others) through EchoText.Markup, keeping what the user sees the same unless the spec says otherwise.

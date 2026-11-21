@@ -2,6 +2,8 @@
 
 As a Times user on the beta or develop channel, I want a staged prerelease update to install, so that the update channel I picked actually updates.
 
+Category: bug
+
 ## What
 
 - `UpdateApplier.UpdateArguments` no longer adds `--prerelease`: the exact `--version` already names the prerelease, and `dotnet tool update` refuses the two options together ("The --prerelease and --version options are not supported in the same command").

@@ -2,6 +2,8 @@
 
 As a Times user, I want booking a checkpoint with a work item like `#1234` to open the matching Context note, so that my notes for that work are at hand the moment I start it.
 
+Category: feature
+
 ## What
 
 When a checkpoint with a work item (`#1234`) is booked, open the Context note tagged `#1234` in the Context desktop app, creating it if there's none (through Context's CLI, never by writing Context's files). A setting turns it on; if Context isn't installed, nothing happens. Builds on the settings dialog and Context's scriptable CLI.

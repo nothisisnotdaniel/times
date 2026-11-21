@@ -2,6 +2,8 @@
 
 As a Times user, I want the check-in reminder to come back if I missed it, so that focus assist or a balloon that timed out unseen doesn't leave my arrival unbooked.
 
+Category: feature
+
 ## What
 
 When the check-in reminder was shown but neither clicked nor followed by a booking (for example hidden by focus assist or Do Not Disturb), show it once more after a set time. This changes the spec's once-per-date rule, so the new rule (how often, how many times) needs to be decided in the spec.

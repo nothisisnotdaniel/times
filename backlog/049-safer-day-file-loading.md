@@ -2,6 +2,8 @@
 
 As a Times user, I want day files loaded safely on every platform, counted whatever the case of their extension, and scanned without slowing every redraw, so that my balance is right and the app stays fast.
 
+Category: bug
+
 ## What
 
 - Safer file loading on Windows (was #13): On Windows the day file is still opened by path; make it as safe as on the other platforms. 086 left this out of scope.

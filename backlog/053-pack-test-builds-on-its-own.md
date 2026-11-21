@@ -2,6 +2,8 @@
 
 As a developer, I want PackedTimes_HoldsNoIssuerFile to work without a prior build, so that running it alone never fails for the wrong reason.
 
+Category: test
+
 ## What
 
 Make the test pack without `--no-build` (or build first itself) so it does not depend on `dotnet test` having built the output already.

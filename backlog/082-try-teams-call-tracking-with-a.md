@@ -2,6 +2,8 @@
 
 As the Times owner, I want to try Teams call tracking with a real Teams once, so that the assumptions it was built on are confirmed.
 
+Category: test
+
 ## What
 
 With the new Teams app installed, pair Times with the teams command and check: 1:1 calls set isInMeeting and book a Call; the pairing request toggles nothing (no mute, no video); whether Teams sends a meeting title. Fix any differing constant in TeamsProtocol.

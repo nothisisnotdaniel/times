@@ -2,6 +2,8 @@
 
 As a Times user, I want a limit on how many Call checkpoints Teams events can book, so that a misbehaving or fake Teams endpoint cannot flood my day file.
 
+Category: security
+
 ## What
 
 Limit the Call bookings TeamsTracker makes from meetingUpdate toggles, for example per minute and per day; past the limit, ignore further toggles and show a grey hint once.

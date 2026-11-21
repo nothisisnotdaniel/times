@@ -2,6 +2,8 @@
 
 As a Times user, I want a clear rule for an end-of-day alert that was off at startup and is switched on later, so that it rings when I expect it to.
 
+Category: bug
+
 ## What
 
 Should an alert that is switched off at startup still be marked as fired by Prime, or ring later when it is switched on (review-ux 2)?

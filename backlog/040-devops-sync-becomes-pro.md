@@ -2,6 +2,8 @@
 
 As the maker of Times, I want Azure DevOps sync and import to need Pro, so that the feature teams value most pays for the suite.
 
+Category: feature
+
 ## What
 
 Azure DevOps sync, import and connect check the Pro gate from #39. Everything else stays free. The release note and README say clearly that existing versions keep working as they are, and that only new releases need a key for DevOps.

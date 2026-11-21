@@ -2,6 +2,8 @@
 
 As a Times user on Windows, I want a short confirmation after clicking the check-in reminder, so that I know the arrival was booked without opening the tray menu.
 
+Category: ux
+
 ## What
 
 After a click on the check-in reminder balloon books the arrival, show a brief confirmation (for example a second balloon or a tray tooltip naming the booked time). Today the click books silently and only the refreshed tray menu shows the arrival.

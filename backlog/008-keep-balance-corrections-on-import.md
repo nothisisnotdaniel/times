@@ -2,6 +2,8 @@
 
 As a Times user, I want an import that replaces a day to keep that day's balance corrections, or warn me first, so that I don't lose corrections without noticing.
 
+Category: bug
+
 ## What
 
 Replacing a day through import drops that day's balance corrections; keep them or warn before replacing (121 review-security 2, review-ux 2)

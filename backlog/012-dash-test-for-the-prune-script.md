@@ -2,6 +2,8 @@
 
 As a maintainer, I want the prerelease prune script tested under dash, so that it really runs on POSIX `sh` and not only on bash.
 
+Category: test
+
 ## What
 
 Run the prerelease prune script under dash (POSIX sh) in a test or CI job, since this machine's sh is bash.

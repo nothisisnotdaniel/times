@@ -2,6 +2,8 @@
 
 As a maintainer, I want all hints that echo typed text to use one escaping helper, so that a fix to escaping reaches every hint at once.
 
+Category: tidy-up
+
 ## What
 
 The plain Markup.Escape echo of typed text in hints (remove, change, booked, time hints, absence) should go through one helper

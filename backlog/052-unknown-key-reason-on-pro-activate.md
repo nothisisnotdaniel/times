@@ -2,6 +2,8 @@
 
 As a Pro buyer, I want `times pro activate` to say "unknown key" when my key was signed by a key this build doesn't know, so that I know to update the app instead of thinking my key is broken.
 
+Category: ux
+
 ## What
 
 In LicenceKey.Verify, when no public key in LicencePublicKeys verifies the signature and the payload's key id is not in the table, report "unknown key" instead of "signature does not match". Keep checking the signature before trusting any field; only the reason text changes. Add a test with a token signed by a key not in the table.

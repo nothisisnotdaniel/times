@@ -2,6 +2,8 @@
 
 As a user typing `report --json` with bad dates in the session, I want to see the hint that fits best, so that I fix the right thing first.
 
+Category: ux
+
 ## What
 
 Decide whether the session's `--json is one-shot only` hint or the bad-date error should come first for `report --from x --json`, and keep or change the order with a test that pins it.

@@ -2,6 +2,8 @@
 
 As a Times user, I want control characters and lone surrogates kept out of the printed timesheet, so that an odd reason in an old day file never shows as a broken glyph.
 
+Category: security
+
 ## What
 
 In TimesheetHtml.Escape, replace C0 control characters (except none needed in a one-line reason) and lone surrogates with U+FFFD or drop them, with a test for each.

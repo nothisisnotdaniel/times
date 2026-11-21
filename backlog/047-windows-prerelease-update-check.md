@@ -2,6 +2,8 @@
 
 As the Times maintainer, I want to confirm on a real Windows machine that a prerelease update installs, so that GitHub issue #1 can be closed with confidence.
 
+Category: test
+
 ## What
 
 - On Windows, with the develop or beta channel set, let Times stage and apply the newest -develop prerelease (built from job 127-prerelease-update-fix).

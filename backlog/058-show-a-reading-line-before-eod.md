@@ -2,6 +2,8 @@
 
 As a Times user ending the day, I want a short line while eod reads Context's todos, so that a slow read doesn't look like a hang.
 
+Category: ux
+
 ## What
 
 A "reading Context…" line before the todos run changes the output, so it needs its own job. In src/Times/App.cs (EndOfDay), print a short grey line before the `context todos` run, which can block for up to 10 s; update the tests and MANUAL.md for the changed output.

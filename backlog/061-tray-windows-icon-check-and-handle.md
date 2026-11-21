@@ -2,6 +2,8 @@
 
 As a Times user on Windows, I want the tray icon to be clear on a dark taskbar and to free its native resources, so that it is readable and does not leak.
 
+Category: ui
+
 ## What
 
 Check the tray icon's contrast on a dark and a light Windows taskbar and adjust it if needed; free the native icon handle the Windows icon loader creates (DestroyIcon after the Icon is cloned). Run the Windows tray shell once by hand.

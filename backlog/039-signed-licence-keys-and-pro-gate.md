@@ -2,6 +2,8 @@
 
 As the maker of the suite, I want to hand out Suite Pro licence keys myself and have both apps check them offline, so that I can sell Pro now without a payment provider and plug one in later without breaking any key.
 
+Category: feature
+
 ## What
 
 A licence key is a short text token (for example `CTX1-…`, base64url): a versioned payload (format version, key id of the signing key, licence id, licensee name, edition `suite-pro`, updates-until date, issue date) plus an ECDSA P-256 signature over it (built into .NET, no new package). Times and Context ship the public key(s) by key id; nothing secret is in either app or repo.
