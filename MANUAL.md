@@ -912,7 +912,9 @@ field of their work items, so you no longer copy numbers from `report` and run `
 
 `sync`, `devops connect` and `devops import` need **Suite Pro** (see [Suite Pro](#suite-pro)); without
 it they show one red line saying so, never ask for a token and change nothing. `devops` and
-`devops disconnect` stay free, so you can always see and remove a stored token. Versions of Times that are already released keep DevOps sync working as they are; only new releases need a Suite Pro key for it.
+`devops disconnect` stay free, so you can always see and remove a stored token. Versions of Times
+that are already released keep DevOps sync working as they are; only new releases need a Suite Pro
+key for it.
 
 1. In Azure DevOps, open *User settings → Personal access tokens* and create a token with the
    scope **Work Items: Read & write**.

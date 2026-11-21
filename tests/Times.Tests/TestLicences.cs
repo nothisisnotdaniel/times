@@ -66,6 +66,8 @@ internal sealed class TestLicences : IDisposable
         return licences.Pro(store ?? new FakeLicenceStore(), BuildDate);
     }
 
+    // Disposing the TestLicences only frees its private signing key: the Pro keeps the public key table, which is
+    // plain data built from the PEM, so it still verifies the token after the using block ends.
     private static Pro WithStored(string until)
     {
         using TestLicences licences = new TestLicences();
