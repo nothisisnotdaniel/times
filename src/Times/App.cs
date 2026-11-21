@@ -4567,6 +4567,59 @@ internal sealed class App
         return 0;
     }
 
+    // True for a command a one-shot refuses as a whole (devops connect is refused by SessionOnlyName on top).
+    private static bool IsSessionOnly(Command command) =>
+        SessionOnly.Contains(command.Name, StringComparer.OrdinalIgnoreCase);
+
+    internal const string StatusHelpDescription = "Print today's day view, or today's state as JSON with --json";
+
+    internal const string DevOpsOneShotDescription = "Show or set the Azure DevOps link: [import | disconnect]";
+
+    // help from the shell: only what runs as a one-shot (the SessionOnly rule), a status row (status is not
+    // registered, so the session still refuses it) and devops without connect. With an argument, only that
+    // command's row; a session-only or unknown name is a red line. Footer: version, then data folder.
+    private CommandResult OneShotHelp(string argument)
+    {
+        string[] words = argument.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
+        string? typed = words.Length == 0 ? null : words[0];
+        string? wanted = typed is null ? null : typed.StartsWith('/') ? typed[1..] : typed;
+        Command status = new Command("status", string.Empty, StatusHelpDescription, _ => CommandResult.None);
+        Func<Command, bool> include = command => !IsSessionOnly(command)
+            && !string.Equals(command.Name, "devops", StringComparison.OrdinalIgnoreCase);
+        List<Command> extra = [status];
+        if (registry.TryGet("devops", out Command? devops))
+        {
+            extra.Add(new Command(devops.Name, devops.Alias, DevOpsOneShotDescription, devops.Handler));
+        }
+
+        if (wanted is not null)
+        {
+            Command? only = null;
+            if (string.Equals(wanted, status.Name, StringComparison.OrdinalIgnoreCase))
+            {
+                only = status;
+            }
+            else if (wanted.Length == 0 || !registry.TryGet(wanted, out only))
+            {
+                return Hint($"Unknown command [bold]{EchoText.Markup(typed!)}[/]. Type [bold]help[/] to see all commands.");
+            }
+            else if (IsSessionOnly(only))
+            {
+                return Hint($"{Markup.Escape(only.Name)} needs the interactive session. Run times without arguments.");
+            }
+
+            string name = only.Name;
+            Func<Command, bool> listed = include;
+            include = command => listed(command) && string.Equals(command.Name, name, StringComparison.OrdinalIgnoreCase);
+            extra = extra.Where(command => string.Equals(command.Name, name, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+
+        IRenderable footer = new Rows(
+            new Markup($"[grey]Version:[/] {Markup.Escape(AppVersion.Current)}"),
+            RenderDataFolder());
+        return new CommandResult(registry.RenderHelp(footer, include, extra), hideQuicklist: true);
+    }
+
     // The name of the session-only command a one-shot line starts with, or null.
     private string? SessionOnlyName(string text)
     {
@@ -4582,7 +4635,7 @@ internal sealed class App
             return null;
         }
 
-        if (SessionOnly.Contains(command.Name, StringComparer.OrdinalIgnoreCase))
+        if (IsSessionOnly(command))
         {
             return command.Name;
         }
@@ -4755,6 +4808,11 @@ internal sealed class App
             // The data-folder footer belongs to the app, not to the shared registry, so it is passed in here.
             if (string.Equals(command.Name, "help", StringComparison.OrdinalIgnoreCase))
             {
+                if (oneShot)
+                {
+                    return OneShotHelp(argument);
+                }
+
                 return new CommandResult(registry.RenderHelp(RenderHelpFooter()), hideQuicklist: true);
             }
 

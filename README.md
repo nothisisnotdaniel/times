@@ -140,7 +140,7 @@ times leave
 times status
 ```
 
-`status` prints today's day view. Several words are joined, so `times checkpoint 8:30 #1 Design review` works. Commands that need the session (`quit`, `settings`, `prev`, `next`, `today`, `update`, `import`, `devops connect`) are refused with a red line. Exit codes: 0 done, 1 command error, 2 bad data folder, 3 another Times is open on the data folder, 4 the lock could not be taken. With no arguments, or an argument starting with `-`, Times starts the interactive session.
+`status` prints today's day view. Several words are joined, so `times checkpoint 8:30 #1 Design review` works. Commands that need the session (`quit`, `settings`, `prev`, `next`, `today`, `update`, `import`, `devops connect`) are refused with a red line. `times help` lists only the commands that run as one-shots (with `status`, without `devops connect`), then the version and the data folder, and `times help <command>` shows just that command's row (a session-only command gives a red line, exit 1). Exit codes: 0 done, 1 command error, 2 bad data folder, 3 another Times is open on the data folder, 4 the lock could not be taken. With no arguments, or an argument starting with `-`, Times starts the interactive session.
 
 `times status --json` prints today's state (`out`, `working`, `break` or `absent`, since when, the
 running checkpoint, and worked, target and left minutes) as one JSON document; see the
@@ -236,7 +236,7 @@ required. A booking without a time uses the current time. `remove`, `change`, `b
 | `moveproject` | `mp` | `<number> <new number>` | Move a project to another number on the quicklist; the projects in between shift by one |
 | `settings` | `se` | none | Open the settings panel (see [Settings](#settings)) |
 | `update` | `up` | none | Check for a newer Times now and install it when you quit (see [Updates](#updates)) |
-| `help` | `h` | none | List all commands, the running version and the data folder |
+| `help` | `h` | none | List all commands, the running version and the data folder; as a one-shot (`times help [command]`), only the one-shot commands, or one command |
 | `quit` | `q` | none | Exit Times |
 
 ### Settings
