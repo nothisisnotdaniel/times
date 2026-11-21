@@ -166,7 +166,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [?] [#71](backlog/071-cap-the-number-of-calendar-meetings.md) Cap the number of calendar meetings read
 - [ ] [#72](backlog/072-run-the-windows-and-linux-file.md) Run the Windows and Linux file checks in CI
 - [?] [#73](backlog/073-drop-cache-entries-for-deleted-day.md) Drop cache entries for deleted day files
-- [?] [#74](backlog/074-readme-take-the-signing-key-from.md) README: take the signing key from the release tag
+- [ ] [#74](backlog/074-readme-take-the-signing-key-from.md) README: take the signing key from the release tag
 - [?] [#75](backlog/075-test-the-skipped-hint-order-on.md) Test the skipped hint order on empty days
 - [?] [#76](backlog/076-escape-other-echoed-text-with-echotext.md) Escape other echoed text with EchoText
 - [?] [#77](backlog/077-sync-send-exits-1-when-a.md) Sync send exits 1 when a work item fails
