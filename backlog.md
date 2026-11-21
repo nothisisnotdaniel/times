@@ -155,7 +155,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [?] [#60](backlog/060-tray-no-left-today-row-on.md) Tray: no Left today row on an absent day
 - [?] [#61](backlog/061-tray-windows-icon-check-and-handle.md) Tray: Windows icon check and handle cleanup
 - [?] [#62](backlog/062-tray-confirm-a-booking-made-from.md) Tray: confirm a booking made from the reminder
-- [?] [#63](backlog/063-tray-remind-again-after-a-missed.md) Tray: remind again after a missed check-in balloon
+- [ ] [#63](backlog/063-tray-remind-again-after-a-missed.md) Tray: remind again after a missed check-in balloon
 - [?] [#64](backlog/064-cache-the-month-s-home-office.md) Cache the month's home-office count
 - [?] [#65](backlog/065-narrow-the-catch-lists-of-the.md) Narrow the catch lists of the read-only day counters
 - [?] [#66](backlog/066-drop-control-characters-from-timesheet-reasons.md) Drop control characters from timesheet reasons
