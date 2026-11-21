@@ -229,6 +229,54 @@ public sealed class AppTests : IDisposable
         Assert.Contains("A command from the test", output);
     }
 
+    // AC-9 (350): the session ignores the help argument and keeps the full list.
+    [Fact]
+    public void Help_WithArgument_InSession_RendersAsBefore()
+    {
+        UseSideLock();
+        (_, string plainOutput) = Run(c =>
+        {
+            Tall(c);
+            c.Input.PushTextWithEnter("help");
+            c.Input.PushTextWithEnter("quit");
+        });
+        (_, string argOutput) = Run(c =>
+        {
+            Tall(c);
+            c.Input.PushTextWithEnter("help arrive");
+            c.Input.PushTextWithEnter("quit");
+        });
+        (_, string aliasOutput) = Run(c =>
+        {
+            Tall(c);
+            c.Input.PushTextWithEnter("h");
+            c.Input.PushTextWithEnter("quit");
+        });
+
+        string frame = HelpTop(plainOutput);
+        Assert.Equal(frame, HelpTop(argOutput));
+        Assert.Equal(frame, HelpTop(aliasOutput));
+        Assert.Contains("Day view codes:", frame);
+        Assert.Contains("│ quit ", frame);
+        Assert.DoesNotContain("│ status ", frame);
+    }
+
+    // A terminal big enough that help fits without scrolling or wrapping.
+    private static void Tall(TestConsole console)
+    {
+        console.Profile.Width = 250;
+        console.Profile.Height = 120;
+    }
+
+    // The top area of the frame drawn after help: from its heading to the input box.
+    private static string HelpTop(string output)
+    {
+        string frame = LastFrame(output);
+        int box = frame.LastIndexOf("\n╭", StringComparison.Ordinal);
+        Assert.True(box > 0, "the help frame has no input box");
+        return frame[..box];
+    }
+
     // AC-5
     [Fact]
     public void UnknownCommand_ShowsHint_AndLoopContinues()

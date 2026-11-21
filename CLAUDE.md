@@ -6,7 +6,7 @@ Every factory agent reads this file before working on Times. Keep it short and a
 - **How it runs:** the app stays open in the terminal until the user closes it (an interactive
   session). `times <command ...>` (first argument not starting with `-`) is a one-shot: `App.RunOneShot`
   runs that line through `Dispatch` against today, prints plain lines (no layout, mouse or clock), exits 0, or 1 on
-  an error (`CommandResult.Failed`); `status` (and `status --json`, see Tray app) is one-shot only; session-only commands are refused. The current day's view sits above an
+  an error (`CommandResult.Failed`); `status` (and `status --json`, see Tray app) is one-shot only; session-only commands are refused; one-shot `help [command]` (`App.OneShotHelp`) lists only the non-session-only commands (same `SessionOnly` list) plus a synthetic `status` row, `devops` without `connect`, and a Version/Data folder footer without day view codes. The current day's view sits above an
   **input box at the bottom of the screen**, in the style of the GitHub Copilot CLI: a bordered
   prompt line where the user types commands.
   - Commands are bare words (e.g. `arrive 8:15`); one leading `/` is still accepted and stripped

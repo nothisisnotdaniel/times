@@ -91,7 +91,7 @@ times status
 times eod 17:30 --plan Write tests
 ```
 
-`status` prints today's day view. Several words are joined, so `times checkpoint 8:30 #1 Design review` works. Commands that need the session (`quit`, `settings`, `prev`, `next`, `today`, `update`, `import`, `teams`, `devops connect`) are refused with a red line. Exit codes: 0 done, 1 command error, 2 bad data folder, 3 another Times is open on the data folder, 4 the lock could not be taken. With no arguments, or an argument starting with `-`, Times starts the interactive session.
+`status` prints today's day view. Several words are joined, so `times checkpoint 8:30 #1 Design review` works. Commands that need the session (`quit`, `settings`, `prev`, `next`, `today`, `update`, `import`, `teams`, `devops connect`) are refused with a red line. `times help` lists only the commands that run as one-shots (with `status`, without `devops connect`), then the version and the data folder, and `times help <command>` shows just that command's row (a session-only command gives a red line, exit 1). Exit codes: 0 done, 1 command error, 2 bad data folder, 3 another Times is open on the data folder, 4 the lock could not be taken. With no arguments, or an argument starting with `-`, Times starts the interactive session.
 
 `times status --json` prints today's state as one JSON document for other tools (the menu bar
 app reads it), and nothing else: no colours or line wrapping. It only reads, so a day with no file
@@ -601,12 +601,22 @@ up
 
 Arguments: none.
 
-Lists every command with its alias and description, the running version and the data folder.
+Lists every command with its alias and description, the day view codes, the running version and the data folder.
+
+As a one-shot, `times help` lists only the commands that run from the shell: the session-only ones
+(`quit`, `settings`, `prev`, `next`, `today`, `update`, `import`, `teams`) are left out, a `status`
+row is added and `devops` shows no `connect`. Below the table come only the version and the data
+folder, no day view codes. `times help <command>` (name or alias, also `status`) shows just that
+command's row; a session-only command gives a red `<name> needs the interactive session` line and
+an unknown one the usual red hint, both with exit 1. In the session, an argument to `help` is ignored.
 
 ```text
 help
 h
+help arrive
 ```
+
+The last example shows only `arrive` when run as `times help arrive`; in the session it lists every command.
 
 ### `quit` (`q`)
 

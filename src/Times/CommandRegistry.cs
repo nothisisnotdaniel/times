@@ -384,8 +384,19 @@ internal sealed class CommandRegistry
     /// <summary>
     /// Renders the <c>help</c> table, with an optional <paramref name="footer"/> below it.
     /// </summary>
-    public IRenderable RenderHelp(IRenderable? footer = null)
+    public IRenderable RenderHelp(IRenderable? footer = null) => RenderHelp(footer, _ => true, []);
+
+    /// <summary>
+    /// Renders the <c>help</c> table with only the registered commands <paramref name="include"/>
+    /// keeps plus the <paramref name="extra"/> rows (which need not be registered), all in name
+    /// order, with an optional <paramref name="footer"/> below it. An empty alias leaves its cell
+    /// empty.
+    /// </summary>
+    public IRenderable RenderHelp(IRenderable? footer, Func<Command, bool> include, IEnumerable<Command> extra)
     {
+        IEnumerable<Command> rows = Commands.Where(include)
+            .Concat(extra)
+            .OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase);
         Table table = new Table()
             .Border(TableBorder.Rounded)
             .BorderColor(Color.Grey)
@@ -393,11 +404,11 @@ internal sealed class CommandRegistry
             .AddColumn("[grey]Alias[/]")
             .AddColumn("[grey]Description[/]");
 
-        foreach (Command command in Commands)
+        foreach (Command command in rows)
         {
             table.AddRow(
                 new Markup($"[steelblue1]{Markup.Escape(command.Name)}[/]"),
-                new Markup($"[steelblue1]{Markup.Escape(command.Alias)}[/]"),
+                command.Alias.Length == 0 ? Text.Empty : new Markup($"[steelblue1]{Markup.Escape(command.Alias)}[/]"),
                 new Text(command.Description));
         }
 

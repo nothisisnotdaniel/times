@@ -627,4 +627,38 @@ public class CommandRegistryTests
 
         Assert.Equal(before, registry.Commands.Count());
     }
+
+    // 350: the session call renders the same table as before; a filter and an extra row give only those rows.
+    [Fact]
+    public void RenderHelp_WithFilterAndExtraRow_ListsOnlyThose_InNameOrder()
+    {
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+        registry.Register("demo", "dm", "A demo", _ => CommandResult.None);
+
+        TestConsole plainConsole = new TestConsole();
+        plainConsole.Profile.Width = 80;
+        plainConsole.Write(registry.RenderHelp());
+        TestConsole explicitConsole = new TestConsole();
+        explicitConsole.Profile.Width = 80;
+        explicitConsole.Write(registry.RenderHelp(null, _ => true, []));
+        Assert.Equal(plainConsole.Output, explicitConsole.Output);
+        Assert.Matches(@"│ demo +│ dm +│ A demo +│", plainConsole.Output);
+
+        TestConsole console = new TestConsole();
+        console.Profile.Width = 80;
+        console.Write(registry.RenderHelp(
+            new Markup("footer"),
+            c => c.Name != "quit",
+            [new Command("extra", string.Empty, "Not registered", _ => CommandResult.None)]));
+
+        string output = console.Output;
+        Assert.DoesNotContain("│ quit ", output);
+        Assert.Matches(@"│ extra +│ +│ Not registered +│", output);
+        int demo = output.IndexOf("│ demo ", StringComparison.Ordinal);
+        int extra = output.IndexOf("│ extra ", StringComparison.Ordinal);
+        int help = output.IndexOf("│ help ", StringComparison.Ordinal);
+        Assert.True(demo >= 0 && demo < extra && extra < help, output);
+        Assert.EndsWith("footer", output.TrimEnd());
+        Assert.False(registry.TryGet("extra", out _));
+    }
 }

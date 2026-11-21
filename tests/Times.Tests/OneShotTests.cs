@@ -199,7 +199,7 @@ public sealed class OneShotTests : IDisposable
 
         Assert.Equal(0, exit);
         Assert.Contains("arrive", output);
-        Assert.DoesNotContain("status", output);
+        Assert.Contains("│ status ", output);
     }
 
     // AC-8
@@ -1079,5 +1079,174 @@ public sealed class OneShotTests : IDisposable
         Assert.Contains(App.MeetingsNotUnderstood, badOutput);
         Assert.DoesNotContain("SECRET-OUTPUT", badOutput);
         Assert.False(File.Exists(EodFile));
+    }
+
+    // One-shot help (350) ------------------------------------------------------------------
+
+    private static readonly string[] SessionOnlyNames = ["quit", "settings", "prev", "next", "today", "update", "import", "teams"];
+
+    private (int Exit, string Output, CommandRegistry Registry) HelpShot(
+        string[] args, CommandRegistry? registry = null, bool folderFromEnvironment = false)
+    {
+        registry ??= CommandRegistry.CreateDefault();
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 250;
+        using InstanceLock sideLock = new InstanceLock(other.Path);
+        int exit = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), registry,
+            folderFromEnvironment: folderFromEnvironment, instanceLock: sideLock).Run(args);
+        return (exit, console.Output, registry);
+    }
+
+    // AC-1, AC-2, AC-3, AC-4
+    [Fact]
+    public void Help_ListsOnlyOneShotCommands_WithStatus_NoConnect_NoDayViewCodes()
+    {
+        (int exit, string output, CommandRegistry registry) = HelpShot(["help"]);
+
+        Assert.Equal(0, exit);
+        foreach (Command command in registry.Commands)
+        {
+            if (SessionOnlyNames.Contains(command.Name))
+            {
+                Assert.DoesNotContain($"│ {command.Name} ", output);
+            }
+            else
+            {
+                Assert.Contains($"│ {command.Name} ", output);
+            }
+        }
+
+        foreach (string name in new[] { "arrive", "report", "devops", "help", "vacation" })
+        {
+            Assert.Contains($"│ {name} ", output);
+        }
+
+        Assert.Matches(@"│ status +│ +│ " + Regex.Escape(App.StatusHelpDescription) + " +│", output);
+        string devops = output.Split('\n').Single(line => line.StartsWith("│ devops ", StringComparison.Ordinal));
+        Assert.Contains(App.DevOpsOneShotDescription, devops);
+        Assert.DoesNotMatch(@"\bconnect\b", devops);
+
+        Assert.DoesNotContain("Day view codes:", output);
+        string[] lines = output.TrimEnd().Split('\n').Select(l => l.TrimEnd()).ToArray();
+        Assert.Equal($"Data folder: {data.Path}", lines[^1]);
+        Assert.Equal($"Version: {AppVersion.Current}", lines[^2]);
+        Assert.StartsWith("╰", lines[^3]);
+    }
+
+    // AC-3
+    [Fact]
+    public void SessionHelp_KeepsDevOpsConnect_AndHasNoStatusRow()
+    {
+        TestConsole console = new TestConsole().Interactive();
+        console.Profile.Width = 250;
+        console.Profile.Height = 80;
+        console.Input.PushTextWithEnter("help");
+        console.Input.PushTextWithEnter("quit");
+        using InstanceLock sideLock = new InstanceLock(other.Path);
+        Assert.Equal(0, new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), instanceLock: sideLock).Run([]));
+
+        Assert.Contains("[connect <org> | import | disconnect]", console.Output);
+        Assert.DoesNotContain("│ status ", console.Output);
+        Assert.Contains("Day view codes:", console.Output);
+    }
+
+    // AC-4
+    [Fact]
+    public void Help_FromEnvironment_NamesTheVariable()
+    {
+        (int exit, string output, _) = HelpShot(["help"], folderFromEnvironment: true);
+
+        Assert.Equal(0, exit);
+        string last = output.TrimEnd().Split('\n')[^1].TrimEnd();
+        Assert.Equal($"Data folder: {data.Path} (from TIMES_DATA_DIR)", last);
+    }
+
+    // AC-5
+    [Fact]
+    public void Help_AliasAndSlash_PrintTheSame()
+    {
+        string help = HelpShot(["help"]).Output;
+
+        Assert.Equal(help, HelpShot(["h"]).Output);
+        Assert.Equal(help, HelpShot(["/help"]).Output);
+    }
+
+    // AC-6
+    [Theory]
+    [InlineData("arrive", "arrive")]
+    [InlineData("a", "arrive")]
+    [InlineData("/arrive", "arrive")]
+    [InlineData("ARRIVE", "arrive")]
+    [InlineData("status", "status")]
+    [InlineData("devops", "devops")]
+    [InlineData("help", "help")]
+    public void HelpCommand_ShowsOnlyThatRow(string asked, string row)
+    {
+        (int exit, string output, _) = HelpShot(["help", asked]);
+
+        Assert.Equal(0, exit);
+        string[] lines = output.TrimEnd().Split('\n').Select(l => l.TrimEnd()).ToArray();
+        string[] rows = lines.Where(l => l.StartsWith("│ ", StringComparison.Ordinal) && !l.StartsWith("│ Command ", StringComparison.Ordinal)).ToArray();
+        Assert.Single(rows);
+        Assert.StartsWith($"│ {row} ", rows[0]);
+        Assert.Equal($"Data folder: {data.Path}", lines[^1]);
+        Assert.Equal($"Version: {AppVersion.Current}", lines[^2]);
+        Assert.DoesNotContain("Day view codes:", output);
+    }
+
+    // AC-7
+    [Theory]
+    [InlineData(new[] { "help", "quit" }, "quit")]
+    [InlineData(new[] { "help", "se" }, "settings")]
+    [InlineData(new[] { "help", "teams" }, "teams")]
+    [InlineData(new[] { "help", "/today" }, "today")]
+    public void HelpSessionOnly_IsOneRedLine(string[] args, string name)
+    {
+        TestConsole console = new TestConsole().Interactive().EmitAnsiSequences();
+        console.Profile.Width = 250;
+        using InstanceLock sideLock = new InstanceLock(other.Path);
+        int exit = new App(console, FixedTimeProvider.At20261027(), new DayStore(data.Path), instanceLock: sideLock).Run(args);
+
+        Assert.Equal(1, exit);
+        string plain = Regex.Replace(console.Output, @"\x1b\[[0-9;]*m", string.Empty);
+        Assert.Equal($"{name} needs the interactive session. Run times without arguments.", plain.Trim());
+        Assert.Matches(@"\x1b\[(31|91|38;5;9)m", console.Output);
+    }
+
+    // AC-7
+    [Fact]
+    public void HelpDevOpsConnect_IsHelpDevOps()
+    {
+        (int exit, string output, _) = HelpShot(["help", "devops", "connect"]);
+
+        Assert.Equal(0, exit);
+        Assert.Equal(HelpShot(["help", "devops"]).Output, output);
+    }
+
+    // AC-8
+    [Theory]
+    [InlineData("nosuch", "nosuch")]
+    [InlineData("[red]x", "[red]x")]
+    [InlineData("//help", "//help")]
+    public void HelpUnknown_IsTheSessionHint(string asked, string shown)
+    {
+        (int exit, string output, _) = HelpShot(["help", asked]);
+
+        Assert.Equal(1, exit);
+        Assert.Equal($"Unknown command {shown}. Type help to see all commands.", output.Trim());
+    }
+
+    // AC-10
+    [Fact]
+    public void Help_ListsCommandAddedInTest()
+    {
+        CommandRegistry registry = CommandRegistry.CreateDefault();
+        registry.Register("demo", "dm", "A command from the test", _ => CommandResult.None);
+
+        (int exit, string output, _) = HelpShot(["help"], registry);
+
+        Assert.Equal(0, exit);
+        Assert.Matches(@"│ demo +│ dm +│ A command from the test +│", output);
+        Assert.DoesNotContain("│ quit ", output);
     }
 }
