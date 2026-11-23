@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Buffers.Text;
 using System.Formats.Asn1;
 using System.Security.Cryptography;
+using System.Text.Unicode;
 
 namespace Times.LicenceIssuer;
 
@@ -62,6 +63,9 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
 
     private const int MaxBytes = 16 * 1024;
     private const string Unreadable = "The stored signing key is not readable.";
+    // Complete DER encodings of id-ecPublicKey and prime256v1, respectively.
+    private static ReadOnlySpan<byte> EcPublicKeyOid => [0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01];
+    private static ReadOnlySpan<byte> P256Oid => [0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
 
     private readonly string? trustedPath;
     private readonly MacKeychainItem keychain;
@@ -78,7 +82,7 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
 
     public bool Exists(string keyId) => keychain.Exists(Service, keyId);
 
-    public byte[]? Read(string keyId) => keychain.Read(Service, keyId, MaxBytes, ReadKey);
+    public byte[]? Read(string keyId) => keychain.ReadFromDefaultFirst(Service, keyId, MaxBytes, ReadKey);
 
     public bool TryCreate(string keyId, byte[] pkcs8)
     {
@@ -95,8 +99,17 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
         // The raw SEQUENCE tag is 0x30. Base64 of that tag starts with 'M'.
         if (stored is [0x30, ..])
         {
-            Validate(stored);
-            return stored.ToArray();
+            byte[] der = stored.ToArray();
+            try
+            {
+                Validate(der);
+                return der;
+            }
+            catch
+            {
+                CryptographicOperations.ZeroMemory(der);
+                throw;
+            }
         }
 
         return DecodeLegacy(item, stored.ToArray());
@@ -113,7 +126,7 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
             }
 
             ReadOnlyMemory<byte> der = encoded.AsMemory(0, length);
-            Validate(der.Span);
+            Validate(der);
             if (trustedPath is not null)
             {
                 keychain.UpdateData(item, der);
@@ -127,30 +140,30 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
         }
     }
 
-    private static void Validate(ReadOnlySpan<byte> der)
+    private static void Validate(ReadOnlyMemory<byte> der)
     {
         try
         {
-            // ImportPkcs8PrivateKey also accepts BER. Check the DER of both PrivateKeyInfo and
-            // the ECPrivateKey carried in its privateKey OCTET STRING before letting the provider import it.
-            ReadOnlySpan<byte> fields = CheckDerSequence(der);
-            AsnDecoder.ReadIntegerBytes(fields, AsnEncodingRules.DER, out int versionLength);
-            fields = fields[versionLength..];
-            AsnDecoder.ReadSequence(fields, AsnEncodingRules.DER, out _, out _, out int algorithmLength);
-            if (!AsnDecoder.TryReadPrimitiveOctetString(fields[algorithmLength..], AsnEncodingRules.DER,
-                    out ReadOnlySpan<byte> ecPrivateKey, out _))
+            // Some providers accept BER or infer a curve from the key size. Check the encoded
+            // PrivateKeyInfo (RFC 5208) and ECPrivateKey (RFC 5915) before asking the provider to use it.
+            AsnReader reader = new AsnReader(der, AsnEncodingRules.DER);
+            AsnReader fields = reader.ReadSequence();
+            reader.ThrowIfNotEmpty();
+            Require(fields.TryReadInt32(out int version) && version == 0);
+            AsnReader algorithm = fields.ReadSequence();
+            Require(algorithm.ReadEncodedValue().Span.SequenceEqual(EcPublicKeyOid));
+            ReadP256Curve(algorithm);
+            Require(fields.TryReadPrimitiveOctetString(out ReadOnlyMemory<byte> ecPrivateKey));
+            ValidateEcPrivateKey(ecPrivateKey);
+            if (fields.HasData)
             {
-                throw new TokenStoreException(Unreadable);
+                ReadAttributes(fields.ReadSetOf(new Asn1Tag(TagClass.ContextSpecific, 0)));
             }
 
-            CheckDerSequence(ecPrivateKey);
+            fields.ThrowIfNotEmpty();
             using ECDsa key = ECDsa.Create();
-            key.ImportPkcs8PrivateKey(der, out int read);
-            if (read != der.Length
-                || key.ExportParameters(false).Curve.Oid?.Value != ECCurve.NamedCurves.nistP256.Oid.Value)
-            {
-                throw new TokenStoreException(Unreadable);
-            }
+            key.ImportPkcs8PrivateKey(der.Span, out int read);
+            Require(read == der.Length && key.ExportParameters(false).Curve.Oid.Value == ECCurve.NamedCurves.nistP256.Oid.Value);
         }
         catch (Exception ex) when (ex is AsnContentException or CryptographicException or ArgumentException or NotSupportedException)
         {
@@ -158,28 +171,153 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
         }
     }
 
-    private static ReadOnlySpan<byte> CheckDerSequence(ReadOnlySpan<byte> encoded)
+    private static void ReadP256Curve(AsnReader parameters)
     {
-        AsnDecoder.ReadSequence(encoded, AsnEncodingRules.DER, out int start, out _, out int consumed);
-        if (consumed != encoded.Length)
+        Require(parameters.ReadEncodedValue().Span.SequenceEqual(P256Oid));
+        parameters.ThrowIfNotEmpty();
+    }
+
+    private static void ValidateEcPrivateKey(ReadOnlyMemory<byte> encoded)
+    {
+        AsnReader reader = new AsnReader(encoded, AsnEncodingRules.DER);
+        AsnReader fields = reader.ReadSequence();
+        reader.ThrowIfNotEmpty();
+        Require(fields.TryReadInt32(out int version) && version == 1);
+        Require(fields.TryReadPrimitiveOctetString(out ReadOnlyMemory<byte> scalar) && scalar.Length == 32);
+        Asn1Tag parameters = new Asn1Tag(TagClass.ContextSpecific, 0);
+        if (fields.HasData && fields.PeekTag().HasSameClassAndValue(parameters))
+        {
+            ReadP256Curve(fields.ReadSequence(parameters));
+        }
+
+        if (fields.HasData)
+        {
+            AsnReader publicKey = fields.ReadSequence(new Asn1Tag(TagClass.ContextSpecific, 1));
+            Require(publicKey.TryReadPrimitiveBitString(out int unused, out ReadOnlyMemory<byte> point)
+                && unused == 0 && !point.IsEmpty);
+            publicKey.ThrowIfNotEmpty();
+        }
+
+        fields.ThrowIfNotEmpty();
+    }
+
+    private static void ReadAttributes(AsnReader attributes)
+    {
+        while (attributes.HasData)
+        {
+            AsnReader attribute = attributes.ReadSequence();
+            ReadObjectIdentifierBytes(attribute);
+            AsnReader values = attribute.ReadSetOf();
+            attribute.ThrowIfNotEmpty();
+            Require(values.HasData);
+            while (values.HasData)
+            {
+                ValidateAttributeValue(values.ReadEncodedValue());
+            }
+        }
+    }
+
+    private static void ValidateAttributeValue(ReadOnlyMemory<byte> encoded)
+    {
+        // Attribute values have open types. Walk constructed values within their own bounds
+        // without using the call stack, including DER ordering on nested universal sets.
+        Stack<AsnReader> levels = new Stack<AsnReader>();
+        levels.Push(new AsnReader(encoded, AsnEncodingRules.DER));
+        while (levels.TryPeek(out AsnReader? level))
+        {
+            if (!level.HasData)
+            {
+                levels.Pop();
+                continue;
+            }
+
+            Asn1Tag tag = level.PeekTag();
+            if (tag == Asn1Tag.SetOf)
+            {
+                levels.Push(level.ReadSetOf());
+            }
+            else if (tag.IsConstructed)
+            {
+                Require(tag.TagClass != TagClass.Universal || (UniversalTagNumber)tag.TagValue is
+                    UniversalTagNumber.Sequence or UniversalTagNumber.External or UniversalTagNumber.Embedded
+                    or UniversalTagNumber.UnrestrictedCharacterString);
+                levels.Push(new AsnReader(level.PeekContentBytes(), AsnEncodingRules.DER));
+                level.ReadEncodedValue();
+            }
+            else
+            {
+                ValidatePrimitive(level, tag);
+            }
+        }
+    }
+
+    private static void ValidatePrimitive(AsnReader reader, Asn1Tag tag)
+    {
+        if (tag.TagClass == TagClass.Universal)
+        {
+            switch ((UniversalTagNumber)tag.TagValue)
+            {
+                case UniversalTagNumber.EndOfContents:
+                case UniversalTagNumber.Sequence:
+                case UniversalTagNumber.Set:
+                case UniversalTagNumber.External:
+                case UniversalTagNumber.Embedded:
+                case UniversalTagNumber.UnrestrictedCharacterString:
+                    throw new TokenStoreException(Unreadable);
+                case UniversalTagNumber.Boolean:
+                    reader.ReadBoolean();
+                    return;
+                case UniversalTagNumber.Integer:
+                    reader.ReadIntegerBytes();
+                    return;
+                case UniversalTagNumber.BitString:
+                    Require(reader.TryReadPrimitiveBitString(out _, out _));
+                    return;
+                case UniversalTagNumber.Null:
+                    reader.ReadNull();
+                    return;
+                case UniversalTagNumber.ObjectIdentifier:
+                    ReadObjectIdentifierBytes(reader);
+                    return;
+                case UniversalTagNumber.Enumerated:
+                    reader.ReadEnumeratedBytes();
+                    return;
+                case UniversalTagNumber.UtcTime:
+                    reader.ReadUtcTime();
+                    return;
+                case UniversalTagNumber.GeneralizedTime:
+                    reader.ReadGeneralizedTime();
+                    return;
+                case UniversalTagNumber.UTF8String:
+                    Require(Utf8.IsValid(reader.PeekContentBytes().Span));
+                    break;
+            }
+        }
+
+        reader.ReadEncodedValue();
+    }
+
+    private static void ReadObjectIdentifierBytes(AsnReader reader)
+    {
+        Require(reader.PeekTag() == Asn1Tag.ObjectIdentifier);
+        ReadOnlySpan<byte> value = reader.PeekContentBytes().Span;
+        Require(!value.IsEmpty);
+        bool start = true;
+        foreach (byte part in value)
+        {
+            Require(!start || part != 0x80); // no leading zero group in a base-128 component
+            start = (part & 0x80) == 0;
+        }
+
+        Require(start);
+        reader.ReadEncodedValue();
+    }
+
+    private static void Require(bool valid)
+    {
+        if (!valid)
         {
             throw new TokenStoreException(Unreadable);
         }
-
-        // Visit nested headers without recursion. The EC importer checks the field types and values.
-        ReadOnlySpan<byte> fields = encoded[start..];
-        ReadOnlySpan<byte> remaining = fields;
-        while (!remaining.IsEmpty)
-        {
-            Asn1Tag tag = AsnDecoder.ReadEncodedValue(remaining, AsnEncodingRules.DER, out int header, out _, out int total);
-            if (tag == Asn1Tag.ConstructedOctetString || tag == Asn1Tag.ConstructedBitString)
-            {
-                throw new TokenStoreException(Unreadable);
-            }
-
-            remaining = remaining[(tag.IsConstructed ? header : total)..];
-        }
-
-        return fields;
     }
 }

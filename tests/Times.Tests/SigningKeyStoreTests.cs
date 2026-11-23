@@ -12,7 +12,7 @@ public sealed class SigningKeyStoreTests : IDisposable
     private const string Service = "Suite Pro signing key";
     private const string Kid = "maker";
     private const string Unreadable = "The stored signing key is not readable.";
-    private const string SaveFailed = "The item could not be saved in the macOS Keychain.";
+    private const string MigrationFailed = "Signing-key migration failed. Check Keychain write access and retry.";
 
     private readonly TempFolder folder = new();
     private readonly FakeKeychain native = new();
@@ -102,6 +102,8 @@ public sealed class SigningKeyStoreTests : IDisposable
         Assert.Equal(race ? 1 : 0, native.Creates);
         Assert.Equal(0, native.Updates);
         Assert.Equal(0, native.Deletes);
+        Assert.Equal(0, native.Frees);
+        Assert.Equal(0, native.DataRequests);
         if (race)
         {
             AssertCleared(native.CreateBuffer!);
@@ -109,24 +111,83 @@ public sealed class SigningKeyStoreTests : IDisposable
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void Issue_Twice_VerifiesWithTheOriginalKeyAndMigratesOnlyLegacyData(bool legacy)
+    [InlineData("existing")]
+    [InlineData("after lookup")]
+    [InlineData("during add")]
+    public void CreateKey_IdInAnotherKeychain_RefusesAndPreservesTheCompetingKey(string arrival)
+    {
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] original = Legacy(key.ExportPkcs8PrivateKey());
+        Item existing = new Item(original, ["other reader"]);
+        switch (arrival)
+        {
+            case "existing":
+                native.OtherStored = existing;
+                break;
+            case "after lookup":
+                native.AfterMissingLookup = () => native.OtherStored = existing;
+                break;
+            case "during add":
+                native.AfterAdd = () => native.OtherStored = existing;
+                break;
+        }
+
+        Assert.Equal(1, Run(store, "create-key", "--kid", Kid));
+        Assert.Empty(output.ToString());
+        Assert.Equal($"A signing key named {Kid} already exists; it was left as it is." + error.NewLine, error.ToString());
+        Assert.Null(native.Stored);
+        Assert.Same(existing, native.OtherStored);
+        Assert.Equal(original, existing.Data);
+        Assert.Equal(["other reader"], existing.TrustedPaths);
+        Assert.Equal(Item.OriginalPartition, existing.Partition);
+        Assert.Equal(0, native.Updates);
+        Assert.Equal(0, native.Deletes);
+        Assert.Equal(0, native.Frees);
+        Assert.Equal(0, native.DataRequests);
+    }
+
+    [Fact]
+    public void Issue_DefaultKeyWinsEvenWhenAnotherKeychainIsSearchedFirst()
+    {
+        Assert.Equal(0, Run(store, "create-key", "--kid", Kid));
+        LicencePublicKeys created = LicencePublicKeys.FromTable([(Kid, output.ToString().Trim())]);
+        using ECDsa other = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        native.OtherStored = new Item(Legacy(other.ExportPkcs8PrivateKey()), ["other reader"]);
+
+        Assert.Equal(0, Issue(store));
+        Assert.True(LicenceKey.TryVerify(output.ToString().Trim(), created, LicenceRevocations.None).IsValid);
+        Assert.Equal(0, native.Updates);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public void Issue_Twice_VerifiesWithTheOriginalKeyAndMigratesOnlyLegacyData(bool legacy, bool otherKeychain)
     {
         using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         byte[] der = key.ExportPkcs8PrivateKey();
         LicencePublicKeys original = LicencePublicKeys.FromTable([(Kid, key.ExportSubjectPublicKeyInfoPem())]);
         Item item = new Item(legacy ? Legacy(der) : der, ["previous app", "keeper"]);
-        native.Stored = item;
+        if (otherKeychain)
+        {
+            native.OtherStored = item;
+        }
+        else
+        {
+            native.Stored = item;
+        }
 
         for (int i = 0; i < 2; i++)
         {
             Assert.Equal(0, Issue(store));
             Assert.True(LicenceKey.TryVerify(output.ToString().Trim(), original, LicenceRevocations.None).IsValid);
             Assert.Empty(error.ToString());
-            Assert.Same(item, native.Stored);
+            Assert.Same(item, otherKeychain ? native.OtherStored : native.Stored);
             Assert.Equal(der, item.Data);
             Assert.Equal(["previous app", "keeper"], item.TrustedPaths);
+            Assert.Equal(Item.OriginalPartition, item.Partition);
             Assert.Equal(legacy ? 1 : 0, native.Updates);
         }
 
@@ -177,32 +238,38 @@ public sealed class SigningKeyStoreTests : IDisposable
         Assert.Equal(0, native.Updates);
     }
 
-    [Fact]
-    public void Issue_FailedMigration_PreservesTheItemAndLedgerForRetry()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Issue_FailedMigration_PreservesTheItemAndLedgerForRetry(bool failRestoringPartition)
     {
         using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         byte[] der = key.ExportPkcs8PrivateKey();
         byte[] legacy = Legacy(der);
         Item item = new Item(legacy, ["original app"]);
         native.Stored = item;
-        native.RefuseUpdate = true;
+        native.RefuseUpdate = !failRestoringPartition;
+        native.RefusePartition = failRestoringPartition;
         File.WriteAllText(Ledger, "previous entry\n");
 
         Assert.Equal(1, Issue(store));
-        Assert.Equal(SaveFailed + error.NewLine, error.ToString());
+        Assert.Equal(MigrationFailed + error.NewLine, error.ToString());
         Assert.Empty(output.ToString());
         Assert.Equal("previous entry\n", File.ReadAllText(Ledger));
         Assert.Same(item, native.Stored);
         Assert.Equal(legacy, item.Data);
         Assert.Equal(["original app"], item.TrustedPaths);
+        Assert.Equal(Item.OriginalPartition, item.Partition);
         AssertCleared(native.UpdateBuffer!);
         Assert.Equal(1, native.Frees);
 
         native.RefuseUpdate = false;
+        native.RefusePartition = false;
         Assert.Equal(0, Issue(store));
         LicencePublicKeys original = LicencePublicKeys.FromTable([(Kid, key.ExportSubjectPublicKeyInfoPem())]);
         Assert.True(LicenceKey.TryVerify(output.ToString().Trim(), original, LicenceRevocations.None).IsValid);
         Assert.Equal(der, item.Data);
+        Assert.Equal(Item.OriginalPartition, item.Partition);
         Assert.Equal(2, native.Updates);
         Assert.Equal(2, native.Frees);
         Assert.Equal(2, File.ReadAllLines(Ledger).Length);
@@ -290,6 +357,132 @@ public sealed class SigningKeyStoreTests : IDisposable
         AssertCleared(partial);
     }
 
+    public static TheoryData<string, bool> InvalidPkcs8Fields
+    {
+        get
+        {
+            TheoryData<string, bool> cases = [];
+            foreach (string invalidField in new[] { "outer version", "algorithm", "named curve", "inner version",
+                "inner curve", "attribute order", "attribute value order", "invalid UTF-8 attribute" })
+            {
+                cases.Add(invalidField, false);
+                cases.Add(invalidField, true);
+            }
+
+            return cases;
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(InvalidPkcs8Fields))]
+    public void Issue_InvalidPkcs8Field_LeavesKeyAccessAndLedgerIntact(string field, bool legacy)
+    {
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] invalid = WithPkcs8Fields(key.ExportPkcs8PrivateKey(), field);
+        byte[] original = legacy ? Legacy(invalid) : invalid;
+        Item item = new Item(original, ["previous reader"]);
+        native.Stored = item;
+        File.WriteAllText(Ledger, "previous entry\n");
+
+        Assert.Equal(1, Issue(store));
+        Assert.Equal(Unreadable + error.NewLine, error.ToString());
+        Assert.Empty(output.ToString());
+        Assert.Equal("previous entry\n", File.ReadAllText(Ledger));
+        Assert.Same(item, native.Stored);
+        Assert.Equal(original, item.Data);
+        Assert.Equal(["previous reader"], item.TrustedPaths);
+        Assert.Equal(Item.OriginalPartition, item.Partition);
+        Assert.Equal(0, native.Updates);
+        Assert.Equal(0, native.Creates);
+        Assert.Equal(0, native.Deletes);
+        Assert.Equal(1, native.Frees);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Read_SortedAttributes_PreservesTheirExactDer(bool legacy)
+    {
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] der = WithPkcs8Fields(key.ExportPkcs8PrivateKey(), "sorted attributes");
+        native.Stored = new Item(legacy ? Legacy(der) : der, [apphost]);
+        Assert.Equal(der, store.Read(Kid));
+        Assert.Equal(der, native.Stored.Data);
+        Assert.Equal(legacy ? 1 : 0, native.Updates);
+    }
+
+    // The key and public point are always P-256. BER writer scopes let the test choose the
+    // order of SET OF members, including encodings that a DER writer would silently sort.
+    private static byte[] WithPkcs8Fields(byte[] der, string field)
+    {
+        AsnReader pkcs8 = new AsnReader(der, AsnEncodingRules.DER).ReadSequence();
+        pkcs8.ReadInteger();
+        pkcs8.ReadSequence();
+        AsnReader ec = new AsnReader(pkcs8.ReadOctetString(), AsnEncodingRules.DER).ReadSequence();
+        ec.ReadInteger();
+        AsnWriter inner = new AsnWriter(AsnEncodingRules.DER);
+        Asn1Tag parameters = new Asn1Tag(TagClass.ContextSpecific, 0);
+        using (inner.PushSequence())
+        {
+            inner.WriteInteger(field == "inner version" ? 2 : 1);
+            inner.WriteEncodedValue(ec.ReadEncodedValue().Span);
+            if (ec.HasData && ec.PeekTag().HasSameClassAndValue(parameters))
+            {
+                ec.ReadEncodedValue();
+            }
+
+            if (field == "inner curve")
+            {
+                using (inner.PushSequence(parameters))
+                {
+                    inner.WriteObjectIdentifier(ECCurve.NamedCurves.nistP384.Oid.Value!);
+                }
+            }
+
+            if (ec.HasData)
+            {
+                inner.WriteEncodedValue(ec.ReadEncodedValue().Span);
+            }
+        }
+
+        AsnWriter writer = new AsnWriter(AsnEncodingRules.BER);
+        using (writer.PushSequence())
+        {
+            writer.WriteInteger(field == "outer version" ? 2 : 0);
+            using (writer.PushSequence())
+            {
+                writer.WriteObjectIdentifier(field == "algorithm" ? "1.2.840.113549.1.1.1" : "1.2.840.10045.2.1");
+                writer.WriteObjectIdentifier((field == "named curve" ? ECCurve.NamedCurves.nistP384 : ECCurve.NamedCurves.nistP256).Oid.Value!);
+            }
+
+            writer.WriteOctetString(inner.Encode());
+            using (writer.PushSetOf(parameters))
+            {
+                WriteAttribute(field == "attribute order" ? "1.2.3.2" : "1.2.3.1");
+                WriteAttribute(field == "attribute order" ? "1.2.3.1" : "1.2.3.2");
+            }
+        }
+
+        return writer.Encode();
+
+        void WriteAttribute(string oid)
+        {
+            using (writer.PushSequence())
+            {
+                writer.WriteObjectIdentifier(oid);
+                using (writer.PushSetOf())
+                {
+                    writer.WriteInteger(field == "attribute value order" ? 2 : 1);
+                    writer.WriteInteger(field == "attribute value order" ? 1 : 2);
+                    if (field == "invalid UTF-8 attribute")
+                    {
+                        writer.WriteEncodedValue([0x0c, 0x01, 0xff]);
+                    }
+                }
+            }
+        }
+    }
+
     private static byte[] Legacy(ReadOnlySpan<byte> der)
     {
         byte[] encoded = new byte[Base64.GetMaxEncodedToUtf8Length(der.Length)];
@@ -322,6 +515,7 @@ public sealed class SigningKeyStoreTests : IDisposable
 
     private sealed class Item
     {
+        public const string OriginalPartition = "teamid:original-reader,teamid:keeper";
         public Item(byte[] data, string[] trustedPaths)
         {
             Data = data.ToArray();
@@ -330,22 +524,33 @@ public sealed class SigningKeyStoreTests : IDisposable
 
         public byte[] Data { get; set; }
         public string[] TrustedPaths { get; }
+        public string Partition { get; set; } = OriginalPartition;
     }
 
-    // Models one generic password. A find retains the item and returns a separate, caller-owned native buffer.
+    // The second keychain comes first on the search list. A native add checks only its target database.
     private sealed class FakeKeychain : MacKeychainItem.INativeCalls
     {
         private readonly HashSet<IntPtr> held = [];
-        private readonly IntPtr itemRef = 1;
-        private readonly IntPtr accessRef = 2;
+        private const int ItemRef = 1;
+        private const int AccessRef = 2;
+        private const int OtherItemRef = 3;
+        private const int DefaultKeychain = 4;
+        private const int OtherKeychain = 5;
+        private const int PartitionRef = 6;
+        private IntPtr writing;
+        private string? savedPartition;
         private IntPtr readPointer;
         private int readLength;
         private string? trustedPath;
 
         public Item? Stored { get; set; }
+        public Item? OtherStored { get; set; }
         public Action? AfterMissingLookup { get; set; }
+        public Action? AfterAdd { get; set; }
         public bool RefuseUpdate { get; set; }
+        public bool RefusePartition { get; set; }
         public int Finds { get; private set; }
+        public int DataRequests { get; private set; }
         public int AccessCreations { get; private set; }
         public int Creates { get; private set; }
         public int Updates { get; private set; }
@@ -354,17 +559,24 @@ public sealed class SigningKeyStoreTests : IDisposable
         public byte[]? CreateBuffer { get; private set; }
         public byte[]? UpdateBuffer { get; private set; }
 
-        public int Find(string service, string account, bool readData, out uint length, out IntPtr data, out IntPtr item)
+        public int Find(IntPtr keychain, string service, string account, IntPtr length, IntPtr data, out IntPtr item)
         {
             Assert.Equal(Service, service);
             Assert.Equal(Kid, account);
-            Finds++;
-            length = 0;
-            data = IntPtr.Zero;
-            item = IntPtr.Zero;
-            if (Stored is null)
+            Assert.Equal(length == IntPtr.Zero, data == IntPtr.Zero);
+            if (data != IntPtr.Zero)
             {
-                if (!readData)
+                DataRequests++;
+            }
+
+            Assert.True(keychain == IntPtr.Zero || keychain == DefaultKeychain || keychain == OtherKeychain);
+            Finds++;
+            item = IntPtr.Zero;
+            bool other = keychain == OtherKeychain || (keychain == IntPtr.Zero && OtherStored is not null);
+            Item? found = other ? OtherStored : Stored;
+            if (found is null)
+            {
+                if (length == IntPtr.Zero && keychain == IntPtr.Zero)
                 {
                     AfterMissingLookup?.Invoke();
                 }
@@ -372,34 +584,118 @@ public sealed class SigningKeyStoreTests : IDisposable
                 return -25300;
             }
 
-            item = itemRef;
+            item = other ? OtherItemRef : ItemRef;
             Assert.True(held.Add(item));
-            if (readData)
+            if (data != IntPtr.Zero)
             {
-                readLength = Stored.Data.Length;
-                length = (uint)readLength;
+                readLength = found.Data.Length;
+                Marshal.WriteInt32(length, readLength);
                 readPointer = Marshal.AllocHGlobal(Math.Max(1, readLength));
-                Marshal.Copy(Stored.Data, 0, readPointer, readLength);
-                data = readPointer;
+                Marshal.Copy(found.Data, 0, readPointer, readLength);
+                Marshal.WriteIntPtr(data, readPointer);
             }
 
             return 0;
         }
 
+        public int CopyDefaultKeychain(out IntPtr keychain)
+        {
+            keychain = DefaultKeychain;
+            return 0;
+        }
+
+        public int CopyItemKeychain(IntPtr item, out IntPtr keychain)
+        {
+            Assert.Contains(item, held);
+            keychain = item == ItemRef ? DefaultKeychain : OtherKeychain;
+            return 0;
+        }
+
+        public IEnumerable<IntPtr> OtherKeychains(IntPtr target)
+        {
+            Assert.Equal((IntPtr)DefaultKeychain, target);
+            return [(IntPtr)OtherKeychain];
+        }
+
+        public bool WriteTransaction(IntPtr keychain, Func<bool> change)
+        {
+            Assert.Equal(IntPtr.Zero, writing);
+            writing = keychain;
+            Item? original = keychain == DefaultKeychain ? Stored : OtherStored;
+            byte[]? originalData = original?.Data;
+            string? partition = original?.Partition;
+            bool commit = false;
+            try
+            {
+                commit = change();
+                return commit;
+            }
+            finally
+            {
+                if (!commit)
+                {
+                    if (keychain == DefaultKeychain)
+                    {
+                        Stored = original;
+                    }
+                    else
+                    {
+                        OtherStored = original;
+                    }
+
+                    if (original is not null)
+                    {
+                        original.Data = originalData!;
+                        original.Partition = partition!;
+                    }
+                }
+
+                writing = IntPtr.Zero;
+            }
+        }
+
+        public IntPtr CopyPartition(IntPtr item)
+        {
+            savedPartition = WritableItem(item).Partition;
+            Assert.True(held.Add(PartitionRef));
+            return PartitionRef;
+        }
+
+        public void PreservePartition(IntPtr item, IntPtr original)
+        {
+            Assert.Equal((IntPtr)PartitionRef, original);
+            Assert.Contains(original, held);
+            if (RefusePartition)
+            {
+                throw new TokenStoreException("Access denied");
+            }
+
+            WritableItem(item).Partition = savedPartition!;
+        }
+
+        private Item WritableItem(IntPtr item)
+        {
+            Assert.Contains(item, held);
+            Assert.Equal(item == ItemRef ? (IntPtr)DefaultKeychain : OtherKeychain, writing);
+            return item == ItemRef ? Stored! : OtherStored!;
+        }
+
         public IntPtr CreateAccess(string path, string description)
         {
             Assert.Equal(Service, description);
-            Assert.True(held.Add(accessRef));
+            Assert.True(held.Add(AccessRef));
             AccessCreations++;
             trustedPath = path;
-            return accessRef;
+            return AccessRef;
         }
 
         public int CreateFromContent(uint itemClass, ref MacKeychainItem.AttributeList attributes, byte[] data,
-            IntPtr access, out IntPtr item)
+            IntPtr keychain, IntPtr access, out IntPtr item)
         {
             Assert.Equal(0x67656e70u, itemClass); // kSecGenericPasswordItemClass
-            Assert.Equal(accessRef, access);
+            Assert.Equal((IntPtr)DefaultKeychain, keychain);
+            Assert.Equal(keychain, writing);
+            Assert.Equal((IntPtr)AccessRef, access);
             Assert.Contains(access, held);
             Dictionary<uint, string> values = [];
             for (int i = 0; i < attributes.Count; i++)
@@ -421,15 +717,15 @@ public sealed class SigningKeyStoreTests : IDisposable
             }
 
             Stored = new Item(data, [trustedPath!]);
-            item = itemRef;
+            item = ItemRef;
             Assert.True(held.Add(item));
+            AfterAdd?.Invoke();
             return 0;
         }
 
         public int ModifyAttributesAndData(IntPtr item, IntPtr attributes, ReadOnlyMemory<byte> data)
         {
-            Assert.Equal(itemRef, item);
-            Assert.Contains(item, held);
+            Item updated = WritableItem(item);
             Assert.Equal(IntPtr.Zero, attributes);
             Updates++;
             Assert.True(MemoryMarshal.TryGetArray(data, out ArraySegment<byte> segment));
@@ -439,7 +735,8 @@ public sealed class SigningKeyStoreTests : IDisposable
                 return -1;
             }
 
-            Stored!.Data = data.ToArray();
+            updated.Data = data.ToArray();
+            updated.Partition = "teamid:writer";
             return 0;
         }
 
@@ -468,6 +765,12 @@ public sealed class SigningKeyStoreTests : IDisposable
             }
         }
 
-        public void Release(IntPtr reference) => Assert.True(held.Remove(reference));
+        public void Release(IntPtr reference)
+        {
+            if (reference != DefaultKeychain && reference != OtherKeychain && reference != IntPtr.Zero)
+            {
+                Assert.True(held.Remove(reference));
+            }
+        }
     }
 }

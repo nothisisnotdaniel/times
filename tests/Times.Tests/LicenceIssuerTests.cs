@@ -368,6 +368,10 @@ public sealed class LicenceIssuerTests : IDisposable
         int start = shared.IndexOf("class MacKeychainItem", StringComparison.Ordinal);
         Assert.True(start >= 0);
         CheckSource(shared[start..shared.IndexOf("\n}", start, StringComparison.Ordinal)], "MacKeychainItem");
+        foreach (string file in Directory.EnumerateFiles(Path.Combine(RepoRoot, "src", "Times"), "MacKeychainItem.*.cs"))
+        {
+            CheckSource(File.ReadAllText(file), file);
+        }
 
         static void CheckSource(string source, string name)
         {

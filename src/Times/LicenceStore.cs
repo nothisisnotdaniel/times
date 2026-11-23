@@ -152,6 +152,7 @@ internal sealed partial class MacKeychainItem
     private const int ErrSecSuccess = 0;
     private const int ErrSecItemNotFound = -25300;
     private const int ErrSecDuplicateItem = -25299;
+    private const int ErrSecNoDefaultKeychain = -25307;
     private const int MaxItems = 16;
 
     private const uint AccountAttribute = 0x61636374;
@@ -162,6 +163,7 @@ internal sealed partial class MacKeychainItem
 
     private const string ReadFailed = "The macOS Keychain could not be read.";
     private const string SaveFailed = "The item could not be saved in the macOS Keychain.";
+    private const string MigrationFailed = "Signing-key migration failed. Check Keychain write access and retry.";
 
     public static readonly MacKeychainItem Default = new(new NativeCalls());
 
@@ -173,10 +175,40 @@ internal sealed partial class MacKeychainItem
     }
 
     /// <summary>Reads bounded data with the item reference still held. Both are borrowed for the callback.</summary>
-    public unsafe T? Read<T>(string service, string account, int maxBytes, Func<IntPtr, ReadOnlySpan<byte>, T> read)
+    public T? Read<T>(string service, string account, int maxBytes, Func<IntPtr, ReadOnlySpan<byte>, T> read)
+        where T : class => Read(IntPtr.Zero, service, account, maxBytes, read);
+
+    // New signing keys belong to the default keychain. An older key can still live elsewhere on the search list.
+    public T? ReadFromDefaultFirst<T>(string service, string account, int maxBytes, Func<IntPtr, ReadOnlySpan<byte>, T> read)
         where T : class
     {
-        int status = native.Find(service, account, readData: true, out uint length, out IntPtr data, out IntPtr item);
+        int status = native.CopyDefaultKeychain(out IntPtr target);
+        if (status != ErrSecNoDefaultKeychain)
+        {
+            Check(status, ReadFailed);
+            try
+            {
+                T? result = Read(target, service, account, maxBytes, read);
+                if (result is not null)
+                {
+                    return result;
+                }
+            }
+            finally
+            {
+                native.Release(target);
+            }
+        }
+
+        return Read(service, account, maxBytes, read);
+    }
+
+    internal unsafe T? Read<T>(IntPtr keychain, string service, string account, int maxBytes,
+        Func<IntPtr, ReadOnlySpan<byte>, T> read) where T : class
+    {
+        uint length = 0;
+        IntPtr data = IntPtr.Zero;
+        int status = native.Find(keychain, service, account, (IntPtr)(&length), (IntPtr)(&data), out IntPtr item);
         if (status == ErrSecItemNotFound)
         {
             return null;
@@ -205,9 +237,11 @@ internal sealed partial class MacKeychainItem
     }
 
     /// <summary>True if an item with this service and account exists (its data is never copied out).</summary>
-    public bool Exists(string service, string account)
+    public bool Exists(string service, string account) => Exists(IntPtr.Zero, service, account);
+
+    private bool Exists(IntPtr keychain, string service, string account)
     {
-        int status = native.Find(service, account, readData: false, out _, out _, out IntPtr item);
+        int status = native.Find(keychain, service, account, IntPtr.Zero, IntPtr.Zero, out IntPtr item);
         if (status == ErrSecItemNotFound)
         {
             return false;
@@ -225,23 +259,59 @@ internal sealed partial class MacKeychainItem
     /// <summary>Adds with the given access list. A duplicate leaves the existing item intact. The caller owns the data.</summary>
     public bool TryCreate(string service, string account, byte[] data, string trustedPath)
     {
-        IntPtr access = native.CreateAccess(trustedPath, service);
+        Check(native.CopyDefaultKeychain(out IntPtr target), SaveFailed);
         try
         {
-            return TryAdd(service, account, data, access);
+            IntPtr access = native.CreateAccess(trustedPath, service);
+            try
+            {
+                // The native add arbitrates duplicates in target. Before making it visible,
+                // check the other searchable keychains for legacy IDs, even if target is searched first.
+                return native.WriteTransaction(target, () => TryAdd(target, service, account, data, access)
+                    && !native.OtherKeychains(target).Any(other => Exists(other, service, account)));
+            }
+            finally
+            {
+                native.Release(access);
+            }
         }
         finally
         {
-            native.Release(access);
+            native.Release(target);
         }
     }
 
     /// <summary>Updates only the data of the item held by <see cref="Read{T}"/>.</summary>
     public void UpdateData(IntPtr item, ReadOnlyMemory<byte> data)
     {
-        if (native.ModifyAttributesAndData(item, IntPtr.Zero, data) != ErrSecSuccess)
+        try
         {
-            throw new TokenStoreException(SaveFailed);
+            Check(native.CopyItemKeychain(item, out IntPtr owner), MigrationFailed);
+            try
+            {
+                native.WriteTransaction(owner, () =>
+                {
+                    IntPtr partition = native.CopyPartition(item);
+                    try
+                    {
+                        Check(native.ModifyAttributesAndData(item, IntPtr.Zero, data), MigrationFailed);
+                        native.PreservePartition(item, partition);
+                        return true;
+                    }
+                    finally
+                    {
+                        native.Release(partition);
+                    }
+                });
+            }
+            finally
+            {
+                native.Release(owner);
+            }
+        }
+        catch (TokenStoreException)
+        {
+            throw new TokenStoreException(MigrationFailed);
         }
     }
 
@@ -253,7 +323,7 @@ internal sealed partial class MacKeychainItem
         {
             access = native.CreateAccess(trustedPath, service);
             Delete(service, account);
-            if (!TryAdd(service, account, secret, access))
+            if (!TryAdd(IntPtr.Zero, service, account, secret, access))
             {
                 throw new TokenStoreException(SaveFailed);
             }
@@ -274,7 +344,7 @@ internal sealed partial class MacKeychainItem
         bool deleted = false;
         for (int i = 0; i < MaxItems; i++)
         {
-            int status = native.Find(service, account, readData: false, out _, out _, out IntPtr item);
+            int status = native.Find(IntPtr.Zero, service, account, IntPtr.Zero, IntPtr.Zero, out IntPtr item);
             if (status == ErrSecItemNotFound)
             {
                 return deleted;
@@ -346,7 +416,7 @@ internal sealed partial class MacKeychainItem
         return CFArrayCreate(IntPtr.Zero, (IntPtr)values, 1, callBacks);
     }
 
-    private unsafe bool TryAdd(string service, string account, byte[] secret, IntPtr access)
+    private unsafe bool TryAdd(IntPtr keychain, string service, string account, byte[] secret, IntPtr access)
     {
         byte[] serviceBytes = Encoding.UTF8.GetBytes(service);
         byte[] accountBytes = Encoding.UTF8.GetBytes(account);
@@ -358,7 +428,7 @@ internal sealed partial class MacKeychainItem
             attributes[1] = new Attribute { Tag = AccountAttribute, Length = (uint)accountBytes.Length, Data = (IntPtr)accountPointer };
             attributes[2] = new Attribute { Tag = LabelAttribute, Length = (uint)serviceBytes.Length, Data = (IntPtr)servicePointer };
             AttributeList list = new AttributeList { Count = 3, Attributes = (IntPtr)attributes };
-            int status = native.CreateFromContent(GenericPasswordClass, ref list, secret, access, out IntPtr item);
+            int status = native.CreateFromContent(GenericPasswordClass, ref list, secret, keychain, access, out IntPtr item);
             if (status == ErrSecDuplicateItem)
             {
                 return false;
@@ -382,6 +452,14 @@ internal sealed partial class MacKeychainItem
         }
     }
 
+    private static void Check(int status, string message)
+    {
+        if (status != ErrSecSuccess)
+        {
+            throw new TokenStoreException(message);
+        }
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     internal struct Attribute
     {
@@ -399,36 +477,61 @@ internal sealed partial class MacKeychainItem
 
     internal interface INativeCalls
     {
-        public int Find(string service, string account, bool readData, out uint length, out IntPtr data, out IntPtr item);
+        public int Find(IntPtr keychain, string service, string account, IntPtr length, IntPtr data, out IntPtr item);
+        public int CopyDefaultKeychain(out IntPtr keychain);
+        public int CopyItemKeychain(IntPtr item, out IntPtr keychain);
+        public IEnumerable<IntPtr> OtherKeychains(IntPtr target);
+        public bool WriteTransaction(IntPtr keychain, Func<bool> change);
+        public IntPtr CopyPartition(IntPtr item);
+        public void PreservePartition(IntPtr item, IntPtr original);
         public IntPtr CreateAccess(string path, string description);
-        public int CreateFromContent(uint itemClass, ref AttributeList attributes, byte[] data, IntPtr access, out IntPtr item);
+        public int CreateFromContent(uint itemClass, ref AttributeList attributes, byte[] data, IntPtr keychain,
+            IntPtr access, out IntPtr item);
         public int ModifyAttributesAndData(IntPtr item, IntPtr attributes, ReadOnlyMemory<byte> data);
         public int Delete(IntPtr item);
         public void FreeContent(IntPtr data);
         public void Release(IntPtr reference);
     }
 
-    private sealed class NativeCalls : INativeCalls
+    private sealed partial class NativeCalls : INativeCalls
     {
-        public int Find(string service, string account, bool readData, out uint length, out IntPtr data, out IntPtr item)
+        public int Find(IntPtr keychain, string service, string account, IntPtr length, IntPtr data, out IntPtr item)
         {
             byte[] serviceBytes = Encoding.UTF8.GetBytes(service);
             byte[] accountBytes = Encoding.UTF8.GetBytes(account);
-            if (readData)
-            {
-                return SecKeychainFindGenericPassword(IntPtr.Zero, (uint)serviceBytes.Length, serviceBytes,
-                    (uint)accountBytes.Length, accountBytes, out length, out data, out item);
-            }
+            return SecKeychainFindGenericPassword(keychain, (uint)serviceBytes.Length, serviceBytes,
+                (uint)accountBytes.Length, accountBytes, length, data, out item);
+        }
 
-            data = IntPtr.Zero;
-            return SecKeychainFindGenericPassword(IntPtr.Zero, (uint)serviceBytes.Length, serviceBytes,
-                (uint)accountBytes.Length, accountBytes, out length, IntPtr.Zero, out item);
+        public int CopyDefaultKeychain(out IntPtr keychain) => SecKeychainCopyDefault(out keychain);
+
+        public int CopyItemKeychain(IntPtr item, out IntPtr keychain) => SecKeychainItemCopyKeychain(item, out keychain);
+
+        public IEnumerable<IntPtr> OtherKeychains(IntPtr target)
+        {
+            Check(SecKeychainCopySearchList(out IntPtr list), ReadFailed);
+            try
+            {
+                for (nint i = 0; i < CFArrayGetCount(list); i++)
+                {
+                    IntPtr candidate = CFArrayGetValueAtIndex(list, i);
+                    if (CFEqual(candidate, target) == 0)
+                    {
+                        yield return candidate;
+                    }
+                }
+            }
+            finally
+            {
+                CFRelease(list);
+            }
         }
 
         public IntPtr CreateAccess(string path, string description) => MacKeychainItem.CreateAccess(path, description);
 
-        public int CreateFromContent(uint itemClass, ref AttributeList attributes, byte[] data, IntPtr access, out IntPtr item) =>
-            SecKeychainItemCreateFromContent(itemClass, ref attributes, (uint)data.Length, data, IntPtr.Zero, access, out item);
+        public int CreateFromContent(uint itemClass, ref AttributeList attributes, byte[] data, IntPtr keychain,
+            IntPtr access, out IntPtr item) =>
+            SecKeychainItemCreateFromContent(itemClass, ref attributes, (uint)data.Length, data, keychain, access, out item);
 
         public int ModifyAttributesAndData(IntPtr item, IntPtr attributes, ReadOnlyMemory<byte> data) =>
             SecKeychainItemModifyAttributesAndData(item, attributes, (uint)data.Length, data.Span);
@@ -442,13 +545,26 @@ internal sealed partial class MacKeychainItem
 
     [LibraryImport(Security)]
     private static partial int SecKeychainFindGenericPassword(IntPtr keychainOrArray, uint serviceNameLength,
-        byte[] serviceName, uint accountNameLength, byte[] accountName, out uint passwordLength,
-        out IntPtr passwordData, out IntPtr itemRef);
+        byte[] serviceName, uint accountNameLength, byte[] accountName, IntPtr passwordLength,
+        IntPtr passwordData, out IntPtr itemRef);
 
     [LibraryImport(Security)]
-    private static partial int SecKeychainFindGenericPassword(IntPtr keychainOrArray, uint serviceNameLength,
-        byte[] serviceName, uint accountNameLength, byte[] accountName, out uint passwordLength,
-        IntPtr passwordData, out IntPtr itemRef);
+    private static partial int SecKeychainCopyDefault(out IntPtr keychain);
+
+    [LibraryImport(Security)]
+    private static partial int SecKeychainItemCopyKeychain(IntPtr item, out IntPtr keychain);
+
+    [LibraryImport(Security)]
+    private static partial int SecKeychainCopySearchList(out IntPtr list);
+
+    [LibraryImport(CoreFoundation)]
+    private static partial nint CFArrayGetCount(IntPtr array);
+
+    [LibraryImport(CoreFoundation)]
+    private static partial IntPtr CFArrayGetValueAtIndex(IntPtr array, nint index);
+
+    [LibraryImport(CoreFoundation)]
+    private static partial byte CFEqual(IntPtr first, IntPtr second);
 
     [LibraryImport(Security, StringMarshalling = StringMarshalling.Utf8)]
     private static partial int SecTrustedApplicationCreateFromPath(string path, out IntPtr application);
