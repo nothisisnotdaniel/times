@@ -146,7 +146,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] [#47](backlog/047-windows-prerelease-update-check.md) Windows prerelease update check
 - [x] [#52](backlog/052-unknown-key-reason-on-pro-activate.md) Unknown key reason on pro activate → 399-unknown-key-reason-on-pro.e6e3c776773b4d47bc96cd1e3485a4ce
 - [?] [#53](backlog/053-pack-test-builds-on-its-own.md) Pack test builds on its own
-- [ ] [#54](backlog/054-signing-key-stored-as-raw-bytes.md) Signing key stored as raw bytes
+- [x] [#54](backlog/054-signing-key-stored-as-raw-bytes.md) Signing key stored as raw bytes → 401-signing-key-stored-as-raw.73097ecd21544216855a6e72e97c1c7f
 - [ ] [#55](backlog/055-mistyped-pro-command-kept-out-of.md) Mistyped pro command kept out of history
 - [?] [#56](backlog/056-hours-json-reads-day-files-once.md) Hours JSON reads day files once
 - [?] [#57](backlog/057-report-hint-order-for-bad-dates.md) Report hint order for bad dates
