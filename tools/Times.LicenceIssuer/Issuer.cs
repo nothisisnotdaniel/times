@@ -83,20 +83,24 @@ internal sealed class Issuer
 
         try
         {
+            string alreadyExists = $"A signing key named {kid} already exists; it was left as it is.";
             if (keys.Exists(kid))
             {
-                return Fail(1, $"A signing key named {kid} already exists; it was left as it is.");
+                return Fail(1, alreadyExists);
             }
 
             using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
             byte[] pkcs8 = key.ExportPkcs8PrivateKey();
             try
             {
-                keys.Write(kid, pkcs8);
+                if (!keys.TryCreate(kid, pkcs8))
+                {
+                    return Fail(1, alreadyExists);
+                }
             }
             finally
             {
-                Array.Clear(pkcs8);
+                CryptographicOperations.ZeroMemory(pkcs8);
             }
 
             output.WriteLine(key.ExportSubjectPublicKeyInfoPem());
@@ -159,20 +163,25 @@ internal sealed class Issuer
             return Fail(1, $"There is no signing key named {kid}. Run create-key --kid {kid} first.");
         }
 
-        DateOnly issued = DateOnly.FromDateTime(time.GetLocalNow().DateTime);
-        string licenceId = NewLicenceId();
+        DateOnly issued;
+        string licenceId;
         string token;
         try
         {
-            token = Sign(pkcs8, kid, licenceId, name, until, issued);
-        }
-        catch (CryptographicException)
-        {
-            return Fail(1, $"The signing key named {kid} cannot be used.");
+            issued = DateOnly.FromDateTime(time.GetLocalNow().DateTime);
+            licenceId = NewLicenceId();
+            try
+            {
+                token = Sign(pkcs8, kid, licenceId, name, until, issued);
+            }
+            catch (CryptographicException)
+            {
+                return Fail(1, $"The signing key named {kid} cannot be used.");
+            }
         }
         finally
         {
-            Array.Clear(pkcs8);
+            CryptographicOperations.ZeroMemory(pkcs8);
         }
 
         try

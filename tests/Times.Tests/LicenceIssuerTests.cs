@@ -4,6 +4,7 @@ using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using Times.LicenceIssuer;
 
 namespace Times.Tests;
@@ -123,6 +124,22 @@ public sealed class LicenceIssuerTests : IDisposable
         Assert.Equal(new DateOnly(2027, 12, 31), licence.Until);
         Assert.Equal(new DateOnly(2026, 10, 27), licence.Issued);
         Assert.Equal(TestLicences.LicenceId + "\tAda Lovelace\t2027-12-31\t2026-10-27\tk1\n", File.ReadAllText(Ledger));
+        AssertCleared(keys.LastRead!);
+    }
+
+    [Fact]
+    public void Issue_RandomSourceThrows_ClearsTheKeyReturnedByRead()
+    {
+        CreateKey();
+        using ThrowingRandom random = new ThrowingRandom();
+        Issuer issuer = new Issuer(output, error, keys, random, FixedTimeProvider.At20261027(), Ledger);
+
+        Assert.Throws<InvalidOperationException>(() =>
+            issuer.Run(["issue", "--kid", "k1", "--name", "Ada", "--until", "2027-12-31"]));
+
+        AssertCleared(keys.LastRead!);
+        Assert.Empty(output.ToString());
+        Assert.False(File.Exists(Ledger));
     }
 
     // AC-13: a second issue appends a second line, the first stays.
@@ -334,6 +351,31 @@ public sealed class LicenceIssuerTests : IDisposable
         }
     }
 
+    [Fact]
+    public void PrivateKeySources_KeepSecretsOutOfStrings()
+    {
+        string issuer = Path.Combine(RepoRoot, "tools", "Times.LicenceIssuer");
+        foreach (string file in Directory.EnumerateFiles(issuer, "*.cs", SearchOption.AllDirectories))
+        {
+            string[] path = Path.GetRelativePath(issuer, file).Split(Path.DirectorySeparatorChar);
+            if (!path.Contains("obj") && !path.Contains("bin"))
+            {
+                CheckSource(File.ReadAllText(file), file);
+            }
+        }
+
+        string shared = File.ReadAllText(Path.Combine(RepoRoot, "src", "Times", "LicenceStore.cs"));
+        int start = shared.IndexOf("class MacKeychainItem", StringComparison.Ordinal);
+        Assert.True(start >= 0);
+        CheckSource(shared[start..shared.IndexOf("\n}", start, StringComparison.Ordinal)], "MacKeychainItem");
+
+        static void CheckSource(string source, string name)
+        {
+            const string Conversions = @"\b(GetString|FromBase64String|ToBase64String|ToHexString(?:Lower)?|(?:Try)?Export\w*PrivateKeyPem|PemEncoding\s*\.\s*WriteString)\s*\(";
+            Assert.False(Regex.IsMatch(source, Conversions), $"Private-key string conversion in {name}");
+        }
+    }
+
     private static List<string> Lines(string text) =>
         text.ReplaceLineEndings("\n").Split('\n', StringSplitOptions.RemoveEmptyEntries).ToList();
 
@@ -356,7 +398,7 @@ public sealed class LicenceIssuerTests : IDisposable
     }
 
     // Fills every request with 0, 1, 2, … so the first licence id is TestLicences.LicenceId.
-    private sealed class CountingRandom : RandomNumberGenerator
+    internal sealed class CountingRandom : RandomNumberGenerator
     {
         public override void GetBytes(byte[] data)
         {
@@ -367,11 +409,24 @@ public sealed class LicenceIssuerTests : IDisposable
         }
     }
 
+    private sealed class ThrowingRandom : RandomNumberGenerator
+    {
+        public override void GetBytes(byte[] data) => throw new InvalidOperationException("Random source failed.");
+    }
+
+    private static void AssertCleared(byte[] bytes)
+    {
+        Assert.NotEmpty(bytes);
+        Assert.False(bytes.AsSpan().ContainsAnyExcept((byte)0));
+    }
+
     private sealed class FakeSigningKeyStore : ISigningKeyStore
     {
         public Dictionary<string, byte[]> Keys { get; } = new(StringComparer.Ordinal);
 
         public int WriteCount { get; private set; }
+
+        public byte[]? LastRead { get; private set; }
 
         public bool IsSupported => true;
 
@@ -380,12 +435,12 @@ public sealed class LicenceIssuerTests : IDisposable
         public bool Exists(string keyId) => Keys.ContainsKey(keyId);
 
         // A copy: the issuer zeroes what it reads.
-        public byte[]? Read(string keyId) => Keys.TryGetValue(keyId, out byte[]? key) ? key.ToArray() : null;
+        public byte[]? Read(string keyId) => LastRead = Keys.TryGetValue(keyId, out byte[]? key) ? key.ToArray() : null;
 
-        public void Write(string keyId, byte[] pkcs8)
+        public bool TryCreate(string keyId, byte[] pkcs8)
         {
             WriteCount++;
-            Keys[keyId] = pkcs8.ToArray();
+            return Keys.TryAdd(keyId, pkcs8.ToArray());
         }
     }
 }
