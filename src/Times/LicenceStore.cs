@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace Times;
@@ -167,6 +168,7 @@ internal sealed partial class MacKeychainItem
 
     public static readonly MacKeychainItem Default = new(new NativeCalls());
 
+    private static readonly Lock TransactionLock = new();
     private readonly INativeCalls native;
 
     internal MacKeychainItem(INativeCalls native)
@@ -178,40 +180,23 @@ internal sealed partial class MacKeychainItem
     public T? Read<T>(string service, string account, int maxBytes, Func<IntPtr, ReadOnlySpan<byte>, T> read)
         where T : class => Read(IntPtr.Zero, service, account, maxBytes, read);
 
-    // New signing keys belong to the default keychain. An older key can still live elsewhere on the search list.
-    public T? ReadFromDefaultFirst<T>(string service, string account, int maxBytes, Func<IntPtr, ReadOnlySpan<byte>, T> read)
-        where T : class
+    internal T? Read<T>(IntPtr keychain, string service, string account, int maxBytes,
+        Func<IntPtr, ReadOnlySpan<byte>, T> read) where T : class
     {
-        int status = native.CopyDefaultKeychain(out IntPtr target);
-        if (status != ErrSecNoDefaultKeychain)
-        {
-            Check(status, ReadFailed);
-            try
-            {
-                T? result = Read(target, service, account, maxBytes, read);
-                if (result is not null)
-                {
-                    return result;
-                }
-            }
-            finally
-            {
-                native.Release(target);
-            }
-        }
-
-        return Read(service, account, maxBytes, read);
+        T? result = null;
+        WithItemData(keychain, service, account, maxBytes, (item, bytes) => result = read(item, bytes));
+        return result;
     }
 
-    internal unsafe T? Read<T>(IntPtr keychain, string service, string account, int maxBytes,
-        Func<IntPtr, ReadOnlySpan<byte>, T> read) where T : class
+    private unsafe bool WithItemData(IntPtr keychain, string service, string account, int maxBytes,
+        Action<IntPtr, ReadOnlySpan<byte>> read)
     {
         uint length = 0;
         IntPtr data = IntPtr.Zero;
         int status = native.Find(keychain, service, account, (IntPtr)(&length), (IntPtr)(&data), out IntPtr item);
         if (status == ErrSecItemNotFound)
         {
-            return null;
+            return false;
         }
 
         if (status != ErrSecSuccess)
@@ -226,7 +211,8 @@ internal sealed partial class MacKeychainItem
                 throw new TokenStoreException("The macOS Keychain item is too large.");
             }
 
-            return read(item, new ReadOnlySpan<byte>(data.ToPointer(), (int)length));
+            read(item, new ReadOnlySpan<byte>(data.ToPointer(), (int)length));
+            return true;
         }
         finally
         {
@@ -265,10 +251,13 @@ internal sealed partial class MacKeychainItem
             IntPtr access = native.CreateAccess(trustedPath, service);
             try
             {
-                // The native add arbitrates duplicates in target. Before making it visible,
-                // check the other searchable keychains for legacy IDs, even if target is searched first.
-                return native.WriteTransaction(target, () => TryAdd(target, service, account, data, access)
-                    && !native.OtherKeychains(target).Any(other => Exists(other, service, account)));
+                return native.WithSearchList(target, others =>
+                {
+                    lock (TransactionLock)
+                    {
+                        return AddWithSearchListLocked(target, others, service, account, data, access);
+                    }
+                });
             }
             finally
             {
@@ -281,32 +270,146 @@ internal sealed partial class MacKeychainItem
         }
     }
 
-    /// <summary>Updates only the data of the item held by <see cref="Read{T}"/>.</summary>
-    public void UpdateData(IntPtr item, ReadOnlyMemory<byte> data)
+    private bool AddWithSearchListLocked(IntPtr target, IReadOnlyList<IntPtr> others, string service, string account,
+        byte[] data, IntPtr access)
     {
+        // Paths have the same order across processes, even with different defaults or search orders.
+        // The lookup and the target commit both run while every searchable database is locked.
+        IEnumerable<(IntPtr Keychain, byte[] Path)> ordered = others.Append(target)
+            .Select(keychain => (Keychain: keychain, Path: native.KeychainPath(keychain)))
+            .OrderBy(entry => entry.Path, Comparer<byte[]>.Create((a, b) => a.AsSpan().SequenceCompareTo(b)));
+        Stack<IDisposable> held = new(others.Count + 1);
+        IFileTransaction? targetTransaction = null;
         try
         {
-            Check(native.CopyItemKeychain(item, out IntPtr owner), MigrationFailed);
-            try
+            foreach ((IntPtr keychain, byte[] path) in ordered)
             {
-                native.WriteTransaction(owner, () =>
+                if (keychain == target)
                 {
-                    IntPtr partition = native.CopyPartition(item);
+                    targetTransaction = native.BeginTransaction(keychain);
+                    held.Push(targetTransaction);
+                }
+                else
+                {
+                    held.Push(native.LockForLookup(keychain, path));
+                }
+            }
+
+            if (Exists(target, service, account) || others.Any(other => Exists(other, service, account))
+                || !TryAdd(target, service, account, data, access))
+            {
+                return false;
+            }
+
+            targetTransaction!.Commit();
+            return true;
+        }
+        finally
+        {
+            foreach (IDisposable guard in held)
+            {
+                guard.Dispose();
+            }
+        }
+    }
+
+    /// <summary>Returns the decoded data and migrates a writable item if its encoding changed.</summary>
+    public byte[]? ReadAndMigrate(IntPtr search, string service, string account, int maxBytes, bool writable,
+        Func<ReadOnlySpan<byte>, byte[]> decode)
+    {
+        byte[]? decoded = null;
+        byte[]? expected = null;
+        IntPtr owner = IntPtr.Zero;
+        IntPtr recordId = IntPtr.Zero;
+        try
+        {
+            void Decode(IntPtr item, ReadOnlySpan<byte> bytes)
+            {
+                decoded = decode(bytes);
+                if (writable && !CryptographicOperations.FixedTimeEquals(bytes, decoded))
+                {
+                    Check(native.CopyItemKeychain(item, out owner), MigrationFailed);
+                    Check(native.CopyRecordId(item, out recordId), MigrationFailed);
+                    expected = bytes.ToArray();
+                }
+            }
+
+            if (!WithItemData(search, service, account, maxBytes, Decode) && search == IntPtr.Zero)
+            {
+                // A default outside the configured search list can hold an issuer-created key.
+                // Always give existing keys in the configured order the first lookup.
+                int status = native.CopyDefaultKeychain(out IntPtr target);
+                if (status != ErrSecNoDefaultKeychain)
+                {
+                    Check(status, ReadFailed);
                     try
                     {
-                        Check(native.ModifyAttributesAndData(item, IntPtr.Zero, data), MigrationFailed);
-                        native.PreservePartition(item, partition);
-                        return true;
+                        WithItemData(target, service, account, maxBytes, Decode);
                     }
                     finally
                     {
-                        native.Release(partition);
+                        native.Release(target);
                     }
-                });
+                }
             }
-            finally
+
+            if (expected is not null)
             {
-                native.Release(owner);
+                // Release the initial item before looking it up again. Security.framework
+                // caches live item references by primary key, including their old record handles.
+                Migrate(owner, recordId, service, account, expected, decoded!);
+            }
+
+            return decoded;
+        }
+        catch
+        {
+            CryptographicOperations.ZeroMemory(decoded);
+            throw;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(expected);
+            native.Release(recordId);
+            native.Release(owner);
+        }
+    }
+
+    private void Migrate(IntPtr owner, IntPtr recordId, string service, string account, byte[] expected, byte[] data)
+    {
+        try
+        {
+            lock (TransactionLock)
+            {
+                using IFileTransaction transaction = native.BeginTransaction(owner);
+                bool found = WithItemData(owner, service, account, Math.Max(expected.Length, data.Length), (current, bytes) =>
+                {
+                    if (CryptographicOperations.FixedTimeEquals(bytes, data))
+                    {
+                        return; // Another issuer finished this migration.
+                    }
+
+                    Check(native.CopyRecordId(current, out IntPtr currentId), MigrationFailed);
+                    try
+                    {
+                        if (!native.Equal(recordId, currentId) || !CryptographicOperations.FixedTimeEquals(bytes, expected))
+                        {
+                            throw new TokenStoreException(MigrationFailed);
+                        }
+                    }
+                    finally
+                    {
+                        native.Release(currentId);
+                    }
+
+                    native.CheckAccessForUpdate(owner, current);
+                    Check(native.ModifyAttributesAndData(current, IntPtr.Zero, data), MigrationFailed);
+                    transaction.Commit();
+                });
+                if (!found)
+                {
+                    throw new TokenStoreException(MigrationFailed);
+                }
             }
         }
         catch (TokenStoreException)
@@ -480,10 +583,13 @@ internal sealed partial class MacKeychainItem
         public int Find(IntPtr keychain, string service, string account, IntPtr length, IntPtr data, out IntPtr item);
         public int CopyDefaultKeychain(out IntPtr keychain);
         public int CopyItemKeychain(IntPtr item, out IntPtr keychain);
-        public IEnumerable<IntPtr> OtherKeychains(IntPtr target);
-        public bool WriteTransaction(IntPtr keychain, Func<bool> change);
-        public IntPtr CopyPartition(IntPtr item);
-        public void PreservePartition(IntPtr item, IntPtr original);
+        public bool WithSearchList(IntPtr target, Func<IReadOnlyList<IntPtr>, bool> action);
+        public byte[] KeychainPath(IntPtr keychain);
+        public IDisposable LockForLookup(IntPtr keychain, byte[] path);
+        public IFileTransaction BeginTransaction(IntPtr keychain);
+        public int CopyRecordId(IntPtr item, out IntPtr recordId);
+        public bool Equal(IntPtr first, IntPtr second);
+        public void CheckAccessForUpdate(IntPtr owner, IntPtr item);
         public IntPtr CreateAccess(string path, string description);
         public int CreateFromContent(uint itemClass, ref AttributeList attributes, byte[] data, IntPtr keychain,
             IntPtr access, out IntPtr item);
@@ -493,7 +599,7 @@ internal sealed partial class MacKeychainItem
         public void Release(IntPtr reference);
     }
 
-    private sealed partial class NativeCalls : INativeCalls
+    internal sealed partial class NativeCalls : INativeCalls
     {
         public int Find(IntPtr keychain, string service, string account, IntPtr length, IntPtr data, out IntPtr item)
         {
@@ -507,19 +613,26 @@ internal sealed partial class MacKeychainItem
 
         public int CopyItemKeychain(IntPtr item, out IntPtr keychain) => SecKeychainItemCopyKeychain(item, out keychain);
 
-        public IEnumerable<IntPtr> OtherKeychains(IntPtr target)
+        public int CopyRecordId(IntPtr item, out IntPtr recordId) => SecKeychainItemCopyRecordIdentifier(item, out recordId);
+
+        public bool Equal(IntPtr first, IntPtr second) => CFEqual(first, second) != 0;
+
+        public bool WithSearchList(IntPtr target, Func<IReadOnlyList<IntPtr>, bool> action)
         {
             Check(SecKeychainCopySearchList(out IntPtr list), ReadFailed);
             try
             {
+                List<IntPtr> others = [];
                 for (nint i = 0; i < CFArrayGetCount(list); i++)
                 {
                     IntPtr candidate = CFArrayGetValueAtIndex(list, i);
-                    if (CFEqual(candidate, target) == 0)
+                    if (CFEqual(candidate, target) == 0 && !others.Any(other => CFEqual(candidate, other) != 0))
                     {
-                        yield return candidate;
+                        others.Add(candidate);
                     }
                 }
+
+                return action(others);
             }
             finally
             {
@@ -553,6 +666,9 @@ internal sealed partial class MacKeychainItem
 
     [LibraryImport(Security)]
     private static partial int SecKeychainItemCopyKeychain(IntPtr item, out IntPtr keychain);
+
+    [LibraryImport(Security)]
+    private static partial int SecKeychainItemCopyRecordIdentifier(IntPtr item, out IntPtr identifier);
 
     [LibraryImport(Security)]
     private static partial int SecKeychainCopySearchList(out IntPtr list);

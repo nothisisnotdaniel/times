@@ -1,8 +1,10 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Buffers.Text;
 using System.Formats.Asn1;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
-using System.Text.Unicode;
+using System.Text;
 
 namespace Times.LicenceIssuer;
 
@@ -66,6 +68,11 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
     // Complete DER encodings of id-ecPublicKey and prime256v1, respectively.
     private static ReadOnlySpan<byte> EcPublicKeyOid => [0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01];
     private static ReadOnlySpan<byte> P256Oid => [0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
+    private static ReadOnlySpan<byte> P256Order =>
+    [
+        0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xbc, 0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84, 0xf3, 0xb9, 0xca, 0xc2, 0xfc, 0x63, 0x25, 0x51,
+    ];
 
     private readonly string? trustedPath;
     private readonly MacKeychainItem keychain;
@@ -82,7 +89,10 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
 
     public bool Exists(string keyId) => keychain.Exists(Service, keyId);
 
-    public byte[]? Read(string keyId) => keychain.ReadFromDefaultFirst(Service, keyId, MaxBytes, ReadKey);
+    public byte[]? Read(string keyId) => Read(IntPtr.Zero, keyId);
+
+    internal byte[]? Read(IntPtr search, string keyId) =>
+        keychain.ReadAndMigrate(search, Service, keyId, MaxBytes, trustedPath is not null, ReadKey);
 
     public bool TryCreate(string keyId, byte[] pkcs8)
     {
@@ -94,7 +104,7 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
         return keychain.TryCreate(Service, keyId, pkcs8, trustedPath);
     }
 
-    private byte[] ReadKey(IntPtr item, ReadOnlySpan<byte> stored)
+    private static byte[] ReadKey(ReadOnlySpan<byte> stored)
     {
         // The raw SEQUENCE tag is 0x30. Base64 of that tag starts with 'M'.
         if (stored is [0x30, ..])
@@ -112,11 +122,11 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
             }
         }
 
-        return DecodeLegacy(item, stored.ToArray());
+        return DecodeLegacy(stored.ToArray());
     }
 
     // Owns the mutable copy, including any prefix overwritten by a partial decode.
-    internal byte[] DecodeLegacy(IntPtr item, byte[] encoded)
+    internal static byte[] DecodeLegacy(byte[] encoded)
     {
         try
         {
@@ -127,11 +137,6 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
 
             ReadOnlyMemory<byte> der = encoded.AsMemory(0, length);
             Validate(der);
-            if (trustedPath is not null)
-            {
-                keychain.UpdateData(item, der);
-            }
-
             return der.ToArray();
         }
         finally
@@ -184,6 +189,7 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
         reader.ThrowIfNotEmpty();
         Require(fields.TryReadInt32(out int version) && version == 1);
         Require(fields.TryReadPrimitiveOctetString(out ReadOnlyMemory<byte> scalar) && scalar.Length == 32);
+        Require(scalar.Span.ContainsAnyExcept((byte)0) && scalar.Span.SequenceCompareTo(P256Order) < 0);
         Asn1Tag parameters = new Asn1Tag(TagClass.ContextSpecific, 0);
         if (fields.HasData && fields.PeekTag().HasSameClassAndValue(parameters))
         {
@@ -196,9 +202,28 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
             Require(publicKey.TryReadPrimitiveBitString(out int unused, out ReadOnlyMemory<byte> point)
                 && unused == 0 && !point.IsEmpty);
             publicKey.ThrowIfNotEmpty();
+            CheckPublicPoint(scalar.Span, point.Span);
         }
 
         fields.ThrowIfNotEmpty();
+    }
+
+    private static void CheckPublicPoint(ReadOnlySpan<byte> scalar, ReadOnlySpan<byte> point)
+    {
+        // Import D alone: providers that accept a supplied Q can export it unchanged,
+        // even when it is not D times the generator.
+        byte[] d = scalar.ToArray();
+        try
+        {
+            using ECDsa derived = ECDsa.Create(new ECParameters { Curve = ECCurve.NamedCurves.nistP256, D = d });
+            ECPoint q = derived.ExportParameters(false).Q;
+            Require(point.Length == 65 && point[0] == 4 && point.Slice(1, 32).SequenceEqual(q.X)
+                && point[33..].SequenceEqual(q.Y));
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(d);
+        }
     }
 
     private static void ReadAttributes(AsnReader attributes)
@@ -288,9 +313,42 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
                 case UniversalTagNumber.GeneralizedTime:
                     reader.ReadGeneralizedTime();
                     return;
-                case UniversalTagNumber.UTF8String:
-                    Require(Utf8.IsValid(reader.PeekContentBytes().Span));
+                case UniversalTagNumber.OctetString:
+                    Require(reader.TryReadPrimitiveOctetString(out _));
+                    return;
+                case UniversalTagNumber.RelativeObjectIdentifier:
+                    ValidateOidComponents(reader.PeekContentBytes().Span);
                     break;
+                case UniversalTagNumber.UniversalString:
+                    ReadOnlySpan<byte> utf32 = reader.PeekContentBytes().Span;
+                    Require(utf32.Length % 4 == 0);
+                    for (int i = 0; i < utf32.Length; i += 4)
+                    {
+                        Require(Rune.IsValid(BinaryPrimitives.ReadInt32BigEndian(utf32[i..])));
+                    }
+
+                    break;
+                case UniversalTagNumber.UTF8String:
+                case UniversalTagNumber.BMPString:
+                case UniversalTagNumber.IA5String:
+                case UniversalTagNumber.NumericString:
+                case UniversalTagNumber.PrintableString:
+                case UniversalTagNumber.VisibleString:
+                case UniversalTagNumber.T61String:
+                    Span<char> characters = new char[reader.PeekContentBytes().Length];
+                    try
+                    {
+                        Require(reader.TryReadCharacterString(characters, (UniversalTagNumber)tag.TagValue, out _));
+                    }
+                    finally
+                    {
+                        CryptographicOperations.ZeroMemory(MemoryMarshal.AsBytes(characters));
+                    }
+
+                    return;
+                default:
+                    // No DER content validator for this universal type.
+                    throw new TokenStoreException(Unreadable);
             }
         }
 
@@ -300,7 +358,12 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
     private static void ReadObjectIdentifierBytes(AsnReader reader)
     {
         Require(reader.PeekTag() == Asn1Tag.ObjectIdentifier);
-        ReadOnlySpan<byte> value = reader.PeekContentBytes().Span;
+        ValidateOidComponents(reader.PeekContentBytes().Span);
+        reader.ReadEncodedValue();
+    }
+
+    private static void ValidateOidComponents(ReadOnlySpan<byte> value)
+    {
         Require(!value.IsEmpty);
         bool start = true;
         foreach (byte part in value)
@@ -310,7 +373,6 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
         }
 
         Require(start);
-        reader.ReadEncodedValue();
     }
 
     private static void Require(bool valid)

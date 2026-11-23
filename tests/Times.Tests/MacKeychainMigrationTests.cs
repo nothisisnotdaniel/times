@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using Microsoft.Win32.SafeHandles;
 using Times.LicenceIssuer;
 
 namespace Times.Tests;
@@ -21,7 +22,7 @@ public sealed class MacKeychainMigrationTests
     [MacKeychainTheory]
     [InlineData(false)]
     [InlineData(true)]
-    public void LegacyMigration_PreservesNativeAccessOrRollsBackIfMacOSDeniesRestoration(bool addReaderPartition)
+    public void LegacyMigration_IssuesTwiceWithOriginalAccessOrPreservesCustomPartitions(bool addReaderPartition)
     {
         using TempFolder folder = new TempFolder();
         string path = Path.Combine(folder.Path, "issuer-test.keychain");
@@ -53,27 +54,42 @@ public sealed class MacKeychainMigrationTests
 
             string apphost = Path.Combine(folder.Path, "Times.LicenceIssuer");
             File.WriteAllBytes(apphost, []);
-            MacKeychainSigningKeyStore store = new MacKeychainSigningKeyStore(apphost);
+            TestKeychainStore store = new TestKeychainStore(apphost, keychain);
+            LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]);
+            string ledger = Path.Combine(folder.Path, "ledger.tsv");
             Assert.Equal(0, SecKeychainGetUserInteractionAllowed(out byte previous));
             Assert.Equal(0, SecKeychainSetUserInteractionAllowed(0));
             try
             {
-                byte[] expected = der;
-                try
+                for (int i = 0; i < 2; i++)
                 {
+                    using StringWriter output = new StringWriter();
+                    using StringWriter error = new StringWriter();
+                    using LicenceIssuerTests.CountingRandom random = new LicenceIssuerTests.CountingRandom();
+                    Issuer issuer = new Issuer(output, error, store, random, FixedTimeProvider.At20261027(), ledger);
+                    int result = issuer.Run(["issue", "--kid", Account, "--name", "Ada", "--until", "2027-12-31"]);
+                    if (addReaderPartition && result == 1)
+                    {
+                        Assert.Empty(output.ToString());
+                        Assert.Equal("Signing-key migration failed. Check Keychain write access and retry." + error.NewLine,
+                            error.ToString());
+                        Assert.False(File.Exists(ledger));
+                        Assert.Equal(legacy, MacKeychainItem.Default.Read(keychain, Service, Account, 16384,
+                            static (_, data) => data.ToArray()));
+                        Assert.Equal(before, AccessEntries(path));
+                        return;
+                    }
+
+                    Assert.Equal(0, result);
+                    Assert.Empty(error.ToString());
+                    Assert.True(LicenceKey.TryVerify(output.ToString().Trim(), original, LicenceRevocations.None).IsValid);
                     Assert.Equal(der, MacKeychainItem.Default.Read(keychain, Service, Account, 16384,
-                        (item, data) => store.DecodeLegacy(item, data.ToArray())));
-                }
-                catch (TokenStoreException ex) when (addReaderPartition)
-                {
-                    // macOS may require the keychain password to restore an extra reader.
-                    Assert.Equal("Signing-key migration failed. Check Keychain write access and retry.", ex.Message);
-                    expected = legacy;
+                        static (_, data) => data.ToArray()));
+                    Assert.Equal(before, AccessEntries(path));
                 }
 
-                Assert.Equal(expected, MacKeychainItem.Default.Read(keychain, Service, Account, 16384,
-                    static (_, data) => data.ToArray()));
-                Assert.Equal(before, AccessEntries(path));
+                Assert.Equal(2, File.ReadAllLines(ledger).Length);
+                AssertLookupLocksTheSameFileAsAWriter(keychain, folder.Path);
             }
             finally
             {
@@ -86,6 +102,61 @@ public sealed class MacKeychainMigrationTests
             CFRelease(keychain);
             Assert.Equal(0, status);
         }
+    }
+
+    private static void AssertLookupLocksTheSameFileAsAWriter(IntPtr keychain, string directory)
+    {
+        MacKeychainItem.NativeCalls native = new MacKeychainItem.NativeCalls();
+        string writerLock;
+        using (native.BeginTransaction(keychain))
+        {
+            writerLock = Assert.Single(BusyLockFiles(directory));
+        }
+
+        using (IDisposable guard = native.LockForLookup(keychain, native.KeychainPath(keychain)))
+        {
+            Assert.IsType<SafeFileHandle>(guard); // a read-only guard on the local temporary volume
+            Assert.Equal([writerLock], BusyLockFiles(directory));
+        }
+
+        Assert.Empty(BusyLockFiles(directory));
+    }
+
+    private static string[] BusyLockFiles(string directory)
+    {
+        List<string> busy = [];
+        foreach (string path in Directory.EnumerateFiles(directory, ".fl*"))
+        {
+            int fd = OpenReadOnly(path, 0);
+            Assert.True(fd >= 0);
+            using SafeFileHandle handle = new SafeFileHandle(fd, ownsHandle: true);
+            if (flock(handle, 2 | 4) != 0) // LOCK_EX | LOCK_NB
+            {
+                Assert.Equal(35, Marshal.GetLastPInvokeError()); // EWOULDBLOCK
+                busy.Add(path);
+            }
+        }
+
+        return busy.ToArray();
+    }
+
+    // Bind the issuer's lookup to the fixture's Keychain without changing the user's search order.
+    private sealed class TestKeychainStore : ISigningKeyStore
+    {
+        private readonly MacKeychainSigningKeyStore store;
+        private readonly IntPtr keychain;
+
+        public TestKeychainStore(string apphost, IntPtr keychain)
+        {
+            store = new MacKeychainSigningKeyStore(apphost);
+            this.keychain = keychain;
+        }
+
+        public bool IsSupported => store.IsSupported;
+        public string? WriteRefusal => store.WriteRefusal;
+        public byte[]? Read(string keyId) => store.Read(keychain, keyId);
+        public bool Exists(string keyId) => throw new NotSupportedException();
+        public bool TryCreate(string keyId, byte[] pkcs8) => throw new NotSupportedException();
     }
 
     private static string[] AccessEntries(string path)
@@ -140,6 +211,12 @@ public sealed class MacKeychainMigrationTests
 
     [DllImport(Security)]
     private static extern int SecKeychainDelete(IntPtr keychain);
+
+    [DllImport("libc", EntryPoint = "open")]
+    private static extern int OpenReadOnly([MarshalAs(UnmanagedType.LPUTF8Str)] string path, int flags);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int flock(SafeFileHandle file, int operation);
 
     [DllImport("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")]
     private static extern void CFRelease(IntPtr reference);
