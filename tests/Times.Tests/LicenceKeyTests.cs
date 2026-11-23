@@ -112,6 +112,16 @@ public sealed class LicenceKeyTests : IDisposable
         Assert.Equal(LicenceKey.Malformed, Verify(token + "=").Problem);
     }
 
+    [Fact]
+    public void NonzeroUnusedBits_InPayloadOrSignature_AreMalformed()
+    {
+        string token = licences.Token();
+        int dot = token.IndexOf('.', StringComparison.Ordinal);
+
+        Assert.Equal(LicenceKey.Malformed, Verify(LicenceKey.Prefix + "AB" + token[dot..]).Problem);
+        Assert.Equal(LicenceKey.Malformed, Verify(token[..^1] + "B").Problem);
+    }
+
     // AC-1: a signature in DER form (not the 64-byte IEEE P1363 form) is refused.
     [Fact]
     public void DerSignature_Fails()
@@ -227,6 +237,9 @@ public sealed class LicenceKeyTests : IDisposable
 
     [Theory]
     [InlineData("""{"k\u0069d":"\u0066uture","extra":{"kid":"test"}}""", LicenceKey.UnknownKey)]
+    [InlineData("""{"kid":"future","\ud800":0}""", LicenceKey.UnknownKey)]
+    [InlineData("""{"\ud800":0,"kid":"future"}""", LicenceKey.UnknownKey)]
+    [InlineData("""{"kid":"future","\ud800":0,"k\u0069d":"test"}""", LicenceKey.BadSignature)]
     [InlineData("""{"extra":{"kid":"future"}}""", LicenceKey.BadSignature)]
     [InlineData("""[{"kid":"future"}]""", LicenceKey.BadSignature)]
     [InlineData("""{"kid":"future","k\u0069d":"future"}""", LicenceKey.BadSignature)]

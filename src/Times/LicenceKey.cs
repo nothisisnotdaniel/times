@@ -184,18 +184,12 @@ internal static partial class LicenceKey
     internal static bool TryDecode(string text, out byte[] bytes)
     {
         bytes = [];
-        if (text.Length == 0 || text.Length % 4 == 1 || !text.All(IsBase64UrlChar))
+        if (text.Length == 0 || !text.All(IsBase64UrlChar) || !Base64Url.IsValid(text))
         {
             return false;
         }
 
-        byte[] decoded = Base64Url.DecodeFromChars(text);
-        if (!string.Equals(Base64Url.EncodeToString(decoded), text, StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        bytes = decoded;
+        bytes = Base64Url.DecodeFromChars(text);
         return true;
     }
 
@@ -235,7 +229,7 @@ internal static partial class LicenceKey
             string? kid = null;
             foreach (JsonProperty property in root.EnumerateObject())
             {
-                if (!property.NameEquals("kid"u8))
+                if (!IsKeyIdProperty(property))
                 {
                     continue;
                 }
@@ -253,6 +247,19 @@ internal static partial class LicenceKey
         catch (Exception ex) when (ex is DecoderFallbackException or JsonException or InvalidOperationException)
         {
             return null;
+        }
+    }
+
+    private static bool IsKeyIdProperty(JsonProperty property)
+    {
+        try
+        {
+            return property.NameEquals("kid"u8);
+        }
+        catch (InvalidOperationException)
+        {
+            // A name with an unpaired surrogate escape cannot spell "kid".
+            return false;
         }
     }
 
