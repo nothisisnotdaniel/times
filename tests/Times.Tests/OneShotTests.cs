@@ -376,6 +376,7 @@ public sealed class OneShotTests : IDisposable
     [InlineData("garbage", LicenceKey.Malformed)]
     [InlineData("tampered", LicenceKey.BadSignature)]
     [InlineData("unknown", LicenceKey.UnknownKey)]
+    [InlineData("future", "it was signed with an unknown key")]
     [InlineData("revoked", LicenceKey.Revoked)]
     public void ProActivate_UnusableKey_RedReason_ExitOne_StoreAndFileUnchanged(string kind, string reason)
     {
@@ -390,14 +391,16 @@ public sealed class OneShotTests : IDisposable
             "garbage" => "CTX1-not-a-key-SECRETISH",
             "tampered" => stranger.Token(),
             "unknown" => licences.Token(kid: "other"),
+            "future" => stranger.Token(kid: "future"),
             _ => licences.Token(),
         };
 
         (int exit, string output) = ProShot(store, licences.Pro(store, ProBuilt, TestLicences.LicenceId), "pro", "activate", key);
 
+        string expected = $"pro: this licence key cannot be used: {reason}. Nothing was stored.";
         Assert.Equal(1, exit);
-        Assert.Equal([$"pro: this licence key cannot be used: {reason}. Nothing was stored."], PlainLines(output));
-        Assert.Matches(Red + "pro: this licence key cannot be used", output);
+        Assert.Equal([expected], PlainLines(output));
+        Assert.Matches(Red + Regex.Escape(expected), output);
         Assert.DoesNotContain(key, output, StringComparison.Ordinal);
         Assert.DoesNotContain("SECRETISH", output, StringComparison.Ordinal);
         Assert.Empty(store.Writes);

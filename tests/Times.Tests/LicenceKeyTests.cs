@@ -34,13 +34,20 @@ public sealed class LicenceKeyTests : IDisposable
     {
         string token = licences.Token();
         Assert.True(LicenceKey.TrySplit(token, out byte[] payload, out byte[] signature));
+        int kidStart = payload.AsSpan().IndexOf(Encoding.UTF8.GetBytes(TestLicences.KeyId));
+        Assert.NotEqual(-1, kidStart);
 
         for (int i = 0; i < payload.Length; i++)
         {
             byte[] changed = (byte[])payload.Clone();
             changed[i] ^= 0x01;
             string tampered = LicenceKey.Prefix + LicenceKey.Encode(changed) + "." + LicenceKey.Encode(signature);
-            Assert.Equal(LicenceKey.BadSignature, Verify(tampered).Problem);
+            // Flipping the low bit of any letter in "test" produces another lowercase letter.
+            string expected = i >= kidStart && i < kidStart + TestLicences.KeyId.Length
+                ? LicenceKey.UnknownKey : LicenceKey.BadSignature;
+            LicenceCheck check = Verify(tampered);
+            Assert.Null(check.Licence);
+            Assert.Equal(expected, check.Problem);
         }
 
         for (int i = 0; i < signature.Length; i++)
@@ -48,7 +55,9 @@ public sealed class LicenceKeyTests : IDisposable
             byte[] changed = (byte[])signature.Clone();
             changed[i] ^= 0x80;
             string tampered = LicenceKey.Prefix + LicenceKey.Encode(payload) + "." + LicenceKey.Encode(changed);
-            Assert.Equal(LicenceKey.BadSignature, Verify(tampered).Problem);
+            LicenceCheck check = Verify(tampered);
+            Assert.Null(check.Licence);
+            Assert.Equal(LicenceKey.BadSignature, check.Problem);
         }
     }
 
@@ -101,6 +110,16 @@ public sealed class LicenceKeyTests : IDisposable
         }
 
         Assert.Equal(LicenceKey.Malformed, Verify(token + "=").Problem);
+    }
+
+    [Fact]
+    public void NonzeroUnusedBits_InPayloadOrSignature_AreMalformed()
+    {
+        string token = licences.Token();
+        int dot = token.IndexOf('.', StringComparison.Ordinal);
+
+        Assert.Equal(LicenceKey.Malformed, Verify(LicenceKey.Prefix + "AB" + token[dot..]).Problem);
+        Assert.Equal(LicenceKey.Malformed, Verify(token[..^1] + "B").Problem);
     }
 
     // AC-1: a signature in DER form (not the 64-byte IEEE P1363 form) is refused.
@@ -181,11 +200,15 @@ public sealed class LicenceKeyTests : IDisposable
     [Fact]
     public void InvalidUtf8_Fails()
     {
-        byte[] payload = Encoding.UTF8.GetBytes(TestLicences.PayloadJson(name: "Ada X"));
+        using TestLicences stranger = new TestLicences();
+        byte[] payload = Encoding.UTF8.GetBytes(TestLicences.PayloadJson(kid: "future", name: "Ada X"));
         int x = Array.IndexOf(payload, (byte)'X');
         payload[x] = 0xFF;
 
         Assert.Equal(LicenceKey.BadContents, Verify(licences.Sign(payload)).Problem);
+        LicenceCheck check = Verify(stranger.Sign(payload));
+        Assert.Null(check.Licence);
+        Assert.Equal(LicenceKey.BadSignature, check.Problem);
     }
 
     // AC-2
@@ -196,17 +219,56 @@ public sealed class LicenceKeyTests : IDisposable
     }
 
     // AC-2: a token from a key that is not in the table never verifies.
-    [Fact]
-    public void TokenFromAnotherKey_DoesNotVerify()
+    [Theory]
+    [InlineData(TestLicences.KeyId, LicenceKey.BadSignature)]
+    [InlineData("future", LicenceKey.UnknownKey)]
+    public void TokenFromAnotherKey_DoesNotVerify(string kid, string reason)
+    {
+        using TestLicences stranger = new TestLicences();
+        string token = stranger.Token(kid: kid);
+
+        LicenceCheck check = Verify(token);
+
+        Assert.Null(check.Licence);
+        Assert.Equal(reason, check.Problem);
+        Assert.Equal(LicenceKey.UnknownKey,
+            LicenceKey.TryVerify(token, LicencePublicKeys.None, LicenceRevocations.None).Problem);
+    }
+
+    [Theory]
+    [InlineData("""{"k\u0069d":"\u0066uture","extra":{"kid":"test"}}""", LicenceKey.UnknownKey)]
+    [InlineData("""{"kid":"future","\ud800":0}""", LicenceKey.UnknownKey)]
+    [InlineData("""{"\ud800":0,"kid":"future"}""", LicenceKey.UnknownKey)]
+    [InlineData("""{"kid":"future","\ud800":0,"k\u0069d":"test"}""", LicenceKey.BadSignature)]
+    [InlineData("""{"extra":{"kid":"future"}}""", LicenceKey.BadSignature)]
+    [InlineData("""[{"kid":"future"}]""", LicenceKey.BadSignature)]
+    [InlineData("""{"kid":"future","k\u0069d":"future"}""", LicenceKey.BadSignature)]
+    [InlineData("""{"kid":null,"kid":"future"}""", LicenceKey.BadSignature)]
+    [InlineData("""{"kid":123}""", LicenceKey.BadSignature)]
+    [InlineData("""{"kid":"Future!"}""", LicenceKey.BadSignature)]
+    [InlineData("""{"kid":"\ud800"}""", LicenceKey.BadSignature)]
+    [InlineData("""{"kid":"future"} trailing""", LicenceKey.BadSignature)]
+    public void UnverifiedJson_UsesOnlyASingleValidTopLevelKid(string payload, string reason)
     {
         using TestLicences stranger = new TestLicences();
 
-        LicenceCheck check = Verify(stranger.Token());
+        LicenceCheck check = Verify(stranger.Sign(payload));
 
-        Assert.False(check.IsValid);
+        Assert.Null(check.Licence);
+        Assert.Equal(reason, check.Problem);
+    }
+
+    [Fact]
+    public void VerifiedSignature_ClaimingAnotherListedKey_FailsAsBadSignature()
+    {
+        using TestLicences other = new TestLicences();
+        LicencePublicKeys keys = LicencePublicKeys.FromTable(
+            [(TestLicences.KeyId, licences.Pem), ("other", other.Pem)]);
+
+        LicenceCheck check = LicenceKey.TryVerify(licences.Token(kid: "other"), keys, LicenceRevocations.None);
+
+        Assert.Null(check.Licence);
         Assert.Equal(LicenceKey.BadSignature, check.Problem);
-        Assert.Equal(LicenceKey.UnknownKey,
-            LicenceKey.TryVerify(stranger.Token(), LicencePublicKeys.None, LicenceRevocations.None).Problem);
     }
 
     // AC-2

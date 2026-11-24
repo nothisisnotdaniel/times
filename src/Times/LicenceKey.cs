@@ -68,7 +68,8 @@ internal sealed class LicenceCheck
 /// <see cref="MaxLength"/> characters. The payload is UTF-8 JSON with exactly the properties
 /// <c>v</c>, <c>kid</c>, <c>lid</c>, <c>name</c>, <c>ed</c>, <c>until</c> and <c>issued</c>; the signature is
 /// ECDSA P-256 over SHA-256 of the exact payload bytes in IEEE P1363 form (64 bytes). The signature is
-/// checked before any JSON is parsed. Context reads the same format.
+/// checked before any JSON is parsed. On a signature failure, the claimed <c>kid</c> can only select
+/// the rejection reason. Context reads the same format.
 /// </summary>
 internal static partial class LicenceKey
 {
@@ -99,8 +100,8 @@ internal static partial class LicenceKey
 
     /// <summary>
     /// Checks <paramref name="token"/> against <paramref name="keys"/> and <paramref name="revocations"/>.
-    /// Never throws; a failure carries one fixed reason. The signature must verify with a key of the table
-    /// before the payload is parsed, and the payload's <c>kid</c> must then name that same key.
+    /// Returns a fixed reason for any failure without throwing. A licence requires a matching signature,
+    /// valid contents and a <c>kid</c> that names the signer.
     /// </summary>
     public static LicenceCheck TryVerify(string? token, LicencePublicKeys keys, LicenceRevocations revocations)
     {
@@ -130,7 +131,8 @@ internal static partial class LicenceKey
         string? signedBy = keys.FindSigner(payload, signature);
         if (signedBy is null)
         {
-            return LicenceCheck.Invalid(BadSignature);
+            string? claimedId = ReadClaimedKeyId(payload);
+            return LicenceCheck.Invalid(claimedId is not null && !keys.Contains(claimedId) ? UnknownKey : BadSignature);
         }
 
         Licence? licence = Parse(payload);
@@ -182,18 +184,12 @@ internal static partial class LicenceKey
     internal static bool TryDecode(string text, out byte[] bytes)
     {
         bytes = [];
-        if (text.Length == 0 || text.Length % 4 == 1 || !text.All(IsBase64UrlChar))
+        if (text.Length == 0 || !text.All(IsBase64UrlChar) || !Base64Url.IsValid(text))
         {
             return false;
         }
 
-        byte[] decoded = Base64Url.DecodeFromChars(text);
-        if (!string.Equals(Base64Url.EncodeToString(decoded), text, StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        bytes = decoded;
+        bytes = Base64Url.DecodeFromChars(text);
         return true;
     }
 
@@ -216,6 +212,56 @@ internal static partial class LicenceKey
         DateOnly.TryParseExact(text, DateFormat, CultureInfo.InvariantCulture, DateTimeStyles.None, out date);
 
     public static string FormatDate(DateOnly date) => date.ToString(DateFormat, CultureInfo.InvariantCulture);
+
+    private static string? ReadClaimedKeyId(byte[] payload)
+    {
+        try
+        {
+            // JsonDocument decodes strings on access. Check UTF-8 even in fields we skip.
+            StrictUtf8.GetCharCount(payload);
+            using JsonDocument document = JsonDocument.Parse(payload, new JsonDocumentOptions { MaxDepth = MaxLength });
+            JsonElement root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+
+            string? kid = null;
+            foreach (JsonProperty property in root.EnumerateObject())
+            {
+                if (!IsKeyIdProperty(property))
+                {
+                    continue;
+                }
+
+                if (kid is not null || property.Value.ValueKind != JsonValueKind.String)
+                {
+                    return null;
+                }
+
+                kid = property.Value.GetString();
+            }
+
+            return IsValidKeyId(kid) ? kid : null;
+        }
+        catch (Exception ex) when (ex is DecoderFallbackException or JsonException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    private static bool IsKeyIdProperty(JsonProperty property)
+    {
+        try
+        {
+            return property.NameEquals("kid"u8);
+        }
+        catch (InvalidOperationException)
+        {
+            // A name with an unpaired surrogate escape cannot spell "kid".
+            return false;
+        }
+    }
 
     // The strict payload parse: one object, each of the seven properties exactly once, nothing else.
     private static Licence? Parse(byte[] payload)
