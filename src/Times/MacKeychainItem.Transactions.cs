@@ -1,5 +1,7 @@
-using System.Buffers;
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace Times;
 
@@ -10,15 +12,13 @@ internal sealed partial class MacKeychainItem
         public void Commit();
     }
 
-    internal sealed partial class NativeCalls
+    internal partial class NativeCalls
     {
         private const uint GetFileDatabase = 6; // CSSM_APPLECSPDL_DB_GET_HANDLE
         private const uint ToggleAutocommit = 0;
         private const uint CommitDatabase = 1;
         private const uint Rollback = 2;
         private const uint TakeFileLock = 3;
-        private const uint PartitionId = 0x10002; // CSSM_ACL_AUTHORIZATION_PARTITION_ID
-        private const uint PartitionedDatabase = 0x200;
 
         [StructLayout(LayoutKind.Sequential)]
         private struct DatabaseHandle
@@ -47,8 +47,7 @@ internal sealed partial class MacKeychainItem
 
         public IDisposable LockForLookup(IntPtr keychain, byte[] path)
         {
-            DatabaseHandle db = FileDatabase(keychain);
-            return (IDisposable?)TryLockLocalFile(path) ?? new FileTransaction(db);
+            return (IDisposable?)TryLockLocalFile(path) ?? BeginTransaction(keychain);
         }
 
         // Security.framework's nested password operations leave the commit to the caller
@@ -96,127 +95,103 @@ internal sealed partial class MacKeychainItem
             }
         }
 
-        public void CheckAccessForUpdate(IntPtr owner, IntPtr item)
+        public int UpdateData(IntPtr owner, IntPtr item, ReadOnlyMemory<byte> data) =>
+            UpdateProtectedPassword(owner, item, data.Span, (uint)data.Length);
+
+        public byte[]? DataStamp(IntPtr item)
         {
-            // The locked read has just decrypted this item. On a partitioned file Keychain
-            // securityd requires the reader's partition to be in its list. A data update copies
-            // the ordinary ACLs and creates a group with just the writer's partition. Therefore
-            // a singleton already matches. A custom list cannot be reproduced by this update.
-            // Check the committed group: cursors cannot find a newly staged group by label.
-            Check(SecKeychainGetKeychainVersion(owner, out uint version), MigrationFailed);
-            Check(SecKeychainItemCopyAccess(item, out IntPtr access), MigrationFailed);
-            IntPtr list = IntPtr.Zero;
+            byte[] digest = new byte[32];
             try
             {
-                Check(SecAccessCopySelectedACLList(access, PartitionId, out list), MigrationFailed);
-                bool hasPartition = false;
-                nint count = list == IntPtr.Zero ? 0 : CFArrayGetCount(list);
-                for (nint i = 0; i < count; i++)
-                {
-                    IntPtr acl = CFArrayGetValueAtIndex(list, i);
-                    // The selected list can also include wildcard authorizations.
-                    uint tagCount = 0;
-                    int status = SecACLGetAuthorizations(acl, [], ref tagCount);
-                    if (status != -50 || tagCount == 0) // errSecParam reports the required capacity
-                    {
-                        Check(status, MigrationFailed);
-                    }
-
-                    uint[] tags = new uint[tagCount];
-                    Check(SecACLGetAuthorizations(acl, tags, ref tagCount), MigrationFailed);
-                    if (tags.Contains(PartitionId))
-                    {
-                        if (hasPartition || tagCount != 1 || !HasSingleReader(acl))
-                        {
-                            throw new TokenStoreException(MigrationFailed);
-                        }
-
-                        hasPartition = true;
-                    }
-                }
-
-                if (hasPartition != (version >= PartitionedDatabase))
-                {
-                    throw new TokenStoreException(MigrationFailed);
-                }
+                return PasswordStamp(item, digest) == 0 ? digest : null;
             }
-            finally
+            catch (Exception ex) when (ex is TypeLoadException or BadImageFormatException)
             {
-                ReleaseIfSet(list);
-                CFRelease(access);
+                return null;
             }
         }
 
-        private static bool HasSingleReader(IntPtr acl)
+        // The writer transaction refreshes its FileDL snapshot. A shared reader lock does
+        // not, so resolve secondary matches in a process with no cached database view.
+        public bool CommittedMatch(IntPtr keychain, string service, string account, string apphost)
         {
-            int status = SecACLCopyContents(acl, out IntPtr apps, out IntPtr descriptor, out ushort flags);
+            byte[] path = KeychainPath(keychain);
             try
             {
-                if (status != ErrSecSuccess || apps != IntPtr.Zero || descriptor == IntPtr.Zero || flags != 0)
+                string filename = new(new UTF8Encoding(false, true).GetChars(path));
+                ProcessStartInfo info = new(apphost)
                 {
-                    return false;
-                }
-
-                // SecACLCopyContents exposes the partition property list as hexadecimal text.
-                nint length = CFStringGetLength(descriptor);
-                if (length is <= 0 or > 65536 || length % 2 != 0)
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                };
+                info.ArgumentList.Add(ProbeArgument);
+                info.ArgumentList.Add(filename);
+                info.ArgumentList.Add(service);
+                info.ArgumentList.Add(account);
+                using Process child = Process.Start(info) ?? throw new TokenStoreException(SaveFailed);
+                child.BeginOutputReadLine();
+                child.BeginErrorReadLine();
+                child.WaitForExit();
+                return child.ExitCode switch
                 {
-                    return false;
-                }
-
-                byte[] hex = new byte[(int)length + 1];
-                byte[] plist = new byte[length / 2];
-                if (CFStringGetCString(descriptor, hex, hex.Length, CFStringEncodingUtf8) == 0 ||
-                    Convert.FromHexString(hex.AsSpan(0, (int)length), plist, out _, out _) != OperationStatus.Done)
-                {
-                    return false;
-                }
-
-                return IsSinglePartitionList(plist);
+                    ProbeFound => true,
+                    ProbeMissing => false,
+                    _ => throw new TokenStoreException(SaveFailed),
+                };
             }
-            finally
+            catch (Exception ex) when (ex is Win32Exception or DecoderFallbackException or IOException)
             {
-                ReleaseIfSet(apps);
-                ReleaseIfSet(descriptor);
+                throw new TokenStoreException(SaveFailed);
             }
         }
 
-        private static bool IsSinglePartitionList(byte[] plist)
+        internal const string ProbeArgument = "--probe-signing-key-id";
+        private const int ProbeFound = 40;
+        private const int ProbeMissing = 41;
+
+        internal static int Probe(string path, string service, string account)
         {
-            IntPtr data = CFDataCreate(0, plist, plist.Length);
-            IntPtr dictionary = IntPtr.Zero;
-            IntPtr name = IntPtr.Zero;
+            if (!Path.IsPathFullyQualified(path) || SecKeychainSetUserInteractionAllowed(0) != 0
+                || SecKeychainOpen(path, out IntPtr keychain) != 0 || keychain == IntPtr.Zero)
+            {
+                return 1;
+            }
+
             try
             {
-                if (data == IntPtr.Zero)
+                const uint ReadPermission = 2; // kSecReadPermStatus
+                if (SecKeychainGetStatus(keychain, out uint status) != 0 || (status & ReadPermission) == 0)
                 {
-                    return false;
+                    return 1;
                 }
 
-                dictionary = CFPropertyListCreateWithData(0, data, 0, 0, 0);
-                if (dictionary == IntPtr.Zero || CFGetTypeID(dictionary) != CFDictionaryGetTypeID()
-                    || CFDictionaryGetCount(dictionary) != 1)
-                {
-                    return false;
-                }
-
-                name = CFStringCreateWithCString(0, "Partitions", CFStringEncodingUtf8);
-                IntPtr entries = name == IntPtr.Zero ? IntPtr.Zero : CFDictionaryGetValue(dictionary, name);
-                if (entries == IntPtr.Zero || CFGetTypeID(entries) != CFArrayGetTypeID() || CFArrayGetCount(entries) != 1)
-                {
-                    return false;
-                }
-
-                IntPtr reader = CFArrayGetValueAtIndex(entries, 0);
-                return CFGetTypeID(reader) == CFStringGetTypeID() && CFStringGetLength(reader) > 0;
+                return Default.Exists(keychain, service, account) ? ProbeFound : ProbeMissing;
+            }
+            catch (TokenStoreException)
+            {
+                return 1;
             }
             finally
             {
-                ReleaseIfSet(name);
-                ReleaseIfSet(dictionary);
-                ReleaseIfSet(data);
+                CFRelease(keychain);
             }
         }
+
+        [LibraryImport("TimesIssuerKeychain", EntryPoint = "TimesUpdateProtectedPassword")]
+        private static partial int UpdateProtectedPassword(IntPtr owner, IntPtr item, ReadOnlySpan<byte> data, uint length);
+
+        [LibraryImport("TimesIssuerKeychain", EntryPoint = "TimesPasswordStamp")]
+        private static partial int PasswordStamp(IntPtr item, [Out] byte[] digest);
+
+        [LibraryImport(Security, StringMarshalling = StringMarshalling.Utf8)]
+        private static partial int SecKeychainOpen(string path, out IntPtr keychain);
+
+        [LibraryImport(Security)]
+        private static partial int SecKeychainSetUserInteractionAllowed(byte allowed);
+
+        [LibraryImport(Security)]
+        private static partial int SecKeychainGetStatus(IntPtr keychain, out uint status);
 
         [LibraryImport(Security)]
         private static partial int SecKeychainGetPath(IntPtr keychain, ref uint length, [Out] byte[] path);
@@ -226,51 +201,5 @@ internal sealed partial class MacKeychainItem
 
         [LibraryImport(Security)]
         private static partial int CSSM_DL_PassThrough(DatabaseHandle database, uint operation, IntPtr input, IntPtr output);
-
-        [LibraryImport(Security)]
-        private static partial int SecKeychainGetKeychainVersion(IntPtr keychain, out uint version);
-
-        [LibraryImport(Security)]
-        private static partial int SecKeychainItemCopyAccess(IntPtr item, out IntPtr access);
-
-        [LibraryImport(Security)]
-        private static partial int SecAccessCopySelectedACLList(IntPtr access, uint right, out IntPtr list);
-
-        [LibraryImport(Security)]
-        private static partial int SecACLGetAuthorizations(IntPtr acl, [Out] uint[] tags, ref uint count);
-
-        [LibraryImport(Security)]
-        private static partial int SecACLCopyContents(IntPtr acl, out IntPtr applications, out IntPtr description, out ushort flags);
-
-        [LibraryImport(CoreFoundation)]
-        private static partial nint CFStringGetLength(IntPtr value);
-
-        [LibraryImport(CoreFoundation)]
-        private static partial byte CFStringGetCString(IntPtr value, [Out] byte[] buffer, nint size, uint encoding);
-
-        [LibraryImport(CoreFoundation)]
-        private static partial IntPtr CFDataCreate(IntPtr allocator, byte[] bytes, nint length);
-
-        [LibraryImport(CoreFoundation)]
-        private static partial IntPtr CFPropertyListCreateWithData(IntPtr allocator, IntPtr data, nuint options,
-            IntPtr format, IntPtr error);
-
-        [LibraryImport(CoreFoundation)]
-        private static partial nuint CFGetTypeID(IntPtr value);
-
-        [LibraryImport(CoreFoundation)]
-        private static partial nuint CFDictionaryGetTypeID();
-
-        [LibraryImport(CoreFoundation)]
-        private static partial nuint CFArrayGetTypeID();
-
-        [LibraryImport(CoreFoundation)]
-        private static partial nuint CFStringGetTypeID();
-
-        [LibraryImport(CoreFoundation)]
-        private static partial nint CFDictionaryGetCount(IntPtr dictionary);
-
-        [LibraryImport(CoreFoundation)]
-        private static partial IntPtr CFDictionaryGetValue(IntPtr dictionary, IntPtr name);
     }
 }

@@ -10,97 +10,378 @@ using Times.LicenceIssuer;
 
 namespace Times.Tests;
 
-public sealed class MacKeychainMigrationTests
+public sealed partial class MacKeychainMigrationTests
 {
     private const string Security = "/System/Library/Frameworks/Security.framework/Security";
     private const string Service = MacKeychainSigningKeyStore.Service;
     private const string Account = "maker";
-    private const string FixturePassword = "temporary-test-keychain";
 
-    // Both commands explicitly target the private temporary keychain. security dump-keychain -a
-    // reads the ACL independently of the production code and does not request the password data.
+    private const string MigrationFailed = "Signing-key migration failed. Check Keychain write access and retry.";
+    private const UnixFileMode OwnerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+
     [MacKeychainTheory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void LegacyMigration_IssuesTwiceWithOriginalAccessOrPreservesCustomPartitions(bool addReaderPartition)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void LegacyMigration_PreservesNativeRecordAndReaders(bool extraReader, bool oneTimeRead)
     {
-        using TempFolder folder = new TempFolder();
-        string path = Path.Combine(folder.Path, "issuer-test.keychain");
-        byte[] password = Encoding.UTF8.GetBytes(FixturePassword);
-        Assert.Equal(0, SecKeychainCreate(path, (uint)password.Length, password, 0, 0, out IntPtr keychain));
+        using Fixture fixture = new();
+        using TempFolder folder = new();
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] der = key.ExportPkcs8PrivateKey();
         try
         {
-            using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
-            byte[] der = key.ExportPkcs8PrivateKey();
-            byte[] legacy = new byte[Base64.GetMaxEncodedToUtf8Length(der.Length)];
-            Assert.Equal(OperationStatus.Done, Base64.EncodeToUtf8(der, legacy, out _, out _));
-            byte[] service = Encoding.UTF8.GetBytes(Service);
-            byte[] account = Encoding.UTF8.GetBytes(Account);
-            Assert.Equal(0, SecKeychainAddGenericPassword(keychain, (uint)service.Length, service, (uint)account.Length,
-                account, (uint)legacy.Length, legacy, 0));
-
-            string[] before = AccessEntries(path);
-            string partition = Assert.Single(before, entry => entry.Contains(" partition_id", StringComparison.Ordinal));
-            Assert.Contains(before, entry => entry.Contains(" decrypt", StringComparison.Ordinal));
-            if (addReaderPartition)
-            {
-                string ids = partition.Split('\n').Single(line => line.TrimStart().StartsWith("description:", StringComparison.Ordinal))
-                    .Trim()["description:".Length..].Replace(" ", "", StringComparison.Ordinal);
-                RunSecurity("set-generic-password-partition-list", "-s", Service, "-a", Account, "-S",
-                    ids + ",teamid:TESTREADER", "-k", FixturePassword, path);
-                before = AccessEntries(path);
-                Assert.Contains(before, entry => entry.Contains("teamid:TESTREADER", StringComparison.Ordinal));
-            }
-
-            string apphost = Path.Combine(folder.Path, "Times.LicenceIssuer");
-            File.WriteAllBytes(apphost, []);
-            TestKeychainStore store = new TestKeychainStore(apphost, keychain);
+            fixture.AddLegacy(der);
+            string[] before = fixture.Readers(extraReader);
+            byte[] identity = fixture.Identity();
             LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]);
+            ReadGrant grant = new();
+            TestKeychainStore store = new(fixture.Reference, grant);
             string ledger = Path.Combine(folder.Path, "ledger.tsv");
-            Assert.Equal(0, SecKeychainGetUserInteractionAllowed(out byte previous));
-            Assert.Equal(0, SecKeychainSetUserInteractionAllowed(0));
-            try
+            for (int i = 0; i < 2; i++)
             {
-                for (int i = 0; i < 2; i++)
-                {
-                    using StringWriter output = new StringWriter();
-                    using StringWriter error = new StringWriter();
-                    using LicenceIssuerTests.CountingRandom random = new LicenceIssuerTests.CountingRandom();
-                    Issuer issuer = new Issuer(output, error, store, random, FixedTimeProvider.At20261027(), ledger);
-                    int result = issuer.Run(["issue", "--kid", Account, "--name", "Ada", "--until", "2027-12-31"]);
-                    if (addReaderPartition && result == 1)
-                    {
-                        Assert.Empty(output.ToString());
-                        Assert.Equal("Signing-key migration failed. Check Keychain write access and retry." + error.NewLine,
-                            error.ToString());
-                        Assert.False(File.Exists(ledger));
-                        Assert.Equal(legacy, MacKeychainItem.Default.Read(keychain, Service, Account, 16384,
-                            static (_, data) => data.ToArray()));
-                        Assert.Equal(before, AccessEntries(path));
-                        return;
-                    }
-
-                    Assert.Equal(0, result);
-                    Assert.Empty(error.ToString());
-                    Assert.True(LicenceKey.TryVerify(output.ToString().Trim(), original, LicenceRevocations.None).IsValid);
-                    Assert.Equal(der, MacKeychainItem.Default.Read(keychain, Service, Account, 16384,
-                        static (_, data) => data.ToArray()));
-                    Assert.Equal(before, AccessEntries(path));
-                }
-
-                Assert.Equal(2, File.ReadAllLines(ledger).Length);
-                AssertLookupLocksTheSameFileAsAWriter(keychain, folder.Path);
+                // Model Allow Once at the read boundary. Each granted read still
+                // goes through Security.framework and the database's actual ACL.
+                grant.Remaining = oneTimeRead ? 1 : null;
+                AssertIssued(store, ledger, original);
+                Assert.True(!oneTimeRead || grant.Remaining == 0);
+                fixture.AssertData(der);
+                Assert.Equal(identity, fixture.Identity());
+                Assert.Equal(before, AccessEntries(fixture.Path));
             }
-            finally
-            {
-                Assert.Equal(0, SecKeychainSetUserInteractionAllowed(previous));
-            }
+
+            Assert.Equal(2, File.ReadAllLines(ledger).Length);
         }
         finally
         {
-            int status = SecKeychainDelete(keychain);
-            CFRelease(keychain);
-            Assert.Equal(0, status);
+            CryptographicOperations.ZeroMemory(der);
+        }
+    }
+
+    [MacKeychainTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DeniedMigration_PreservesNativeRecordAccessAndLedgerForRetry(bool extraReader)
+    {
+        if (!OperatingSystem.IsMacOS())
+        {
+            throw new PlatformNotSupportedException();
+        }
+
+        using Fixture fixture = new();
+        using TempFolder folder = new();
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] der = key.ExportPkcs8PrivateKey();
+        try
+        {
+            fixture.AddLegacy(der);
+            string ledger = Path.Combine(folder.Path, "ledger.tsv");
+            File.WriteAllText(ledger, "previous entry\n");
+            byte[] identity = fixture.Identity();
+            string[] before = fixture.Readers(extraReader);
+            TestKeychainStore store = new(fixture.Reference);
+            File.SetUnixFileMode(fixture.Directory, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+            try
+            {
+                using StringWriter output = new();
+                using StringWriter error = new();
+                Assert.Equal(1, RunIssue(store, ledger, output, error));
+                Assert.Empty(output.ToString());
+                Assert.Equal(MigrationFailed + error.NewLine, error.ToString());
+            }
+            finally
+            {
+                File.SetUnixFileMode(fixture.Directory, OwnerOnly);
+            }
+
+            fixture.AssertData(fixture.Legacy!);
+            Assert.Equal(before, AccessEntries(fixture.Path));
+            Assert.Equal(identity, fixture.Identity());
+            Assert.Equal("previous entry\n", File.ReadAllText(ledger));
+            AssertIssued(store, ledger, LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]));
+            fixture.AssertData(der);
+            Assert.Equal(before, AccessEntries(fixture.Path));
+            Assert.Equal(identity, fixture.Identity());
+            Assert.Equal(2, File.ReadAllLines(ledger).Length);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(der);
+        }
+    }
+
+    [MacKeychainTheory]
+    [InlineData("regular")]
+    [InlineData("symlink")]
+    [InlineData("fifo")]
+    public void LookupGuard_UsesWriterLockAndRefusesUnsafeFiles(string kind)
+    {
+        using Fixture first = new();
+        using Fixture second = new();
+        (Fixture target, Fixture fixture) = string.CompareOrdinal(first.Path, second.Path) < 0
+            ? (first, second) : (second, first);
+        MacKeychainItem.NativeCalls calls = new();
+        AssertLookupLocksTheSameFileAsAWriter(fixture.Reference, fixture.Directory);
+        if (kind == "regular")
+        {
+            return;
+        }
+
+        string lockPath = Assert.Single(Directory.GetFiles(fixture.Directory, ".fl*"));
+        string saved = lockPath + ".original";
+        File.Move(lockPath, saved);
+        try
+        {
+            if (kind == "symlink")
+            {
+                File.CreateSymbolicLink(lockPath, saved);
+            }
+            else
+            {
+                Assert.Equal(0, mkfifo(lockPath, 0x180)); // 0600
+            }
+
+            // The target writer sorts first. Refusing the secondary must release it.
+            Assert.Throws<TokenStoreException>(() => MacKeychainItem.Default.AddWithSearchList(
+                target.Reference, [fixture.Reference], Service, Account, [], 0, IssuerApphost));
+            Assert.Empty(BusyLockFiles(target.Directory));
+        }
+        finally
+        {
+            File.Delete(lockPath);
+            File.Move(saved, lockPath);
+        }
+    }
+
+    private static string IssuerApphost => Path.Combine(AppContext.BaseDirectory, "Times.LicenceIssuer");
+
+    [MacKeychainTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CreateKey_GuardedProbeSeesCommittedSecondary(bool competingInsert)
+    {
+        using Fixture target = new();
+        using Fixture secondary = new();
+        using ECDsa sample = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] der = sample.ExportPkcs8PrivateKey();
+        MacKeychainItem.NativeCalls calls = new();
+        IntPtr access = calls.CreateAccess(IssuerApphost, Service);
+        try
+        {
+            Assert.False(MacKeychainItem.Default.Exists(secondary.Reference, Service, Account));
+            byte[]? id = null;
+            string[]? entries = null;
+            if (competingInsert)
+            {
+                secondary.AddLegacy(der);
+                id = secondary.Identity();
+                entries = secondary.Readers(false);
+            }
+
+            bool created = MacKeychainItem.Default.AddWithSearchList(target.Reference, [secondary.Reference],
+                Service, Account, der, access, IssuerApphost);
+            Assert.Equal(!competingInsert, created);
+            Assert.Equal(created, MacKeychainItem.Default.Exists(target.Reference, Service, Account));
+            if (competingInsert)
+            {
+                secondary.AssertData(secondary.Legacy!);
+                Assert.Equal(id, secondary.Identity());
+                Assert.Equal(entries, AccessEntries(secondary.Path));
+            }
+            else
+            {
+                Assert.Equal(0, calls.Find(target.Reference, Service, Account, out IntPtr marked, createdOnly: true));
+                calls.Release(marked);
+            }
+
+            Assert.Empty(BusyLockFiles(target.Directory));
+            Assert.Empty(BusyLockFiles(secondary.Directory));
+        }
+        finally
+        {
+            calls.Release(access);
+            CryptographicOperations.ZeroMemory(der);
+        }
+    }
+
+    private static int RunIssue(ISigningKeyStore store, string ledger, TextWriter output, TextWriter error)
+    {
+        using LicenceIssuerTests.CountingRandom random = new();
+        Issuer issuer = new(output, error, store, random, FixedTimeProvider.At20261027(), ledger);
+        return issuer.Run(["issue", "--kid", Account, "--name", "Ada", "--until", "2027-12-31"]);
+    }
+
+    private static void AssertIssued(ISigningKeyStore store, string ledger, LicencePublicKeys original)
+    {
+        using StringWriter output = new();
+        using StringWriter error = new();
+        int result = RunIssue(store, ledger, output, error);
+        Assert.True(result == 0, error.ToString());
+        Assert.Empty(error.ToString());
+        Assert.True(LicenceKey.TryVerify(output.ToString().Trim(), original, LicenceRevocations.None).IsValid);
+    }
+
+    private sealed class ReadGrant : MacKeychainItem.NativeCalls
+    {
+        public int? Remaining { get; set; }
+
+        public override int CopyContent(IntPtr item, out uint length, out IntPtr data)
+        {
+            Assert.False(Remaining == 0, "Migration requested another protected read.");
+            Remaining--;
+            return base.CopyContent(item, out length, out data);
+        }
+    }
+
+    private sealed class Fixture : IDisposable
+    {
+        private readonly byte previousInteraction;
+        private readonly string password = Guid.NewGuid().ToString("N");
+        public string Directory { get; }
+        public string Path { get; }
+        public IntPtr Reference { get; }
+        public byte[]? Legacy { get; private set; }
+
+        public Fixture()
+        {
+            if (!OperatingSystem.IsMacOS())
+            {
+                throw new PlatformNotSupportedException();
+            }
+
+            string root = Environment.GetEnvironmentVariable("TIMES_TEST_KEYCHAIN_ROOT")!;
+            string parent = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                "Library", "Keychains");
+            Assert.True(System.IO.Path.IsPathFullyQualified(root));
+            root = System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetFullPath(root));
+            Assert.StartsWith(parent + "/", root, StringComparison.Ordinal);
+            Assert.Equal(OwnerOnly, File.GetUnixFileMode(root));
+            for (DirectoryInfo? entry = new(root); entry is not null && entry.FullName != parent; entry = entry.Parent)
+            {
+                Assert.Null(entry.LinkTarget);
+            }
+
+            Directory = System.IO.Path.Combine(root, Guid.NewGuid().ToString("N"));
+            System.IO.Directory.CreateDirectory(Directory, OwnerOnly);
+            Path = System.IO.Path.Combine(Directory, "issuer.keychain-db");
+            Assert.Equal(0, SecKeychainGetUserInteractionAllowed(out previousInteraction));
+            Assert.Equal(0, SecKeychainSetUserInteractionAllowed(0));
+            byte[] encodedPassword = Encoding.UTF8.GetBytes(password);
+            try
+            {
+                Assert.Equal(0, SecKeychainCreate(Path, (uint)encodedPassword.Length, encodedPassword, 0, 0, out IntPtr reference));
+                Reference = reference;
+                Assert.NotEqual(IntPtr.Zero, Reference);
+                Assert.Equal(0, SecKeychainGetKeychainVersion(Reference, out uint version));
+                Assert.True(version >= 0x200, $"Fixture file Keychain version 0x{version:x} lacks partition support.");
+                Assert.Equal(Path, Encoding.UTF8.GetString(new MacKeychainItem.NativeCalls().KeychainPath(Reference)));
+            }
+            catch
+            {
+                Dispose();
+                throw;
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(encodedPassword);
+            }
+        }
+
+        public void AddLegacy(byte[] der)
+        {
+            Legacy = new byte[Base64.GetMaxEncodedToUtf8Length(der.Length)];
+            Assert.Equal(OperationStatus.Done, Base64.EncodeToUtf8(der, Legacy, out _, out _));
+            byte[] service = Encoding.UTF8.GetBytes(Service);
+            byte[] account = Encoding.UTF8.GetBytes(Account);
+            Assert.Equal(0, SecKeychainAddGenericPassword(Reference, (uint)service.Length, service, (uint)account.Length,
+                account, (uint)Legacy.Length, Legacy, 0));
+        }
+
+        public string[] Readers(bool extra)
+        {
+            string[] before = AccessEntries(Path);
+            string[] partitions = PartitionIds(before);
+            Assert.Contains(before, entry => entry.Contains(" decrypt", StringComparison.Ordinal));
+            if (extra)
+            {
+                string[] expected = [.. partitions, "teamid:TESTREADER"];
+                RunSecurity("set-generic-password-partition-list", "-s", Service, "-a", Account, "-S",
+                    string.Join(',', expected), "-k", password, Path);
+                before = AccessEntries(Path);
+                Assert.Equal(expected.Order(StringComparer.Ordinal), PartitionIds(before).Order(StringComparer.Ordinal));
+            }
+
+            return before;
+        }
+
+        private static string[] PartitionIds(string[] entries)
+        {
+            string partition = Assert.Single(entries, entry => entry.Contains(" partition_id", StringComparison.Ordinal));
+            string description = partition.Split('\n').Select(line => line.Trim())
+                .Single(line => line.StartsWith("description:", StringComparison.Ordinal))["description:".Length..].Trim();
+            Assert.DoesNotContain("invalid partition ID", description, StringComparison.Ordinal);
+            Assert.NotEqual("<NULL>", description);
+            string[] ids = description.Split(',', StringSplitOptions.TrimEntries);
+            Assert.All(ids, id => Assert.NotEmpty(id));
+            return ids;
+        }
+
+        public byte[] Identity()
+        {
+            MacKeychainItem.NativeCalls calls = new();
+            Assert.Equal(0, calls.Find(Reference, Service, Account, out IntPtr item));
+            try
+            {
+                Assert.Equal(0, calls.CopyRecordId(item, out IntPtr id));
+                try
+                {
+                    byte[] bytes = new byte[checked((int)CFDataGetLength(id))];
+                    Assert.NotEmpty(bytes);
+                    Marshal.Copy(CFDataGetBytePtr(id), bytes, 0, bytes.Length);
+                    return bytes;
+                }
+                finally
+                {
+                    calls.Release(id);
+                }
+            }
+            finally
+            {
+                calls.Release(item);
+            }
+        }
+
+        public void AssertData(byte[] expected)
+        {
+            byte[] actual = Assert.IsType<byte[]>(MacKeychainItem.Default.Read(Reference, Service, Account, 16384,
+                static (_, data) => data.ToArray()));
+            try
+            {
+                Assert.True(CryptographicOperations.FixedTimeEquals(expected, actual));
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(actual);
+            }
+        }
+
+        public void Dispose()
+        {
+            try
+            {
+                if (Reference != IntPtr.Zero)
+                {
+                    int result = SecKeychainDelete(Reference);
+                    CFRelease(Reference);
+                    Assert.Equal(0, result);
+                }
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(Legacy);
+                SecKeychainSetUserInteractionAllowed(previousInteraction);
+                System.IO.Directory.Delete(Directory, recursive: true);
+            }
         }
     }
 
@@ -146,9 +427,10 @@ public sealed class MacKeychainMigrationTests
         private readonly MacKeychainSigningKeyStore store;
         private readonly IntPtr keychain;
 
-        public TestKeychainStore(string apphost, IntPtr keychain)
+        public TestKeychainStore(IntPtr keychain, MacKeychainItem.NativeCalls? calls = null)
         {
-            store = new MacKeychainSigningKeyStore(apphost);
+            store = new MacKeychainSigningKeyStore(IssuerApphost, new MacKeychainItem(calls ?? new MacKeychainItem.NativeCalls()));
+            Assert.Null(store.WriteRefusal);
             this.keychain = keychain;
         }
 
@@ -163,9 +445,8 @@ public sealed class MacKeychainMigrationTests
     {
         string record = RunSecurity("dump-keychain", "-a", path).Split("keychain:")
             .Single(item => item.Contains(Service, StringComparison.Ordinal));
-        // Entry order and the system's integrity digest can change on a password-data update.
+        // Compare every ACL, including the integrity entry. Enumeration order is immaterial.
         return Regex.Split(record, @"(?m)^    entry [0-9]+:\s*$").Skip(1)
-            .Where(entry => !entry.Contains("): integrity", StringComparison.Ordinal))
             .Select(entry => entry.Trim()).Order(StringComparer.Ordinal).ToArray();
     }
 
@@ -192,6 +473,10 @@ public sealed class MacKeychainMigrationTests
             {
                 Skip = "Requires the macOS file Keychain.";
             }
+            else if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("TIMES_TEST_KEYCHAIN_ROOT")))
+            {
+                Skip = "Requires an isolated TIMES_TEST_KEYCHAIN_ROOT.";
+            }
         }
     }
 
@@ -208,6 +493,18 @@ public sealed class MacKeychainMigrationTests
 
     [DllImport(Security)]
     private static extern int SecKeychainSetUserInteractionAllowed(byte state);
+
+    [DllImport(Security)]
+    private static extern int SecKeychainGetKeychainVersion(IntPtr keychain, out uint version);
+
+    [DllImport("libc")]
+    private static extern int mkfifo([MarshalAs(UnmanagedType.LPUTF8Str)] string path, ushort mode);
+
+    [DllImport("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")]
+    private static extern nint CFDataGetLength(IntPtr data);
+
+    [DllImport("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")]
+    private static extern IntPtr CFDataGetBytePtr(IntPtr data);
 
     [DllImport(Security)]
     private static extern int SecKeychainDelete(IntPtr keychain);

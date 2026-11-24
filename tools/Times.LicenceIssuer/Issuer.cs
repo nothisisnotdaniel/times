@@ -174,7 +174,7 @@ internal sealed class Issuer
             {
                 token = Sign(pkcs8, kid, licenceId, name, until, issued);
             }
-            catch (CryptographicException)
+            catch (Exception ex) when (ex is CryptographicException or TokenStoreException)
             {
                 return Fail(1, $"The signing key named {kid} cannot be used.");
             }
@@ -272,7 +272,7 @@ internal sealed class Issuer
     {
         byte[] payload = Payload(kid, licenceId, name, until, issued);
         using ECDsa key = ECDsa.Create();
-        key.ImportPkcs8PrivateKey(pkcs8, out _);
+        MacKeychainSigningKeyStore.ImportKey(key, pkcs8);
         byte[] signature = key.SignData(payload, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
         string token = LicenceKey.Prefix + LicenceKey.Encode(payload) + "." + LicenceKey.Encode(signature);
 

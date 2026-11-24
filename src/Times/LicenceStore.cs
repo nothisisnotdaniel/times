@@ -159,6 +159,8 @@ internal sealed partial class MacKeychainItem
     private const uint AccountAttribute = 0x61636374;
     private const uint ServiceAttribute = 0x73766365;
     private const uint LabelAttribute = 0x6c61626c;
+    private const uint GenericAttribute = 0x67656e61;
+    private static ReadOnlySpan<byte> IssuerMarker => "Times.LicenceIssuer/create-key/v1"u8;
     private const uint GenericPasswordClass = 0x67656e70;
     private const uint CFStringEncodingUtf8 = 0x08000100;
 
@@ -188,12 +190,10 @@ internal sealed partial class MacKeychainItem
         return result;
     }
 
-    private unsafe bool WithItemData(IntPtr keychain, string service, string account, int maxBytes,
-        Action<IntPtr, ReadOnlySpan<byte>> read)
+    private bool WithItemData(IntPtr keychain, string service, string account, int maxBytes,
+        Action<IntPtr, ReadOnlySpan<byte>> read, bool createdOnly = false, Action<IntPtr>? beforeRead = null)
     {
-        uint length = 0;
-        IntPtr data = IntPtr.Zero;
-        int status = native.Find(keychain, service, account, (IntPtr)(&length), (IntPtr)(&data), out IntPtr item);
+        int status = native.Find(keychain, service, account, out IntPtr item, createdOnly);
         if (status == ErrSecItemNotFound)
         {
             return false;
@@ -206,28 +206,50 @@ internal sealed partial class MacKeychainItem
 
         try
         {
+            beforeRead?.Invoke(item);
+            ReadContent(item, maxBytes, read);
+            return true;
+        }
+        finally
+        {
+            native.Release(item);
+        }
+    }
+
+    private unsafe void ReadContent(IntPtr item, int maxBytes, Action<IntPtr, ReadOnlySpan<byte>> read)
+    {
+        int status = native.CopyContent(item, out uint length, out IntPtr data);
+        try
+        {
+            Check(status, ReadFailed);
+            if (length != 0 && data == IntPtr.Zero)
+            {
+                throw new TokenStoreException(ReadFailed);
+            }
+
             if (length > maxBytes)
             {
                 throw new TokenStoreException("The macOS Keychain item is too large.");
             }
 
             read(item, new ReadOnlySpan<byte>(data.ToPointer(), (int)length));
-            return true;
         }
         finally
         {
-            NativeMemory.Clear(data.ToPointer(), length);
-            native.FreeContent(data);
-            native.Release(item);
+            if (data != IntPtr.Zero)
+            {
+                NativeMemory.Clear(data.ToPointer(), length);
+                native.FreeContent(data);
+            }
         }
     }
 
     /// <summary>True if an item with this service and account exists (its data is never copied out).</summary>
     public bool Exists(string service, string account) => Exists(IntPtr.Zero, service, account);
 
-    private bool Exists(IntPtr keychain, string service, string account)
+    internal bool Exists(IntPtr keychain, string service, string account)
     {
-        int status = native.Find(keychain, service, account, IntPtr.Zero, IntPtr.Zero, out IntPtr item);
+        int status = native.Find(keychain, service, account, out IntPtr item);
         if (status == ErrSecItemNotFound)
         {
             return false;
@@ -251,13 +273,8 @@ internal sealed partial class MacKeychainItem
             IntPtr access = native.CreateAccess(trustedPath, service);
             try
             {
-                return native.WithSearchList(target, others =>
-                {
-                    lock (TransactionLock)
-                    {
-                        return AddWithSearchListLocked(target, others, service, account, data, access);
-                    }
-                });
+                return native.WithSearchList(target, others => AddWithSearchList(target, others, service, account,
+                    data, access, trustedPath));
             }
             finally
             {
@@ -270,8 +287,17 @@ internal sealed partial class MacKeychainItem
         }
     }
 
+    internal bool AddWithSearchList(IntPtr target, IReadOnlyList<IntPtr> others, string service, string account,
+        byte[] data, IntPtr access, string apphost)
+    {
+        lock (TransactionLock)
+        {
+            return AddWithSearchListLocked(target, others, service, account, data, access, apphost);
+        }
+    }
+
     private bool AddWithSearchListLocked(IntPtr target, IReadOnlyList<IntPtr> others, string service, string account,
-        byte[] data, IntPtr access)
+        byte[] data, IntPtr access, string apphost)
     {
         // Paths have the same order across processes, even with different defaults or search orders.
         // The lookup and the target commit both run while every searchable database is locked.
@@ -295,8 +321,9 @@ internal sealed partial class MacKeychainItem
                 }
             }
 
-            if (Exists(target, service, account) || others.Any(other => Exists(other, service, account))
-                || !TryAdd(target, service, account, data, access))
+            if (Exists(target, service, account)
+                || others.Any(other => native.CommittedMatch(other, service, account, apphost))
+                || !TryAdd(target, service, account, data, access, issuerCreated: true))
             {
                 return false;
             }
@@ -319,10 +346,15 @@ internal sealed partial class MacKeychainItem
     {
         byte[]? decoded = null;
         byte[]? expected = null;
+        byte[]? stamp = null;
         IntPtr owner = IntPtr.Zero;
         IntPtr recordId = IntPtr.Zero;
         try
         {
+            bool ReadSelected(IntPtr scope, bool createdOnly = false) =>
+                WithItemData(scope, service, account, maxBytes, Decode, createdOnly,
+                    writable ? item => stamp = native.DataStamp(item) : null);
+
             void Decode(IntPtr item, ReadOnlySpan<byte> bytes)
             {
                 decoded = decode(bytes);
@@ -334,22 +366,35 @@ internal sealed partial class MacKeychainItem
                 }
             }
 
-            if (!WithItemData(search, service, account, maxBytes, Decode) && search == IntPtr.Zero)
+            if (search != IntPtr.Zero)
             {
-                // A default outside the configured search list can hold an issuer-created key.
-                // Always give existing keys in the configured order the first lookup.
+                if (!ReadSelected(search, createdOnly: true))
+                {
+                    ReadSelected(search);
+                }
+            }
+            else
+            {
+                // Only a successful create-key stamps its record. Prefer that association even
+                // if an unmarked duplicate later appears earlier in the search list. Unmarked
+                // records (including earlier migrations) retain the historical search order.
                 int status = native.CopyDefaultKeychain(out IntPtr target);
                 if (status != ErrSecNoDefaultKeychain)
                 {
                     Check(status, ReadFailed);
-                    try
+                }
+
+                try
+                {
+                    if (!(target != IntPtr.Zero && ReadSelected(target, createdOnly: true))
+                        && !ReadSelected(search, createdOnly: true) && !ReadSelected(search) && target != IntPtr.Zero)
                     {
-                        WithItemData(target, service, account, maxBytes, Decode);
+                        ReadSelected(target);
                     }
-                    finally
-                    {
-                        native.Release(target);
-                    }
+                }
+                finally
+                {
+                    native.Release(target);
                 }
             }
 
@@ -357,7 +402,7 @@ internal sealed partial class MacKeychainItem
             {
                 // Release the initial item before looking it up again. Security.framework
                 // caches live item references by primary key, including their old record handles.
-                Migrate(owner, recordId, service, account, expected, decoded!);
+                Migrate(owner, recordId, service, account, expected, decoded!, stamp);
             }
 
             return decoded;
@@ -375,24 +420,21 @@ internal sealed partial class MacKeychainItem
         }
     }
 
-    private void Migrate(IntPtr owner, IntPtr recordId, string service, string account, byte[] expected, byte[] data)
+    private void Migrate(IntPtr owner, IntPtr recordId, string service, string account, byte[] expected, byte[] data,
+        byte[]? stamp)
     {
         try
         {
             lock (TransactionLock)
             {
                 using IFileTransaction transaction = native.BeginTransaction(owner);
-                bool found = WithItemData(owner, service, account, Math.Max(expected.Length, data.Length), (current, bytes) =>
+                Check(native.Find(owner, service, account, out IntPtr current), MigrationFailed);
+                try
                 {
-                    if (CryptographicOperations.FixedTimeEquals(bytes, data))
-                    {
-                        return; // Another issuer finished this migration.
-                    }
-
                     Check(native.CopyRecordId(current, out IntPtr currentId), MigrationFailed);
                     try
                     {
-                        if (!native.Equal(recordId, currentId) || !CryptographicOperations.FixedTimeEquals(bytes, expected))
+                        if (!native.Equal(recordId, currentId))
                         {
                             throw new TokenStoreException(MigrationFailed);
                         }
@@ -402,17 +444,35 @@ internal sealed partial class MacKeychainItem
                         native.Release(currentId);
                     }
 
-                    native.CheckAccessForUpdate(owner, current);
-                    Check(native.ModifyAttributesAndData(current, IntPtr.Zero, data), MigrationFailed);
+                    // An unchanged protected record needs only the original authorized read.
+                    // Recheck plaintext only if another writer changed it or no stamp was available.
+                    if (stamp is null || !stamp.AsSpan().SequenceEqual(native.DataStamp(current)))
+                    {
+                        bool migrated = false;
+                        ReadContent(current, Math.Max(expected.Length, data.Length), (_, bytes) =>
+                        {
+                            migrated = CryptographicOperations.FixedTimeEquals(bytes, data);
+                            if (!migrated && !CryptographicOperations.FixedTimeEquals(bytes, expected))
+                            {
+                                throw new TokenStoreException(MigrationFailed);
+                            }
+                        });
+                        if (migrated)
+                        {
+                            return;
+                        }
+                    }
+
+                    Check(native.UpdateData(owner, current, data), MigrationFailed);
                     transaction.Commit();
-                });
-                if (!found)
+                }
+                finally
                 {
-                    throw new TokenStoreException(MigrationFailed);
+                    native.Release(current);
                 }
             }
         }
-        catch (TokenStoreException)
+        catch (Exception ex) when (ex is TokenStoreException or TypeLoadException or BadImageFormatException)
         {
             throw new TokenStoreException(MigrationFailed);
         }
@@ -447,7 +507,7 @@ internal sealed partial class MacKeychainItem
         bool deleted = false;
         for (int i = 0; i < MaxItems; i++)
         {
-            int status = native.Find(IntPtr.Zero, service, account, IntPtr.Zero, IntPtr.Zero, out IntPtr item);
+            int status = native.Find(IntPtr.Zero, service, account, out IntPtr item);
             if (status == ErrSecItemNotFound)
             {
                 return deleted;
@@ -519,18 +579,21 @@ internal sealed partial class MacKeychainItem
         return CFArrayCreate(IntPtr.Zero, (IntPtr)values, 1, callBacks);
     }
 
-    private unsafe bool TryAdd(IntPtr keychain, string service, string account, byte[] secret, IntPtr access)
+    private unsafe bool TryAdd(IntPtr keychain, string service, string account, byte[] secret, IntPtr access,
+        bool issuerCreated = false)
     {
         byte[] serviceBytes = Encoding.UTF8.GetBytes(service);
         byte[] accountBytes = Encoding.UTF8.GetBytes(account);
         fixed (byte* servicePointer = serviceBytes)
         fixed (byte* accountPointer = accountBytes)
+        fixed (byte* marker = IssuerMarker)
         {
-            Attribute* attributes = stackalloc Attribute[3];
+            Attribute* attributes = stackalloc Attribute[4];
             attributes[0] = new Attribute { Tag = ServiceAttribute, Length = (uint)serviceBytes.Length, Data = (IntPtr)servicePointer };
             attributes[1] = new Attribute { Tag = AccountAttribute, Length = (uint)accountBytes.Length, Data = (IntPtr)accountPointer };
             attributes[2] = new Attribute { Tag = LabelAttribute, Length = (uint)serviceBytes.Length, Data = (IntPtr)servicePointer };
-            AttributeList list = new AttributeList { Count = 3, Attributes = (IntPtr)attributes };
+            attributes[3] = new Attribute { Tag = GenericAttribute, Length = (uint)IssuerMarker.Length, Data = (IntPtr)marker };
+            AttributeList list = new AttributeList { Count = issuerCreated ? 4u : 3u, Attributes = (IntPtr)attributes };
             int status = native.CreateFromContent(GenericPasswordClass, ref list, secret, keychain, access, out IntPtr item);
             if (status == ErrSecDuplicateItem)
             {
@@ -580,7 +643,10 @@ internal sealed partial class MacKeychainItem
 
     internal interface INativeCalls
     {
-        public int Find(IntPtr keychain, string service, string account, IntPtr length, IntPtr data, out IntPtr item);
+        public int Find(IntPtr keychain, string service, string account, out IntPtr item, bool createdOnly = false);
+        public bool CommittedMatch(IntPtr keychain, string service, string account, string apphost);
+        public int CopyContent(IntPtr item, out uint length, out IntPtr data);
+        public byte[]? DataStamp(IntPtr item);
         public int CopyDefaultKeychain(out IntPtr keychain);
         public int CopyItemKeychain(IntPtr item, out IntPtr keychain);
         public bool WithSearchList(IntPtr target, Func<IReadOnlyList<IntPtr>, bool> action);
@@ -589,27 +655,58 @@ internal sealed partial class MacKeychainItem
         public IFileTransaction BeginTransaction(IntPtr keychain);
         public int CopyRecordId(IntPtr item, out IntPtr recordId);
         public bool Equal(IntPtr first, IntPtr second);
-        public void CheckAccessForUpdate(IntPtr owner, IntPtr item);
         public IntPtr CreateAccess(string path, string description);
         public int CreateFromContent(uint itemClass, ref AttributeList attributes, byte[] data, IntPtr keychain,
             IntPtr access, out IntPtr item);
-        public int ModifyAttributesAndData(IntPtr item, IntPtr attributes, ReadOnlyMemory<byte> data);
+        public int UpdateData(IntPtr owner, IntPtr item, ReadOnlyMemory<byte> data);
         public int Delete(IntPtr item);
         public void FreeContent(IntPtr data);
         public void Release(IntPtr reference);
     }
 
-    internal sealed partial class NativeCalls : INativeCalls
+    internal partial class NativeCalls : INativeCalls
     {
-        public int Find(IntPtr keychain, string service, string account, IntPtr length, IntPtr data, out IntPtr item)
+        public unsafe int Find(IntPtr keychain, string service, string account, out IntPtr item, bool createdOnly = false)
         {
             byte[] serviceBytes = Encoding.UTF8.GetBytes(service);
             byte[] accountBytes = Encoding.UTF8.GetBytes(account);
+            if (createdOnly)
+            {
+                fixed (byte* servicePointer = serviceBytes)
+                fixed (byte* accountPointer = accountBytes)
+                fixed (byte* marker = IssuerMarker)
+                {
+                    Attribute* attrs = stackalloc Attribute[3];
+                    attrs[0] = new Attribute { Tag = ServiceAttribute, Length = (uint)serviceBytes.Length, Data = (IntPtr)servicePointer };
+                    attrs[1] = new Attribute { Tag = AccountAttribute, Length = (uint)accountBytes.Length, Data = (IntPtr)accountPointer };
+                    attrs[2] = new Attribute { Tag = GenericAttribute, Length = (uint)IssuerMarker.Length, Data = (IntPtr)marker };
+                    AttributeList list = new() { Count = 3, Attributes = (IntPtr)attrs };
+                    item = IntPtr.Zero;
+                    int status = SecKeychainSearchCreateFromAttributes(keychain, GenericPasswordClass, ref list, out IntPtr search);
+                    try
+                    {
+                        if (status == 0)
+                        {
+                            status = SecKeychainSearchCopyNext(search, out item);
+                        }
+
+                        return status;
+                    }
+                    finally
+                    {
+                        ReleaseIfSet(search);
+                    }
+                }
+            }
+
             return SecKeychainFindGenericPassword(keychain, (uint)serviceBytes.Length, serviceBytes,
-                (uint)accountBytes.Length, accountBytes, length, data, out item);
+                (uint)accountBytes.Length, accountBytes, 0, 0, out item);
         }
 
         public int CopyDefaultKeychain(out IntPtr keychain) => SecKeychainCopyDefault(out keychain);
+
+        public virtual int CopyContent(IntPtr item, out uint length, out IntPtr data) =>
+            SecKeychainItemCopyContent(item, 0, 0, out length, out data);
 
         public int CopyItemKeychain(IntPtr item, out IntPtr keychain) => SecKeychainItemCopyKeychain(item, out keychain);
 
@@ -645,9 +742,6 @@ internal sealed partial class MacKeychainItem
         public int CreateFromContent(uint itemClass, ref AttributeList attributes, byte[] data, IntPtr keychain,
             IntPtr access, out IntPtr item) =>
             SecKeychainItemCreateFromContent(itemClass, ref attributes, (uint)data.Length, data, keychain, access, out item);
-
-        public int ModifyAttributesAndData(IntPtr item, IntPtr attributes, ReadOnlyMemory<byte> data) =>
-            SecKeychainItemModifyAttributesAndData(item, attributes, (uint)data.Length, data.Span);
 
         public int Delete(IntPtr item) => SecKeychainItemDelete(item);
 
@@ -693,8 +787,14 @@ internal sealed partial class MacKeychainItem
         byte[] data, IntPtr keychain, IntPtr initialAccess, out IntPtr itemRef);
 
     [LibraryImport(Security)]
-    private static partial int SecKeychainItemModifyAttributesAndData(IntPtr itemRef, IntPtr attrList, uint length,
-        ReadOnlySpan<byte> data);
+    private static partial int SecKeychainSearchCreateFromAttributes(IntPtr search, uint itemClass, ref AttributeList attributes,
+        out IntPtr cursor);
+
+    [LibraryImport(Security)]
+    private static partial int SecKeychainSearchCopyNext(IntPtr cursor, out IntPtr item);
+
+    [LibraryImport(Security)]
+    private static partial int SecKeychainItemCopyContent(IntPtr item, IntPtr itemClass, IntPtr attributes, out uint length, out IntPtr data);
 
     [LibraryImport(CoreFoundation)]
     private static partial IntPtr CFArrayCreate(IntPtr allocator, IntPtr values, nint count, IntPtr callBacks);

@@ -9,7 +9,7 @@ namespace Times;
 
 internal sealed partial class MacKeychainItem
 {
-    internal sealed partial class NativeCalls
+    internal partial class NativeCalls
     {
         // AppleFileDL's AtomicFile.cpp, LocalFileLocker: all local writers flock this
         // read-only lock file. A shared lock also works for System.keychain, whose parent
@@ -19,14 +19,18 @@ internal sealed partial class MacKeychainItem
             int slash = path.AsSpan().LastIndexOf((byte)'/');
             if (slash < 0 || slash == path.Length - 1)
             {
-                return null;
+                throw new TokenStoreException(SaveFailed);
             }
 
             byte[] directory = new byte[slash + 2];
             path.AsSpan(0, slash + 1).CopyTo(directory);
             AttributeSelection volume = new() { Count = 5, Volume = 0x80004000 }; // ATTR_VOL_INFO | MOUNTFLAGS
-            if (getattrlist(directory, in volume, out VolumeAttributes mount, 8, 0) != 0 ||
-                mount.Size != 8 || (mount.Flags & 0x1000) == 0) // MNT_LOCAL
+            if (getattrlist(directory, in volume, out VolumeAttributes mount, 8, 0) != 0 || mount.Size != 8)
+            {
+                throw new TokenStoreException(SaveFailed);
+            }
+
+            if ((mount.Flags & 0x1000) == 0) // MNT_LOCAL
             {
                 return null;
             }
@@ -44,13 +48,14 @@ internal sealed partial class MacKeychainItem
             int fd = open(lockPath, OpenFlags);
             if (fd < 0)
             {
-                return null;
+                throw new TokenStoreException(SaveFailed);
             }
 
             SafeFileHandle handle = new SafeFileHandle(fd, ownsHandle: true);
             bool held = false;
             try
             {
+                ValidateLockFile(handle);
                 int result;
                 do
                 {
@@ -58,10 +63,14 @@ internal sealed partial class MacKeychainItem
                 }
                 while (result != 0 && Marshal.GetLastPInvokeError() == 4); // EINTR
 
-                AttributeSelection file = new() { Count = 5, Common = 8, File = 1 }; // OBJTYPE, LINKCOUNT
-                held = result == 0 && fgetattrlist(handle, in file, out LockAttributes attributes, 12, 0) == 0
-                    && attributes.Size == 12 && attributes.Type == 1 && attributes.Links > 0; // VREG, still linked
-                return held ? handle : null;
+                if (result != 0)
+                {
+                    throw new TokenStoreException(SaveFailed);
+                }
+
+                ValidateLockFile(handle);
+                held = true;
+                return handle;
             }
             finally
             {
@@ -69,6 +78,16 @@ internal sealed partial class MacKeychainItem
                 {
                     handle.Dispose();
                 }
+            }
+        }
+
+        private static void ValidateLockFile(SafeFileHandle handle)
+        {
+            AttributeSelection file = new() { Count = 5, Common = 8, File = 1 }; // OBJTYPE, LINKCOUNT
+            if (fgetattrlist(handle, in file, out LockAttributes attrs, 12, 0) != 0
+                || attrs.Size != 12 || attrs.Type != 1 || attrs.Links != 1)
+            {
+                throw new TokenStoreException(SaveFailed);
             }
         }
 

@@ -7,6 +7,12 @@ internal static class IssuerProgram
 {
     public static int Main(string[] args)
     {
+        if (OperatingSystem.IsMacOS() && args is [MacKeychainItem.NativeCalls.ProbeArgument, string path,
+                MacKeychainSigningKeyStore.Service, string kid])
+        {
+            return MacKeychainItem.NativeCalls.Probe(path, MacKeychainSigningKeyStore.Service, kid);
+        }
+
         using RandomNumberGenerator random = RandomNumberGenerator.Create();
         Issuer issuer = new Issuer(Console.Out, Console.Error, SigningKeyStore.ForCurrentPlatform(), random,
             TimeProvider.System, Issuer.DefaultLedger(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData)));

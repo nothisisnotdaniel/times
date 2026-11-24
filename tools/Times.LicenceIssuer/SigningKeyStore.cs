@@ -10,7 +10,7 @@ namespace Times.LicenceIssuer;
 
 /// <summary>
 /// Holds the issuer's P-256 signing keys (PKCS#8) by key id. Failures throw <see cref="TokenStoreException"/>
-/// with a fixed message that never holds a key. Tests inject a fake, so no test touches the Keychain.
+/// with a fixed message that never holds a key.
 /// </summary>
 internal interface ISigningKeyStore
 {
@@ -147,6 +147,12 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
 
     private static void Validate(ReadOnlyMemory<byte> der)
     {
+        using ECDsa key = ECDsa.Create();
+        ImportKey(key, der);
+    }
+
+    internal static void ImportKey(ECDsa key, ReadOnlyMemory<byte> der)
+    {
         try
         {
             // Some providers accept BER or infer a curve from the key size. Check the encoded
@@ -159,18 +165,45 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
             Require(algorithm.ReadEncodedValue().Span.SequenceEqual(EcPublicKeyOid));
             ReadP256Curve(algorithm);
             Require(fields.TryReadPrimitiveOctetString(out ReadOnlyMemory<byte> ecPrivateKey));
-            ValidateEcPrivateKey(ecPrivateKey);
+            ReadOnlyMemory<byte> point = ValidateEcPrivateKey(ecPrivateKey, out ReadOnlyMemory<byte> scalar);
             if (fields.HasData)
             {
                 ReadAttributes(fields.ReadSetOf(new Asn1Tag(TagClass.ContextSpecific, 0)));
             }
 
             fields.ThrowIfNotEmpty();
-            using ECDsa key = ECDsa.Create();
-            key.ImportPkcs8PrivateKey(der.Span, out int read);
-            Require(read == der.Length && key.ExportParameters(false).Curve.Oid.Value == ECCurve.NamedCurves.nistP256.Oid.Value);
+            if (point.IsEmpty && OperatingSystem.IsMacOS())
+            {
+                // The provider's scalar-only import re-exports an uncleared managed
+                // private scalar. Obtain the optional public point from an ephemeral key.
+                byte[] derived = new byte[65];
+                byte[] privateScalar = scalar.ToArray();
+                try
+                {
+                    Require(CopyPublicPoint(privateScalar, derived) == 0);
+                    ECParameters parameters = PublicParameters(derived);
+                    parameters.D = privateScalar;
+                    key.ImportParameters(parameters);
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(privateScalar);
+                }
+            }
+            else
+            {
+                key.ImportPkcs8PrivateKey(der.Span, out int read);
+                Require(read == der.Length);
+            }
+
+            Require(key.ExportParameters(false).Curve.Oid.Value == ECCurve.NamedCurves.nistP256.Oid.Value);
+            if (!point.IsEmpty)
+            {
+                CheckPublicPoint(key, point.Span);
+            }
         }
-        catch (Exception ex) when (ex is AsnContentException or CryptographicException or ArgumentException or NotSupportedException)
+        catch (Exception ex) when (ex is AsnContentException or CryptographicException or ArgumentException
+            or NotSupportedException or TypeLoadException or BadImageFormatException)
         {
             throw new TokenStoreException(Unreadable);
         }
@@ -182,13 +215,13 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
         parameters.ThrowIfNotEmpty();
     }
 
-    private static void ValidateEcPrivateKey(ReadOnlyMemory<byte> encoded)
+    private static ReadOnlyMemory<byte> ValidateEcPrivateKey(ReadOnlyMemory<byte> encoded, out ReadOnlyMemory<byte> scalar)
     {
         AsnReader reader = new AsnReader(encoded, AsnEncodingRules.DER);
         AsnReader fields = reader.ReadSequence();
         reader.ThrowIfNotEmpty();
         Require(fields.TryReadInt32(out int version) && version == 1);
-        Require(fields.TryReadPrimitiveOctetString(out ReadOnlyMemory<byte> scalar) && scalar.Length == 32);
+        Require(fields.TryReadPrimitiveOctetString(out scalar) && scalar.Length == 32);
         Require(scalar.Span.ContainsAnyExcept((byte)0) && scalar.Span.SequenceCompareTo(P256Order) < 0);
         Asn1Tag parameters = new Asn1Tag(TagClass.ContextSpecific, 0);
         if (fields.HasData && fields.PeekTag().HasSameClassAndValue(parameters))
@@ -196,34 +229,37 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
             ReadP256Curve(fields.ReadSequence(parameters));
         }
 
+        ReadOnlyMemory<byte> point = default;
         if (fields.HasData)
         {
             AsnReader publicKey = fields.ReadSequence(new Asn1Tag(TagClass.ContextSpecific, 1));
-            Require(publicKey.TryReadPrimitiveBitString(out int unused, out ReadOnlyMemory<byte> point)
-                && unused == 0 && !point.IsEmpty);
+            Require(publicKey.TryReadPrimitiveBitString(out int unused, out point)
+                && unused == 0 && point.Length == 65 && point.Span[0] == 4);
             publicKey.ThrowIfNotEmpty();
-            CheckPublicPoint(scalar.Span, point.Span);
         }
 
         fields.ThrowIfNotEmpty();
+        return point;
     }
 
-    private static void CheckPublicPoint(ReadOnlySpan<byte> scalar, ReadOnlySpan<byte> point)
+    private static ECParameters PublicParameters(ReadOnlySpan<byte> point) => new()
     {
-        // Import D alone: providers that accept a supplied Q can export it unchanged,
-        // even when it is not D times the generator.
-        byte[] d = scalar.ToArray();
-        try
-        {
-            using ECDsa derived = ECDsa.Create(new ECParameters { Curve = ECCurve.NamedCurves.nistP256, D = d });
-            ECPoint q = derived.ExportParameters(false).Q;
-            Require(point.Length == 65 && point[0] == 4 && point.Slice(1, 32).SequenceEqual(q.X)
-                && point[33..].SequenceEqual(q.Y));
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(d);
-        }
+        Curve = ECCurve.NamedCurves.nistP256,
+        Q = new ECPoint { X = point.Slice(1, 32).ToArray(), Y = point[33..].ToArray() },
+    };
+
+    [DllImport("TimesIssuerKeychain", EntryPoint = "TimesCopyPublicPoint")]
+    private static extern int CopyPublicPoint(byte[] scalar, [Out] byte[] point);
+
+    private static void CheckPublicPoint(ECDsa key, ReadOnlySpan<byte> point)
+    {
+        using ECDsa verifier = ECDsa.Create(PublicParameters(point));
+        // A pairwise consistency test uses the supplied point independently of what
+        // the provider exports. Importing the scalar alone can re-export it on macOS.
+        ReadOnlySpan<byte> challenge = "Times issuer P-256 key consistency"u8;
+        Span<byte> signature = stackalloc byte[64];
+        Require(key.TrySignData(challenge, signature, HashAlgorithmName.SHA256, out int count)
+            && verifier.VerifyData(challenge, signature[..count], HashAlgorithmName.SHA256));
     }
 
     private static void ReadAttributes(AsnReader attributes)
@@ -266,8 +302,21 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
                 Require(tag.TagClass != TagClass.Universal || (UniversalTagNumber)tag.TagValue is
                     UniversalTagNumber.Sequence or UniversalTagNumber.External or UniversalTagNumber.Embedded
                     or UniversalTagNumber.UnrestrictedCharacterString);
-                levels.Push(new AsnReader(level.PeekContentBytes(), AsnEncodingRules.DER));
+                AsnReader contents = new(level.PeekContentBytes(), AsnEncodingRules.DER);
                 level.ReadEncodedValue();
+                if (tag.TagClass == TagClass.Universal && tag.TagValue == (int)UniversalTagNumber.External)
+                {
+                    ReadExternal(contents, levels);
+                }
+                else if (tag.TagClass == TagClass.Universal && tag.TagValue is (int)UniversalTagNumber.Embedded
+                    or (int)UniversalTagNumber.UnrestrictedCharacterString)
+                {
+                    ReadEmbedded(contents);
+                }
+                else
+                {
+                    levels.Push(contents);
+                }
             }
             else
             {
@@ -319,6 +368,15 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
                 case UniversalTagNumber.RelativeObjectIdentifier:
                     ValidateOidComponents(reader.PeekContentBytes().Span);
                     break;
+                case UniversalTagNumber.Real:
+                    ValidateReal(reader.PeekContentBytes().Span);
+                    break;
+                case UniversalTagNumber.ObjectDescriptor:
+                case UniversalTagNumber.GraphicString:
+                case UniversalTagNumber.GeneralString:
+                case UniversalTagNumber.VideotexString:
+                    // These strings carry registered ISO 2022 character sets.
+                    break;
                 case UniversalTagNumber.UniversalString:
                     ReadOnlySpan<byte> utf32 = reader.PeekContentBytes().Span;
                     Require(utf32.Length % 4 == 0);
@@ -355,9 +413,145 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
         reader.ReadEncodedValue();
     }
 
-    private static void ReadObjectIdentifierBytes(AsnReader reader)
+    private static Asn1Tag Context(int number) => new(TagClass.ContextSpecific, number);
+
+    private static void ReadExternal(AsnReader fields, Stack<AsnReader> levels)
     {
-        Require(reader.PeekTag() == Asn1Tag.ObjectIdentifier);
+        // X.690 8.18. The identification is followed by exactly one encoding choice.
+        bool direct = fields.PeekTag() == Asn1Tag.ObjectIdentifier;
+        if (direct)
+        {
+            ReadObjectIdentifierBytes(fields);
+        }
+
+        bool indirect = fields.PeekTag() == Asn1Tag.Integer;
+        if (indirect)
+        {
+            fields.ReadIntegerBytes();
+        }
+
+        Require(direct || indirect);
+        if (fields.PeekTag() == new Asn1Tag(UniversalTagNumber.ObjectDescriptor))
+        {
+            fields.ReadEncodedValue();
+        }
+
+        Asn1Tag encoding = fields.PeekTag();
+        if (encoding.HasSameClassAndValue(Context(0)))
+        {
+            AsnReader explicitValue = fields.ReadSequence(Context(0));
+            levels.Push(new AsnReader(explicitValue.ReadEncodedValue(), AsnEncodingRules.DER));
+            explicitValue.ThrowIfNotEmpty();
+        }
+        else if (encoding == Context(1))
+        {
+            Require(fields.TryReadPrimitiveOctetString(out _, Context(1)));
+        }
+        else
+        {
+            Require(fields.TryReadPrimitiveBitString(out _, out _, Context(2)));
+        }
+
+        fields.ThrowIfNotEmpty();
+    }
+
+    private static void ReadEmbedded(AsnReader fields)
+    {
+        // X.680 36.5 and 44.5 use automatic tagging. The identification CHOICE
+        // has an explicit wrapper and the descriptor is constrained to be absent.
+        AsnReader identification = fields.ReadSequence(Context(0));
+        Asn1Tag choice = identification.PeekTag();
+        Require(choice.TagClass == TagClass.ContextSpecific);
+        switch (choice.TagValue)
+        {
+            case 0:
+            case 3:
+                AsnReader pair = identification.ReadSequence(choice);
+                if (choice.TagValue == 0)
+                {
+                    ReadObjectIdentifierBytes(pair, Context(0));
+                }
+                else
+                {
+                    pair.ReadIntegerBytes(Context(0));
+                }
+
+                ReadObjectIdentifierBytes(pair, Context(1));
+                pair.ThrowIfNotEmpty();
+                break;
+            case 1:
+            case 4:
+                ReadObjectIdentifierBytes(identification, Context(choice.TagValue));
+                break;
+            case 2:
+                identification.ReadIntegerBytes(Context(2));
+                break;
+            case 5:
+                identification.ReadNull(Context(5));
+                break;
+            default:
+                throw new TokenStoreException(Unreadable);
+        }
+
+        identification.ThrowIfNotEmpty();
+        Require(fields.TryReadPrimitiveOctetString(out _, Context(2)));
+        fields.ThrowIfNotEmpty();
+    }
+
+    private static void ValidateReal(ReadOnlySpan<byte> value)
+    {
+        if (value.IsEmpty || value is [>= 0x40 and <= 0x43])
+        {
+            return; // positive zero, infinities, NaN, and negative zero
+        }
+
+        if (value[0] == 3)
+        {
+            // Canonical NR3 (X.690 11.3.2), checked without converting to text.
+            ReadOnlySpan<byte> number = value[1..];
+            if (number.StartsWith("-"u8))
+            {
+                number = number[1..];
+            }
+
+            int end = number.IndexOf(".E"u8);
+            Require(end > 0 && number[0] != '0' && number[end - 1] != '0'
+                && !number[..end].ContainsAnyExceptInRange((byte)'0', (byte)'9'));
+            ReadOnlySpan<byte> exponent = number[(end + 2)..];
+            if (!exponent.SequenceEqual("+0"u8))
+            {
+                if (exponent.StartsWith("-"u8))
+                {
+                    exponent = exponent[1..];
+                }
+
+                Require(!exponent.IsEmpty && exponent[0] != '0'
+                    && !exponent.ContainsAnyExceptInRange((byte)'0', (byte)'9'));
+            }
+
+            return;
+        }
+
+        // Canonical binary uses base two, zero scaling, a minimal signed
+        // exponent and a minimal odd unsigned mantissa (X.690 11.3.1).
+        Require((value[0] & 0xbc) == 0x80 && value.Length >= 3);
+        int length = (value[0] & 3) + 1;
+        int start = 1;
+        if (length == 4)
+        {
+            length = value[1];
+            start++;
+            Require(length >= 4);
+        }
+
+        Require(start + length < value.Length && value[start + length] != 0 && (value[^1] & 1) == 1);
+        Require(length == 1 || !(value[start] == 0 && value[start + 1] < 0x80
+            || value[start] == 0xff && value[start + 1] >= 0x80));
+    }
+
+    private static void ReadObjectIdentifierBytes(AsnReader reader, Asn1Tag? tag = null)
+    {
+        Require(reader.PeekTag() == (tag ?? Asn1Tag.ObjectIdentifier));
         ValidateOidComponents(reader.PeekContentBytes().Span);
         reader.ReadEncodedValue();
     }
