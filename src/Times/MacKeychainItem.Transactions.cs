@@ -57,31 +57,41 @@ internal sealed partial class MacKeychainItem
             return fileDb;
         }
 
-        public virtual IFileTransaction BeginTransaction(IntPtr keychain, bool nonInteractive = false)
+        public void WithoutInteraction(Action action)
         {
-            bool restoreInteraction = false;
-            SafeFileHandle? guard = null;
-            try
+            // This setting is shared by Keychain Services calls in the issuer process.
+            // Cover selection, the first authorization and any subsequent verification.
+            lock (TransactionLock)
             {
-                if (nonInteractive)
+                Check(Report("get interaction", SecKeychainGetUserInteractionAllowed(out byte allowed)), MigrationFailed);
+                if (allowed != 0)
                 {
-                    Check(Report("get interaction", SecKeychainGetUserInteractionAllowed(out byte allowed)), SaveFailed);
+                    Check(Report("disable interaction", SecKeychainSetUserInteractionAllowed(0)), MigrationFailed);
+                }
+                try
+                {
+                    action();
+                }
+                finally
+                {
                     if (allowed != 0)
                     {
-                        Check(Report("disable interaction", SecKeychainSetUserInteractionAllowed(0)), SaveFailed);
-                        restoreInteraction = true;
+                        Check(Report("restore interaction", SecKeychainSetUserInteractionAllowed(allowed)), MigrationFailed);
                     }
                 }
-                guard = OpenLocalLock(KeychainPath(keychain), lookup: false);
-                return new FileTransaction(FileDatabase(keychain), guard, this, restoreInteraction);
+            }
+        }
+
+        public virtual IFileTransaction BeginTransaction(IntPtr keychain)
+        {
+            SafeFileHandle? guard = OpenLocalLock(KeychainPath(keychain), lookup: false);
+            try
+            {
+                return new FileTransaction(FileDatabase(keychain), guard, this);
             }
             catch
             {
                 guard?.Dispose();
-                if (restoreInteraction)
-                {
-                    SecKeychainSetUserInteractionAllowed(1);
-                }
                 throw;
             }
         }
@@ -188,10 +198,9 @@ internal sealed partial class MacKeychainItem
             private readonly DatabaseHandle fileDb;
             private readonly SafeFileHandle? guard;
             private readonly NativeCalls calls;
-            private readonly bool restoreInteraction;
             private bool committed;
 
-            public unsafe FileTransaction(DatabaseHandle fileDb, SafeFileHandle? guard, NativeCalls calls, bool restoreInteraction)
+            public unsafe FileTransaction(DatabaseHandle fileDb, SafeFileHandle? guard, NativeCalls calls)
             {
                 this.fileDb = fileDb;
                 this.calls = calls;
@@ -217,7 +226,6 @@ internal sealed partial class MacKeychainItem
                     throw;
                 }
                 this.guard = guard;
-                this.restoreInteraction = restoreInteraction;
             }
 
             public void Commit()
@@ -234,10 +242,6 @@ internal sealed partial class MacKeychainItem
                 }
 
                 CSSM_DL_PassThrough(fileDb, ToggleAutocommit, 1, 0);
-                if (restoreInteraction)
-                {
-                    SecKeychainSetUserInteractionAllowed(1);
-                }
                 guard?.Dispose();
             }
         }
@@ -245,8 +249,8 @@ internal sealed partial class MacKeychainItem
         public int CopyAccessSnapshot(IntPtr item, out IntPtr snapshot) =>
             Report("copy access", CopyPasswordAccess(item, out snapshot));
 
-        public int CopyLegacyReadPolicy(IntPtr item, out IntPtr snapshot) =>
-            Report("check legacy read policy", CopyLegacyPolicy(item, out snapshot));
+        public int CopyLegacyReadPolicy(IntPtr item, bool writable, out IntPtr snapshot) =>
+            Report("check legacy read policy", CopyLegacyPolicy(item, writable ? 1 : 0, out snapshot));
 
         public int CheckMigrationReader(IntPtr item, IntPtr policy, byte[] expected) =>
             Report("check migration reader", CheckOriginalReader(item, policy, expected, (nuint)expected.Length));
@@ -392,7 +396,7 @@ internal sealed partial class MacKeychainItem
         private static partial int CheckOriginalReader(IntPtr item, IntPtr policy, ReadOnlySpan<byte> expected, nuint length);
 
         [LibraryImport("TimesIssuerKeychain", EntryPoint = "TimesCopyLegacyReadPolicy")]
-        private static partial int CopyLegacyPolicy(IntPtr item, out IntPtr snapshot);
+        private static partial int CopyLegacyPolicy(IntPtr item, int writable, out IntPtr snapshot);
 
         [LibraryImport("TimesIssuerKeychain", EntryPoint = "TimesCheckPasswordPolicy")]
         private static partial int CheckPasswordPolicy(IntPtr before, IntPtr after, IntPtr item,

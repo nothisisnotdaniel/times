@@ -56,7 +56,7 @@ internal sealed class UnsupportedSigningKeyStore : ISigningKeyStore
 /// A Keychain generic password per key: service <see cref="Service"/>, account = key id, value = PKCS#8 DER.
 /// New items trust only the issuer's apphost. A writable read migrates legacy base64 on the same item.
 /// </summary>
-internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
+internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
 {
     public const string Service = "Suite Pro signing key";
 
@@ -504,11 +504,7 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
                     ValidateDuration(reader.PeekContentBytes().Span);
                     break;
                 case UniversalTagNumber.Time:
-                    // X.680 38.4.4 permits a duration subtype with the TIME tag.
-                    // Its value notation retains the P omitted from tag 34.
-                    ReadOnlySpan<byte> duration = reader.PeekContentBytes().Span;
-                    Require(duration.StartsWith("P"u8));
-                    ValidateDuration(duration[1..]);
+                    ValidateTime(reader.PeekContentBytes().Span);
                     break;
                 case UniversalTagNumber.UniversalString:
                     ReadOnlySpan<byte> utf32 = reader.PeekContentBytes().Span;
@@ -632,7 +628,7 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
                 }
 
                 Require(i < value.Length && value[i] is >= 0x30 and <= 0x7e);
-                ReadGraphicEscape(value, start, i, videotex, widths, sets96, designations, ref left, ref right, ref single);
+                ReadGraphicEscape(value, start, i, graphicOnly, videotex, widths, sets96, designations, ref left, ref right, ref single);
             }
             else if (current is 0x0e or 0x0f or 0x8e or 0x8f)
             {
@@ -671,7 +667,7 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
         Require(single < 0);
     }
 
-    private static void ReadGraphicEscape(ReadOnlySpan<byte> value, int start, int end, bool videotex,
+    private static void ReadGraphicEscape(ReadOnlySpan<byte> value, int start, int end, bool graphicOnly, bool videotex,
         Span<int> widths, Span<bool> sets96, Span<Range> designations, ref int left, ref int right, ref int single)
     {
         ReadOnlySpan<byte> intermediates = value[start..end];
@@ -688,6 +684,9 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
                     break;
                 case (byte)'~' or (byte)'}' or (byte)'|':
                     right = '~' - final + 1;
+                    break;
+                default:
+                    Require(!graphicOnly && final is >= 0x40 and <= 0x5f);
                     break;
             }
             return;
@@ -708,8 +707,9 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
             nameStart = start + (multibyte ? 2 : 1);
             if (slot is < '(' or > '/' or ',')
             {
-                Require(!multibyte);
-                return; // e.g. designation of a control set
+                // Only types with a control repertoire can designate C0 (!) or C1 (").
+                Require(!graphicOnly && !multibyte && slot is '!' or '"');
+                return;
             }
         }
 

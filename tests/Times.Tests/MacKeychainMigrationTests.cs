@@ -394,6 +394,84 @@ public sealed partial class MacKeychainMigrationTests
     public void SeparateReadGrant_CannotAuthorizeAnExcludedWriter() =>
         ExerciseMigration("excluded-writer", extraReader: true, oneTimeRead: true, allowWriter: false);
 
+    [MacKeychainTheory]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    public void LegacyRead_ChecksTheEffectiveApplicationSubject(bool sharedHost, bool readerPair)
+    {
+        using Fixture fixture = new();
+        using TempFolder folder = new();
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] der = key.ExportPkcs8PrivateKey();
+        try
+        {
+            if (readerPair)
+            {
+                fixture.AddLegacyForReaderPair(der);
+            }
+            else
+            {
+                fixture.AddLegacy(der);
+            }
+            byte[] legacy = fixture.Legacy!;
+            using Observation before = new(fixture, legacy, legacy);
+            Assert.Equal(0, before.Caller.Status);
+            Assert.True(before.Caller.Original && before.HasIntegrity && before.HasPartitions);
+            int reads = 0, policyRefusals = 0;
+            IssuerEvidence evidence = new(log);
+            MacKeychainItem.NativeCalls calls = new((operation, status) =>
+            {
+                evidence.ObserveCall(readerPair ? "denied-write" : "issue-1", operation, status);
+                if (operation == "read password" && status == 0)
+                {
+                    reads++;
+                }
+                if (operation == "check legacy read policy" && status == -25293)
+                {
+                    policyRefusals++;
+                }
+            });
+            string? host = sharedHost ? Path.Combine(folder.Path, "dotnet") : null;
+            if (host is not null)
+            {
+                File.WriteAllBytes(host, []);
+            }
+            TestKeychainStore store = new(fixture.Reference, calls, processPath: host);
+            Assert.Equal(sharedHost ? MacKeychainSigningKeyStore.SharedHostRefused : null, store.WriteRefusal);
+            string ledger = Path.Combine(folder.Path, "ledger.tsv");
+            File.WriteAllText(ledger, "previous entry\n");
+            byte[] previous = File.ReadAllBytes(ledger);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            int result = RunIssue(store, ledger, output, error);
+            if (readerPair)
+            {
+                Assert.Equal(1, result);
+                Assert.True(error.ToString() == MigrationFailed + error.NewLine);
+                Assert.True(output.GetStringBuilder().Length == 0);
+                Assert.True(previous.AsSpan().SequenceEqual(File.ReadAllBytes(ledger)));
+            }
+            else
+            {
+                Assert.Equal(0, result);
+                Assert.True(error.GetStringBuilder().Length == 0);
+                Assert.Equal(2, File.ReadAllLines(ledger).Length);
+            }
+            Assert.Equal(1, reads);
+            Assert.Equal(readerPair ? 1 : 0, policyRefusals);
+            LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]);
+            Assert.Equal(readerPair ? 0 : 1, evidence.VerifyOutput(output.ToString(), original));
+            evidence.AssertCounts(0, readerPair ? 0 : 1);
+            using Observation after = new(fixture, der, legacy, before);
+            AssertObservation(readerPair ? "denied-write" : "issue-1", before, after, false, requireOriginal: true, requirePhysical: true);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(der);
+        }
+    }
+
     [MacKeychainFact]
     public void CreateKey_SecondaryWithoutLock_CreatesAndReleasesFileLock()
     {
@@ -590,12 +668,13 @@ public sealed partial class MacKeychainMigrationTests
                     item => ObserveStaged(fixture, before, phase, item));
                 TestKeychainStore store = new(fixture.Reference, grant);
 
-                void Attempt(TestKeychainStore issuerStore, bool permitted, bool readOnlyDirectory = false)
+                void Attempt(TestKeychainStore issuerStore, bool permitted, bool readOnlyDirectory = false,
+                    bool useGrant = true)
                 {
                     bool second = phase is "issue-2" or "retry-2";
                     byte[] previous = second ? der : legacy;
                     using Observation start = new(fixture, previous, previous, before);
-                    if (oneTimeRead)
+                    if (oneTimeRead && useGrant)
                     {
                         grant.AllowOnce(fixture, legacy);
                     }
@@ -609,10 +688,16 @@ public sealed partial class MacKeychainMigrationTests
                     int result;
                     try
                     {
+                        // Start like an interactive CLI. The observer checks at the first password
+                        // copy, before calling Security.framework on the explicit fixture item.
+                        Assert.Equal(0, SecKeychainSetUserInteractionAllowed(1));
                         result = RunIssue(issuerStore, ledger, output, error, second ? "Bob" : "Ada");
+                        Assert.Equal(0, SecKeychainGetUserInteractionAllowed(out byte restored));
+                        Assert.Equal(1, restored);
                     }
                     finally
                     {
+                        Assert.Equal(0, SecKeychainSetUserInteractionAllowed(0));
                         if (readOnlyDirectory)
                         {
                             File.SetUnixFileMode(fixture.Directory, OwnerOnly);
@@ -643,6 +728,11 @@ public sealed partial class MacKeychainMigrationTests
                     }
                 }
 
+                if (oneTimeRead)
+                {
+                    phase = "denied-read";
+                    Attempt(store, false, useGrant: false);
+                }
                 if (retry)
                 {
                     phase = "denied-write";
@@ -711,8 +801,8 @@ public sealed partial class MacKeychainMigrationTests
             return status;
         }
 
-        public override MacKeychainItem.IFileTransaction BeginTransaction(IntPtr keychain, bool nonInteractive = false) =>
-            new ObservedTransaction(base.BeginTransaction(keychain, nonInteractive), ObservePending);
+        public override MacKeychainItem.IFileTransaction BeginTransaction(IntPtr keychain) =>
+            new ObservedTransaction(base.BeginTransaction(keychain), ObservePending);
 
         private void ObservePending()
         {
@@ -770,6 +860,8 @@ public sealed partial class MacKeychainMigrationTests
 
         public override int CopyContent(IntPtr item, out uint length, out IntPtr data)
         {
+            Assert.Equal(0, SecKeychainGetUserInteractionAllowed(out byte allowed));
+            Assert.Equal(0, allowed);
             int status = base.CopyContent(item, out length, out data);
             if (source is null)
             {
@@ -857,7 +949,7 @@ public sealed partial class MacKeychainMigrationTests
                 Assert.NotEqual(IntPtr.Zero, Reference);
                 Assert.True(Path == Encoding.UTF8.GetString(new MacKeychainItem.NativeCalls().KeychainPath(Reference)),
                     "Keychain Services opened a different database.");
-                Assert.Equal(0, TimesFixtureAdd(Reference, CheckService, null, null, 1, [1], 1));
+                Assert.Equal(0, TimesFixtureAdd(Reference, CheckService, null, null, FixtureReaders.IncludeCaller, [1], 1));
                 string[] markerPolicy = AccessEntries(Path, CheckService);
                 Assert.True(PartitionIds(markerPolicy).Length > 0, "The marker lacks a partition.");
                 Assert.True(markerPolicy.Any(entry => entry.Contains(" integrity", StringComparison.Ordinal)),
@@ -892,7 +984,7 @@ public sealed partial class MacKeychainMigrationTests
 
             // Establish the original readers at creation. All later observations and updates keep this policy.
             Assert.Equal(0, TimesFixtureAdd(Reference, Service, paths.FirstOrDefault(), paths.LastOrDefault(),
-                oneTimeRead ? 0 : 1, Legacy, (uint)Legacy.Length));
+                oneTimeRead ? FixtureReaders.NamedReaders : FixtureReaders.IncludeCaller, Legacy, (uint)Legacy.Length));
             string[] expected = allowWriter ? [.. originalPartitions, .. partitions] : [.. partitions];
             if (extra)
             {
@@ -908,6 +1000,14 @@ public sealed partial class MacKeychainMigrationTests
         }
 
         private const string CheckService = "Times fixture partition check";
+
+        public void AddLegacyForReaderPair(byte[] der)
+        {
+            Legacy = EncodeLegacy(der);
+            string helper = CompileReader("related-reader");
+            Assert.Equal(0, TimesFixtureAdd(Reference, Service, helper, null, FixtureReaders.ReaderPair, Legacy, (uint)Legacy.Length));
+            Assert.True(PartitionIds(AccessEntries(Path)) is [_], "The fixture must have exactly one partition.");
+        }
         private string? excludedReader;
         private static string Marker(string path) => "Times fixture " + System.IO.Path.GetFileName(path);
 
@@ -1083,6 +1183,10 @@ public sealed partial class MacKeychainMigrationTests
             Assert.NotEqual(IntPtr.Zero, keychain);
             items = new MacKeychainItem(calls ?? new MacKeychainItem.NativeCalls());
             store = new MacKeychainSigningKeyStore(processPath ?? IssuerApphost, items, readContended);
+            if (processPath is null)
+            {
+                Assert.Null(store.WriteRefusal);
+            }
             this.keychain = keychain;
             secondaries = secondary == IntPtr.Zero ? [] : [secondary];
         }
@@ -1206,10 +1310,12 @@ public sealed partial class MacKeychainMigrationTests
     [DllImport("TimesKeychainFixture")]
     private static extern int TimesFixtureUpdate(IntPtr database, IntPtr item, byte[] data, uint length);
 
+    private enum FixtureReaders { NamedReaders, IncludeCaller, ReaderPair }
+
     [DllImport("TimesKeychainFixture")]
     private static extern int TimesFixtureAdd(IntPtr database, [MarshalAs(UnmanagedType.LPUTF8Str)] string service,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string? first, [MarshalAs(UnmanagedType.LPUTF8Str)] string? second,
-        int includeCaller, byte[] sample, uint length);
+        FixtureReaders readerMode, byte[] sample, uint length);
 
     [DllImport("libc")]
     private static extern int mkfifo([MarshalAs(UnmanagedType.LPUTF8Str)] string path, ushort mode);

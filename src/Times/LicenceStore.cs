@@ -187,14 +187,14 @@ internal sealed partial class MacKeychainItem
         Func<IntPtr, ReadOnlySpan<byte>, T> read) where T : class
     {
         T? result = null;
-        WithItemData(keychain, service, account, maxBytes, (item, bytes) => result = read(item, bytes));
+        WithItem(keychain, service, account, item =>
+            ReadContent(item, maxBytes, (found, bytes) => result = read(found, bytes)));
         return result;
     }
 
-    private bool WithItemData(IntPtr keychain, string service, string account, int maxBytes,
-        Action<IntPtr, ReadOnlySpan<byte>> read, bool createdOnly = false, Action<IntPtr>? beforeRead = null)
+    private bool WithItem(IntPtr keychain, string service, string account, Action<IntPtr> use)
     {
-        int status = native.Find(keychain, service, account, out IntPtr item, createdOnly);
+        int status = native.Find(keychain, service, account, out IntPtr item);
         if (status == ErrSecItemNotFound)
         {
             return false;
@@ -207,8 +207,7 @@ internal sealed partial class MacKeychainItem
 
         try
         {
-            beforeRead?.Invoke(item);
-            ReadContent(item, maxBytes, read);
+            use(item);
             return true;
         }
         finally
@@ -217,11 +216,16 @@ internal sealed partial class MacKeychainItem
         }
     }
 
-    private unsafe void ReadContent(IntPtr item, int maxBytes, Action<IntPtr, ReadOnlySpan<byte>> read)
+    private unsafe void ReadContent(IntPtr item, int maxBytes, Action<IntPtr, ReadOnlySpan<byte>> read,
+        Action? authorizationDenied = null)
     {
         int status = native.CopyContent(item, out uint length, out IntPtr data);
         try
         {
+            if (status is -25293 or -25308 or -25243 or -60005 or -2147416032 or -128)
+            {
+                authorizationDenied?.Invoke();
+            }
             Check(status, ReadFailed);
             if (length != 0 && data == IntPtr.Zero)
             {
@@ -345,9 +349,47 @@ internal sealed partial class MacKeychainItem
         IntPtr persistent = IntPtr.Zero;
         try
         {
-            bool ReadSelected(IntPtr scope) =>
-                WithItemData(scope, service, account, maxBytes, Decode, createdOnly: false,
-                    writable ? item => stamp = native.DataStamp(item) : null);
+            native.WithoutInteraction(SelectAndMigrate);
+            return decoded;
+        }
+        catch (Exception ex)
+        {
+            CryptographicOperations.ZeroMemory(decoded);
+            if (ex is TypeLoadException or BadImageFormatException)
+            {
+                throw new TokenStoreException(MigrationFailed);
+            }
+            throw;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(expected);
+            native.Release(originalPolicy);
+            native.Release(persistent);
+            native.Release(recordId);
+            native.Release(owner);
+        }
+
+        void SelectAndMigrate()
+        {
+            bool ReadSelected(IntPtr scope) => WithItem(scope, service, account, ReadSelectedItem);
+
+            void ReadSelectedItem(IntPtr item)
+            {
+                stamp = writable ? native.DataStamp(item) : null;
+                // A denied noninteractive read supplies no bytes. An identifiable unsafe policy
+                // still gets its fixed refusal without prompting or asking for the value again.
+                ReadContent(item, maxBytes, Decode, () => CopyPolicy(item));
+            }
+
+            void CopyPolicy(IntPtr item)
+            {
+                Check(native.CopyLegacyReadPolicy(item, writable, out originalPolicy), MigrationFailed);
+                if (originalPolicy == IntPtr.Zero)
+                {
+                    throw new TokenStoreException(MigrationFailed);
+                }
+            }
 
             void Decode(IntPtr item, ReadOnlySpan<byte> bytes)
             {
@@ -357,24 +399,13 @@ internal sealed partial class MacKeychainItem
                     return;
                 }
 
-                try
+                CopyPolicy(item);
+                if (writable)
                 {
-                    Check(native.CopyLegacyReadPolicy(item, out originalPolicy), MigrationFailed);
-                    if (originalPolicy == IntPtr.Zero)
-                    {
-                        throw new TokenStoreException(MigrationFailed);
-                    }
-                    if (writable)
-                    {
-                        Check(native.CopyItemKeychain(item, out owner), MigrationFailed);
-                        Check(native.CopyRecordId(item, out recordId), MigrationFailed);
-                        Check(native.CopyPersistentReference(item, out persistent), MigrationFailed);
-                        expected = bytes.ToArray();
-                    }
-                }
-                catch (Exception ex) when (ex is TypeLoadException or BadImageFormatException)
-                {
-                    throw new TokenStoreException(MigrationFailed);
+                    Check(native.CopyItemKeychain(item, out owner), MigrationFailed);
+                    Check(native.CopyRecordId(item, out recordId), MigrationFailed);
+                    Check(native.CopyPersistentReference(item, out persistent), MigrationFailed);
+                    expected = bytes.ToArray();
                 }
             }
 
@@ -396,11 +427,7 @@ internal sealed partial class MacKeychainItem
                 try
                 {
                     bool marked = native.WithSearchList(target, others => WithPublishedKey(
-                        target == IntPtr.Zero ? others : others.Append(target), service, account, item =>
-                        {
-                            stamp = writable ? native.DataStamp(item) : null;
-                            ReadContent(item, maxBytes, Decode);
-                        }));
+                        target == IntPtr.Zero ? others : others.Append(target), service, account, ReadSelectedItem));
                     if (!marked && !ReadSelected(search) && target != IntPtr.Zero)
                     {
                         ReadSelected(target);
@@ -418,21 +445,6 @@ internal sealed partial class MacKeychainItem
                 // caches live item references by primary key, including their old record handles.
                 Migrate(owner, recordId, persistent, originalPolicy, service, account, expected, decoded!, stamp);
             }
-
-            return decoded;
-        }
-        catch
-        {
-            CryptographicOperations.ZeroMemory(decoded);
-            throw;
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(expected);
-            native.Release(originalPolicy);
-            native.Release(persistent);
-            native.Release(recordId);
-            native.Release(owner);
         }
     }
 
@@ -480,7 +492,7 @@ internal sealed partial class MacKeychainItem
         {
             lock (TransactionLock)
             {
-                using IFileTransaction transaction = native.BeginTransaction(owner, nonInteractive: true);
+                using IFileTransaction transaction = native.BeginTransaction(owner);
                 Check(native.FindUnique(owner, service, account, out IntPtr current), MigrationFailed);
                 IntPtr before = IntPtr.Zero;
                 try
@@ -778,12 +790,13 @@ internal sealed partial class MacKeychainItem
         public int CopyDefaultKeychain(out IntPtr keychain);
         public int CopyItemKeychain(IntPtr item, out IntPtr keychain);
         public bool WithSearchList(IntPtr target, Func<IReadOnlyList<IntPtr>, bool> action);
-        public IFileTransaction BeginTransaction(IntPtr keychain, bool nonInteractive = false);
+        public void WithoutInteraction(Action action);
+        public IFileTransaction BeginTransaction(IntPtr keychain);
         public int CopyRecordId(IntPtr item, out IntPtr recordId);
         public int CopyPersistentReference(IntPtr item, out IntPtr persistent);
         public int ResolvePassword(IntPtr persistent, IntPtr owner, string service, string account, out IntPtr item);
         public int CopyAccessSnapshot(IntPtr item, out IntPtr snapshot);
-        public int CopyLegacyReadPolicy(IntPtr item, out IntPtr snapshot);
+        public int CopyLegacyReadPolicy(IntPtr item, bool writable, out IntPtr snapshot);
         public int CheckMigrationReader(IntPtr item, IntPtr policy, byte[] expected);
         public int CheckAccess(IntPtr before, IntPtr after, IntPtr item, byte[] expected);
         public bool Equal(IntPtr first, IntPtr second);

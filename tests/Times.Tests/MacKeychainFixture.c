@@ -5,8 +5,47 @@
 #include <string.h>
 #include <strings.h>
 
+extern OSStatus SecTrustedApplicationCreateFromRequirement(const char *, SecRequirementRef, SecTrustedApplicationRef *);
+
+// One ACL subject for two ordinary applications. Use only public requirements
+// of the test host and a reader compiled for this disposable database.
+static OSStatus fixtureReaderPair(const char *readerPath, SecTrustedApplicationRef *reader)
+{
+    SecCodeRef host = NULL;
+    SecStaticCodeRef helper = NULL, hostCode = NULL;
+    SecRequirementRef first = NULL, second = NULL, pair = NULL;
+    CFStringRef left = NULL, right = NULL, expression = NULL;
+    CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)readerPath, strlen(readerPath), false);
+    OSStatus status = url ? SecStaticCodeCreateWithPath(url, 0, &helper) : errSecAllocate;
+    if (!status) status = SecCodeCopySelf(0, &host);
+    if (!status) status = SecCodeCopyStaticCode(host, 0, &hostCode);
+    if (!status) status = SecCodeCopyDesignatedRequirement(hostCode, 0, &first);
+    if (!status) status = SecCodeCopyDesignatedRequirement(helper, 0, &second);
+    if (!status) status = SecRequirementCopyString(first, 0, &left);
+    if (!status) status = SecRequirementCopyString(second, 0, &right);
+    if (!status && CFEqual(left, right)) status = errSecParam;
+    if (!status) {
+        expression = CFStringCreateWithFormat(NULL, NULL, CFSTR("(%@) or (%@)"), left, right);
+        status = expression ? SecRequirementCreateWithString(expression, 0, &pair) : errSecAllocate;
+    }
+    if (!status) status = SecTrustedApplicationCreateFromRequirement(readerPath, pair, reader);
+    if (pair) CFRelease(pair);
+    if (expression) CFRelease(expression);
+    if (right) CFRelease(right);
+    if (left) CFRelease(left);
+    if (second) CFRelease(second);
+    if (first) CFRelease(first);
+    if (helper) CFRelease(helper);
+    if (hostCode) CFRelease(hostCode);
+    if (host) CFRelease(host);
+    if (url) CFRelease(url);
+    return status;
+}
+
+enum { NamedReaders, IncludeCaller, ReaderPair };
+
 OSStatus TimesFixtureAdd(SecKeychainRef database, const char *service, const char *first, const char *second,
-                         int includeCaller, const UInt8 *bytes, UInt32 length)
+                         int readerMode, const UInt8 *bytes, UInt32 length)
 {
     if (!database || !service || !bytes) return errSecParam;
     CFStringRef name = CFStringCreateWithCString(NULL, service, kCFStringEncodingUTF8);
@@ -16,10 +55,12 @@ OSStatus TimesFixtureAdd(SecKeychainRef database, const char *service, const cha
     OSStatus status = errSecAllocate;
     if (!name || !readers || !value) goto done;
     const char *paths[] = {NULL, first, second};
-    for (int i = 0; i < 3; ++i) {
-        if ((i == 0 && !includeCaller) || (i != 0 && !paths[i])) continue;
+    if (readerMode == ReaderPair && !first) { status = errSecParam; goto done; }
+    int count = readerMode == ReaderPair ? 1 : 3;
+    for (int i = readerMode == NamedReaders ? 1 : 0; i < count; ++i) {
+        if (i != 0 && !paths[i]) continue;
         SecTrustedApplicationRef reader = NULL;
-        status = SecTrustedApplicationCreateFromPath(paths[i], &reader);
+        status = readerMode == ReaderPair ? fixtureReaderPair(first, &reader) : SecTrustedApplicationCreateFromPath(paths[i], &reader);
         if (status) goto done;
         CFArrayAppendValue(readers, reader);
         CFRelease(reader);

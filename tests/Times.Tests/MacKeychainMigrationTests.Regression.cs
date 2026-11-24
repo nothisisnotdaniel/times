@@ -233,6 +233,80 @@ public sealed partial class MacKeychainMigrationTests
     }
 
     [Fact]
+    public void WriteRefusal_UnpartitionedLegacyWithTwoReaders_UsesAuthorizedReadWithoutMutation()
+    {
+        using PortableFixture fixture = new();
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] der = key.ExportPkcs8PrivateKey();
+        byte[] legacy = EncodeLegacy(der);
+        try
+        {
+            SigningKeyStoreTests.Item item = new(legacy, ["first reader", "second reader"]) { Partition = "" };
+            fixture.Calls.Stored = item;
+            fixture.Calls.RemainingReads = 1;
+            MacKeychainSigningKeyStore sharedHost = new(null, new MacKeychainItem(fixture.Calls));
+            Assert.Equal(MacKeychainSigningKeyStore.SharedHostRefused, sharedHost.WriteRefusal);
+
+            LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]);
+            AssertIssued(sharedHost, fixture.Ledger, original);
+            Assert.Single(File.ReadAllLines(fixture.Ledger));
+            Assert.Equal(0, fixture.Calls.RemainingReads);
+            Assert.Empty(fixture.Calls.LockOrder);
+            Assert.Equal(0, fixture.Calls.Updates + fixture.Calls.Creates + fixture.Calls.Deletes);
+            Assert.Same(item, fixture.Calls.Stored);
+            Assert.True(CryptographicOperations.FixedTimeEquals(legacy, item.Data));
+            Assert.True(item.TrustedPaths.SequenceEqual(["first reader", "second reader"]));
+            Assert.Empty(item.Partition);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(der);
+            CryptographicOperations.ZeroMemory(legacy);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FirstRead_AuthorizationDeniedForPartitionedReaders_RefusesWithoutPromptOrRetry(bool sharedHost)
+    {
+        using PortableFixture fixture = new();
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] der = key.ExportPkcs8PrivateKey();
+        byte[] legacy = EncodeLegacy(der);
+        try
+        {
+            SigningKeyStoreTests.Item item = new(legacy, ["first reader", "second reader"]);
+            fixture.Calls.Stored = item;
+            fixture.Calls.RefuseRead = true;
+            MacKeychainSigningKeyStore store = sharedHost
+                ? new(null, new MacKeychainItem(fixture.Calls)) : fixture.Store;
+            Assert.Equal(sharedHost, store.WriteRefusal is not null);
+            File.WriteAllText(fixture.Ledger, "previous entry\n");
+            byte[] previous = File.ReadAllBytes(fixture.Ledger);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            Assert.Equal(1, RunIssue(store, fixture.Ledger, output, error));
+            Assert.True(error.ToString() == MigrationFailed + error.NewLine);
+            Assert.True(output.GetStringBuilder().Length == 0);
+            Assert.True(previous.AsSpan().SequenceEqual(File.ReadAllBytes(fixture.Ledger)));
+            Assert.True(fixture.Calls.InteractionAllowed);
+            Assert.Equal(1, fixture.Calls.DataRequests);
+            Assert.Empty(fixture.Calls.LockOrder);
+            Assert.Equal(0, fixture.Calls.Creates + fixture.Calls.Updates + fixture.Calls.Deletes);
+            Assert.Same(item, fixture.Calls.Stored);
+            Assert.True(CryptographicOperations.FixedTimeEquals(legacy, item.Data));
+            Assert.True(item.TrustedPaths.SequenceEqual(["first reader", "second reader"]));
+            Assert.True(item.Partition == SigningKeyStoreTests.Item.OriginalPartition);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(der);
+            CryptographicOperations.ZeroMemory(legacy);
+        }
+    }
+
+    [Fact]
     public void WriteRefusal_AuthorizedSingleReaderLegacy_IssuesWithOneReadAndNoWriter()
     {
         using PortableFixture fixture = new();
@@ -534,6 +608,11 @@ public sealed partial class MacKeychainMigrationTests
                 cases.Add("1.3.6.1.4.1.32473.4", [0x31, 5, 0xa0, 0, 0x81, 1, 1], true, legacy);
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 2, 0x1b, 0x28], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 1, 65], true, legacy);
+                // GraphicString has no C0 or C1 repertoire, even if the next character is graphic.
+                cases.Add("1.3.6.1.4.1.32473.5", [0x19, 4, 0x1b, 0x21, 0x40, 65], false, legacy);
+                cases.Add("1.3.6.1.4.1.32473.5", [0x19, 4, 0x1b, 0x22, 0x43, 65], false, legacy);
+                // GeneralString permits the registered C1 control repertoire in this designation.
+                cases.Add("1.3.6.1.4.1.32473.11", [0x1b, 4, 0x1b, 0x22, 0x43, 65], true, legacy);
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 4, 0x1b, 0x28, 0x42, 65], false, legacy);
                 // ASCII is already G0. Designating it as G1 and invoking it is redundant.
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 4, 0x1b, 0x29, 0x42, 0xc1], false, legacy);
@@ -581,6 +660,20 @@ public sealed partial class MacKeychainMigrationTests
                     cases.Add("1.3.6.1.4.1.32473.10", TimeAttribute("P" + duration), false, legacy);
                 }
                 cases.Add("1.3.6.1.4.1.32473.10", TimeAttribute("1D"), false, legacy);
+                foreach (string time in new[] { "1985", "23:20:30Z", "19C", "1985-04", "-0002-04-12",
+                    "+11985-04-12", "1985-102T23:50:30Z", "1985-W15-5", "2020-W53", "15:27.50+05:30",
+                    "24:00:00.0", "23Z", "1985-04-12/P1D", "P1W/1985-W15", "R2/P1Y6M",
+                    "R/12:30+02/13:30", "12:30Z/13:30Z", "12:30-05/13:30-04" })
+                {
+                    cases.Add("1.3.6.1.4.1.32473.10", TimeAttribute(time), true, legacy);
+                }
+                foreach (string time in new[] { "", "19x5", "1985-02-29", "1985-366", "1985-W54", "+1985",
+                    "-0000", "2021-W53", "25:01", "24:00.1", "23:20:30Zx", "23:20:61Z", "12:30,0",
+                    "12:30+02:00", "12-15:01", "R/1985", "P1D/P2D", "12:30+02/13:30+02",
+                    "12:30/13:30Z", "1985/12:30", "1985-W15/1985-04", "1985//1986" })
+                {
+                    cases.Add("1.3.6.1.4.1.32473.10", TimeAttribute(time), false, legacy);
+                }
             }
 
             return cases;

@@ -777,6 +777,8 @@ public sealed class SigningKeyStoreTests : IDisposable
         public Action? AtCreateCommit { get; set; }
         public bool CacheOtherMiss { get; set; }
         public int? RemainingReads { get; set; }
+        public bool RefuseRead { get; set; }
+        public bool InteractionAllowed { get; private set; } = true;
         public bool OtherIsLocked => locked.Contains(OtherKeychain);
         public bool CheckedOtherUnderLock { get; private set; }
         public List<int> LockOrder { get; } = [];
@@ -836,9 +838,16 @@ public sealed class SigningKeyStoreTests : IDisposable
         public int CopyContent(IntPtr item, out uint length, out IntPtr data)
         {
             Assert.Contains(item, held);
+            DataRequests++;
+            if (RefuseRead)
+            {
+                Assert.False(InteractionAllowed, "The issuer reached authorization with interaction enabled.");
+                length = 0;
+                data = IntPtr.Zero;
+                return -25308;
+            }
             Assert.False(RemainingReads == 0, "A one-time read was requested again.");
             RemainingReads--;
-            DataRequests++;
             byte[] bytes = GetItem(owners[item])!.Data;
             length = (uint)bytes.Length;
             data = Marshal.AllocHGlobal(Math.Max(1, bytes.Length));
@@ -943,7 +952,21 @@ public sealed class SigningKeyStoreTests : IDisposable
             return lockedMatch;
         }
 
-        public MacKeychainItem.IFileTransaction BeginTransaction(IntPtr keychain, bool nonInteractive = false)
+        public void WithoutInteraction(Action action)
+        {
+            bool previous = InteractionAllowed;
+            InteractionAllowed = false;
+            try
+            {
+                action();
+            }
+            finally
+            {
+                InteractionAllowed = previous;
+            }
+        }
+
+        public MacKeychainItem.IFileTransaction BeginTransaction(IntPtr keychain)
         {
             if (keychain == OtherKeychain)
             {
@@ -1052,12 +1075,13 @@ public sealed class SigningKeyStoreTests : IDisposable
             && RemainingReads is null && CryptographicOperations.FixedTimeEquals(GetItem(owners[item])!.Data, expected)
                 ? 0 : -25293;
 
-        public int CopyLegacyReadPolicy(IntPtr item, out IntPtr snapshot)
+        public int CopyLegacyReadPolicy(IntPtr item, bool writable, out IntPtr snapshot)
         {
             Item current = GetItem(owners[item])!;
             snapshot = IntPtr.Zero;
-            return current.TrustedPaths.Length == 1 && !current.Partition.Contains(',')
-                ? CopyAccessSnapshot(item, out snapshot) : -25293;
+            bool allowed = current.Partition.Length == 0 ? !writable
+                : current.TrustedPaths.Length == 1 && !current.Partition.Contains(',');
+            return allowed ? CopyAccessSnapshot(item, out snapshot) : -25293;
         }
 
         private Item WritableItem(IntPtr item)
