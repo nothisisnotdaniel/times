@@ -78,11 +78,13 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
 
     private readonly string? trustedPath;
     private readonly MacKeychainItem keychain;
+    private readonly Action? readContended;
 
-    public MacKeychainSigningKeyStore(string? processPath, MacKeychainItem? keychain = null)
+    public MacKeychainSigningKeyStore(string? processPath, MacKeychainItem? keychain = null, Action? readContended = null)
     {
         trustedPath = MacKeychainTokenStore.TrustedApplicationPath(processPath);
         this.keychain = keychain ?? MacKeychainItem.Default;
+        this.readContended = readContended;
     }
 
     public bool IsSupported => true;
@@ -113,7 +115,11 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
             {
                 try
                 {
-                    guard.WaitOne();
+                    if (!guard.WaitOne(0))
+                    {
+                        readContended?.Invoke();
+                        guard.WaitOne();
+                    }
                 }
                 catch (AbandonedMutexException)
                 {
@@ -497,6 +503,13 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
                 case UniversalTagNumber.Duration:
                     ValidateDuration(reader.PeekContentBytes().Span);
                     break;
+                case UniversalTagNumber.Time:
+                    // X.680 38.4.4 permits a duration subtype with the TIME tag.
+                    // Its value notation retains the P omitted from tag 34.
+                    ReadOnlySpan<byte> duration = reader.PeekContentBytes().Span;
+                    Require(duration.StartsWith("P"u8));
+                    ValidateDuration(duration[1..]);
+                    break;
                 case UniversalTagNumber.UniversalString:
                     ReadOnlySpan<byte> utf32 = reader.PeekContentBytes().Span;
                     Require(utf32.Length % 4 == 0);
@@ -705,14 +718,13 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
         Require(!multibyte || final is >= 0x40 and < 0x70);
         int width = multibyte ? (final < 0x60 ? 2 : 3) : 1;
         bool is96 = slot >= '-';
+        // X.690 11.4 requires the lowest registered slot. The ISO 2022
+        // designations for 94-character sets start at G0, and for 96 at G1.
+        Require(set == (is96 ? 1 : 0));
         Range name = nameStart..(end + 1);
-        for (int designated = 0; designated < widths.Length; designated++)
+        if (widths[set] == width && sets96[set] == is96)
         {
-            if (widths[designated] != width || sets96[designated] != is96)
-            {
-                continue;
-            }
-            ReadOnlySpan<byte> previous = value[designations[designated]];
+            ReadOnlySpan<byte> previous = value[designations[set]];
             if (previous.IsEmpty)
             {
                 previous = videotex ? "u"u8 : "B"u8; // X.690 table 3, initial G0

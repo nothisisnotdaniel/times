@@ -71,13 +71,12 @@ public sealed partial class MacKeychainMigrationTests
                     evidence.ObserveCall("issue-1", operation, status);
                     if (operation == "read password" && status == 0 && firstReading.TrySetResult())
                     {
-                        Assert.True(secondReading.Wait(FixtureTimeout), "The second issuer did not enter its key read.");
+                        Assert.True(secondReading.Wait(FixtureTimeout), "The second issuer did not contend for the key read.");
                     }
                 }));
                 TestKeychainStore second = new(fixture.Reference, new MacKeychainItem.NativeCalls(
-                    (operation, status) => evidence.ObserveCall("issue-2", operation, status)))
+                    (operation, status) => evidence.ObserveCall("issue-2", operation, status)), readContended: secondReading.Set)
                 {
-                    BeforeRead = secondReading.Set,
                     // The two key-store calls overlap. Order the independent ledger appends.
                     AfterRead = () => Assert.True(firstIssued.Wait(FixtureTimeout), "The first issuer did not finish."),
                 };
@@ -591,7 +590,7 @@ public sealed partial class MacKeychainMigrationTests
                     item => ObserveStaged(fixture, before, phase, item));
                 TestKeychainStore store = new(fixture.Reference, grant);
 
-                void Attempt(bool permitted, bool readOnlyDirectory = false)
+                void Attempt(TestKeychainStore issuerStore, bool permitted, bool readOnlyDirectory = false)
                 {
                     bool second = phase is "issue-2" or "retry-2";
                     byte[] previous = second ? der : legacy;
@@ -610,7 +609,7 @@ public sealed partial class MacKeychainMigrationTests
                     int result;
                     try
                     {
-                        result = RunIssue(store, ledger, output, error, second ? "Bob" : "Ada");
+                        result = RunIssue(issuerStore, ledger, output, error, second ? "Bob" : "Ada");
                     }
                     finally
                     {
@@ -647,16 +646,28 @@ public sealed partial class MacKeychainMigrationTests
                 if (retry)
                 {
                     phase = "denied-write";
-                    Attempt(false, readOnlyDirectory: true);
+                    Attempt(store, false, readOnlyDirectory: true);
+                }
+                else if (extraReader && !oneTimeRead)
+                {
+                    // Exercise WriteRefusal on the same readable multi-reader policy.
+                    // The process identity, actual read and explicitly selected item stay the same.
+                    string sharedHost = Path.Combine(folder.Path, "dotnet");
+                    File.WriteAllBytes(sharedHost, []);
+                    TestKeychainStore readOnly = new(fixture.Reference, grant, processPath: sharedHost);
+                    Assert.Equal(MacKeychainSigningKeyStore.SharedHostRefused, readOnly.WriteRefusal);
+                    Assert.Equal(0, before.Caller.Status);
+                    phase = "denied-write";
+                    Attempt(readOnly, false);
                 }
 
                 phase = retry ? "retry-1" : allowWriter ? "issue-1" : "denied-write";
-                Attempt(!extraReader);
+                Attempt(store, !extraReader);
                 if (!extraReader)
                 {
                     evidence.AssertCounts(1, 1);
                     phase = retry ? "retry-2" : "issue-2";
-                    Attempt(true);
+                    Attempt(store, true);
                     Assert.Equal(3, File.ReadAllLines(ledger).Length);
                 }
             }
@@ -1066,23 +1077,21 @@ public sealed partial class MacKeychainMigrationTests
         private readonly IntPtr keychain;
         private readonly IntPtr[] secondaries;
 
-        public TestKeychainStore(IntPtr keychain, MacKeychainItem.NativeCalls? calls = null, IntPtr secondary = default)
+        public TestKeychainStore(IntPtr keychain, MacKeychainItem.NativeCalls? calls = null, IntPtr secondary = default,
+            string? processPath = null, Action? readContended = null)
         {
             Assert.NotEqual(IntPtr.Zero, keychain);
             items = new MacKeychainItem(calls ?? new MacKeychainItem.NativeCalls());
-            store = new MacKeychainSigningKeyStore(IssuerApphost, items);
-            Assert.Null(store.WriteRefusal);
+            store = new MacKeychainSigningKeyStore(processPath ?? IssuerApphost, items, readContended);
             this.keychain = keychain;
             secondaries = secondary == IntPtr.Zero ? [] : [secondary];
         }
 
         public bool IsSupported => store.IsSupported;
         public string? WriteRefusal => store.WriteRefusal;
-        public Action? BeforeRead { get; init; }
         public Action? AfterRead { get; init; }
         public byte[]? Read(string keyId)
         {
-            BeforeRead?.Invoke();
             byte[]? value = store.Read(keychain, keyId);
             try
             {

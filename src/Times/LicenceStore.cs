@@ -352,20 +352,29 @@ internal sealed partial class MacKeychainItem
             void Decode(IntPtr item, ReadOnlySpan<byte> bytes)
             {
                 decoded = decode(bytes);
-                if (writable && !CryptographicOperations.FixedTimeEquals(bytes, decoded))
+                if (CryptographicOperations.FixedTimeEquals(bytes, decoded))
                 {
-                    try
+                    return;
+                }
+
+                try
+                {
+                    Check(native.CopyLegacyReadPolicy(item, out originalPolicy), MigrationFailed);
+                    if (originalPolicy == IntPtr.Zero)
+                    {
+                        throw new TokenStoreException(MigrationFailed);
+                    }
+                    if (writable)
                     {
                         Check(native.CopyItemKeychain(item, out owner), MigrationFailed);
                         Check(native.CopyRecordId(item, out recordId), MigrationFailed);
                         Check(native.CopyPersistentReference(item, out persistent), MigrationFailed);
-                        Check(native.CopyAccessSnapshot(item, out originalPolicy), MigrationFailed);
+                        expected = bytes.ToArray();
                     }
-                    catch (Exception ex) when (ex is TypeLoadException or BadImageFormatException)
-                    {
-                        throw new TokenStoreException(MigrationFailed);
-                    }
-                    expected = bytes.ToArray();
+                }
+                catch (Exception ex) when (ex is TypeLoadException or BadImageFormatException)
+                {
+                    throw new TokenStoreException(MigrationFailed);
                 }
             }
 
@@ -774,6 +783,7 @@ internal sealed partial class MacKeychainItem
         public int CopyPersistentReference(IntPtr item, out IntPtr persistent);
         public int ResolvePassword(IntPtr persistent, IntPtr owner, string service, string account, out IntPtr item);
         public int CopyAccessSnapshot(IntPtr item, out IntPtr snapshot);
+        public int CopyLegacyReadPolicy(IntPtr item, out IntPtr snapshot);
         public int CheckMigrationReader(IntPtr item, IntPtr policy, byte[] expected);
         public int CheckAccess(IntPtr before, IntPtr after, IntPtr item, byte[] expected);
         public bool Equal(IntPtr first, IntPtr second);

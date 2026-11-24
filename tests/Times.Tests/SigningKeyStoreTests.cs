@@ -1052,6 +1052,14 @@ public sealed class SigningKeyStoreTests : IDisposable
             && RemainingReads is null && CryptographicOperations.FixedTimeEquals(GetItem(owners[item])!.Data, expected)
                 ? 0 : -25293;
 
+        public int CopyLegacyReadPolicy(IntPtr item, out IntPtr snapshot)
+        {
+            Item current = GetItem(owners[item])!;
+            snapshot = IntPtr.Zero;
+            return current.TrustedPaths.Length == 1 && !current.Partition.Contains(',')
+                ? CopyAccessSnapshot(item, out snapshot) : -25293;
+        }
+
         private Item WritableItem(IntPtr item)
         {
             Assert.Contains(item, held);

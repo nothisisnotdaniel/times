@@ -242,27 +242,26 @@ static OSStatus checkPassword(SecKeychainItemRef item, const uint8_t *expected, 
     return status;
 }
 
-OSStatus TimesCheckMigrationReader(SecKeychainItemRef item, CFArrayRef policy, const uint8_t *expected, size_t length)
+static OSStatus checkSoleReader(SecAccessRef access, CFArrayRef policy, bool requireCaller)
 {
-    if (!item || !policy || CFArrayGetCount(policy) != 7) return errSecInvalidItemRef;
+    if (!access || !policy || CFArrayGetCount(policy) != 7) return errSecInvalidItemRef;
     CFBagRef partitions = CFArrayGetValueAtIndex(policy, 2);
     CFBagRef integrity = CFArrayGetValueAtIndex(policy, 3);
-    if (CFBagGetCount(partitions) != 1 || CFBagGetCount(integrity) != 1) return errSecAuthFailed;
-    const void *entry = NULL;
-    CFBagGetValues(partitions, &entry);
-    CFBagRef membership = CFArrayGetValueAtIndex((CFArrayRef)entry, 2);
-    if (CFBagGetCount(membership) != 1) return errSecAuthFailed;
+    // A read-only caller can also encounter an older unpartitioned Keychain.
+    if (requireCaller || CFBagGetCount(partitions) != 0) {
+        if (CFBagGetCount(partitions) != 1 || CFBagGetCount(integrity) != 1) return errSecAuthFailed;
+        const void *entry = NULL;
+        CFBagGetValues(partitions, &entry);
+        CFBagRef membership = CFArrayGetValueAtIndex((CFArrayRef)entry, 2);
+        if (CFBagGetCount(membership) != 1) return errSecAuthFailed;
+    }
 
-    SecAccessRef access = NULL;
     CFArrayRef grants = NULL, readers = NULL;
     CFStringRef description = NULL;
     SecKeychainPromptSelector prompt = 0;
     SecTrustedApplicationRef caller = NULL;
     CFDataRef callerPath = NULL, readerPath = NULL;
-    OSStatus status = SecKeychainItemCopyAccess(item, &access);
-    if (status) goto done;
-    status = errSecAuthFailed;
-    if (!access) goto done;
+    OSStatus status = errSecAuthFailed;
     grants = SecAccessCopyMatchingACLList(access, kSecACLAuthorizationDecrypt);
     if (!grants || CFArrayGetCount(grants) != 1) goto done;
     status = SecACLCopyContents((SecACLRef)CFArrayGetValueAtIndex(grants, 0), &readers, &description, &prompt);
@@ -271,13 +270,15 @@ OSStatus TimesCheckMigrationReader(SecKeychainItemRef item, CFArrayRef policy, c
     if (!readers || CFArrayGetCount(readers) != 1) goto done;
     SecTrustedApplicationRef reader = (SecTrustedApplicationRef)CFArrayGetValueAtIndex(readers, 0);
     if (CFGetTypeID(reader) != SecTrustedApplicationGetTypeID()) goto done;
+    if (!requireCaller) {
+        // Keychain Services has already authorized the read. No second read or prompt.
+        status = errSecSuccess;
+        goto done;
+    }
     if ((status = SecTrustedApplicationCreateFromPath(NULL, &caller))) goto done;
     if ((status = SecTrustedApplicationCopyData(caller, &callerPath))) goto done;
     if ((status = SecTrustedApplicationCopyData(reader, &readerPath))) goto done;
-    // The trusted path identifies the named reader. The separate provider read
-    // checks its effective code identity and partition, even after a single read grant.
-    status = callerPath && readerPath && CFEqual(callerPath, readerPath)
-        ? checkPassword(item, expected, length) : errSecAuthFailed;
+    status = callerPath && readerPath && CFEqual(callerPath, readerPath) ? errSecSuccess : errSecAuthFailed;
 done:
     if (readerPath) CFRelease(readerPath);
     if (callerPath) CFRelease(callerPath);
@@ -285,8 +286,32 @@ done:
     if (description) CFRelease(description);
     if (readers) CFRelease(readers);
     if (grants) CFRelease(grants);
+    return status;
+}
+
+// Inspect the same SecAccess object for both membership and the complete original policy.
+OSStatus TimesCopyLegacyReadPolicy(SecKeychainItemRef item, CFArrayRef *result)
+{
+    *result = NULL;
+    SecAccessRef access = NULL;
+    CFArrayRef policy = NULL;
+    OSStatus status = item ? SecKeychainItemCopyAccess(item, &access) : errSecParam;
+    if (!status) status = access ? TimesCopyAccessPolicy(access, &policy) : errSecInvalidItemRef;
+    if (!status) status = checkSoleReader(access, policy, false);
+    if (!status) *result = policy;
+    else if (policy) CFRelease(policy);
     if (access) CFRelease(access);
     return status;
+}
+
+OSStatus TimesCheckMigrationReader(SecKeychainItemRef item, CFArrayRef policy, const uint8_t *expected, size_t length)
+{
+    SecAccessRef access = NULL;
+    OSStatus status = item ? SecKeychainItemCopyAccess(item, &access) : errSecParam;
+    if (!status) status = checkSoleReader(access, policy, true);
+    if (access) CFRelease(access);
+    // Authenticate the existing value under the writer's own code identity and partition.
+    return status ? status : checkPassword(item, expected, length);
 }
 
 OSStatus TimesCheckPasswordPolicy(CFArrayRef before, CFArrayRef after, SecKeychainItemRef item,

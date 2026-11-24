@@ -189,10 +189,14 @@ public sealed partial class MacKeychainMigrationTests
     }
 
     [Theory]
-    [InlineData(true, false)]
-    [InlineData(false, true)]
-    [InlineData(true, true)]
-    public void Issue_AdditionalReaderOrPartition_RefusesBeforeTheSetter(bool extraApplication, bool extraPartition)
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(true, true, false)]
+    [InlineData(true, false, true)]
+    [InlineData(false, true, true)]
+    [InlineData(true, true, true)]
+    public void Issue_AdditionalReaderOrPartition_RefusesBeforeTheSetter(bool extraApplication, bool extraPartition,
+        bool readOnly)
     {
         using PortableFixture fixture = new();
         using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
@@ -204,22 +208,59 @@ public sealed partial class MacKeychainMigrationTests
             string partition = SigningKeyStoreTests.Item.OriginalPartition + (extraPartition ? ",teamid:keeper" : "");
             SigningKeyStoreTests.Item initial = new(legacy, [.. readers]) { Partition = partition };
             fixture.Calls.Stored = initial;
+            MacKeychainSigningKeyStore store = readOnly
+                ? new MacKeychainSigningKeyStore(null, new MacKeychainItem(fixture.Calls)) : fixture.Store;
+            Assert.Equal(readOnly, store.WriteRefusal is not null);
+            File.WriteAllText(fixture.Ledger, "previous entry\n");
             using StringWriter output = new();
             using StringWriter error = new();
-            Assert.Equal(1, RunIssue(fixture.Store, fixture.Ledger, output, error));
+            Assert.Equal(1, RunIssue(store, fixture.Ledger, output, error));
             Assert.True(output.GetStringBuilder().Length == 0);
             Assert.True(error.ToString() == MigrationFailed + error.NewLine, "Unexpected migration error.");
-            Assert.False(File.Exists(fixture.Ledger));
+            Assert.True(File.ReadAllText(fixture.Ledger) == "previous entry\n", "The fixture ledger changed.");
             Assert.True(ReferenceEquals(initial, fixture.Calls.Stored), "The stored item changed.");
             Assert.True(CryptographicOperations.FixedTimeEquals(legacy, initial.Data));
             Assert.True(readers.SequenceEqual(initial.TrustedPaths), "The stored reader list changed.");
             Assert.True(partition == initial.Partition, "The partition changed.");
             Assert.Equal(0, fixture.Calls.Updates + fixture.Calls.Creates + fixture.Calls.Deletes);
+            Assert.Empty(fixture.Calls.LockOrder);
         }
         finally
         {
             CryptographicOperations.ZeroMemory(der);
             CryptographicOperations.ZeroMemory(legacy);
+        }
+    }
+
+    [Fact]
+    public void WriteRefusal_AuthorizedSingleReaderLegacy_IssuesWithOneReadAndNoWriter()
+    {
+        using PortableFixture fixture = new();
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] der = key.ExportPkcs8PrivateKey();
+        byte[] legacy = EncodeLegacy(der);
+        try
+        {
+            SigningKeyStoreTests.Item item = new(legacy, ["original reader"]);
+            fixture.Calls.Stored = item;
+            fixture.Calls.RemainingReads = 1;
+            MacKeychainSigningKeyStore store = new(null, new MacKeychainItem(fixture.Calls));
+            Assert.Equal(MacKeychainSigningKeyStore.SharedHostRefused, store.WriteRefusal);
+            LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]);
+            AssertIssued(store, fixture.Ledger, original);
+            Assert.Single(File.ReadAllLines(fixture.Ledger));
+            Assert.Equal(0, fixture.Calls.RemainingReads);
+            Assert.True(ReferenceEquals(item, fixture.Calls.Stored), "The stored item changed.");
+            Assert.True(CryptographicOperations.FixedTimeEquals(legacy, item.Data));
+            Assert.True(item.TrustedPaths.SequenceEqual(["original reader"]));
+            Assert.Equal(SigningKeyStoreTests.Item.OriginalPartition, item.Partition);
+            Assert.Empty(fixture.Calls.LockOrder);
+            Assert.Equal(0, fixture.Calls.Updates + fixture.Calls.Creates + fixture.Calls.Deletes);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(legacy);
+            CryptographicOperations.ZeroMemory(der);
         }
     }
 
@@ -243,15 +284,11 @@ public sealed partial class MacKeychainMigrationTests
                 firstReading.SetResult();
                 Assert.True(secondReading.Wait(FixtureTimeout), "The competing issuer did not start.");
             };
-            MacKeychainSigningKeyStore second = new(fixture.Apphost, new MacKeychainItem(fixture.Calls));
+            MacKeychainSigningKeyStore second = new(fixture.Apphost, new MacKeychainItem(fixture.Calls), secondReading.Set);
             string secondLedger = Path.ChangeExtension(fixture.Ledger, ".second.tsv");
             await RunOverlappingIssues(firstReading.Task, secondReading,
                 () => AssertIssued(fixture.Store, fixture.Ledger, original),
-                () =>
-                {
-                    secondReading.Set();
-                    AssertIssued(second, secondLedger, original);
-                });
+                () => AssertIssued(second, secondLedger, original));
             Assert.Single(File.ReadAllLines(fixture.Ledger));
             Assert.Single(File.ReadAllLines(secondLedger));
             Assert.True(ReferenceEquals(item, fixture.Calls.Stored), "The stored item changed.");
@@ -501,6 +538,12 @@ public sealed partial class MacKeychainMigrationTests
                 // ASCII is already G0. Designating it as G1 and invoking it is redundant.
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 4, 0x1b, 0x29, 0x42, 0xc1], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 5, 0x1b, 0x29, 0x42, 0x0e, 65], false, legacy);
+                // JIS Roman yen, first designated into G0 or into the higher G1.
+                cases.Add("1.3.6.1.4.1.32473.5", [0x19, 4, 0x1b, 0x28, 0x4a, 0x5c], true, legacy);
+                cases.Add("1.3.6.1.4.1.32473.5", [0x19, 4, 0x1b, 0x29, 0x4a, 0xdc], false, legacy);
+                // ISO-IR 100 is a 96-character repertoire. Its lowest slot is G1.
+                cases.Add("1.3.6.1.4.1.32473.5", [0x19, 4, 0x1b, 0x2d, 0x41, 0xe9], true, legacy);
+                cases.Add("1.3.6.1.4.1.32473.5", [0x19, 5, 0x1b, 0x2e, 0x41, 0x8e, 0xe9], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 8, 0x1b, 0x28, 0x4a, 0x5c, 0x1b, 0x28, 0x4a, 0x5c], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 8, 0x1b, 0x28, 0x4a, 0x5c, 0x1b, 0x28, 0x42, 0x5c], true, legacy);
                 // JIS X 0208 designates a two-byte repertoire. A shift or a new
@@ -530,11 +573,14 @@ public sealed partial class MacKeychainMigrationTests
                 foreach (string duration in new[] { "1D", "0W", "2.50W", "1Y3MT0.00S", "T12H5M0S" })
                 {
                     cases.Add("1.3.6.1.4.1.32473.9", DurationAttribute(duration), true, legacy);
+                    cases.Add("1.3.6.1.4.1.32473.10", TimeAttribute("P" + duration), true, legacy);
                 }
                 foreach (string duration in new[] { "", "P1D", "01D", "1D0YT1S", "0DT1H", "T", "1WT2S", "1.5DT1H", "T1,5S", "1.X", "TT1S" })
                 {
                     cases.Add("1.3.6.1.4.1.32473.9", DurationAttribute(duration), false, legacy);
+                    cases.Add("1.3.6.1.4.1.32473.10", TimeAttribute("P" + duration), false, legacy);
                 }
+                cases.Add("1.3.6.1.4.1.32473.10", TimeAttribute("1D"), false, legacy);
             }
 
             return cases;
@@ -543,6 +589,9 @@ public sealed partial class MacKeychainMigrationTests
 
     private static byte[] DurationAttribute(string sample) =>
         [0x1f, 34, checked((byte)sample.Length), .. System.Text.Encoding.ASCII.GetBytes(sample)];
+
+    private static byte[] TimeAttribute(string sample) =>
+        [0x0e, checked((byte)sample.Length), .. System.Text.Encoding.ASCII.GetBytes(sample)];
 
     [Theory]
     [MemberData(nameof(AttributeCases))]
