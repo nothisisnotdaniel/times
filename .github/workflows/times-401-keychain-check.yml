@@ -13,14 +13,14 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 45
     env:
-      FACTORY_TEST_COMMIT: "64ef9558c3728558f4d09d3a6113991cbc20c15f"
+      FACTORY_TEST_COMMIT: "0e4ea52b06afdd316d1336fbe0030fd88b7e5448"
       DOTNET_NOLOGO: "1"
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
     steps:
       - name: Check out the exact Times build
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: "64ef9558c3728558f4d09d3a6113991cbc20c15f"
+          ref: "0e4ea52b06afdd316d1336fbe0030fd88b7e5448"
           persist-credentials: false
       - name: Prepare the disposable Keychain test directory
         shell: bash
@@ -82,7 +82,8 @@ jobs:
           # Trace markers come from completed fixture assertions, independent of the builder's method names.
           issued = {"original-reader", "original-reader-retry", "overlapping-original-reader"}
           refused = {"multiple-readers", "single-read-grant", "excluded-writer", "multiple-readers-retry"}
-          marker = re.compile(r"factory401-proof ([a-z-]+) updates=(\d+) creates=(\d+) deletes=(\d+) licences=(\d+)")
+          marker = re.compile(r"factory401-proof ([a-z-]+) updates=(\d+) creates=(\d+) deletes=(\d+) licences=(\d+)"
+                              r"(?: precommit-refusals=(\d+) rollbacks=(\d+))?")
           full_suite_classes = ("Times.Tests.LicenceIssuerTests.", "Times.Tests.SigningKeyStoreTests.")
           phases = {"control-allowed", "control-denied", "denied-read", "denied-write",
                     "issue-1", "issue-2", "retry-1", "retry-2"}
@@ -111,8 +112,11 @@ jobs:
                   for line in (stream.text or "").splitlines():
                       proof = marker.fullmatch(line.strip())
                       if proof and proof[1] in issued | refused:
-                          events.append({"scenario": proof[1], "updates": int(proof[2]), "creates": int(proof[3]),
-                                         "deletes": int(proof[4]), "licences": int(proof[5])})
+                          evidence = {"scenario": proof[1], "updates": int(proof[2]), "creates": int(proof[3]),
+                                      "deletes": int(proof[4]), "licences": int(proof[5])}
+                          if proof[6] is not None:
+                              evidence.update(precommit_refusals=int(proof[6]), rollbacks=int(proof[7]))
+                          events.append(evidence)
                           continue
                       description, separator, value = line.strip().rpartition(" returned ")
                       if not separator or not re.fullmatch(r"-?[0-9]{1,10}", value):
@@ -128,6 +132,26 @@ jobs:
                       elif operation in operations and -(2**31) <= code < 2**31:
                           events.append({"phase": phase, "operation": operation, "status": code})
               return events
+
+          def policy_outcome(evidence, updates):
+              """Classify one completed issuer fixture from its measured results and native setter trace."""
+              scenario = evidence["scenario"]
+              count = evidence["updates"]
+              if (evidence["creates"] or evidence["deletes"] or count != len(updates)
+                      or any(event["status"] != 0 for event in updates)):
+                  return None
+              if "precommit_refusals" in evidence:
+                  refusals = evidence["precommit_refusals"]
+                  minimum = 2 if scenario == "overlapping-original-reader" else 1
+                  if (scenario in issued and evidence["licences"] == 0 and refusals >= minimum
+                          and evidence["rollbacks"] == count and count <= refusals):
+                      return "file-keychain-refused"
+                  return None
+              if scenario in issued and (count, evidence["licences"]) == (1, 2):
+                  return "migrated"
+              if scenario in refused and (count, evidence["licences"]) == (0, 0):
+                  return "protected-refused"
+              return None
 
           report = {"commit": os.environ["FACTORY_TEST_COMMIT"], "controller": os.environ["GITHUB_SHA"], "suites": {}}
           valid = True
@@ -167,14 +191,10 @@ jobs:
                           for evidence in proofs:
                               scenario = evidence["scenario"]
                               updates = [e for e in trace if e.get("operation") == "provider update"]
-                              expected_updates, expected_licences = (1, 2) if scenario in issued else (0, 0)
-                              measurements = (evidence["updates"], evidence["creates"], evidence["deletes"], evidence["licences"])
-                              # One result cannot substitute for two independent policy cases; both runs require each case.
-                              valid_case = (len(proofs) == 1 and outcome == "Passed" and
-                                            measurements == (expected_updates, 0, 0, expected_licences) and
-                                            len(updates) == expected_updates and all(e["status"] == 0 for e in updates))
+                              disposition = policy_outcome(evidence, updates)
+                              valid_case = len(proofs) == 1 and outcome == "Passed" and disposition is not None
                               decisions[scenario].append({"test": method, "outcome": outcome, "valid": valid_case,
-                                                          "provider_updates": len(updates), **evidence})
+                                                          "disposition": disposition, "provider_updates": len(updates), **evidence})
                   if outcome not in ("Passed", "NotExecuted"):
                       failures.append(label)
                   for suite in full_suite_classes:
@@ -219,7 +239,7 @@ jobs:
                       if not entries:
                           print(f"    - {scenario}: missing", file=summary)
                       for entry in entries:
-                          print(f"    - {scenario}: {entry['test']}, {entry['outcome']}, verified {entry['valid']}, "
+                          print(f"    - {scenario}: {entry['test']}, {entry['outcome']}, {entry['disposition']}, verified {entry['valid']}, "
                                 f"{entry['provider_updates']} native updates, {entry['licences']} verified licences", file=summary)
               print("\n| Required native case | Targeted run | Full Release run |", file=summary)
               print("| --- | --- | --- |", file=summary)
@@ -233,7 +253,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: times-401-macos-64ef9558c3728558f4d09d3a6113991cbc20c15f
+          name: times-401-macos-0e4ea52b06afdd316d1336fbe0030fd88b7e5448
           path: ${{ runner.temp }}/times401/summary.json
           if-no-files-found: error
           retention-days: 14
