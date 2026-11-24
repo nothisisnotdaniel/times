@@ -4,6 +4,7 @@
 #include <Security/Security.h>
 #include <Security/cssmapple.h>
 #include <CommonCrypto/CommonDigest.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 
@@ -238,4 +239,41 @@ OSStatus TimesFixtureAccessVariant(int field, SecAccessRef *access)
                                    .Authorization = {1, &right}}, .EntryHandle = 17};
     strcpy(entry.EntryPublicInfo.EntryTag, field == 2 ? "other" : "sample");
     return SecAccessCreateFromOwnerAndACL(&owner, 1, &entry, access);
+}
+
+// Plain in-memory descriptors. Exercise the same aggregate preflight used on
+// the OS's returned owner and entries. No descriptor is installed on an item.
+typedef bool (*PolicyFits)(const CSSM_ACL_OWNER_PROTOTYPE *, uint32_t, const CSSM_ACL_ENTRY_INFO *);
+int TimesFixturePolicyFits(PolicyFits fits, int kind)
+{
+    size_t count = kind == 1 ? 129 : 4;
+    size_t nodes = kind == 2 ? 600 : kind == 4 ? 45 : 1;
+    size_t length = kind == 3 ? 40000 : 1;
+    CSSM_ACL_ENTRY_INFO *entries = calloc(count, sizeof(*entries));
+    CSSM_LIST_ELEMENT *elements = calloc(nodes, sizeof(*elements));
+    uint8_t *datum = calloc(length, 1);
+    int result = -1;
+    if (!entries || !elements || !datum) goto done;
+    for (size_t i = 0; i < nodes; ++i) {
+        elements[i].ElementType = CSSM_LIST_ELEMENT_DATUM;
+        elements[i].Element.Word = (CSSM_DATA){.Length = length, .Data = datum};
+        if (i + 1 == nodes) continue;
+        if (kind == 4) {
+            elements[i].ElementType = CSSM_LIST_ELEMENT_SUBLIST;
+            elements[i].Element.Sublist = (CSSM_LIST){CSSM_LIST_TYPE_UNKNOWN, &elements[i + 1], &elements[i + 1]};
+        } else {
+            elements[i].NextElement = &elements[i + 1];
+        }
+    }
+    CSSM_LIST_ELEMENT any = {.WordID = CSSM_ACL_SUBJECT_TYPE_ANY, .ElementType = CSSM_LIST_ELEMENT_WORDID};
+    CSSM_ACL_OWNER_PROTOTYPE owner = {.TypedSubject = {CSSM_LIST_TYPE_UNKNOWN, &any, &any}};
+    for (size_t i = 0; i < count; ++i) {
+        entries[i].EntryPublicInfo.TypedSubject = (CSSM_LIST){CSSM_LIST_TYPE_UNKNOWN, elements, &elements[nodes - 1]};
+    }
+    result = fits(&owner, (uint32_t)count, entries) ? 1 : 0;
+done:
+    free(datum);
+    free(elements);
+    free(entries);
+    return result;
 }

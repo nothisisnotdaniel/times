@@ -114,11 +114,21 @@ internal sealed partial class MacKeychainSigningKeyStore
             {
                 // At UTC minute -1 the supplied local date is already the next day.
                 DateOnly followingUtcDay = utcMinute == -1 ? day : day.AddDays(1);
-                Require(followingUtcDay.Day == 1);
+                Require(IsLeapSecondBoundary(followingUtcDay));
             }
         }
         return (date, yearKind, clock.Length, fraction.Length);
     }
+
+    // UTC effective dates in the IERS leap-second history (Bulletin C 72).
+    // The initial 1972-01-01 TAI offset was not a leap-second insertion.
+    private static bool IsLeapSecondBoundary(DateOnly followingDay) =>
+        followingDay.Day == 1 && followingDay.Month switch
+        {
+            1 => followingDay.Year is >= 1973 and <= 1980 or 1988 or 1990 or 1991 or 1996 or 1999 or 2006 or 2009 or 2017,
+            7 => followingDay.Year is 1972 or 1981 or 1982 or 1983 or 1985 or 1992 or 1993 or 1994 or 1997 or 2012 or 2015,
+            _ => false,
+        };
 
     private static int UtcOffsetMinutes(ReadOnlySpan<byte> zone)
     {
@@ -158,7 +168,10 @@ internal sealed partial class MacKeychainSigningKeyStore
         // outside the range of DateTime. Only the last four digits are needed.
         int tail = Number(year[^Math.Min(4, year.Length)..]);
         int yearKind = expanded ? year.Length : negative ? -1 : tail < (century ? 15 : 1582) ? -2 : 0;
-        int cycleYear = 800 + (negative ? -tail : tail) % 400;
+        // Preserve historical dates used for UTC insertions. A representative
+        // year outside that history handles expanded years and ISO week rollover
+        // at the limits of DateOnly.
+        int cycleYear = !signed && tail is > 1 and < 9999 ? tail : 800 + (negative ? -tail : tail) % 400;
         if (dash < 0)
         {
             return (century ? DateForm.Century : DateForm.Year, yearKind);

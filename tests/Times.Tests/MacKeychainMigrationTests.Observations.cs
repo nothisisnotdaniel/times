@@ -258,6 +258,26 @@ public sealed partial class MacKeychainMigrationTests
     [DllImport("TimesKeychainFixture")]
     private static extern int TimesFixtureAccessVariant(int field, out IntPtr access);
 
+    [MacKeychainTheory]
+    [InlineData(0, 1)] // small descriptor
+    [InlineData(1, 0)] // entries
+    [InlineData(2, 0)] // aggregate nodes
+    [InlineData(3, 0)] // aggregate bytes
+    [InlineData(4, 0)] // depth
+    public void AccessPolicy_BoundsTheCompleteInMemoryDescriptor(int kind, int fits) =>
+        Assert.Equal(fits, TimesFixturePolicyFits(TimesPolicyFits, kind));
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    private delegate bool PolicyFits(IntPtr owner, uint count, IntPtr entries);
+
+    [DllImport("TimesKeychainFixture")]
+    private static extern int TimesFixturePolicyFits(PolicyFits fits, int kind);
+
+    [DllImport("TimesIssuerKeychain")]
+    [return: MarshalAs(UnmanagedType.I1)]
+    private static extern bool TimesPolicyFits(IntPtr owner, uint count, IntPtr entries);
+
     [DllImport("TimesIssuerKeychain")]
     private static extern int TimesCopyAccessPolicy(IntPtr access, out IntPtr policy);
 

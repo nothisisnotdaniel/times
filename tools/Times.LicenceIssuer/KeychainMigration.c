@@ -10,6 +10,36 @@
 
 enum { GroupLabelSize = 20, IvSize = 8, PrefixSize = GroupLabelSize + IvSize, MaxCipherSize = 16384 + IvSize };
 
+// Both callers keep the owning database explicit. Copy the opaque identifier
+// while the public CSSM bridge's borrowed record is still valid.
+OSStatus TimesCopyRecordId(SecKeychainItemRef item, CFDataRef *result)
+{
+    *result = NULL;
+    const CSSM_DB_UNIQUE_RECORD *record = NULL;
+    OSStatus status = item ? SecKeychainItemGetUniqueRecordID(item, &record) : errSecParam;
+    if (status) return status;
+    if (!record || !record->RecordIdentifier.Data || !record->RecordIdentifier.Length ||
+        record->RecordIdentifier.Length > 1024) return errSecInvalidItemRef;
+    *result = CFDataCreate(NULL, record->RecordIdentifier.Data, (CFIndex)record->RecordIdentifier.Length);
+    return *result ? errSecSuccess : errSecAllocate;
+}
+
+OSStatus TimesCheckPasswordDatabase(SecKeychainRef database)
+{
+    SecKeychainAttributeInfo *info = NULL;
+    OSStatus status = database ? SecKeychainAttributeInfoForItemID(database, CSSM_DL_DB_RECORD_GENERIC_PASSWORD, &info)
+                               : errSecParam;
+    bool service = false, account = false;
+    if (!status && info && info->tag && info->count <= 256) {
+        for (UInt32 i = 0; i < info->count; ++i) {
+            service |= info->tag[i] == kSecServiceItemAttr;
+            account |= info->tag[i] == kSecAccountItemAttr;
+        }
+    }
+    if (info) SecKeychainFreeAttributeInfo(info);
+    return status ? status : service && account ? errSecSuccess : errSecInvalidKeychain;
+}
+
 // Compare the protected value across the read and the subsequent writer transaction.
 // A fresh IV means that a re-encryption also changes the stamp.
 OSStatus TimesPasswordStamp(SecKeychainItemRef item, int expectedLength, uint8_t digest[CC_SHA256_DIGEST_LENGTH],

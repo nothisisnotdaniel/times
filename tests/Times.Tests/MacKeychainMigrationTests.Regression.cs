@@ -32,6 +32,79 @@ public sealed partial class MacKeychainMigrationTests
     }
 
     [Theory]
+    [InlineData("reader-list")]
+    [InlineData("malformed-legacy")]
+    [InlineData("fresh-view")]
+    [InlineData("revision")]
+    public void RefusedPolicy_PrecedesAllPrivateKeyDecoding(string reason)
+    {
+        using PortableFixture fixture = new();
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] der = key.ExportPkcs8PrivateKey();
+        byte[] stored = EncodeLegacy(der);
+        try
+        {
+            bool multiReader = reason is "reader-list" or "malformed-legacy";
+            if (reason == "malformed-legacy")
+            {
+                stored[^1] = (byte)'!';
+            }
+            string[] readers = multiReader ? ["first reader", "second reader"] : ["original reader"];
+            SigningKeyStoreTests.Item original = new(stored, readers);
+            fixture.Calls.Stored = original;
+            if (reason == "fresh-view")
+            {
+                fixture.Calls.CommittedReadView = new(stored, ["different reader"]);
+            }
+            if (reason == "revision")
+            {
+                fixture.Calls.AfterCopyContent = () => fixture.Calls.DatabaseVersion++;
+            }
+            int keyUses = 0;
+            MacKeychainItem items = new(fixture.Calls);
+            TokenStoreException refused = Assert.Throws<TokenStoreException>(() =>
+                items.ReadAndMigrate(IntPtr.Zero, Service, Account, 16384, true, bytes =>
+                {
+                    keyUses++;
+                    return bytes.ToArray();
+                }));
+            Assert.Equal(MigrationFailed, refused.Message);
+            Assert.Equal(0, keyUses);
+
+            File.WriteAllText(fixture.Ledger, "previous entry\n");
+            byte[] ledger = File.ReadAllBytes(fixture.Ledger);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            Assert.Equal(1, RunIssue(fixture.Store, fixture.Ledger, output, error));
+            Assert.True(error.ToString() == MigrationFailed + error.NewLine);
+            Assert.True(output.GetStringBuilder().Length == 0);
+            Assert.True(ledger.AsSpan().SequenceEqual(File.ReadAllBytes(fixture.Ledger)));
+            Assert.Same(original, fixture.Calls.Stored);
+            Assert.True(CryptographicOperations.FixedTimeEquals(stored, original.Data));
+            Assert.True(original.TrustedPaths.SequenceEqual(readers));
+            Assert.Equal(SigningKeyStoreTests.Item.OriginalPartition, original.Partition);
+            Assert.Equal(0, fixture.Calls.Creates + fixture.Calls.Updates + fixture.Calls.Deletes);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(der);
+            CryptographicOperations.ZeroMemory(stored);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, 40, false)]
+    [InlineData(true, 1, false)]
+    [InlineData(true, 40, true)]
+    public void MetadataReply_RequiresTheRunningVerifierImage(bool authenticated, int status, bool accepted)
+    {
+        byte[] metadata = RandomNumberGenerator.GetBytes(SHA256.HashSizeInBytes);
+        using MemoryStream request = new();
+        Assert.Equal(accepted, MacKeychainItem.NativeCalls.VerifyReply(authenticated, metadata, request, () => status));
+        Assert.True(request.ToArray().AsSpan().SequenceEqual(authenticated ? metadata : []));
+    }
+
+    [Theory]
     [InlineData(true)]
     [InlineData(false)]
     public void Issue_PreservesPublishedKeyAndHistoricalSearchOrder(bool createdHere)
@@ -185,6 +258,61 @@ public sealed partial class MacKeychainMigrationTests
         {
             CryptographicOperations.ZeroMemory(der);
             CryptographicOperations.ZeroMemory(legacy);
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void SoleReader_StagedViewUnavailableOrDisagrees_RollsBackAndCanRetry(bool missingUnique)
+    {
+        using PortableFixture fixture = new();
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] der = key.ExportPkcs8PrivateKey();
+        byte[] legacy = EncodeLegacy(der);
+        try
+        {
+            SigningKeyStoreTests.Item item = new(legacy, ["original reader"]);
+            fixture.Calls.Stored = item;
+            fixture.Calls.AfterUpdate = updated =>
+            {
+                if (missingUnique)
+                {
+                    fixture.Calls.MissNextUniqueLookup = true;
+                }
+                else
+                {
+                    fixture.Calls.NextPolicyObservation = new(updated.Data, ["different staged reader"]);
+                }
+            };
+            File.WriteAllText(fixture.Ledger, "previous entry\n");
+            byte[] ledger = File.ReadAllBytes(fixture.Ledger);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            Assert.Equal(1, RunIssue(fixture.Store, fixture.Ledger, output, error));
+            Assert.True(error.ToString() == MigrationFailed + error.NewLine);
+            Assert.True(output.GetStringBuilder().Length == 0);
+            Assert.True(ledger.AsSpan().SequenceEqual(File.ReadAllBytes(fixture.Ledger)));
+            Assert.Same(item, fixture.Calls.Stored);
+            Assert.True(CryptographicOperations.FixedTimeEquals(legacy, item.Data));
+            Assert.True(item.TrustedPaths.SequenceEqual(["original reader"]));
+            Assert.Equal(SigningKeyStoreTests.Item.OriginalPartition, item.Partition);
+            Assert.Equal(1, fixture.Calls.Updates);
+
+            fixture.Calls.AfterUpdate = null;
+            LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]);
+            AssertIssued(fixture.Store, fixture.Ledger, original);
+            AssertIssued(fixture.Store, fixture.Ledger, original);
+            Assert.Same(item, fixture.Calls.Stored);
+            Assert.True(CryptographicOperations.FixedTimeEquals(der, item.Data));
+            Assert.Equal(2, fixture.Calls.Updates);
+            Assert.Equal(0, fixture.Calls.Creates + fixture.Calls.Deletes);
+            Assert.Equal(3, File.ReadAllLines(fixture.Ledger).Length);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(legacy);
+            CryptographicOperations.ZeroMemory(der);
         }
     }
 
@@ -771,6 +899,17 @@ public sealed partial class MacKeychainMigrationTests
                 General(false, 0x1b, 0x28, 0x4a, 0x20); // SPACE is independent of the 94-character set.
                 General(false, 0x1b, 0x28, 0x4a, 0x1b, 0x28, 0x42, 0x41);
                 General(true, 0x1b, 0x28, 0x4a, 0x5c);
+                General(false, 0x1b, 0x6e); // LS2 without a G2 repertoire or character.
+                General(false, 0x1b, 0x2d, 0x46, 0xd3, 0x0e); // LS1 with no GL character.
+                General(false, 0x1b, 0x2d, 0x46, 0xd3, 0x0e, 0xd3); // GR does not use LS1.
+                General(false, 0x1b, 0x2d, 0x46, 0xd3, 0x0e, 0x0f, 0x41);
+                General(true, 0x1b, 0x2d, 0x46, 0x0e, 0x53, 0x0f, 0x41);
+                General(true, 0x1b, 0x2d, 0x46, 0xd3); // ISO-IR 126 capital sigma.
+                foreach (byte unassigned in new byte[] { 0xa4, 0xa5, 0xaa, 0xae, 0xd2, 0xff })
+                {
+                    General(false, 0x1b, 0x2d, 0x46, unassigned);
+                    General(false, 0x1b, 0x2d, 0x46, 0x0e, (byte)(unassigned & 0x7f));
+                }
                 General(false, 0x1b, 0x28, 0x21, 0x47, 0x41); // Unregistered extended G0.
                 General(true, 0x1b, 0x28, 0x21, 0x42, 0x41); // Invariant ISO-IR 170.
                 General(false, 0x1b, 0x2d, 0x70, 0xe9); // Unregistered 96-character set.
@@ -838,6 +977,7 @@ public sealed partial class MacKeychainMigrationTests
                     "2016-12-31T23:59:60Z", "00:59:60+01", "18:29:60-05:30", "00:00:00+01/00:59:60",
                     "2017-01-01T00:59:60+01", "2016-12-31T18:29:60-05:30", "2016-366T23:59:60Z",
                     "2016-W52-7T00:59:60+01", "2015-06-30T23:59:60Z",
+                    "1972-06-30T23:59:60Z", "2015-07-01T00:59:60+01",
                     "1985-04-12/P1D", "P1W/1985-W15", "R2/P1Y6M",
                     "R/12:30+02/13:30", "12:30Z/13:30Z", "12:30-05/13:30-04" })
                 {
@@ -848,6 +988,8 @@ public sealed partial class MacKeychainMigrationTests
                     "12:00:60Z", "23:58:60Z", "2016-12-31T12:00:60Z", "23:59:60+01", "00:00:00+01/00:00:60",
                     "2016-12-15T23:59:60Z", "2016-12-30T23:59:60Z", "2017-01-02T00:59:60+01",
                     "2016-12-31T00:59:60+01", "2016-365T23:59:60Z", "2016-W52-1T23:59:60Z",
+                    "2016-06-30T23:59:60Z", "2016-07-01T00:59:60+01", "1971-12-31T23:59:60Z",
+                    "2416-12-31T23:59:60Z", "+12016-12-31T23:59:60Z",
                     "12:30+02:00", "12-15:01", "R/1985", "P1D/P2D", "12:30+02/13:30+02",
                     "12:30/13:30Z", "1985/12:30", "1985-W15/1985-04", "1985//1986" })
                 {
@@ -871,6 +1013,8 @@ public sealed partial class MacKeychainMigrationTests
                     Iri(absolute ? "/ITU-R/4/1"u8 : "ITU-R/4/1"u8, !absolute);
                     Iri(absolute ? "/ITU-R/5/101"u8 : "ITU-R/5/101"u8, true);
                     Iri(absolute ? "/ITU-R/R-Recommendation/BR"u8 : "ITU-R/R-Recommendation/BR"u8, true);
+                    Iri(absolute ? "/ITU-R/r-recommendation/BR"u8 : "ITU-R/r-recommendation/BR"u8, !absolute);
+                    Iri(absolute ? "/itu-r/R-Recommendation/BR"u8 : "itu-r/R-Recommendation/BR"u8, !absolute);
                     Iri([], false);
                     Iri(absolute ? "/2//1"u8 : "a//b"u8, false);
                     Iri(absolute ? "/2/"u8 : "a/"u8, false);

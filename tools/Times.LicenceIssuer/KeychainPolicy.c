@@ -8,6 +8,59 @@
 #include <string.h>
 #include <strings.h>
 
+enum {
+    MaxEntries = 128, MaxRights = 64, MaxNodes = 2048, MaxDepth = 32,
+    MaxPolicyBytes = 128 * 1024, MaxPartitionBytes = 8192, MaxPartitions = 64
+};
+
+typedef struct { size_t nodes, bytes; } PolicyBudget;
+
+static bool consume(size_t *remaining, size_t amount)
+{
+    if (amount > *remaining) return false;
+    *remaining -= amount;
+    return true;
+}
+
+// Preflight the entire typed descriptor before copying fields, parsing a
+// partition plist, sorting rights or retaining a subject's code requirement.
+static bool measureSubject(const CSSM_LIST *list, unsigned depth, PolicyBudget *budget)
+{
+    if (!list->Head || depth > MaxDepth) return false;
+    for (const CSSM_LIST_ELEMENT *e = list->Head; e; e = e->NextElement) {
+        if (!consume(&budget->nodes, 1) || !consume(&budget->bytes, sizeof(*e))) return false;
+        switch (e->ElementType) {
+        case CSSM_LIST_ELEMENT_WORDID:
+            break;
+        case CSSM_LIST_ELEMENT_DATUM:
+            if ((e->Element.Word.Length && !e->Element.Word.Data) ||
+                !consume(&budget->bytes, e->Element.Word.Length)) return false;
+            break;
+        case CSSM_LIST_ELEMENT_SUBLIST:
+            if (!measureSubject(&e->Element.Sublist, depth + 1, budget)) return false;
+            break;
+        default:
+            return false;
+        }
+    }
+    return true;
+}
+
+bool TimesPolicyFits(const CSSM_ACL_OWNER_PROTOTYPE *owner, uint32_t count, const CSSM_ACL_ENTRY_INFO *entries)
+{
+    PolicyBudget budget = { MaxNodes, MaxPolicyBytes };
+    if (!owner || !entries || !count || count > MaxEntries ||
+        !measureSubject(&owner->TypedSubject, 0, &budget)) return false;
+    for (uint32_t i = 0; i < count; ++i) {
+        const CSSM_ACL_ENTRY_PROTOTYPE *p = &entries[i].EntryPublicInfo;
+        if (p->Authorization.NumberOfAuthTags > MaxRights ||
+            !consume(&budget.bytes, sizeof(*p) + p->Authorization.NumberOfAuthTags * sizeof(*p->Authorization.AuthTags)) ||
+            !consume(&budget.bytes, p->TimeRange.StartDate.Length) || !consume(&budget.bytes, p->TimeRange.EndDate.Length) ||
+            !measureSubject(&p->TypedSubject, 0, &budget)) return false;
+    }
+    return true;
+}
+
 static void appendNumber(CFMutableDataRef bytes, uint32_t value)
 {
     CFDataAppendBytes(bytes, (const UInt8 *)&value, sizeof(value));
@@ -48,7 +101,7 @@ static void collectCodeSubject(const CSSM_LIST_ELEMENT *head, ReaderSubject *rea
 static bool appendSubject(CFMutableDataRef bytes, const CSSM_LIST *list, unsigned depth,
                           CFTypeRef metadata, CFMutableBagRef prompts, ReaderSubject *reader)
 {
-    if (depth > 32 || !list->Head) return false;
+    if (depth > MaxDepth || !list->Head) return false;
     CFIndex start = CFDataGetLength(bytes);
     appendNumber(bytes, list->ListType);
     collectCodeSubject(list->Head, reader);
@@ -83,16 +136,28 @@ static bool appendSubject(CFMutableDataRef bytes, const CSSM_LIST *list, unsigne
     return true;
 }
 
-// SecAccessGetOwnerAndACL returns separately allocated list nodes and values.
+// Even a rejected, deeply nested descriptor must be released without recursing.
+// Use the owned sublist headers as the return stack, preserving sibling links.
 static void freeSubject(CSSM_LIST *list)
 {
     CSSM_LIST_ELEMENT *e = list->Head;
-    while (e) {
-        CSSM_LIST_ELEMENT *next = e->NextElement;
-        if (e->ElementType == CSSM_LIST_ELEMENT_SUBLIST) freeSubject(&e->Element.Sublist);
-        if (e->ElementType == CSSM_LIST_ELEMENT_DATUM) free(e->Element.Word.Data);
+    CSSM_LIST_ELEMENT *parents = NULL;
+    while (e || parents) {
+        if (!e) {
+            e = parents;
+            parents = e->Element.Sublist.Head;
+        } else if (e->ElementType == CSSM_LIST_ELEMENT_SUBLIST) {
+            CSSM_LIST_ELEMENT *child = e->Element.Sublist.Head;
+            e->Element.Sublist.Head = parents;
+            parents = e;
+            e = child;
+            continue;
+        } else if (e->ElementType == CSSM_LIST_ELEMENT_DATUM) {
+            free(e->Element.Word.Data);
+        }
+        CSSM_LIST_ELEMENT *sibling = e->NextElement;
         free(e);
-        e = next;
+        e = sibling;
     }
 }
 
@@ -119,6 +184,7 @@ static bool appendMetadata(CFMutableDataRef bytes, CSSM_ACL_ENTRY_PROTOTYPE *p)
 
 static CFTypeRef copyPartitionSet(const CSSM_DATA *payload)
 {
+    if (payload->Length > MaxPartitionBytes) return NULL;
     CFDataRef bytes = CFDataCreate(NULL, payload->Data, (CFIndex)payload->Length);
     if (!bytes) return NULL;
     CFPropertyListRef plist = CFPropertyListCreateWithData(NULL, bytes, kCFPropertyListImmutable, NULL, NULL);
@@ -126,11 +192,12 @@ static CFTypeRef copyPartitionSet(const CSSM_DATA *payload)
     CFMutableBagRef ids = NULL;
     if (plist && CFGetTypeID(plist) == CFDictionaryGetTypeID() && CFDictionaryGetCount(plist) == 1) {
         CFArrayRef list = CFDictionaryGetValue(plist, CFSTR("Partitions"));
-        if (list && CFGetTypeID(list) == CFArrayGetTypeID() && CFArrayGetCount(list) > 0) {
+        if (list && CFGetTypeID(list) == CFArrayGetTypeID() && CFArrayGetCount(list) > 0 &&
+            CFArrayGetCount(list) <= MaxPartitions) {
             ids = CFBagCreateMutable(NULL, 0, &kCFTypeBagCallBacks);
             for (CFIndex i = 0; ids && i < CFArrayGetCount(list); ++i) {
                 CFTypeRef id = CFArrayGetValueAtIndex(list, i);
-                if (CFGetTypeID(id) != CFStringGetTypeID() || !CFStringGetLength(id)) {
+                if (CFGetTypeID(id) != CFStringGetTypeID() || !CFStringGetLength(id) || CFStringGetLength(id) > 256) {
                     CFRelease(ids);
                     ids = NULL;
                     break;
@@ -201,12 +268,17 @@ static OSStatus copyAccessPolicy(SecAccessRef access, CFArrayRef *result, Reader
     CSSM_ACL_OWNER_PROTOTYPE *owner = NULL;
     CSSM_ACL_ENTRY_INFO *entries = NULL;
     uint32_t count = 0;
-    OSStatus status = SecAccessGetOwnerAndACL(access, &owner, &count, &entries);
+    CFArrayRef acl = NULL;
+    OSStatus status = SecAccessCopyACLList(access, &acl);
+    if (!status && (!acl || CFArrayGetCount(acl) > MaxEntries)) status = errSecInvalidItemRef;
+    if (acl) CFRelease(acl);
+    if (status) return status;
+    status = SecAccessGetOwnerAndACL(access, &owner, &count, &entries);
     CFMutableDataRef ownerPolicy = NULL;
     CFMutableBagRef bags[BagCount] = {0};
     CFDataRef digest = NULL;
     if (status) goto done;
-    if (!owner || !entries || !count) { status = errSecInvalidItemRef; goto done; }
+    if (!TimesPolicyFits(owner, count, entries)) { status = errSecInvalidItemRef; goto done; }
     status = errSecAllocate;
     for (int i = 0; i < BagCount; ++i) {
         bags[i] = CFBagCreateMutable(NULL, 0, &kCFTypeBagCallBacks);
@@ -267,9 +339,9 @@ static int compareDigests(const void *left, const void *right)
     return memcmp(left, right, sizeof(ViewDigest));
 }
 
-static bool digestField(CFTypeRef field, ViewDigest *digest)
+static bool digestField(CFTypeRef field, ViewDigest *digest, PolicyBudget *budget, unsigned depth)
 {
-    if (!field) return false;
+    if (!field || depth > MaxDepth || !consume(&budget->nodes, 1)) return false;
     CFTypeID type = CFGetTypeID(field);
     CC_SHA256_CTX hash;
     CC_SHA256_Init(&hash);
@@ -277,6 +349,7 @@ static bool digestField(CFTypeRef field, ViewDigest *digest)
         bool bag = type == CFBagGetTypeID();
         CC_SHA256_Update(&hash, bag ? "B" : "A", 1);
         CFIndex count = bag ? CFBagGetCount(field) : CFArrayGetCount(field);
+        if (count < 0 || (size_t)count > budget->nodes) return false;
         if (count) {
             const void **values = calloc(count, sizeof(*values));
             ViewDigest *children = calloc(count, sizeof(*children));
@@ -284,7 +357,7 @@ static bool digestField(CFTypeRef field, ViewDigest *digest)
             if (ok) {
                 if (bag) CFBagGetValues(field, values);
                 else CFArrayGetValues(field, CFRangeMake(0, count), values);
-                for (CFIndex i = 0; ok && i < count; ++i) ok = digestField(values[i], &children[i]);
+                for (CFIndex i = 0; ok && i < count; ++i) ok = digestField(values[i], &children[i], budget, depth + 1);
                 if (ok) {
                     if (bag) qsort(children, count, sizeof(*children), compareDigests);
                     for (CFIndex i = 0; i < count; ++i) CC_SHA256_Update(&hash, &children[i], sizeof(*children));
@@ -299,11 +372,12 @@ static bool digestField(CFTypeRef field, ViewDigest *digest)
     } else {
         bool string = type == CFStringGetTypeID();
         if (!string && type != CFDataGetTypeID()) return false;
+        if (string && CFStringGetLength(field) > 256) return false;
         CFDataRef bytes = string ? CFStringCreateExternalRepresentation(NULL, field, kCFStringEncodingUTF8, 0)
                                  : (CFDataRef)CFRetain(field);
         if (!bytes) return false;
         CFIndex size = CFDataGetLength(bytes);
-        bool ok = size >= 0 && (uint64_t)size <= UINT32_MAX;
+        bool ok = size >= 0 && consume(&budget->bytes, (size_t)size);
         CC_SHA256_Update(&hash, string ? "S" : "D", 1);
         if (ok && size) CC_SHA256_Update(&hash, CFDataGetBytePtr(bytes), (CC_LONG)size);
         CFRelease(bytes);
@@ -312,13 +386,15 @@ static bool digestField(CFTypeRef field, ViewDigest *digest)
     return CC_SHA256_Final(digest->bytes, &hash) == 1;
 }
 
-OSStatus TimesReadViewDigest(CFDataRef persistent, CFArrayRef policy, const ViewDigest *protectedValue, ViewDigest *result)
+OSStatus TimesReadViewDigest(CFDataRef persistent, CFArrayRef policy, const uint8_t *protectedValue, uint8_t *result)
 {
     ViewDigest fields[3];
+    PolicyBudget budget = { 4 * MaxNodes, 4 * MaxPolicyBytes };
     if (!persistent || !CFDataGetLength(persistent) || !policy || CFArrayGetCount(policy) != 7 ||
-        !protectedValue || !digestField(persistent, &fields[0]) || !digestField(policy, &fields[1])) return errSecInvalidItemRef;
-    fields[2] = *protectedValue;
-    CC_SHA256(fields, sizeof(fields), result->bytes);
+        !protectedValue || !digestField(persistent, &fields[0], &budget, 0) ||
+        !digestField(policy, &fields[1], &budget, 0)) return errSecInvalidItemRef;
+    memcpy(fields[2].bytes, protectedValue, sizeof(fields[2].bytes));
+    CC_SHA256(fields, sizeof(fields), result);
     return errSecSuccess;
 }
 

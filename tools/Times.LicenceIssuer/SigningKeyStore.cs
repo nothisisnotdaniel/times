@@ -99,7 +99,7 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
     {
         if (trustedPath is null)
         {
-            return keychain.ReadAndMigrate(search, Service, keyId, MaxBytes, false, ReadKey, IssuerProgram.VerifierStartInfo);
+            return keychain.ReadAndMigrate(search, Service, keyId, MaxBytes, false, ReadKey);
         }
 
         // File Keychain persistent references can resolve a replacement with the same
@@ -127,7 +127,7 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
                 }
                 try
                 {
-                    return keychain.ReadAndMigrate(search, Service, keyId, MaxBytes, true, ReadKey, IssuerProgram.VerifierStartInfo);
+                    return keychain.ReadAndMigrate(search, Service, keyId, MaxBytes, true, ReadKey);
                 }
                 finally
                 {
@@ -566,7 +566,7 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
             if (ituRadio && arc == 1)
             {
                 // X.660 A.6.3 restricts this alias to the R-Recommendation subtree.
-                Require(slash >= 0 && (label.SequenceEqual("5"u8) || Ascii.EqualsIgnoreCase(label, "R-Recommendation"u8)));
+                Require(slash >= 0 && (label.SequenceEqual("5"u8) || label.SequenceEqual("R-Recommendation"u8)));
             }
             if (Digits(label))
             {
@@ -585,9 +585,11 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
             {
                 if (absolute && arc == 0)
                 {
-                    ituRadio = Ascii.EqualsIgnoreCase(label, "ITU-R"u8);
+                    ituRadio = label.SequenceEqual("ITU-R"u8);
                     Require(!ituRadio || slash >= 0);
-                    smallSecondArc = ituRadio || Ascii.EqualsIgnoreCase(label, "ISO"u8) || Ascii.EqualsIgnoreCase(label, "ITU-T"u8);
+                    smallSecondArc = ituRadio || label.SequenceEqual("ISO"u8) || label.SequenceEqual("ITU-T"u8);
+                    Require(smallSecondArc || !Ascii.EqualsIgnoreCase(label, "ITU-R"u8)
+                        && !Ascii.EqualsIgnoreCase(label, "ISO"u8) && !Ascii.EqualsIgnoreCase(label, "ITU-T"u8));
                 }
                 ValidateIriLabel(label);
             }
@@ -691,6 +693,7 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
         Span<bool> sets96 = stackalloc bool[4];
         sets96.Clear();
         int left = 0, right = 1, single = -1;
+        bool pendingLeft = false, pendingRight = false;
         for (int i = 0; i < value.Length; i++)
         {
             byte current = value[i];
@@ -723,7 +726,7 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
                         }
                     }
                     ReadGraphicEscape(value, start, i, graphicOnly, videotex, widths, sets96, designations,
-                        ref left, ref right, ref single, ref unusedGraphics);
+                        ref left, ref right, ref single, ref unusedGraphics, ref pendingLeft, ref pendingRight);
                 }
             }
             else if (current is < 0x20 or >= 0x80 and < 0xa0)
@@ -743,7 +746,7 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
                 }
                 if (current is 0x0e or 0x0f)
                 {
-                    left = current == 0x0e ? 1 : 0;
+                    LockGraphicSet(current == 0x0e ? 1 : 0, widths, ref left, ref pendingLeft);
                 }
                 else if (current is 0x8e or 0x8f && (graphicOnly || HasC1Shifts(c1)))
                 {
@@ -759,21 +762,45 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
                 int set = single >= 0 ? single : current < 0x80 ? left : right;
                 int width = widths[set];
                 Require(width > 0);
-                single = -1;
                 if (!sets96[set] && current == 0x20)
                 {
+                    Require(single < 0);
                     continue; // SPACE in the left half of a 94-character repertoire
                 }
 
                 byte low = (byte)((current & 0x80) + (sets96[set] ? 0x20 : 0x21));
                 byte high = (byte)((current & 0x80) + (sets96[set] ? 0x7f : 0x7e));
                 Require(width <= value.Length - i && !value.Slice(i, width).ContainsAnyExceptInRange(low, high));
+                if (sets96[set] && value[designations[set]].SequenceEqual("F"u8))
+                {
+                    // ISO-IR 126 (1986), including when invoked in GL.
+                    Require((current | 0x80) is not (0xa4 or 0xa5 or 0xaa or 0xae or 0xd2 or 0xff));
+                }
+                if (single < 0)
+                {
+                    if (current < 0x80)
+                    {
+                        pendingLeft = false;
+                    }
+                    else
+                    {
+                        pendingRight = false;
+                    }
+                }
+                single = -1;
                 unusedGraphics &= ~(1 << set);
                 i += width - 1;
             }
         }
 
-        Require(single < 0 && unusedGraphics == 0);
+        Require(single < 0 && unusedGraphics == 0 && !pendingLeft && !pendingRight);
+    }
+
+    private static void LockGraphicSet(int set, ReadOnlySpan<int> widths, ref int active, ref bool pending)
+    {
+        Require(widths[set] > 0 && active != set && !pending);
+        active = set;
+        pending = true;
     }
 
     private static bool UsesControlSet(ReadOnlySpan<byte> next, bool primary)
@@ -827,7 +854,7 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
 
     private static void ReadGraphicEscape(ReadOnlySpan<byte> value, int start, int end, bool graphicOnly, bool videotex,
         Span<int> widths, Span<bool> sets96, Span<Range> designations, ref int left, ref int right, ref int single,
-        ref int unusedGraphics)
+        ref int unusedGraphics, ref bool pendingLeft, ref bool pendingRight)
     {
         ReadOnlySpan<byte> intermediates = value[start..end];
         byte final = value[end];
@@ -839,10 +866,10 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
                     single = final - 'N' + 2;
                     break;
                 case (byte)'n' or (byte)'o':
-                    left = final - 'n' + 2;
+                    LockGraphicSet(final - 'n' + 2, widths, ref left, ref pendingLeft);
                     break;
                 case (byte)'~' or (byte)'}' or (byte)'|':
-                    right = '~' - final + 1;
+                    LockGraphicSet('~' - final + 1, widths, ref right, ref pendingRight);
                     break;
                 default:
                     Require(!graphicOnly && final is >= 0x40 and <= 0x5f);
@@ -868,6 +895,7 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
         }
 
         int set = slot & 3;
+        Require(!(set == left && pendingLeft || set == right && pendingRight));
         bool is96 = slot >= '-';
         ReadOnlySpan<byte> nameBytes = value[nameStart..(end + 1)];
         // ISO/IEC TR 2375's register contains only two-byte multibyte

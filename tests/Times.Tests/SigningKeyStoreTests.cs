@@ -777,6 +777,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         public Action? BeforeOwnerLock { get; set; }
         public Action? AtCreateCommit { get; set; }
         public bool CacheOtherMiss { get; set; }
+        public bool MissNextUniqueLookup { get; set; }
         public int? RemainingReads { get; set; }
         public bool RefuseRead { get; set; }
         public Action? AfterCopyContent { get; set; }
@@ -869,8 +870,16 @@ public sealed class SigningKeyStoreTests : IDisposable
                 ? SHA256.HashData(current.Data) : null;
         }
 
-        public int FindUnique(IntPtr keychain, string service, string account, out IntPtr item) =>
-            Find(keychain, service, account, out item);
+        public int FindUnique(IntPtr keychain, string service, string account, out IntPtr item)
+        {
+            if (MissNextUniqueLookup)
+            {
+                MissNextUniqueLookup = false;
+                item = IntPtr.Zero;
+                return -25300;
+            }
+            return Find(keychain, service, account, out item);
+        }
 
         public int CopyPersistentReference(IntPtr item, out IntPtr persistent)
         {
@@ -984,7 +993,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         }
 
         public int VerifyCommittedView(IntPtr keychain, string service, string account, IntPtr persistent, IntPtr policy,
-            byte[]? stamp, Func<ProcessStartInfo> verifier)
+            byte[]? stamp)
         {
             Item current = GetItem(keychain)!;
             Item committed = CommittedReadView ?? current;
@@ -1135,8 +1144,9 @@ public sealed class SigningKeyStoreTests : IDisposable
             throw new InvalidOperationException("A signing key must have an explicit destination.");
 
         public int AddToKeychain(IntPtr keychain, ref MacKeychainItem.AttributeList attributes, byte[] data,
-            string creatorPath, out IntPtr item)
+            string creatorPath, string description, out IntPtr item)
         {
+            Assert.Equal(Service, description);
             Assert.Contains(keychain, locked);
             if (DestinationUnavailable)
             {

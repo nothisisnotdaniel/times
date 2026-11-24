@@ -406,6 +406,88 @@ public sealed partial class MacKeychainMigrationTests
         }
     }
 
+    [MacKeychainTheory]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    public void CaseVariantSharedHost_RequiresVerifiedMetadataForReadOnlyIssue(bool legacy, bool knownImage)
+    {
+        using Fixture fixture = new();
+        using TempFolder folder = new();
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] der = key.ExportPkcs8PrivateKey();
+        try
+        {
+            if (legacy)
+            {
+                fixture.AddLegacy(der);
+            }
+            else
+            {
+                Assert.Equal(0, TimesFixtureAdd(fixture.Reference, Service, null, null,
+                    FixtureReaders.IncludeCaller, der, (uint)der.Length));
+            }
+            byte[] stored = legacy ? fixture.Legacy! : der;
+            using Observation before = new(fixture, stored, stored);
+            string host = Path.Combine(folder.Path, "DoTnEt");
+            File.WriteAllBytes(host, []);
+            IssuerEvidence evidence = new(log);
+            VerifierObservation calls = new(knownImage, (stage, status) => evidence.ObserveCall("read-only", stage, status));
+            TestKeychainStore store = new(fixture.Reference, calls, processPath: host);
+            Assert.Equal(MacKeychainSigningKeyStore.SharedHostRefused, store.WriteRefusal);
+            string ledger = Path.Combine(folder.Path, "ledger.tsv");
+            File.WriteAllText(ledger, "previous entry\n");
+            byte[] previous = File.ReadAllBytes(ledger);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            int result = RunIssue(store, ledger, output, error);
+            Assert.Equal(1, calls.AuthenticatedChildren);
+            if (knownImage)
+            {
+                Assert.Equal(0, result);
+                Assert.True(error.GetStringBuilder().Length == 0);
+                LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]);
+                Assert.Equal(1, evidence.VerifyOutput(output.ToString(), original));
+                Assert.Equal(2, File.ReadAllLines(ledger).Length);
+            }
+            else
+            {
+                Assert.Equal(1, result);
+                Assert.True(output.GetStringBuilder().Length == 0);
+                Assert.True(error.ToString() == MigrationFailed + error.NewLine);
+                Assert.True(previous.AsSpan().SequenceEqual(File.ReadAllBytes(ledger)));
+            }
+            evidence.AssertCounts(0, knownImage ? 1 : 0);
+            using Observation after = new(fixture, stored, stored, before);
+            AssertObservation("read-only", before, after, false, requireOriginal: true, requirePhysical: true);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(der);
+        }
+    }
+
+    private sealed class VerifierObservation : FixtureWriteBoundary
+    {
+        private readonly bool knownImage;
+        public int AuthenticatedChildren { get; private set; }
+
+        public VerifierObservation(bool knownImage, Action<string, int> report) : base(false, report) =>
+            this.knownImage = knownImage;
+
+        internal override bool IsVerifierImage(string executable, int pid)
+        {
+            bool verified = base.IsVerifierImage(executable, pid);
+            if (verified && pid != 0)
+            {
+                AuthenticatedChildren++;
+                return knownImage;
+            }
+            return verified;
+        }
+    }
+
     [MacKeychainFact]
     public void CreateKey_SecondaryWithoutLock_CreatesAndReleasesFileLock()
     {
