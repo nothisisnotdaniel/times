@@ -13,14 +13,14 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 45
     env:
-      FACTORY_TEST_COMMIT: "5c0a895ac02702b76ec03d4be236a7fc366a02cf"
+      FACTORY_TEST_COMMIT: "97d0ea92a5e371bcb65a98a02240500cd51ebe25"
       DOTNET_NOLOGO: "1"
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
     steps:
       - name: Check out the exact Times build
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: "5c0a895ac02702b76ec03d4be236a7fc366a02cf"
+          ref: "97d0ea92a5e371bcb65a98a02240500cd51ebe25"
           persist-credentials: false
       - name: Prepare the disposable Keychain test directory
         shell: bash
@@ -65,6 +65,7 @@ jobs:
           import json
           import os
           import pathlib
+          import re
           import xml.etree.ElementTree as ET
 
           root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "times401"
@@ -82,6 +83,39 @@ jobs:
           required += [f"{lookup_lock}(kind: {kind})" for kind in ("regular", "symlink", "fifo")]
           required += [f"{duplicate}(competingInsert: {value})" for value in ("False", "True")]
           full_suite_classes = ("Times.Tests.LicenceIssuerTests.", "Times.Tests.SigningKeyStoreTests.")
+          phases = {"control-allowed", "control-denied", "denied-read", "denied-write",
+                    "issue-1", "issue-2", "retry-1", "retry-2"}
+          operations = {
+              "allocate protected record", "ciphertext length", "commit database", "control update",
+              "create encryption context", "CSP allocator", "database allocator", "database CSP",
+              "database write permission", "disable autocommit", "encrypt final", "encrypt update",
+              "find password record", "find record group", "generate IV", "get database", "get file database",
+              "group key header", "identify database path", "identify owner", "identify record",
+              "initialize encryption", "item database", "item record", "load stamp bridge", "lock database",
+              "migration arguments", "open lookup lock", "open writer lock", "provider update", "read password",
+              "read protected record", "read record stamp", "read stamp data", "stamp allocator",
+              "stamp database", "stamp record", "update password", "update record data", "validate group reference",
+              "validate record envelope", "validate stamp envelope", "verify writer lock",
+          }
+
+          def fixture_events(result):
+              output = result.findall("./{*}Output/{*}StdOut") or result.findall("./{*}Output/{*}TextMessages/{*}Message")
+              events = []
+              for stream in output:
+                  for line in (stream.text or "").splitlines():
+                      description, separator, value = line.strip().rpartition(" returned ")
+                      if not separator or not re.fullmatch(r"-?[0-9]{1,10}", value):
+                          continue
+                      phase, labelled, operation = description.partition(" | ")
+                      if not labelled:
+                          operation, phase = phase, None
+                      code = int(value)
+                      if operation not in operations or (phase is not None and phase not in phases):
+                          continue
+                      if -(2**31) <= code < 2**31:
+                          events.append({"phase": phase, "operation": operation, "status": code})
+              return events
+
           report = {"commit": os.environ["FACTORY_TEST_COMMIT"], "controller": os.environ["GITHUB_SHA"], "suites": {}}
           valid = True
           for name, status in (("native", "NATIVE_STATUS"), ("full", "FULL_STATUS")):
@@ -93,6 +127,7 @@ jobs:
               seen = {case: [] for case in required}
               classes = set()
               failures = []
+              diagnostics = []
               for node in results:
                   test_name = node.get("testName", "")
                   outcome = node.get("outcome", "Unknown")
@@ -102,6 +137,12 @@ jobs:
                       label = case
                   else:
                       label = test_name.partition("(")[0]
+                  if test_name.startswith(prefix):
+                      method = case.partition("(")[0]
+                      if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,127}", method):
+                          events = fixture_events(node)
+                          if events:
+                              diagnostics.append({"test": case if case in seen else method, "events": events})
                   if outcome not in ("Passed", "NotExecuted"):
                       failures.append(label)
                   for suite in full_suite_classes:
@@ -111,6 +152,7 @@ jobs:
                   "files": len(files), "cases": len(results), "outcomes": dict(counts),
                   "step": os.environ.get(status, "missing"), "required_native": seen,
                   "failed_tests": sorted(set(failures)),
+                  "fixture_diagnostics": diagnostics,
               }
               report["suites"][name] = row
               valid &= (bool(files) and row["step"] == "success" and counts["Passed"] > 0
@@ -129,6 +171,11 @@ jobs:
                   print(f"- {name}: {row['cases']} cases, {row['outcomes']}, process {row['step']}.", file=summary)
                   for test in row["failed_tests"]:
                       print("  - Failed: " + test, file=summary)
+                  for trace in row["fixture_diagnostics"]:
+                      print("  - " + trace["test"], file=summary)
+                      for event in trace["events"]:
+                          phase = event["phase"] + " / " if event["phase"] else ""
+                          print(f"    - {phase}{event['operation']} returned {event['status']}", file=summary)
               print("\n| Required native case | Targeted run | Full Release run |", file=summary)
               print("| --- | --- | --- |", file=summary)
               for case in required:
@@ -141,7 +188,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: times-401-macos-5c0a895ac02702b76ec03d4be236a7fc366a02cf
+          name: times-401-macos-97d0ea92a5e371bcb65a98a02240500cd51ebe25
           path: ${{ runner.temp }}/times401/summary.json
           if-no-files-found: error
           retention-days: 14
