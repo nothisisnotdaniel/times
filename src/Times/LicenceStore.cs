@@ -338,7 +338,7 @@ internal sealed partial class MacKeychainItem
 
     /// <summary>Returns the decoded data and migrates a writable item if its encoding changed.</summary>
     public byte[]? ReadAndMigrate(IntPtr search, string service, string account, int maxBytes, bool writable,
-        Func<ReadOnlySpan<byte>, byte[]> decode)
+        Func<ReadOnlySpan<byte>, byte[]> decode, Func<ProcessStartInfo> verifier)
     {
         byte[]? decoded = null;
         byte[]? expected = null;
@@ -381,7 +381,7 @@ internal sealed partial class MacKeychainItem
                 {
                     Check(native.CopyRecordId(item, out recordId), MigrationFailed);
                     Check(native.CopyAccessSnapshot(item, out originalPolicy), MigrationFailed);
-                    stamp = writable ? native.DataStamp(item) : null;
+                    stamp = native.DataStamp(item);
                     ReadContent(item, maxBytes, Decode, () => VerifyReadPolicy(item, legacy: true));
                 });
             }
@@ -413,6 +413,13 @@ internal sealed partial class MacKeychainItem
                 {
                     VerifyRecordId(selected, recordId);
                     VerifyReadPolicy(selected, legacy);
+                    byte[]? selectedStamp = native.DataStamp(selected);
+                    if (stamp is null || selectedStamp is null || !stamp.AsSpan().SequenceEqual(selectedStamp))
+                    {
+                        throw new TokenStoreException(MigrationFailed);
+                    }
+                    Check(native.CopyPersistentReference(item, out persistent), MigrationFailed);
+                    Check(native.VerifyCommittedView(owner, service, account, persistent, originalPolicy, stamp, verifier), MigrationFailed);
                 }
                 finally
                 {
@@ -421,7 +428,6 @@ internal sealed partial class MacKeychainItem
 
                 if (legacy && writable)
                 {
-                    Check(native.CopyPersistentReference(item, out persistent), MigrationFailed);
                     expected = bytes.ToArray();
                 }
             }
@@ -822,6 +828,8 @@ internal sealed partial class MacKeychainItem
         public bool WithSearchList(IntPtr target, Func<IReadOnlyList<IntPtr>, bool> action);
         public void WithoutInteraction(Action action);
         public void WithStableRead(IntPtr keychain, Action read);
+        public int VerifyCommittedView(IntPtr keychain, string service, string account, IntPtr persistent, IntPtr policy,
+            byte[]? stamp, Func<ProcessStartInfo> verifier);
         public IFileTransaction BeginTransaction(IntPtr keychain);
         public int CopyRecordId(IntPtr item, out IntPtr recordId);
         public int CopyPersistentReference(IntPtr item, out IntPtr persistent);

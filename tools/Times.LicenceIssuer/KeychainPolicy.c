@@ -23,12 +23,35 @@ static bool appendField(CFMutableDataRef bytes, const void *value, size_t length
 
 // No pointer values, struct padding or provider-local ACL handles enter equality.
 // Preserve the structure of compound subjects and the binding of each prompt to its rights.
+typedef struct { unsigned grants, applications; CFDataRef requirement; } ReaderSubject;
+
+// SecAccessGetOwnerAndACL exposes the typed code-signature subject. Recognize
+// the OS X form with exactly one requirement. The comment is never a pathname
+// to open. Unknown forms and additional subjects cannot establish a sole app.
+static void collectCodeSubject(const CSSM_LIST_ELEMENT *head, ReaderSubject *reader)
+{
+    if (!reader || head->ElementType != CSSM_LIST_ELEMENT_WORDID ||
+        head->WordID != CSSM_ACL_SUBJECT_TYPE_CODE_SIGNATURE) return;
+    if (++reader->applications != 1) return;
+    const CSSM_LIST_ELEMENT *type = head->NextElement;
+    const CSSM_LIST_ELEMENT *hash = type ? type->NextElement : NULL;
+    const CSSM_LIST_ELEMENT *comment = hash ? hash->NextElement : NULL;
+    const CSSM_LIST_ELEMENT *requirement = comment ? comment->NextElement : NULL;
+    if (!requirement || requirement->NextElement || type->ElementType != CSSM_LIST_ELEMENT_WORDID ||
+        type->WordID != CSSM_ACL_CODE_SIGNATURE_OSX || hash->ElementType != CSSM_LIST_ELEMENT_DATUM ||
+        hash->Element.Word.Length != CC_SHA1_DIGEST_LENGTH || comment->ElementType != CSSM_LIST_ELEMENT_DATUM ||
+        requirement->ElementType != CSSM_LIST_ELEMENT_DATUM) return;
+    const CSSM_DATA *bytes = &requirement->Element.Word;
+    if (bytes->Length && bytes->Data) reader->requirement = CFDataCreate(NULL, bytes->Data, bytes->Length);
+}
+
 static bool appendSubject(CFMutableDataRef bytes, const CSSM_LIST *list, unsigned depth,
-                          CFTypeRef metadata, CFMutableBagRef prompts)
+                          CFTypeRef metadata, CFMutableBagRef prompts, ReaderSubject *reader)
 {
     if (depth > 32 || !list->Head) return false;
     CFIndex start = CFDataGetLength(bytes);
     appendNumber(bytes, list->ListType);
+    collectCodeSubject(list->Head, reader);
     for (const CSSM_LIST_ELEMENT *e = list->Head; e; e = e->NextElement) {
         appendNumber(bytes, e->ElementType);
         switch (e->ElementType) {
@@ -39,7 +62,7 @@ static bool appendSubject(CFMutableDataRef bytes, const CSSM_LIST *list, unsigne
             if (!appendField(bytes, e->Element.Word.Data, e->Element.Word.Length)) return false;
             break;
         case CSSM_LIST_ELEMENT_SUBLIST:
-            if (!appendSubject(bytes, &e->Element.Sublist, depth + 1, metadata, prompts)) return false;
+            if (!appendSubject(bytes, &e->Element.Sublist, depth + 1, metadata, prompts, reader)) return false;
             break;
         default:
             return false;
@@ -121,7 +144,7 @@ static CFTypeRef copyPartitionSet(const CSSM_DATA *payload)
 }
 
 enum { Ordinary, Partitions, Integrity, Rights, Prompts, BagCount };
-static OSStatus collectEntry(CSSM_ACL_ENTRY_PROTOTYPE *p, CFMutableBagRef bags[], CFDataRef *digest)
+static OSStatus collectEntry(CSSM_ACL_ENTRY_PROTOTYPE *p, CFMutableBagRef bags[], CFDataRef *digest, ReaderSubject *reader)
 {
     CFMutableDataRef metadata = CFDataCreateMutable(NULL, 0);
     CFMutableDataRef subject = CFDataCreateMutable(NULL, 0);
@@ -132,9 +155,11 @@ static OSStatus collectEntry(CSSM_ACL_ENTRY_PROTOTYPE *p, CFMutableBagRef bags[]
     if (!appendMetadata(metadata, p)) goto done;
     CFBagAddValue(bags[Rights], metadata);
     int group = Ordinary;
+    bool decrypt = false;
     const CSSM_LIST_ELEMENT *head = p->TypedSubject.Head;
     for (uint32_t i = 0; i < p->Authorization.NumberOfAuthTags; ++i) {
         CSSM_ACL_AUTHORIZATION_TAG right = p->Authorization.AuthTags[i];
+        if (right == CSSM_ACL_AUTHORIZATION_DECRYPT || right == CSSM_ACL_AUTHORIZATION_ANY) decrypt = true;
         if (right != CSSM_ACL_AUTHORIZATION_PARTITION_ID && right != CSSM_ACL_AUTHORIZATION_INTEGRITY) continue;
         if (p->Authorization.NumberOfAuthTags != 1 || !head || head->ElementType != CSSM_LIST_ELEMENT_WORDID ||
             head->WordID != CSSM_ACL_SUBJECT_TYPE_PARTITION || !head->NextElement ||
@@ -154,7 +179,8 @@ static OSStatus collectEntry(CSSM_ACL_ENTRY_PROTOTYPE *p, CFMutableBagRef bags[]
             if (!*digest) goto done;
         }
     }
-    if (group == Ordinary && !appendSubject(subject, &p->TypedSubject, 0, metadata, bags[Prompts])) goto done;
+    if (reader && decrypt) reader->grants++;
+    if (group == Ordinary && !appendSubject(subject, &p->TypedSubject, 0, metadata, bags[Prompts], decrypt ? reader : NULL)) goto done;
     const void *fields[] = {metadata, subject, partition ? partition : kCFNull};
     CFArrayRef entry = CFArrayCreate(NULL, fields, 3, &kCFTypeArrayCallBacks);
     if (!entry) { status = errSecAllocate; goto done; }
@@ -169,7 +195,7 @@ done:
 }
 
 // Layout: owner, ordinary entries, partitions, integrity rule, rights, prompts, integrity digest.
-OSStatus TimesCopyAccessPolicy(SecAccessRef access, CFArrayRef *result)
+static OSStatus copyAccessPolicy(SecAccessRef access, CFArrayRef *result, ReaderSubject *reader)
 {
     *result = NULL;
     CSSM_ACL_OWNER_PROTOTYPE *owner = NULL;
@@ -189,12 +215,12 @@ OSStatus TimesCopyAccessPolicy(SecAccessRef access, CFArrayRef *result)
     ownerPolicy = CFDataCreateMutable(NULL, 0);
     if (!ownerPolicy) goto done;
     appendNumber(ownerPolicy, owner->Delegate);
-    if (!appendSubject(ownerPolicy, &owner->TypedSubject, 0, CFSTR("owner"), bags[Prompts])) {
+    if (!appendSubject(ownerPolicy, &owner->TypedSubject, 0, CFSTR("owner"), bags[Prompts], NULL)) {
         status = errSecInvalidItemRef;
         goto done;
     }
     for (uint32_t i = 0; i < count; ++i) {
-        status = collectEntry(&entries[i].EntryPublicInfo, bags, &digest);
+        status = collectEntry(&entries[i].EntryPublicInfo, bags, &digest, reader);
         if (status) goto done;
     }
     const void *fields[] = {ownerPolicy, bags[Ordinary], bags[Partitions], bags[Integrity], bags[Rights],
@@ -217,6 +243,11 @@ done:
     return status;
 }
 
+OSStatus TimesCopyAccessPolicy(SecAccessRef access, CFArrayRef *result)
+{
+    return copyAccessPolicy(access, result, NULL);
+}
+
 OSStatus TimesCopyPasswordAccess(SecKeychainItemRef item, CFArrayRef *result)
 {
     *result = NULL;
@@ -225,6 +256,70 @@ OSStatus TimesCopyPasswordAccess(SecKeychainItemRef item, CFArrayRef *result)
     if (!status) status = access ? TimesCopyAccessPolicy(access, result) : errSecInvalidItemRef;
     if (access) CFRelease(access);
     return status;
+}
+
+// The scoped logical reference, complete policy and protected-value stamp must
+// agree across processes. Bag order and process-local CF handles are immaterial.
+typedef struct { uint8_t bytes[CC_SHA256_DIGEST_LENGTH]; } ViewDigest;
+
+static int compareDigests(const void *left, const void *right)
+{
+    return memcmp(left, right, sizeof(ViewDigest));
+}
+
+static bool digestField(CFTypeRef field, ViewDigest *digest)
+{
+    if (!field) return false;
+    CFTypeID type = CFGetTypeID(field);
+    CC_SHA256_CTX hash;
+    CC_SHA256_Init(&hash);
+    if (type == CFArrayGetTypeID() || type == CFBagGetTypeID()) {
+        bool bag = type == CFBagGetTypeID();
+        CC_SHA256_Update(&hash, bag ? "B" : "A", 1);
+        CFIndex count = bag ? CFBagGetCount(field) : CFArrayGetCount(field);
+        if (count) {
+            const void **values = calloc(count, sizeof(*values));
+            ViewDigest *children = calloc(count, sizeof(*children));
+            bool ok = values && children;
+            if (ok) {
+                if (bag) CFBagGetValues(field, values);
+                else CFArrayGetValues(field, CFRangeMake(0, count), values);
+                for (CFIndex i = 0; ok && i < count; ++i) ok = digestField(values[i], &children[i]);
+                if (ok) {
+                    if (bag) qsort(children, count, sizeof(*children), compareDigests);
+                    for (CFIndex i = 0; i < count; ++i) CC_SHA256_Update(&hash, &children[i], sizeof(*children));
+                }
+            }
+            free(children);
+            free(values);
+            if (!ok) return false;
+        }
+    } else if (field == kCFNull) {
+        CC_SHA256_Update(&hash, "N", 1);
+    } else {
+        bool string = type == CFStringGetTypeID();
+        if (!string && type != CFDataGetTypeID()) return false;
+        CFDataRef bytes = string ? CFStringCreateExternalRepresentation(NULL, field, kCFStringEncodingUTF8, 0)
+                                 : (CFDataRef)CFRetain(field);
+        if (!bytes) return false;
+        CFIndex size = CFDataGetLength(bytes);
+        bool ok = size >= 0 && (uint64_t)size <= UINT32_MAX;
+        CC_SHA256_Update(&hash, string ? "S" : "D", 1);
+        if (ok && size) CC_SHA256_Update(&hash, CFDataGetBytePtr(bytes), (CC_LONG)size);
+        CFRelease(bytes);
+        if (!ok) return false;
+    }
+    return CC_SHA256_Final(digest->bytes, &hash) == 1;
+}
+
+OSStatus TimesReadViewDigest(CFDataRef persistent, CFArrayRef policy, const ViewDigest *protectedValue, ViewDigest *result)
+{
+    ViewDigest fields[3];
+    if (!persistent || !CFDataGetLength(persistent) || !policy || CFArrayGetCount(policy) != 7 ||
+        !protectedValue || !digestField(persistent, &fields[0]) || !digestField(policy, &fields[1])) return errSecInvalidItemRef;
+    fields[2] = *protectedValue;
+    CC_SHA256(fields, sizeof(fields), result->bytes);
+    return errSecSuccess;
 }
 
 // The normal password read authenticates the item's integrity under the caller's
@@ -242,45 +337,34 @@ static OSStatus checkPassword(SecKeychainItemRef item, const uint8_t *expected, 
     return status;
 }
 
-// The legacy trusted-application API exposes the description separately from
-// the stored code requirement. Older frameworks without this accessor cannot
-// establish the subject of a partitioned grant.
-extern OSStatus SecTrustedApplicationCopyRequirement(SecTrustedApplicationRef, SecRequirementRef *)
-    __attribute__((weak_import));
-
-static OSStatus checkApplicationSubject(SecTrustedApplicationRef reader)
+static OSStatus checkApplicationSubject(const ReaderSubject *reader)
 {
-    SecRequirementRef stored = NULL;
     SecCodeRef caller = NULL;
     SecStaticCodeRef code = NULL;
-    CFDataRef actual = NULL, expected = NULL;
+    CFDataRef expected = NULL;
     CFDictionaryRef info = NULL;
     OSStatus status = errSecAuthFailed;
-    if (!SecTrustedApplicationCopyRequirement || SecTrustedApplicationCopyRequirement(reader, &stored) || !stored)
-        goto done;
+    if (reader->grants != 1 || reader->applications != 1 || !reader->requirement) return status;
     // The ACL's description may be absent, stale or name a special file. The
     // executing code supplies its own identity for either type of authorized read.
     if (SecCodeCopySelf(kSecCSDefaultFlags, &caller) || !caller ||
         SecCodeCopyStaticCode(caller, kSecCSDefaultFlags, &code) || !code ||
         SecCodeCopySigningInformation(code, kSecCSRequirementInformation, &info) || !info) goto done;
     SecRequirementRef implicit = (SecRequirementRef)CFDictionaryGetValue(info, kSecCodeInfoImplicitDesignatedRequirement);
-    if (!implicit || SecRequirementCopyData(implicit, kSecCSDefaultFlags, &expected) ||
-        SecRequirementCopyData(stored, kSecCSDefaultFlags, &actual)) goto done;
+    if (!implicit || SecRequirementCopyData(implicit, kSecCSDefaultFlags, &expected)) goto done;
     // Membership in a group does not prove a sole reader. Require the entire
     // OS-derived identity and validate the running process against that requirement.
-    if (expected && actual && CFEqual(expected, actual))
-        status = SecCodeCheckValidity(caller, kSecCSDefaultFlags, stored);
+    if (expected && CFEqual(expected, reader->requirement))
+        status = SecCodeCheckValidity(caller, kSecCSDefaultFlags, implicit);
 done:
-    if (actual) CFRelease(actual);
     if (expected) CFRelease(expected);
     if (info) CFRelease(info);
     if (code) CFRelease(code);
     if (caller) CFRelease(caller);
-    if (stored) CFRelease(stored);
     return status;
 }
 
-static OSStatus checkReaderPolicy(SecAccessRef access, CFArrayRef policy, bool writable)
+static OSStatus checkReaderPolicy(SecAccessRef access, CFArrayRef policy, bool writable, const ReaderSubject *subject)
 {
     if (!access || !policy || CFArrayGetCount(policy) != 7) return errSecInvalidItemRef;
     CFBagRef partitions = CFArrayGetValueAtIndex(policy, 2);
@@ -306,7 +390,7 @@ static OSStatus checkReaderPolicy(SecAccessRef access, CFArrayRef policy, bool w
     if (!readers || CFArrayGetCount(readers) != 1) goto done;
     SecTrustedApplicationRef reader = (SecTrustedApplicationRef)CFArrayGetValueAtIndex(readers, 0);
     if (CFGetTypeID(reader) != SecTrustedApplicationGetTypeID()) goto done;
-    status = checkApplicationSubject(reader);
+    status = checkApplicationSubject(subject);
 done:
     if (description) CFRelease(description);
     if (readers) CFRelease(readers);
@@ -320,9 +404,11 @@ OSStatus TimesCopyLegacyReadPolicy(SecKeychainItemRef item, int writable, CFArra
     *result = NULL;
     SecAccessRef access = NULL;
     CFArrayRef policy = NULL;
+    ReaderSubject subject = {0};
     OSStatus status = item ? SecKeychainItemCopyAccess(item, &access) : errSecParam;
-    if (!status) status = access ? TimesCopyAccessPolicy(access, &policy) : errSecInvalidItemRef;
-    if (!status) status = checkReaderPolicy(access, policy, writable != 0);
+    if (!status) status = access ? copyAccessPolicy(access, &policy, &subject) : errSecInvalidItemRef;
+    if (!status) status = checkReaderPolicy(access, policy, writable != 0, &subject);
+    if (subject.requirement) CFRelease(subject.requirement);
     if (!status) *result = policy;
     else if (policy) CFRelease(policy);
     if (access) CFRelease(access);

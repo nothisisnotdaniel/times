@@ -55,7 +55,6 @@ public sealed partial class MacKeychainMigrationTests
         using (TempFolder folder = new())
         using (ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256))
         using (ManualResetEventSlim secondReading = new())
-        using (ManualResetEventSlim firstIssued = new())
         {
             byte[] der = key.ExportPkcs8PrivateKey();
             try
@@ -73,14 +72,11 @@ public sealed partial class MacKeychainMigrationTests
                     {
                         Assert.True(secondReading.Wait(FixtureTimeout), "The second issuer did not contend for the key read.");
                     }
-                }, item => ObserveStaged(fixture, before, "issue-1", item, der)));
+                }, (item, committing) => ObserveStaged(fixture, before, "issue-1", item, der, committing, evidence)));
                 TestKeychainStore second = new(fixture.Reference, new ReadGrant(true,
                     (operation, status) => evidence.ObserveCall("issue-2", operation, status),
-                    item => ObserveStaged(fixture, before, "issue-2", item, der)), readContended: secondReading.Set)
-                {
-                    // The two key-store calls overlap. Order the independent ledger appends.
-                    AfterRead = () => Assert.True(firstIssued.Wait(FixtureTimeout), "The first issuer did not finish."),
-                };
+                    (item, committing) => ObserveStaged(fixture, before, "issue-2", item, der, committing, evidence)),
+                    readContended: secondReading.Set);
                 void Issue(TestKeychainStore store, string name)
                 {
                     using StringWriter output = new();
@@ -89,20 +85,11 @@ public sealed partial class MacKeychainMigrationTests
                     Assert.True(error.GetStringBuilder().Length == 0, "The fixture issuer produced an error.");
                     Assert.Equal(1, evidence.VerifyOutput(output.ToString(), original));
                 }
-                await RunOverlappingIssues(firstReading.Task, secondReading, () =>
-                {
-                    try
-                    {
-                        Issue(first, "Ada");
-                    }
-                    finally
-                    {
-                        firstIssued.Set();
-                    }
-                }, () => Issue(second, "Bob"));
+                await RunOverlappingIssues(firstReading.Task, secondReading,
+                    () => Issue(first, "Ada"), () => Issue(second, "Bob"));
                 using Observation after = new(fixture, der, legacy, before);
                 AssertObservation("issue-2", before, after, false, requireOriginal: false, requirePhysical: false);
-                Assert.Equal(2, File.ReadAllLines(ledger).Length);
+                Assert.Equal(["Ada", "Bob"], File.ReadAllLines(ledger).Select(line => line.Split('\t')[1]).Order());
             }
             finally
             {
@@ -447,7 +434,14 @@ public sealed partial class MacKeychainMigrationTests
     [InlineData(false, false)]
     [InlineData(true, false)]
     [InlineData(false, true)]
-    public void WriteRefusal_BindsCallerRequirementAndBothPolicyObservations(bool fifoDescription, bool differentPolicy)
+    public void WriteRefusal_BindsCallerRequirementAndBothPolicyObservations(bool fifoDescription, bool differentPolicy) =>
+        ExerciseReadOnlyPolicy(fifoDescription, differentPolicy, staleProvider: false);
+
+    [MacKeychainFact]
+    public void WriteRefusal_AgreesInCacheButDiffersFromFreshProvider_RefusesBeforeSigning() =>
+        ExerciseReadOnlyPolicy(fifoDescription: false, differentPolicy: true, staleProvider: true);
+
+    private void ExerciseReadOnlyPolicy(bool fifoDescription, bool differentPolicy, bool staleProvider)
     {
         using Fixture fixture = new();
         using Fixture? other = differentPolicy ? new Fixture() : null;
@@ -456,11 +450,19 @@ public sealed partial class MacKeychainMigrationTests
         byte[] der = key.ExportPkcs8PrivateKey();
         try
         {
-            fixture.AddLegacyWithDescription(der, fifoDescription);
+            if (staleProvider)
+            {
+                fixture.AddLegacyForReaderPair(der);
+                other!.AddLegacy(der);
+            }
+            else
+            {
+                fixture.AddLegacyWithDescription(der, fifoDescription);
+                other?.AddLegacyForReaderPair(der);
+            }
             byte[] legacy = fixture.Legacy!;
             using Observation before = new(fixture, legacy, legacy);
             Assert.True(before.Bound && before.HasPartitions && before.HasIntegrity && before.Caller.Original);
-            other?.AddLegacyForReaderPair(der);
             using Observation? alternative = other is null ? null : new(other, other.Legacy!, other.Legacy!);
             if (alternative is not null)
             {
@@ -471,6 +473,7 @@ public sealed partial class MacKeychainMigrationTests
             string phase = differentPolicy ? "denied-write" : "issue-1";
             IssuerEvidence evidence = new(log);
             int successfulReads = 0;
+            int committedViewRefusals = 0;
             void Report(string operation, int status)
             {
                 evidence.ObserveCall(phase, operation, status);
@@ -478,8 +481,13 @@ public sealed partial class MacKeychainMigrationTests
                 {
                     successfulReads++;
                 }
+                if (operation == "verify committed item" && status != 0)
+                {
+                    committedViewRefusals++;
+                }
             }
-            FixtureWriteBoundary calls = alternative is null ? new FixtureWriteBoundary(false, Report)
+            FixtureWriteBoundary calls = staleProvider ? new CachedPolicyObservation(other!.Reference, Report)
+                : alternative is null ? new FixtureWriteBoundary(false, Report)
                 : new FirstPolicyObservation(alternative.Policy, Report);
             string host = Path.Combine(folder.Path, "dotnet");
             File.WriteAllBytes(host, []);
@@ -492,6 +500,7 @@ public sealed partial class MacKeychainMigrationTests
             using StringWriter error = new();
             Assert.Equal(differentPolicy ? 1 : 0, RunIssue(store, ledger, output, error));
             Assert.Equal(1, successfulReads);
+            Assert.Equal(staleProvider ? 1 : 0, committedViewRefusals);
             if (differentPolicy)
             {
                 Assert.True(output.GetStringBuilder().Length == 0);
@@ -516,12 +525,52 @@ public sealed partial class MacKeychainMigrationTests
         }
     }
 
+    // Both policy observations use the same independently authorized fixture.
+    // The real verifier opens the selected database in a fresh process.
+    private sealed class CachedPolicyObservation : FixtureWriteBoundary
+    {
+        private readonly IntPtr cachedDatabase;
+
+        public CachedPolicyObservation(IntPtr cachedDatabase, Action<string, int> report) : base(false, report)
+        {
+            this.cachedDatabase = cachedDatabase;
+        }
+
+        public override int CopyAccessSnapshot(IntPtr item, out IntPtr snapshot) =>
+            CopyCachedPolicy(false, out snapshot);
+
+        public override int CopyLegacyReadPolicy(IntPtr item, bool writable, out IntPtr snapshot)
+        {
+            Assert.False(writable);
+            return CopyCachedPolicy(true, out snapshot);
+        }
+
+        private int CopyCachedPolicy(bool checkSubject, out IntPtr snapshot)
+        {
+            Assert.Equal(0, FindUnique(cachedDatabase, Service, Account, out IntPtr item));
+            try
+            {
+                return checkSubject ? base.CopyLegacyReadPolicy(item, false, out snapshot) : base.CopyAccessSnapshot(item, out snapshot);
+            }
+            finally
+            {
+                Release(item);
+            }
+        }
+    }
+
     // Substitute only the first metadata observation. Both real policies stay
     // installed on their own fixtures and the issuer makes its ordinary read.
-    private sealed class FirstPolicyObservation(IntPtr policy, Action<string, int> report)
-        : FixtureWriteBoundary(false, report)
+    private sealed class FirstPolicyObservation : FixtureWriteBoundary
     {
+        private readonly IntPtr policy;
         private bool observed;
+
+        public FirstPolicyObservation(IntPtr policy, Action<string, int> report) : base(false, report)
+        {
+            this.policy = policy;
+        }
+
         public override int CopyAccessSnapshot(IntPtr item, out IntPtr snapshot)
         {
             if (observed)
@@ -622,17 +671,17 @@ public sealed partial class MacKeychainMigrationTests
     }
 
     private static int RunIssue(ISigningKeyStore store, string ledger, TextWriter output, TextWriter error,
-        string name = "Ada")
+        string name = "Ada", Action? ledgerContended = null)
     {
         using LicenceIssuerTests.CountingRandom random = new();
-        Issuer issuer = new(output, error, store, random, FixedTimeProvider.At20261027(), ledger);
+        Issuer issuer = new(output, error, store, random, FixedTimeProvider.At20261027(), ledger, ledgerContended);
         return issuer.Run(["issue", "--kid", Account, "--name", name, "--until", "2027-12-31"]);
     }
 
     private sealed class IssuerEvidence
     {
         private readonly ITestOutputHelper log;
-        private int updates, creates, deletes, licences;
+        private int updates, creates, deletes, licences, verifiedStagedWrites;
 
         public IssuerEvidence(ITestOutputHelper log) => this.log = log;
 
@@ -672,9 +721,12 @@ public sealed partial class MacKeychainMigrationTests
         public void Prove(string scenario, bool permitted)
         {
             AssertCounts(permitted ? 1 : 0, permitted ? 2 : 0);
+            Assert.Equal(updates, verifiedStagedWrites);
             log.WriteLine("factory401-proof {0} updates={1} creates={2} deletes={3} licences={4}",
                 scenario, updates, creates, deletes, licences);
         }
+
+        public void VerifiedStagedWrite() => Interlocked.Increment(ref verifiedStagedWrites);
     }
 
     private void ExerciseMigration(string scenario, bool extraReader, bool oneTimeRead = false,
@@ -703,7 +755,7 @@ public sealed partial class MacKeychainMigrationTests
                 string phase = "issue-1";
                 ReadGrant grant = new(!extraReader && !oneTimeRead && allowWriter, (operation, status) => evidence.ObserveCall(
                     oneTimeRead && operation == "read password" && status != 0 ? "denied-read" : phase, operation, status),
-                    item => ObserveStaged(fixture, before, phase, item, der));
+                    (item, committing) => ObserveStaged(fixture, before, phase, item, der, committing, evidence));
                 TestKeychainStore store = new(fixture.Reference, grant);
 
                 void Attempt(TestKeychainStore issuerStore, bool permitted, bool readOnlyDirectory = false,
@@ -774,7 +826,8 @@ public sealed partial class MacKeychainMigrationTests
                 if (retry)
                 {
                     phase = "denied-write";
-                    Attempt(store, false, readOnlyDirectory: true);
+                    FixtureWriteBoundary denied = new(false, (operation, status) => evidence.ObserveCall(phase, operation, status));
+                    Attempt(new TestKeychainStore(fixture.Reference, denied), false, readOnlyDirectory: true);
                 }
                 else if (extraReader && !oneTimeRead)
                 {
@@ -818,13 +871,13 @@ public sealed partial class MacKeychainMigrationTests
 
     private sealed class ReadGrant : FixtureWriteBoundary
     {
-        private readonly Action<IntPtr> observeStaged;
+        private readonly Action<IntPtr, bool> observeStaged;
         private Fixture? source;
         private byte[]? sample;
         private IntPtr grantedData;
         private IntPtr stagedItem;
 
-        public ReadGrant(bool nativeWritePermitted, Action<string, int> reportStatus, Action<IntPtr> observeStaged)
+        public ReadGrant(bool nativeWritePermitted, Action<string, int> reportStatus, Action<IntPtr, bool> observeStaged)
             : base(nativeWritePermitted, reportStatus)
         {
             this.observeStaged = observeStaged;
@@ -843,17 +896,18 @@ public sealed partial class MacKeychainMigrationTests
         public override MacKeychainItem.IFileTransaction BeginTransaction(IntPtr keychain) =>
             new ObservedTransaction(base.BeginTransaction(keychain), ObservePending);
 
-        private void ObservePending()
+        private void ObservePending(bool committing)
         {
             IntPtr item = stagedItem;
             stagedItem = IntPtr.Zero;
             if (item == IntPtr.Zero)
             {
+                Assert.False(committing, "No successful setter was observed before commit.");
                 return;
             }
             try
             {
-                observeStaged(item);
+                observeStaged(item, committing);
             }
             finally
             {
@@ -865,22 +919,22 @@ public sealed partial class MacKeychainMigrationTests
         private sealed class ObservedTransaction : MacKeychainItem.IFileTransaction
         {
             private readonly MacKeychainItem.IFileTransaction transaction;
-            private readonly Action observe;
-            public ObservedTransaction(MacKeychainItem.IFileTransaction transaction, Action observe)
+            private readonly Action<bool> observe;
+            public ObservedTransaction(MacKeychainItem.IFileTransaction transaction, Action<bool> observe)
             {
                 this.transaction = transaction;
                 this.observe = observe;
             }
             public void Commit()
             {
-                observe();
+                observe(true);
                 transaction.Commit();
             }
             public void Dispose()
             {
                 try
                 {
-                    observe();
+                    observe(false);
                 }
                 finally
                 {
@@ -1257,21 +1311,7 @@ public sealed partial class MacKeychainMigrationTests
 
         public bool IsSupported => store.IsSupported;
         public string? WriteRefusal => store.WriteRefusal;
-        public Action? AfterRead { get; init; }
-        public byte[]? Read(string keyId)
-        {
-            byte[]? value = store.Read(keychain, keyId);
-            try
-            {
-                AfterRead?.Invoke();
-                return value;
-            }
-            catch
-            {
-                CryptographicOperations.ZeroMemory(value);
-                throw;
-            }
-        }
+        public byte[]? Read(string keyId) => store.Read(keychain, keyId);
         public bool Exists(string keyId) => items.Exists(keychain, Service, keyId)
             || secondaries.Any(other => items.Exists(other, Service, keyId));
         public bool TryCreate(string keyId, byte[] pkcs8) => items.AddWithSearchList(keychain, secondaries,

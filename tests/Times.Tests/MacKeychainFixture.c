@@ -2,10 +2,63 @@
 #define __STDC_WANT_LIB_EXT1__ 1
 #define _DARWIN_C_SOURCE
 #include <Security/Security.h>
+#include <Security/cssmapple.h>
+#include <CommonCrypto/CommonDigest.h>
 #include <string.h>
 #include <strings.h>
 
-extern OSStatus SecTrustedApplicationCreateFromRequirement(const char *, SecRequirementRef, SecTrustedApplicationRef *);
+// Construct only an in-memory reader for the initial fixture descriptor. The
+// documented access constructor accepts typed CSSM subjects. No item exists
+// here, and the descriptor used to decode the reader is never installed.
+static OSStatus fixtureReader(const char *comment, SecRequirementRef requirement, SecTrustedApplicationRef *result)
+{
+    CFDataRef encoded = NULL;
+    OSStatus status = SecRequirementCopyData(requirement, 0, &encoded);
+    if (status) return status;
+    uint8_t hash[CC_SHA1_DIGEST_LENGTH] = {0};
+    CSSM_ACL_KEYCHAIN_PROMPT_SELECTOR selector = {CSSM_ACL_KEYCHAIN_PROMPT_CURRENT_VERSION, 0};
+    CSSM_LIST_ELEMENT app[] = {
+        {.NextElement = &app[1], .WordID = CSSM_ACL_SUBJECT_TYPE_CODE_SIGNATURE, .ElementType = CSSM_LIST_ELEMENT_WORDID},
+        {.NextElement = &app[2], .WordID = CSSM_ACL_CODE_SIGNATURE_OSX, .ElementType = CSSM_LIST_ELEMENT_WORDID},
+        {.NextElement = &app[3], .ElementType = CSSM_LIST_ELEMENT_DATUM, .Element.Word = {sizeof(hash), hash}},
+        {.NextElement = &app[4], .ElementType = CSSM_LIST_ELEMENT_DATUM, .Element.Word = {strlen(comment) + 1, (uint8_t *)comment}},
+        {.ElementType = CSSM_LIST_ELEMENT_DATUM, .Element.Word = {CFDataGetLength(encoded), (uint8_t *)CFDataGetBytePtr(encoded)}}
+    };
+    CSSM_LIST_ELEMENT prompt[] = {
+        {.NextElement = &prompt[1], .WordID = CSSM_ACL_SUBJECT_TYPE_KEYCHAIN_PROMPT, .ElementType = CSSM_LIST_ELEMENT_WORDID},
+        {.NextElement = &prompt[2], .ElementType = CSSM_LIST_ELEMENT_DATUM, .Element.Word = {sizeof(selector), (uint8_t *)&selector}},
+        {.ElementType = CSSM_LIST_ELEMENT_DATUM, .Element.Word = {1, (uint8_t *)""}}
+    };
+    CSSM_LIST_ELEMENT choices[] = {
+        {.NextElement = &choices[1], .WordID = CSSM_ACL_SUBJECT_TYPE_THRESHOLD, .ElementType = CSSM_LIST_ELEMENT_WORDID},
+        {.NextElement = &choices[2], .WordID = 1, .ElementType = CSSM_LIST_ELEMENT_WORDID},
+        {.NextElement = &choices[3], .WordID = 2, .ElementType = CSSM_LIST_ELEMENT_WORDID},
+        {.NextElement = &choices[4], .ElementType = CSSM_LIST_ELEMENT_SUBLIST, .Element.Sublist = {CSSM_LIST_TYPE_UNKNOWN, app, &app[4]}},
+        {.ElementType = CSSM_LIST_ELEMENT_SUBLIST, .Element.Sublist = {CSSM_LIST_TYPE_UNKNOWN, prompt, &prompt[2]}}
+    };
+    CSSM_ACL_AUTHORIZATION_TAG decrypt = CSSM_ACL_AUTHORIZATION_DECRYPT;
+    CSSM_ACL_ENTRY_INFO entry = {.EntryPublicInfo = {.TypedSubject = {CSSM_LIST_TYPE_UNKNOWN, choices, &choices[4]},
+                                                    .Authorization = {1, &decrypt}}, .EntryHandle = 1};
+    CSSM_ACL_OWNER_PROTOTYPE owner = {.TypedSubject = {CSSM_LIST_TYPE_UNKNOWN, app, &app[4]}};
+    SecAccessRef descriptor = NULL;
+    CFArrayRef grants = NULL, readers = NULL;
+    CFStringRef label = NULL;
+    SecKeychainPromptSelector flags = 0;
+    status = SecAccessCreateFromOwnerAndACL(&owner, 1, &entry, &descriptor);
+    if (!status) {
+        grants = SecAccessCopyMatchingACLList(descriptor, kSecACLAuthorizationDecrypt);
+        status = grants && CFArrayGetCount(grants) == 1 ? SecACLCopyContents(
+            (SecACLRef)CFArrayGetValueAtIndex(grants, 0), &readers, &label, &flags) : errSecInvalidItemRef;
+    }
+    if (!status && (!readers || CFArrayGetCount(readers) != 1)) status = errSecInvalidItemRef;
+    if (!status) *result = (SecTrustedApplicationRef)CFRetain(CFArrayGetValueAtIndex(readers, 0));
+    if (label) CFRelease(label);
+    if (readers) CFRelease(readers);
+    if (grants) CFRelease(grants);
+    if (descriptor) CFRelease(descriptor);
+    CFRelease(encoded);
+    return status;
+}
 
 // One ACL subject for two ordinary applications. Use only public requirements
 // of the test host and a reader compiled for this disposable database.
@@ -28,7 +81,7 @@ static OSStatus fixtureReaderPair(const char *readerPath, SecTrustedApplicationR
         expression = CFStringCreateWithFormat(NULL, NULL, CFSTR("(%@) or (%@)"), left, right);
         status = expression ? SecRequirementCreateWithString(expression, 0, &pair) : errSecAllocate;
     }
-    if (!status) status = SecTrustedApplicationCreateFromRequirement(readerPath, pair, reader);
+    if (!status) status = fixtureReader(readerPath, pair, reader);
     if (pair) CFRelease(pair);
     if (expression) CFRelease(expression);
     if (right) CFRelease(right);
@@ -50,7 +103,7 @@ static OSStatus fixtureCallerWithDescription(const char *description, SecTrusted
     OSStatus status = SecCodeCopySelf(0, &host);
     if (!status) status = SecCodeCopyStaticCode(host, 0, &code);
     if (!status) status = SecCodeCopyDesignatedRequirement(code, 0, &requirement);
-    if (!status) status = SecTrustedApplicationCreateFromRequirement(description, requirement, reader);
+    if (!status) status = fixtureReader(description, requirement, reader);
     if (requirement) CFRelease(requirement);
     if (code) CFRelease(code);
     if (host) CFRelease(host);

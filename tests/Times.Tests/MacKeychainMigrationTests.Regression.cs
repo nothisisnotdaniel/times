@@ -389,6 +389,99 @@ public sealed partial class MacKeychainMigrationTests
         }
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void WriteRefusal_AgreementInStaleView_RequiresCurrentPolicyAndData(bool legacy, bool policyChanged)
+    {
+        using PortableFixture fixture = new();
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] der = key.ExportPkcs8PrivateKey();
+        byte[] stored = legacy ? EncodeLegacy(der) : der;
+        try
+        {
+            SigningKeyStoreTests.Item cached = new(stored, ["original reader"]);
+            SigningKeyStoreTests.Item committed = new(stored, policyChanged ? ["other reader"] : ["original reader"]);
+            if (!policyChanged)
+            {
+                committed.Data[^1] ^= 1;
+            }
+            fixture.Calls.Stored = cached;
+            fixture.Calls.CommittedReadView = committed;
+            fixture.Calls.RemainingReads = 1;
+            MacKeychainSigningKeyStore store = new(null, new MacKeychainItem(fixture.Calls));
+            Assert.Equal(MacKeychainSigningKeyStore.SharedHostRefused, store.WriteRefusal);
+            File.WriteAllText(fixture.Ledger, "previous entry\n");
+            byte[] previous = File.ReadAllBytes(fixture.Ledger);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            Assert.Equal(1, RunIssue(store, fixture.Ledger, output, error));
+            Assert.True(error.ToString() == MigrationFailed + error.NewLine);
+            Assert.True(output.GetStringBuilder().Length == 0);
+            Assert.True(previous.AsSpan().SequenceEqual(File.ReadAllBytes(fixture.Ledger)));
+            Assert.Equal(1, fixture.Calls.DataRequests);
+            Assert.Equal(0, fixture.Calls.RemainingReads);
+            Assert.Empty(fixture.Calls.LockOrder);
+            Assert.Equal(0, fixture.Calls.Updates + fixture.Calls.Creates + fixture.Calls.Deletes);
+            Assert.Same(cached, fixture.Calls.Stored);
+            Assert.True(CryptographicOperations.FixedTimeEquals(stored, cached.Data));
+            Assert.True(cached.TrustedPaths.SequenceEqual(["original reader"]));
+            Assert.Equal(SigningKeyStoreTests.Item.OriginalPartition, cached.Partition);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(stored);
+            CryptographicOperations.ZeroMemory(der);
+        }
+    }
+
+    [Fact]
+    public async Task Issue_WaitsForTheSameLedgerBeforePublishingOnce()
+    {
+        using PortableFixture fixture = new();
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] der = key.ExportPkcs8PrivateKey();
+        using StringWriter output = new();
+        using StringWriter error = new();
+        TaskCompletionSource waiting = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<int>? issue = null;
+        try
+        {
+            fixture.Calls.Stored = new SigningKeyStoreTests.Item(der, ["original reader"]);
+            File.WriteAllText(fixture.Ledger, "previous entry\n");
+            using (FileStream prior = new(fixture.Ledger, FileMode.Open, FileAccess.Write, FileShare.None))
+            {
+                issue = Task.Run(() => RunIssue(fixture.Store, fixture.Ledger, output, error,
+                    ledgerContended: () => waiting.TrySetResult()));
+                await waiting.Task.WaitAsync(FixtureTimeout);
+                Assert.True(output.GetStringBuilder().Length == 0);
+            }
+            Assert.Equal(0, await issue.WaitAsync(FixtureTimeout));
+            Assert.True(error.GetStringBuilder().Length == 0);
+            LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]);
+            Assert.Equal(1, new IssuerEvidence(log).VerifyOutput(output.ToString(), original));
+            string[] rows = File.ReadAllLines(fixture.Ledger);
+            Assert.Equal(2, rows.Length);
+            Assert.True(rows[0] == "previous entry" && rows[1].Split('\t')[1] == "Ada");
+        }
+        finally
+        {
+            try
+            {
+                if (issue is not null)
+                {
+                    await issue.WaitAsync(FixtureTimeout);
+                }
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(der);
+            }
+        }
+    }
+
     [Fact]
     public async Task Issue_RegeneratedPhysicalId_PreservesTheLogicalItemAndTwoVerifiableLicences()
     {
@@ -410,12 +503,10 @@ public sealed partial class MacKeychainMigrationTests
                 Assert.True(secondReading.Wait(FixtureTimeout), "The competing issuer did not start.");
             };
             MacKeychainSigningKeyStore second = new(fixture.Apphost, new MacKeychainItem(fixture.Calls), secondReading.Set);
-            string secondLedger = Path.ChangeExtension(fixture.Ledger, ".second.tsv");
             await RunOverlappingIssues(firstReading.Task, secondReading,
                 () => AssertIssued(fixture.Store, fixture.Ledger, original),
-                () => AssertIssued(second, secondLedger, original));
-            Assert.Single(File.ReadAllLines(fixture.Ledger));
-            Assert.Single(File.ReadAllLines(secondLedger));
+                () => AssertIssued(second, fixture.Ledger, original));
+            Assert.Equal(2, File.ReadAllLines(fixture.Ledger).Length);
             Assert.True(ReferenceEquals(item, fixture.Calls.Stored), "The stored item changed.");
             Assert.Equal(1, item.PhysicalVersion);
             Assert.True(CryptographicOperations.FixedTimeEquals(der, item.Data));
@@ -665,6 +756,25 @@ public sealed partial class MacKeychainMigrationTests
                 // Designate the C1 repertoire and use its NEXT LINE function (8-bit and 7-bit).
                 cases.Add("1.3.6.1.4.1.32473.11", [0x1b, 4, 0x1b, 0x22, 0x43, 0x85], true, legacy);
                 cases.Add("1.3.6.1.4.1.32473.11", [0x1b, 5, 0x1b, 0x22, 0x43, 0x1b, 0x45], true, legacy);
+                void General(bool valid, params byte[] encoding) => cases.Add("1.3.6.1.4.1.32473.11",
+                    [0x1b, checked((byte)encoding.Length), .. encoding], valid, legacy);
+                General(false, 0x1b, 0x22, 0x7e, 0x85); // Empty C1 repertoire.
+                General(false, 0x1b, 0x22, 0x30, 0x85); // Private C1 repertoire.
+                General(false, 0x1b, 0x22, 0x43, 0x80); // Unassigned position in ISO-IR 77.
+                General(false, 0x1b, 0x22, 0x47, 0x85); // ISO-IR 105 only assigns the single shifts.
+                General(false, 0x1b, 0x22, 0x43, 0x85, 0x1b, 0x45);
+                General(false, 0x1b, 0x22, 0x43, 0x1b, 0x45, 0x85);
+                General(true, 0x1b, 0x22, 0x43, 0x85, 0x85);
+                General(true, 0x1b, 0x22, 0x43, 0x1b, 0x45, 0x1b, 0x45);
+                General(false, 0x1b, 0x21, 0x45, 0x01); // Unassigned C0 position in ISO-IR 106.
+                General(false, 0x1b, 0x28, 0x4a); // Nothing uses the newly designated G0.
+                General(false, 0x1b, 0x28, 0x4a, 0x20); // SPACE is independent of the 94-character set.
+                General(false, 0x1b, 0x28, 0x4a, 0x1b, 0x28, 0x42, 0x41);
+                General(true, 0x1b, 0x28, 0x4a, 0x5c);
+                General(false, 0x1b, 0x28, 0x21, 0x47, 0x41); // Unregistered extended G0.
+                General(true, 0x1b, 0x28, 0x21, 0x42, 0x41); // Invariant ISO-IR 170.
+                General(false, 0x1b, 0x2d, 0x70, 0xe9); // Unregistered 96-character set.
+                General(false, 0x1b, 0x24, 0x28, 0x5a, 0x24, 0x22); // Unregistered multibyte set.
                 cases.Add("1.3.6.1.4.1.32473.11", [0x1b, 4, 0x1b, 0x22, 0x43, 65], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.11", [0x1b, 3, 0x1b, 0x22, 0x43], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.11", [0x1b, 4, 0x1b, 0x21, 0x40, 0x0d], false, legacy);
@@ -726,6 +836,8 @@ public sealed partial class MacKeychainMigrationTests
                     "+11985-04-12", "1985-102T23:50:30Z", "1985-W15-5", "2020-W53", "15:27.50+05:30",
                     "24:00:00.0", "23Z", "1500-01-01", "1500-01-01T12:00:00", "23:59:60Z", "23:59:60.5Z",
                     "2016-12-31T23:59:60Z", "00:59:60+01", "18:29:60-05:30", "00:00:00+01/00:59:60",
+                    "2017-01-01T00:59:60+01", "2016-12-31T18:29:60-05:30", "2016-366T23:59:60Z",
+                    "2016-W52-7T00:59:60+01", "2015-06-30T23:59:60Z",
                     "1985-04-12/P1D", "P1W/1985-W15", "R2/P1Y6M",
                     "R/12:30+02/13:30", "12:30Z/13:30Z", "12:30-05/13:30-04" })
                 {
@@ -734,6 +846,8 @@ public sealed partial class MacKeychainMigrationTests
                 foreach (string time in new[] { "", "19x5", "1985-02-29", "1985-366", "1985-W54", "+1985",
                     "-0000", "2021-W53", "25:01", "24:00.1", "23:20:30Zx", "23:20:61Z", "12:30,0",
                     "12:00:60Z", "23:58:60Z", "2016-12-31T12:00:60Z", "23:59:60+01", "00:00:00+01/00:00:60",
+                    "2016-12-15T23:59:60Z", "2016-12-30T23:59:60Z", "2017-01-02T00:59:60+01",
+                    "2016-12-31T00:59:60+01", "2016-365T23:59:60Z", "2016-W52-1T23:59:60Z",
                     "12:30+02:00", "12-15:01", "R/1985", "P1D/P2D", "12:30+02/13:30+02",
                     "12:30/13:30Z", "1985/12:30", "1985-W15/1985-04", "1985//1986" })
                 {
@@ -753,6 +867,10 @@ public sealed partial class MacKeychainMigrationTests
                     Iri(absolute ? "/0/39"u8 : "123456789012345678901234567890"u8, true);
                     Iri(absolute ? "/3"u8 : "/relative"u8, false);
                     Iri(absolute ? "/1/40"u8 : "0/40"u8, !absolute);
+                    Iri(absolute ? "/ITU-R/40"u8 : "ITU-R/40"u8, !absolute);
+                    Iri(absolute ? "/ITU-R/4/1"u8 : "ITU-R/4/1"u8, !absolute);
+                    Iri(absolute ? "/ITU-R/5/101"u8 : "ITU-R/5/101"u8, true);
+                    Iri(absolute ? "/ITU-R/R-Recommendation/BR"u8 : "ITU-R/R-Recommendation/BR"u8, true);
                     Iri([], false);
                     Iri(absolute ? "/2//1"u8 : "a//b"u8, false);
                     Iri(absolute ? "/2/"u8 : "a/"u8, false);

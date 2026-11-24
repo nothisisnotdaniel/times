@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 
@@ -95,6 +96,39 @@ internal sealed partial class MacKeychainItem
             }
             read();
             Check(Report("verify database version", DatabaseAtPath(version, path)), MigrationFailed);
+        }
+
+        public int VerifyCommittedView(IntPtr keychain, string service, string account, IntPtr persistent, IntPtr policy,
+            byte[]? stamp, Func<ProcessStartInfo> verifier)
+        {
+            byte[] expected = new byte[SHA256.HashSizeInBytes];
+            if (stamp is not { Length: SHA256.HashSizeInBytes } || ReadViewDigest(persistent, policy, stamp, expected) != 0)
+            {
+                return Report("verify committed item", -25293);
+            }
+            // A stable pathname alone cannot detect a previously cached FileDL view.
+            // The child opens only this database, after the parent has pinned its revision.
+            try
+            {
+                ProcessStartInfo info = verifier();
+                info.UseShellExecute = false;
+                info.RedirectStandardInput = info.RedirectStandardOutput = info.RedirectStandardError = true;
+                info.StandardInputEncoding = new UTF8Encoding(false);
+                info.ArgumentList.Add(VerifyArgument);
+                info.ArgumentList.Add(KeychainFilename(KeychainPath(keychain, MigrationFailed)));
+                info.ArgumentList.Add(service);
+                info.ArgumentList.Add(account);
+                using Process child = Process.Start(info) ?? throw new TokenStoreException(MigrationFailed);
+                using (StreamWriter input = child.StandardInput)
+                {
+                    input.BaseStream.Write(expected);
+                }
+                return Report("verify committed item", WaitForProbe(child, ProbeTimeout) == ProbeFound ? 0 : -25293);
+            }
+            catch (Exception ex) when (ex is IOException or Win32Exception or DecoderFallbackException or TokenStoreException)
+            {
+                return Report("verify committed item", -25293);
+            }
         }
 
         public virtual IFileTransaction BeginTransaction(IntPtr keychain)
@@ -264,7 +298,7 @@ internal sealed partial class MacKeychainItem
         public virtual int CopyAccessSnapshot(IntPtr item, out IntPtr snapshot) =>
             Report("copy access", CopyPasswordAccess(item, out snapshot));
 
-        public int CopyLegacyReadPolicy(IntPtr item, bool writable, out IntPtr snapshot) =>
+        public virtual int CopyLegacyReadPolicy(IntPtr item, bool writable, out IntPtr snapshot) =>
             Report("check legacy read policy", CopyLegacyPolicy(item, writable ? 1 : 0, out snapshot));
 
         public int CheckMigrationReader(IntPtr item, IntPtr policy, byte[] expected) =>
@@ -309,7 +343,6 @@ internal sealed partial class MacKeychainItem
         {
             try
             {
-                string filename = new(new UTF8Encoding(false, true).GetChars(path));
                 ProcessStartInfo info = new(apphost)
                 {
                     UseShellExecute = false,
@@ -317,7 +350,7 @@ internal sealed partial class MacKeychainItem
                     RedirectStandardError = true,
                 };
                 info.ArgumentList.Add(ProbeArgument);
-                info.ArgumentList.Add(filename);
+                info.ArgumentList.Add(KeychainFilename(path));
                 info.ArgumentList.Add(service);
                 info.ArgumentList.Add(account);
                 using Process child = Process.Start(info) ?? throw new TokenStoreException(SaveFailed);
@@ -334,7 +367,10 @@ internal sealed partial class MacKeychainItem
             }
         }
 
+        private static string KeychainFilename(byte[] path) => new(new UTF8Encoding(false, true).GetChars(path));
+
         internal const string ProbeArgument = "--probe-signing-key-id";
+        internal const string VerifyArgument = "--verify-signing-key-view";
         private const int ProbeFound = 40;
         private const int ProbeMissing = 41;
 
@@ -358,7 +394,7 @@ internal sealed partial class MacKeychainItem
             throw new TokenStoreException(SaveFailed);
         }
 
-        internal static int Probe(string path, string service, string account)
+        internal static int Probe(string path, string service, string account, byte[]? expected = null)
         {
             if (!LicenceKey.IsValidKeyId(account) || path.Contains('\0') || !Path.IsPathFullyQualified(path))
             {
@@ -384,7 +420,8 @@ internal sealed partial class MacKeychainItem
                     return 1;
                 }
 
-                bool found = Default.Exists(keychain, service, account);
+                bool found = expected is null ? Default.Exists(keychain, service, account)
+                    : MatchesCommittedView(keychain, service, account, expected);
                 return DatabaseAtPath(database, terminatedPath) == 0 ? (found ? ProbeFound : ProbeMissing) : 1;
             }
             catch (TokenStoreException)
@@ -396,6 +433,29 @@ internal sealed partial class MacKeychainItem
                 CFRelease(keychain);
             }
         }
+
+        private static bool MatchesCommittedView(IntPtr keychain, string service, string account, byte[] expected)
+        {
+            NativeCalls calls = new();
+            IntPtr persistent = IntPtr.Zero, policy = IntPtr.Zero;
+            int status = calls.FindUnique(keychain, service, account, out IntPtr item);
+            try
+            {
+                byte[] digest = new byte[SHA256.HashSizeInBytes];
+                return status == 0 && item != IntPtr.Zero && calls.CopyPersistentReference(item, out persistent) == 0
+                    && calls.CopyAccessSnapshot(item, out policy) == 0 && calls.DataStamp(item) is byte[] stamp
+                    && ReadViewDigest(persistent, policy, stamp, digest) == 0 && CryptographicOperations.FixedTimeEquals(digest, expected);
+            }
+            finally
+            {
+                calls.Release(policy);
+                calls.Release(persistent);
+                calls.Release(item);
+            }
+        }
+
+        [LibraryImport("TimesIssuerKeychain", EntryPoint = "TimesReadViewDigest")]
+        private static partial int ReadViewDigest(IntPtr persistent, IntPtr policy, ReadOnlySpan<byte> stamp, Span<byte> digest);
 
         [LibraryImport(CoreFoundation)]
         private static partial IntPtr CFRetain(IntPtr value);

@@ -223,7 +223,7 @@ internal sealed class InstanceLock : IDisposable
 
     // Windows reports a sharing or lock violation (HRESULT 0x80070020/21). On Unix .NET reports the flock errno
     // itself as the HResult: EWOULDBLOCK, 35 on macOS and 11 on Linux.
-    private static bool IsLockConflict(IOException ex)
+    internal static bool IsLockConflict(IOException ex)
     {
         if (OperatingSystem.IsWindows())
         {

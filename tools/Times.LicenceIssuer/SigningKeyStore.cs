@@ -99,7 +99,7 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
     {
         if (trustedPath is null)
         {
-            return keychain.ReadAndMigrate(search, Service, keyId, MaxBytes, false, ReadKey);
+            return keychain.ReadAndMigrate(search, Service, keyId, MaxBytes, false, ReadKey, IssuerProgram.VerifierStartInfo);
         }
 
         // File Keychain persistent references can resolve a replacement with the same
@@ -127,7 +127,7 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
                 }
                 try
                 {
-                    return keychain.ReadAndMigrate(search, Service, keyId, MaxBytes, true, ReadKey);
+                    return keychain.ReadAndMigrate(search, Service, keyId, MaxBytes, true, ReadKey, IssuerProgram.VerifierStartInfo);
                 }
                 finally
                 {
@@ -557,11 +557,17 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
         }
 
         bool smallSecondArc = false;
+        bool ituRadio = false;
         for (int arc = 0; ; arc++)
         {
             int slash = value.IndexOf((byte)'/');
             ReadOnlySpan<byte> label = slash < 0 ? value : value[..slash];
             Require(!label.IsEmpty && label[0] != '-' && label[^1] != '-');
+            if (ituRadio && arc == 1)
+            {
+                // X.660 A.6.3 restricts this alias to the R-Recommendation subtree.
+                Require(slash >= 0 && (label.SequenceEqual("5"u8) || Ascii.EqualsIgnoreCase(label, "R-Recommendation"u8)));
+            }
             if (Digits(label))
             {
                 Require(label.Length == 1 || label[0] != '0');
@@ -579,7 +585,9 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
             {
                 if (absolute && arc == 0)
                 {
-                    smallSecondArc = Ascii.EqualsIgnoreCase(label, "ISO"u8) || Ascii.EqualsIgnoreCase(label, "ITU-T"u8);
+                    ituRadio = Ascii.EqualsIgnoreCase(label, "ITU-R"u8);
+                    Require(!ituRadio || slash >= 0);
+                    smallSecondArc = ituRadio || Ascii.EqualsIgnoreCase(label, "ISO"u8) || Ascii.EqualsIgnoreCase(label, "ITU-T"u8);
                 }
                 ValidateIriLabel(label);
             }
@@ -677,8 +685,9 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
         Span<int> widths = [1, 0, 0, 0];
         Span<Range> designations = stackalloc Range[4];
         designations.Clear();
-        Span<Range> controlSets = stackalloc Range[2];
-        controlSets.Clear();
+        byte c0 = (byte)'@', c1 = videotex ? (byte)'A' : (byte)0;
+        bool? escapedC1 = null;
+        int unusedGraphics = 0;
         Span<bool> sets96 = stackalloc bool[4];
         sets96.Clear();
         int left = 0, right = 1, single = -1;
@@ -697,44 +706,53 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
                 Require(i < value.Length && value[i] is >= 0x30 and <= 0x7e);
                 if (start < i && value[start] is (byte)'!' or (byte)'"')
                 {
-                    Require(!graphicOnly);
-                    int slot = value[start] - '!';
-                    ReadOnlySpan<byte> active = value[controlSets[slot]];
-                    if (active.IsEmpty)
-                    {
-                        // X.690 Table 3 assumes ISO-IR 1 in C0, and ISO-IR 73
-                        // in C1 for VideotexString. GeneralString starts without C1.
-                        active = slot == 0 ? "@"u8 : videotex ? "A"u8 : default;
-                    }
-                    Range name = (start + 1)..(i + 1);
-                    Require(!active.SequenceEqual(value[name]) && UsesControlSet(value[(i + 1)..], slot));
-                    controlSets[slot] = name;
+                    Require(!graphicOnly && i == start + 1);
+                    bool primary = value[start] == '!';
+                    ref byte active = ref (primary ? ref c0 : ref c1);
+                    Require(value[i] != active && UsesControlSet(value[(i + 1)..], primary));
+                    active = value[i];
                 }
                 else
                 {
                     if (!graphicOnly && start == i && value[i] is >= 0x40 and <= 0x5f)
                     {
-                        Require(videotex || !value[controlSets[1]].IsEmpty);
+                        CheckC1(c1, value[i] - 0x40, escaped: true, ref escapedC1);
+                        if (value[i] is (byte)'N' or (byte)'O' && !HasC1Shifts(c1))
+                        {
+                            continue;
+                        }
                     }
-                    ReadGraphicEscape(value, start, i, graphicOnly, videotex, widths, sets96, designations, ref left, ref right, ref single);
-                }
-            }
-            else if (current is 0x0e or 0x0f or 0x8e or 0x8f)
-            {
-                Require(single < 0);
-                if (current < 0x80)
-                {
-                    left = current == 0x0e ? 1 : 0;
-                }
-                else
-                {
-                    single = current - 0x8c;
+                    ReadGraphicEscape(value, start, i, graphicOnly, videotex, widths, sets96, designations,
+                        ref left, ref right, ref single, ref unusedGraphics);
                 }
             }
             else if (current is < 0x20 or >= 0x80 and < 0xa0)
             {
-                Require(!graphicOnly && single < 0);
-                Require(current < 0x20 || videotex || !value[controlSets[1]].IsEmpty);
+                Require(single < 0);
+                bool primary = current < 0x20;
+                if (!graphicOnly)
+                {
+                    if (primary)
+                    {
+                        Require(AssignedControl(c0, current, primary: true));
+                    }
+                    else
+                    {
+                        CheckC1(c1, current - 0x80, escaped: false, ref escapedC1);
+                    }
+                }
+                if (current is 0x0e or 0x0f)
+                {
+                    left = current == 0x0e ? 1 : 0;
+                }
+                else if (current is 0x8e or 0x8f && (graphicOnly || HasC1Shifts(c1)))
+                {
+                    single = current - 0x8c;
+                }
+                else
+                {
+                    Require(!graphicOnly);
+                }
             }
             else
             {
@@ -750,20 +768,21 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
                 byte low = (byte)((current & 0x80) + (sets96[set] ? 0x20 : 0x21));
                 byte high = (byte)((current & 0x80) + (sets96[set] ? 0x7f : 0x7e));
                 Require(width <= value.Length - i && !value.Slice(i, width).ContainsAnyExceptInRange(low, high));
+                unusedGraphics &= ~(1 << set);
                 i += width - 1;
             }
         }
 
-        Require(single < 0);
+        Require(single < 0 && unusedGraphics == 0);
     }
 
-    private static bool UsesControlSet(ReadOnlySpan<byte> next, int slot)
+    private static bool UsesControlSet(ReadOnlySpan<byte> next, bool primary)
     {
         if (next.IsEmpty)
         {
             return false;
         }
-        if (slot == 0)
+        if (primary)
         {
             return next[0] < 0x20 && next[0] != 0x1b;
         }
@@ -771,8 +790,44 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
         return next[0] is >= 0x80 and <= 0x9f || next.Length >= 2 && next[0] == 0x1b && next[1] is >= 0x40 and <= 0x5f;
     }
 
+    private static bool HasC1Shifts(byte set) => set is (byte)'C' or (byte)'G';
+
+    private static void CheckC1(byte set, int position, bool escaped, ref bool? previousForm)
+    {
+        Require(AssignedControl(set, position, primary: false) && (previousForm is null || previousForm == escaped));
+        previousForm = escaped;
+    }
+
+    // Assigned positions in the ISO-IR C0 and C1 registration tables (0..31).
+    // An empty, private or unregistered set cannot supply a control character.
+    private static bool AssignedControl(byte set, int p, bool primary) => primary ? set switch
+    {
+        (byte)'@' or (byte)'D' or (byte)'K' or (byte)'L' => true, // IR 1, 36, 135, 140
+        (byte)'A' => p <= 19 || p is 23 or 24 or 27 or 28 || p >= 30, // IR 7
+        (byte)'B' => p is 1 or 2 or 8 or 10 or 12 or 13 or 27 or 29 or 30 or 31, // IR 48
+        (byte)'C' => p != 19 && p != 21 && p != 22, // IR 26
+        (byte)'E' => p is 8 or 10 or 12 or 13 or 14 or 15 or 25 or 26 or 27 or 29, // IR 106
+        (byte)'F' or (byte)'H' => p is not (14 or 15), // IR 74, 130
+        (byte)'G' => p == 27, // IR 104
+        (byte)'I' => p is 0 or >= 7 and <= 20 or 22 or 24 or 25 or >= 27, // IR 132
+        (byte)'J' => p is >= 8 and <= 15 or 17 or 18 or 20 or 24 or 25 or 27 or 29 or 30 or 31, // IR 134
+        _ => false,
+    } : set switch
+    {
+        (byte)'@' => p is not (0 or 14 or 15 or 16 or 27), // IR 56
+        (byte)'A' or (byte)'F' => true, // IR 73, 136
+        (byte)'B' => p is >= 8 and <= 11 or >= 28, // IR 67
+        (byte)'C' => p is >= 4 and <= 23 or 26 or 27, // IR 77
+        (byte)'D' => p <= 16 || p is >= 18 and <= 21 or 23 or >= 27, // IR 133
+        (byte)'E' => p is >= 8 and <= 13 or >= 28, // IR 40
+        (byte)'G' => p is 14 or 15, // IR 105
+        (byte)'H' => p is 11 or 12 or 27, // IR 107
+        _ => false,
+    };
+
     private static void ReadGraphicEscape(ReadOnlySpan<byte> value, int start, int end, bool graphicOnly, bool videotex,
-        Span<int> widths, Span<bool> sets96, Span<Range> designations, ref int left, ref int right, ref int single)
+        Span<int> widths, Span<bool> sets96, Span<Range> designations, ref int left, ref int right, ref int single,
+        ref int unusedGraphics)
     {
         ReadOnlySpan<byte> intermediates = value[start..end];
         byte final = value[end];
@@ -813,10 +868,25 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
         }
 
         int set = slot & 3;
-        // ECMA-35 14.3.3 gives the widths of the registered multibyte sets.
-        Require(!multibyte || final is >= 0x40 and < 0x70);
-        int width = multibyte ? (final < 0x60 ? 2 : 3) : 1;
         bool is96 = slot >= '-';
+        ReadOnlySpan<byte> nameBytes = value[nameStart..(end + 1)];
+        // ISO/IEC TR 2375's register contains only two-byte multibyte
+        // repertoires. The first three use the short G0 escape sequence.
+        if (multibyte)
+        {
+            Require(!is96 && nameBytes.Length == 1 && final is >= 0x40 and <= 0x51
+                && (final > 0x42 || intermediates.Length == 1));
+        }
+        else if (is96)
+        {
+            Require(nameBytes.Length == 1 && (final is >= 0x40 and <= 0x6a and not 0x57 or 0x7d));
+        }
+        else
+        {
+            Require(nameBytes.Length == 1 && final is >= 0x40 and <= 0x7d
+                || nameBytes.Length == 2 && nameBytes[0] == '!' && final is >= 0x40 and <= 0x46);
+        }
+        int width = multibyte ? 2 : 1;
         // X.690 11.4 requires the lowest registered slot. The ISO 2022
         // designations for 94-character sets start at G0, and for 96 at G1.
         Require(set == (is96 ? 1 : 0));
@@ -830,6 +900,8 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
             }
             Require(!previous.SequenceEqual(value[name]));
         }
+        Require((unusedGraphics & (1 << set)) == 0);
+        unusedGraphics |= 1 << set;
         designations[set] = name;
         widths[set] = width;
         sets96[set] = is96;

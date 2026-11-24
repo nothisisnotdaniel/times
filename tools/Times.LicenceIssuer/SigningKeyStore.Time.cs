@@ -66,9 +66,10 @@ internal sealed partial class MacKeychainSigningKeyStore
         bool clockOnly = value.Length >= 2 && Digits(value[..2])
             && (value.Length == 2 || value[2] is (byte)':' or (byte)'.' or (byte)'Z' or (byte)'+' or (byte)'-');
         (DateForm date, int yearKind) = (DateForm.None, 0);
+        DateOnly? localDay = null;
         if (!clockOnly)
         {
-            (date, yearKind) = ValidateTimeDate(separator < 0 ? value : value[..separator]);
+            (date, yearKind) = ValidateTimeDate(separator < 0 ? value : value[..separator], out localDay);
             if (separator < 0)
             {
                 return (date, yearKind, 0, 0);
@@ -107,7 +108,14 @@ internal sealed partial class MacKeychainSigningKeyStore
         Require(hour < 24 || minute == 0 && second == 0 && !fraction.ContainsAnyExcept((byte)'0'));
         if (second == 60 && offset is int minutes)
         {
-            Require((hour * 60 + minute - minutes + 1440) % 1440 == 1439);
+            int utcMinute = hour * 60 + minute - minutes;
+            Require(utcMinute is -1 or 1439);
+            if (localDay is DateOnly day)
+            {
+                // At UTC minute -1 the supplied local date is already the next day.
+                DateOnly followingUtcDay = utcMinute == -1 ? day : day.AddDays(1);
+                Require(followingUtcDay.Day == 1);
+            }
         }
         return (date, yearKind, clock.Length, fraction.Length);
     }
@@ -131,8 +139,9 @@ internal sealed partial class MacKeychainSigningKeyStore
         return zone[0] == '+' ? minutes : -minutes;
     }
 
-    private static (DateForm Form, int YearKind) ValidateTimeDate(ReadOnlySpan<byte> date)
+    private static (DateForm Form, int YearKind) ValidateTimeDate(ReadOnlySpan<byte> date, out DateOnly? localDay)
     {
+        localDay = null;
         bool signed = date.StartsWith("+"u8) || date.StartsWith("-"u8);
         bool negative = date.StartsWith("-"u8);
         bool century = date.EndsWith("C"u8);
@@ -149,7 +158,7 @@ internal sealed partial class MacKeychainSigningKeyStore
         // outside the range of DateTime. Only the last four digits are needed.
         int tail = Number(year[^Math.Min(4, year.Length)..]);
         int yearKind = expanded ? year.Length : negative ? -1 : tail < (century ? 15 : 1582) ? -2 : 0;
-        int cycleYear = 400 + (negative ? -tail : tail) % 400;
+        int cycleYear = 800 + (negative ? -tail : tail) % 400;
         if (dash < 0)
         {
             return (century ? DateForm.Century : DateForm.Year, yearKind);
@@ -165,12 +174,14 @@ internal sealed partial class MacKeychainSigningKeyStore
                 return (DateForm.Week, yearKind);
             }
             Require(rest[3] == '-' && rest[4] is >= (byte)'1' and <= (byte)'7');
+            localDay = DateOnly.FromDateTime(ISOWeek.ToDateTime(cycleYear, week, (DayOfWeek)((rest[4] - '0') % 7)));
             return (DateForm.Weekday, yearKind);
         }
         if (rest.Length == 3)
         {
             int day = Number(rest);
             Require(day >= 1 && day <= (DateTime.IsLeapYear(cycleYear) ? 366 : 365));
+            localDay = new DateOnly(cycleYear, 1, 1).AddDays(day - 1);
             return (DateForm.OrdinalDay, yearKind);
         }
         Require(rest.Length is 2 or 5);
@@ -182,6 +193,7 @@ internal sealed partial class MacKeychainSigningKeyStore
         }
         int dayOfMonth = Number(rest[3..]);
         Require(rest[2] == '-' && dayOfMonth >= 1 && dayOfMonth <= DateTime.DaysInMonth(cycleYear, month));
+        localDay = new DateOnly(cycleYear, month, dayOfMonth);
         return (DateForm.CalendarDay, yearKind);
     }
 

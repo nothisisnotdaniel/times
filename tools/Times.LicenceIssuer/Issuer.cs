@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Encodings.Web;
@@ -27,9 +28,11 @@ internal sealed class Issuer
     private readonly RandomNumberGenerator random;
     private readonly TimeProvider time;
     private readonly string defaultLedger;
+    private readonly Action? ledgerContended;
+    private static readonly TimeSpan LedgerOpenTimeout = TimeSpan.FromSeconds(10);
 
     public Issuer(TextWriter output, TextWriter error, ISigningKeyStore keys, RandomNumberGenerator random,
-        TimeProvider time, string defaultLedger)
+        TimeProvider time, string defaultLedger, Action? ledgerContended = null)
     {
         this.output = output;
         this.error = error;
@@ -37,6 +40,7 @@ internal sealed class Issuer
         this.random = random;
         this.time = time;
         this.defaultLedger = defaultLedger;
+        this.ledgerContended = ledgerContended;
     }
 
     /// <summary><c>&lt;ApplicationData&gt;/SuiteProIssuer/ledger.tsv</c>.</summary>
@@ -227,7 +231,7 @@ internal sealed class Issuer
     /// Appends <paramref name="line"/> to the ledger. It names licensees, so on Unix a folder it creates is
     /// <c>0700</c> and a new ledger <c>0600</c>.
     /// </summary>
-    private static void AppendLedgerLine(string ledger, string line)
+    private void AppendLedgerLine(string ledger, string line)
     {
         string? folder = Path.GetDirectoryName(ledger);
         if (folder is not null)
@@ -254,9 +258,27 @@ internal sealed class Issuer
         }
 
         byte[] bytes = new UTF8Encoding(false).GetBytes(line);
-        using FileStream stream = new FileStream(ledger, options);
+        using FileStream stream = OpenLedger(ledger, options);
         stream.Write(bytes);
         stream.Flush(flushToDisk: true);
+    }
+
+    private FileStream OpenLedger(string ledger, FileStreamOptions options)
+    {
+        long started = Stopwatch.GetTimestamp();
+        SpinWait wait = new();
+        while (true)
+        {
+            try
+            {
+                return new FileStream(ledger, options);
+            }
+            catch (IOException ex) when (InstanceLock.IsLockConflict(ex) && Stopwatch.GetElapsedTime(started) < LedgerOpenTimeout)
+            {
+                ledgerContended?.Invoke();
+                wait.SpinOnce();
+            }
+        }
     }
 
     // 16 random bytes as 22 base64url characters.

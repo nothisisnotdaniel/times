@@ -158,61 +158,71 @@ public sealed partial class MacKeychainMigrationTests
         }
     }
 
-    private void ObserveStaged(Fixture fixture, Observation before, string phase, IntPtr live, byte[] der)
+    private void ObserveStaged(Fixture fixture, Observation before, string phase, IntPtr live, byte[] der,
+        bool committing, IssuerEvidence evidence)
     {
         MacKeychainItem.NativeCalls calls = new();
         int search = calls.FindUnique(fixture.Reference, Service, Account, out IntPtr unique);
         int resolve = calls.ResolvePassword(before.Persistent, fixture.Reference, Service, Account, out IntPtr resolved);
-        IntPtr policy = IntPtr.Zero, livePolicy = IntPtr.Zero, uniquePolicy = IntPtr.Zero;
+        IntPtr writtenId = IntPtr.Zero, livePolicy = IntPtr.Zero;
         try
         {
             ReportStatus(phase, "staged unique lookup", search);
             ReportStatus(phase, "staged persistent lookup", resolve);
-            if (search == 0 && unique != IntPtr.Zero)
+            int idStatus = calls.CopyRecordId(live, out writtenId);
+            int policyStatus = calls.CopyAccessSnapshot(live, out livePolicy);
+            ReportStatus(phase, "staged write identity", idStatus);
+            ReportStatus(phase, "staged live policy", policyStatus);
+            byte[]? writtenStamp = calls.DataStamp(live, der.Length);
+            bool uniqueVerified = search == 0 && VerifyView("unique", unique, writtenStamp);
+            bool resolvedVerified = resolve == 0 && VerifyView("resolved", resolved, writtenStamp);
+            if (committing)
             {
-                ReportStatus(phase, "staged unique policy", calls.CopyAccessSnapshot(unique, out uniquePolicy));
-                ObserveValue("unique", unique, uniquePolicy);
-            }
-            ReportStatus(phase, "staged live policy", calls.CopyAccessSnapshot(live, out livePolicy));
-            Compare(phase, "staged live access equal", before.Same(before.Policy, livePolicy));
-            byte[]? liveStamp = calls.DataStamp(live);
-            Compare(phase, "staged live stamp available", liveStamp is not null);
-            if (resolve == 0 && resolved != IntPtr.Zero)
-            {
-                ReportStatus(phase, "staged resolved policy", calls.CopyAccessSnapshot(resolved, out policy));
-                ObserveValue("resolved", resolved, policy);
-                Compare(phase, "staged resolved access equal", before.Same(livePolicy, policy));
-                byte[]? resolvedStamp = calls.DataStamp(resolved);
-                Compare(phase, "staged protected values equal", liveStamp is not null && resolvedStamp is not null
-                    && liveStamp.AsSpan().SequenceEqual(resolvedStamp));
-            }
-            string[] components = ["owner", "ordinary entries", "partition", "integrity rule", "rights", "prompts", "integrity digest"];
-            for (int i = 0; i < components.Length; i++)
-            {
-                Compare(phase, "staged " + components[i] + " equal", livePolicy != IntPtr.Zero && before.Policy != IntPtr.Zero
-                    && before.Same(CFArrayGetValueAtIndex(before.Policy, i), CFArrayGetValueAtIndex(livePolicy, i)));
+                Assert.True(idStatus == 0 && policyStatus == 0 && uniqueVerified && resolvedVerified,
+                    "The staged write failed independent verification.");
+                evidence.VerifiedStagedWrite();
             }
         }
         finally
         {
-            calls.Release(uniquePolicy);
-            calls.Release(policy);
+            calls.Release(writtenId);
             calls.Release(livePolicy);
             calls.Release(unique);
             calls.Release(resolved);
         }
 
-        void ObserveValue(string reference, IntPtr item, IntPtr stagedPolicy)
+        bool VerifyView(string reference, IntPtr item, byte[]? writtenStamp)
         {
-            SampleRead read = ReadSample(item, der, fixture.Legacy!);
-            ReportStatus(phase, "staged " + reference + " read", read.Status);
-            Compare(phase, "staged " + reference + " DER equal", read.Status == 0 && read.Matches);
-            // Components 0..5 describe effective rights including integrity protection.
-            // The provider verifies the value's integrity during a normal password read.
-            bool effective = stagedPolicy != IntPtr.Zero && before.HasIntegrity
-                && Enumerable.Range(0, 6).All(i => before.Same(
-                    CFArrayGetValueAtIndex(before.Policy, i), CFArrayGetValueAtIndex(stagedPolicy, i)));
-            Compare(phase, "staged " + reference + " effective access equal", effective && read.Status == 0);
+            if (item == IntPtr.Zero)
+            {
+                return false;
+            }
+            int policyStatus = calls.CopyAccessSnapshot(item, out IntPtr policy);
+            int idStatus = calls.CopyRecordId(item, out IntPtr id);
+            try
+            {
+                ReportStatus(phase, "staged " + reference + " policy", policyStatus);
+                bool identity = idStatus == 0 && before.Same(id, writtenId);
+                byte[]? stamp = calls.DataStamp(item, der.Length);
+                bool sameValue = writtenStamp is not null && stamp is not null && writtenStamp.AsSpan().SequenceEqual(stamp);
+                SampleRead read = ReadSample(item, der, fixture.Legacy!);
+                ReportStatus(phase, "staged " + reference + " read", read.Status);
+                // The normal authorized read authenticates the protected data. The new
+                // digest may differ from the original, but both staged views must agree.
+                bool effective = policyStatus == 0 && before.HasIntegrity && before.HasPartitions
+                    && before.Same(policy, livePolicy) && Enumerable.Range(0, 6).All(i => before.Same(
+                        CFArrayGetValueAtIndex(before.Policy, i), CFArrayGetValueAtIndex(policy, i)));
+                Compare(phase, "staged " + reference + " identity equal", identity);
+                Compare(phase, "staged " + reference + " protected value equal", sameValue);
+                Compare(phase, "staged " + reference + " DER equal", read.Status == 0 && read.Matches);
+                Compare(phase, "staged " + reference + " effective access equal", effective && read.Status == 0);
+                return identity && sameValue && effective && read.Status == 0 && read.Matches;
+            }
+            finally
+            {
+                calls.Release(id);
+                calls.Release(policy);
+            }
         }
     }
 

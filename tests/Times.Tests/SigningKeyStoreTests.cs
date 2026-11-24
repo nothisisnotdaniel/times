@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Text;
+using System.Diagnostics;
 using System.Formats.Asn1;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -781,6 +782,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         public Action? AfterCopyContent { get; set; }
         public int DatabaseVersion { get; set; }
         public Item? NextPolicyObservation { get; set; }
+        public Item? CommittedReadView { get; set; }
         public bool InteractionAllowed { get; private set; } = true;
         public bool OtherIsLocked => locked.Contains(OtherKeychain);
         public bool CheckedOtherUnderLock { get; private set; }
@@ -979,6 +981,16 @@ public sealed class SigningKeyStoreTests : IDisposable
             {
                 throw new TokenStoreException(MacKeychainItem.MigrationFailed);
             }
+        }
+
+        public int VerifyCommittedView(IntPtr keychain, string service, string account, IntPtr persistent, IntPtr policy,
+            byte[]? stamp, Func<ProcessStartInfo> verifier)
+        {
+            Item current = GetItem(keychain)!;
+            Item committed = CommittedReadView ?? current;
+            return persistent == keychain && stamp is not null
+                && SHA256.HashData(committed.Data).AsSpan().SequenceEqual(stamp)
+                && policies[policy].SequenceEqual([committed.Partition, .. committed.TrustedPaths]) ? 0 : -25293;
         }
 
         public MacKeychainItem.IFileTransaction BeginTransaction(IntPtr keychain)
