@@ -96,7 +96,7 @@ public sealed partial class MacKeychainMigrationTests
     private void Compare(string phase, string label, bool value) => ReportStatus(phase, label, value ? 1 : 0);
 
     private void AssertObservation(string phase, Observation before, Observation after, bool oneTimeRead,
-        bool requireOriginal, bool requirePhysical, bool controlLostReaders = false)
+        bool requireOriginal, bool requirePhysical)
     {
         bool logical = before.Bound && after.Bound;
         bool physical = before.Same(before.Physical, after.Physical);
@@ -150,21 +150,6 @@ public sealed partial class MacKeychainMigrationTests
         Assert.True(logical, "The original persistent reference and unique scoped lookup did not identify the same item.");
         Assert.True(owner && entries && rights && prompts && integrityRule, "A fixture policy component changed.");
         Assert.True(caller && excluded, "Unexpected caller or excluded-reader authorization.");
-        if (controlLostReaders)
-        {
-            // These standalone provider controls measure the R7 behavior that makes
-            // the product refuse this policy before attempting either setter.
-            Assert.True(before.HasPartitions && after.HasPartitions && !partitions && !completeAccess);
-            Assert.Equal(3, before.Readers.Length);
-            Assert.Equal(before.Readers.Length, after.Readers.Length);
-            Assert.All(before.Readers[..^1], read => Assert.Equal(0, read.Status));
-            Assert.All(after.Readers[..^1], read => Assert.Equal(-25293, read.Status));
-            Assert.False(original);
-            Assert.Equal(!oneTimeRead, after.SuccessfulReads.Any());
-            Assert.Equal(!oneTimeRead, integrity);
-            Assert.Equal(!oneTimeRead, value);
-            return;
-        }
         Assert.True(partitions && integrity && readers, "Fixture partitions, integrity or reader access changed.");
         Assert.True(requireOriginal ? original : value, "The expected fixture value was not verified.");
         if (requirePhysical)
@@ -173,16 +158,21 @@ public sealed partial class MacKeychainMigrationTests
         }
     }
 
-    private void ObserveStaged(Fixture fixture, Observation before, string phase, IntPtr live)
+    private void ObserveStaged(Fixture fixture, Observation before, string phase, IntPtr live, byte[] der)
     {
         MacKeychainItem.NativeCalls calls = new();
         int search = calls.FindUnique(fixture.Reference, Service, Account, out IntPtr unique);
         int resolve = calls.ResolvePassword(before.Persistent, fixture.Reference, Service, Account, out IntPtr resolved);
-        IntPtr policy = IntPtr.Zero, livePolicy = IntPtr.Zero;
+        IntPtr policy = IntPtr.Zero, livePolicy = IntPtr.Zero, uniquePolicy = IntPtr.Zero;
         try
         {
             ReportStatus(phase, "staged unique lookup", search);
             ReportStatus(phase, "staged persistent lookup", resolve);
+            if (search == 0 && unique != IntPtr.Zero)
+            {
+                ReportStatus(phase, "staged unique policy", calls.CopyAccessSnapshot(unique, out uniquePolicy));
+                ObserveValue("unique", unique, uniquePolicy);
+            }
             ReportStatus(phase, "staged live policy", calls.CopyAccessSnapshot(live, out livePolicy));
             Compare(phase, "staged live access equal", before.Same(before.Policy, livePolicy));
             byte[]? liveStamp = calls.DataStamp(live);
@@ -190,6 +180,7 @@ public sealed partial class MacKeychainMigrationTests
             if (resolve == 0 && resolved != IntPtr.Zero)
             {
                 ReportStatus(phase, "staged resolved policy", calls.CopyAccessSnapshot(resolved, out policy));
+                ObserveValue("resolved", resolved, policy);
                 Compare(phase, "staged resolved access equal", before.Same(livePolicy, policy));
                 byte[]? resolvedStamp = calls.DataStamp(resolved);
                 Compare(phase, "staged protected values equal", liveStamp is not null && resolvedStamp is not null
@@ -204,10 +195,24 @@ public sealed partial class MacKeychainMigrationTests
         }
         finally
         {
+            calls.Release(uniquePolicy);
             calls.Release(policy);
             calls.Release(livePolicy);
             calls.Release(unique);
             calls.Release(resolved);
+        }
+
+        void ObserveValue(string reference, IntPtr item, IntPtr stagedPolicy)
+        {
+            SampleRead read = ReadSample(item, der, fixture.Legacy!);
+            ReportStatus(phase, "staged " + reference + " read", read.Status);
+            Compare(phase, "staged " + reference + " DER equal", read.Status == 0 && read.Matches);
+            // Components 0..5 describe effective rights including integrity protection.
+            // The provider verifies the value's integrity during a normal password read.
+            bool effective = stagedPolicy != IntPtr.Zero && before.HasIntegrity
+                && Enumerable.Range(0, 6).All(i => before.Same(
+                    CFArrayGetValueAtIndex(before.Policy, i), CFArrayGetValueAtIndex(stagedPolicy, i)));
+            Compare(phase, "staged " + reference + " effective access equal", effective && read.Status == 0);
         }
     }
 

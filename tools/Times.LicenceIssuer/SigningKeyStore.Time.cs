@@ -43,7 +43,7 @@ internal sealed partial class MacKeychainSigningKeyStore
             return;
         }
 
-        Require(ValidateTimePoint(last, out ReadOnlySpan<byte> endZone) == start);
+        Require(ValidateTimePoint(last, out ReadOnlySpan<byte> endZone, startZone) == start);
         // Both endpoints have the same time properties. A repeated numeric
         // offset must be omitted at the end. UTC retains its Z designator.
         if (startZone.IsEmpty || startZone.SequenceEqual("Z"u8))
@@ -59,7 +59,7 @@ internal sealed partial class MacKeychainSigningKeyStore
     private enum DateForm { None, Century, Year, Month, CalendarDay, OrdinalDay, Week, Weekday }
 
     private static (DateForm Date, int YearKind, int ClockLength, int FractionDigits) ValidateTimePoint(
-        ReadOnlySpan<byte> value, out ReadOnlySpan<byte> zone)
+        ReadOnlySpan<byte> value, out ReadOnlySpan<byte> zone, scoped ReadOnlySpan<byte> inheritedZone = default)
     {
         zone = default;
         int separator = value.IndexOf((byte)'T');
@@ -81,9 +81,10 @@ internal sealed partial class MacKeychainSigningKeyStore
         if (zoneStart >= 0)
         {
             zone = value[zoneStart..];
-            ValidateTimeZone(zone);
             value = value[..zoneStart];
         }
+        ReadOnlySpan<byte> effectiveZone = zone.IsEmpty ? inheritedZone : zone;
+        int? offset = effectiveZone.IsEmpty ? null : UtcOffsetMinutes(effectiveZone);
 
         int point = value.IndexOf((byte)'.');
         ReadOnlySpan<byte> clock = point < 0 ? value : value[..point];
@@ -104,14 +105,18 @@ internal sealed partial class MacKeychainSigningKeyStore
         }
         Require(hour <= 24 && minute <= 59 && second <= 60);
         Require(hour < 24 || minute == 0 && second == 0 && !fraction.ContainsAnyExcept((byte)'0'));
+        if (second == 60 && offset is int minutes)
+        {
+            Require((hour * 60 + minute - minutes + 1440) % 1440 == 1439);
+        }
         return (date, yearKind, clock.Length, fraction.Length);
     }
 
-    private static void ValidateTimeZone(ReadOnlySpan<byte> zone)
+    private static int UtcOffsetMinutes(ReadOnlySpan<byte> zone)
     {
         if (zone.SequenceEqual("Z"u8))
         {
-            return;
+            return 0;
         }
         Require(zone[0] is (byte)'+' or (byte)'-' && zone.Length is 3 or 6);
         int minutes = Number(zone.Slice(1, 2)) * 60;
@@ -123,6 +128,7 @@ internal sealed partial class MacKeychainSigningKeyStore
             minutes += remainder;
         }
         Require(zone[0] == '+' ? minutes <= 16 * 60 : minutes is > 0 and <= 15 * 60);
+        return zone[0] == '+' ? minutes : -minutes;
     }
 
     private static (DateForm Form, int YearKind) ValidateTimeDate(ReadOnlySpan<byte> date)

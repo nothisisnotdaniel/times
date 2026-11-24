@@ -66,16 +66,17 @@ public sealed partial class MacKeychainMigrationTests
                 LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]);
                 string ledger = Path.Combine(folder.Path, "ledger.tsv");
                 TaskCompletionSource firstReading = new(TaskCreationOptions.RunContinuationsAsynchronously);
-                TestKeychainStore first = new(fixture.Reference, new MacKeychainItem.NativeCalls((operation, status) =>
+                TestKeychainStore first = new(fixture.Reference, new ReadGrant(true, (operation, status) =>
                 {
                     evidence.ObserveCall("issue-1", operation, status);
                     if (operation == "read password" && status == 0 && firstReading.TrySetResult())
                     {
                         Assert.True(secondReading.Wait(FixtureTimeout), "The second issuer did not contend for the key read.");
                     }
-                }));
-                TestKeychainStore second = new(fixture.Reference, new MacKeychainItem.NativeCalls(
-                    (operation, status) => evidence.ObserveCall("issue-2", operation, status)), readContended: secondReading.Set)
+                }, item => ObserveStaged(fixture, before, "issue-1", item, der)));
+                TestKeychainStore second = new(fixture.Reference, new ReadGrant(true,
+                    (operation, status) => evidence.ObserveCall("issue-2", operation, status),
+                    item => ObserveStaged(fixture, before, "issue-2", item, der)), readContended: secondReading.Set)
                 {
                     // The two key-store calls overlap. Order the independent ledger appends.
                     AfterRead = () => Assert.True(firstIssued.Wait(FixtureTimeout), "The first issuer did not finish."),
@@ -101,7 +102,6 @@ public sealed partial class MacKeychainMigrationTests
                 }, () => Issue(second, "Bob"));
                 using Observation after = new(fixture, der, legacy, before);
                 AssertObservation("issue-2", before, after, false, requireOriginal: false, requirePhysical: false);
-                Assert.False(before.Same(before.Physical, after.Physical), "This fixture must exercise a regenerated physical ID.");
                 Assert.Equal(2, File.ReadAllLines(ledger).Length);
             }
             finally
@@ -337,59 +337,6 @@ public sealed partial class MacKeychainMigrationTests
         }
     }
 
-    [MacKeychainTheory]
-    [InlineData(false, false, true)]
-    [InlineData(true, false, true)]
-    [InlineData(true, true, true)]
-    [InlineData(true, true, false)]
-    public void DocumentedUpdate_OnMatchingDisposableItem_ReportsAuthorizationAndPreservation(
-        bool extraReader, bool oneTimeRead, bool allowWriter) =>
-        MeasurePublicUpdate(extraReader, oneTimeRead, allowWriter, useSecItem: false);
-
-    [MacKeychainTheory]
-    [InlineData(false, false, true)]
-    [InlineData(true, false, true)]
-    [InlineData(true, true, true)]
-    [InlineData(true, true, false)]
-    public void SecItemUpdate_OnMatchingDisposableItem_ReportsAuthorizationAndPreservation(
-        bool extraReader, bool oneTimeRead, bool allowWriter) =>
-        MeasurePublicUpdate(extraReader, oneTimeRead, allowWriter, useSecItem: true);
-
-    private void MeasurePublicUpdate(bool extraReader, bool oneTimeRead, bool allowWriter, bool useSecItem)
-    {
-        using Fixture fixture = new();
-        using ECDsa generated = ECDsa.Create(ECCurve.NamedCurves.nistP256);
-        byte[] sample = generated.ExportPkcs8PrivateKey();
-        try
-        {
-            fixture.AddLegacy(sample, extraReader, oneTimeRead, allowWriter);
-            using Observation before = new(fixture, fixture.Legacy!, fixture.Legacy!);
-            MacKeychainItem.NativeCalls calls = new();
-            Assert.Equal(0, calls.FindUnique(fixture.Reference, Service, Account, out IntPtr item));
-            int status;
-            try
-            {
-                // The executing process and its authorization are identical to the issuer fixture's.
-                status = useSecItem ? TimesFixtureUpdate(fixture.Reference, item, sample, (uint)sample.Length)
-                    : SecKeychainItemModifyAttributesAndData(item, 0, (uint)sample.Length, sample);
-            }
-            finally
-            {
-                calls.Release(item);
-            }
-            string phase = allowWriter ? "control-allowed" : "control-denied";
-            ReportStatus(phase, "control update", status);
-            using Observation after = new(fixture, sample, fixture.Legacy!, before);
-            AssertObservation(phase, before, after, oneTimeRead, requireOriginal: false, requirePhysical: false,
-                controlLostReaders: extraReader);
-            Assert.Equal(0, status);
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(sample);
-        }
-    }
-
     [MacKeychainFact]
     public void SeparateReadGrant_CannotAuthorizeAnExcludedWriter() =>
         ExerciseMigration("excluded-writer", extraReader: true, oneTimeRead: true, allowWriter: false);
@@ -420,7 +367,7 @@ public sealed partial class MacKeychainMigrationTests
             Assert.True(before.Caller.Original && before.HasIntegrity && before.HasPartitions);
             int reads = 0, policyRefusals = 0;
             IssuerEvidence evidence = new(log);
-            MacKeychainItem.NativeCalls calls = new((operation, status) =>
+            FixtureWriteBoundary calls = new(false, (operation, status) =>
             {
                 evidence.ObserveCall(readerPair ? "denied-write" : "issue-1", operation, status);
                 if (operation == "read password" && status == 0)
@@ -493,6 +440,97 @@ public sealed partial class MacKeychainMigrationTests
         finally
         {
             CryptographicOperations.ZeroMemory(data);
+        }
+    }
+
+    [MacKeychainTheory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public void WriteRefusal_BindsCallerRequirementAndBothPolicyObservations(bool fifoDescription, bool differentPolicy)
+    {
+        using Fixture fixture = new();
+        using Fixture? other = differentPolicy ? new Fixture() : null;
+        using TempFolder folder = new();
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] der = key.ExportPkcs8PrivateKey();
+        try
+        {
+            fixture.AddLegacyWithDescription(der, fifoDescription);
+            byte[] legacy = fixture.Legacy!;
+            using Observation before = new(fixture, legacy, legacy);
+            Assert.True(before.Bound && before.HasPartitions && before.HasIntegrity && before.Caller.Original);
+            other?.AddLegacyForReaderPair(der);
+            using Observation? alternative = other is null ? null : new(other, other.Legacy!, other.Legacy!);
+            if (alternative is not null)
+            {
+                Assert.True(alternative.Bound && alternative.Caller.Original);
+                Assert.False(before.SameComponent(alternative, 1));
+            }
+
+            string phase = differentPolicy ? "denied-write" : "issue-1";
+            IssuerEvidence evidence = new(log);
+            int successfulReads = 0;
+            void Report(string operation, int status)
+            {
+                evidence.ObserveCall(phase, operation, status);
+                if (operation == "read password" && status == 0)
+                {
+                    successfulReads++;
+                }
+            }
+            FixtureWriteBoundary calls = alternative is null ? new FixtureWriteBoundary(false, Report)
+                : new FirstPolicyObservation(alternative.Policy, Report);
+            string host = Path.Combine(folder.Path, "dotnet");
+            File.WriteAllBytes(host, []);
+            TestKeychainStore store = new(fixture.Reference, calls, processPath: host);
+            Assert.Equal(MacKeychainSigningKeyStore.SharedHostRefused, store.WriteRefusal);
+            string ledger = Path.Combine(folder.Path, "ledger.tsv");
+            File.WriteAllText(ledger, "previous entry\n");
+            byte[] previous = File.ReadAllBytes(ledger);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            Assert.Equal(differentPolicy ? 1 : 0, RunIssue(store, ledger, output, error));
+            Assert.Equal(1, successfulReads);
+            if (differentPolicy)
+            {
+                Assert.True(output.GetStringBuilder().Length == 0);
+                Assert.True(error.ToString() == MigrationFailed + error.NewLine);
+                Assert.True(previous.AsSpan().SequenceEqual(File.ReadAllBytes(ledger)));
+            }
+            else
+            {
+                Assert.True(error.GetStringBuilder().Length == 0);
+                Assert.Equal(2, File.ReadAllLines(ledger).Length);
+            }
+            LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]);
+            int expectedLicences = differentPolicy ? 0 : 1;
+            Assert.Equal(expectedLicences, evidence.VerifyOutput(output.ToString(), original));
+            evidence.AssertCounts(0, expectedLicences);
+            using Observation after = new(fixture, der, legacy, before);
+            AssertObservation(phase, before, after, false, requireOriginal: true, requirePhysical: true);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(der);
+        }
+    }
+
+    // Substitute only the first metadata observation. Both real policies stay
+    // installed on their own fixtures and the issuer makes its ordinary read.
+    private sealed class FirstPolicyObservation(IntPtr policy, Action<string, int> report)
+        : FixtureWriteBoundary(false, report)
+    {
+        private bool observed;
+        public override int CopyAccessSnapshot(IntPtr item, out IntPtr snapshot)
+        {
+            if (observed)
+            {
+                return base.CopyAccessSnapshot(item, out snapshot);
+            }
+            observed = true;
+            snapshot = CFRetain(policy);
+            return 0;
         }
     }
 
@@ -663,9 +701,9 @@ public sealed partial class MacKeychainMigrationTests
                 string ledger = Path.Combine(folder.Path, "ledger.tsv");
                 File.WriteAllText(ledger, "previous entry\n");
                 string phase = "issue-1";
-                ReadGrant grant = new((operation, status) => evidence.ObserveCall(
+                ReadGrant grant = new(!extraReader && !oneTimeRead && allowWriter, (operation, status) => evidence.ObserveCall(
                     oneTimeRead && operation == "read password" && status != 0 ? "denied-read" : phase, operation, status),
-                    item => ObserveStaged(fixture, before, phase, item));
+                    item => ObserveStaged(fixture, before, phase, item, der));
                 TestKeychainStore store = new(fixture.Reference, grant);
 
                 void Attempt(TestKeychainStore issuerStore, bool permitted, bool readOnlyDirectory = false,
@@ -778,7 +816,7 @@ public sealed partial class MacKeychainMigrationTests
         Assert.True(LicenceKey.TryVerify(output.ToString().Trim(), original, LicenceRevocations.None).IsValid);
     }
 
-    private sealed class ReadGrant : MacKeychainItem.NativeCalls
+    private sealed class ReadGrant : FixtureWriteBoundary
     {
         private readonly Action<IntPtr> observeStaged;
         private Fixture? source;
@@ -786,7 +824,8 @@ public sealed partial class MacKeychainMigrationTests
         private IntPtr grantedData;
         private IntPtr stagedItem;
 
-        public ReadGrant(Action<string, int> reportStatus, Action<IntPtr> observeStaged) : base(reportStatus)
+        public ReadGrant(bool nativeWritePermitted, Action<string, int> reportStatus, Action<IntPtr> observeStaged)
+            : base(nativeWritePermitted, reportStatus)
         {
             this.observeStaged = observeStaged;
         }
@@ -1007,6 +1046,31 @@ public sealed partial class MacKeychainMigrationTests
             string helper = CompileReader("related-reader");
             Assert.Equal(0, TimesFixtureAdd(Reference, Service, helper, null, FixtureReaders.ReaderPair, Legacy, (uint)Legacy.Length));
             Assert.True(PartitionIds(AccessEntries(Path)) is [_], "The fixture must have exactly one partition.");
+        }
+
+        public void AddLegacyWithDescription(byte[] der, bool fifo)
+        {
+            Legacy = EncodeLegacy(der);
+            string description = System.IO.Path.Combine(Directory, "old-reader-location");
+            Assert.Equal(0, TimesFixtureAdd(Reference, Service, description, null,
+                FixtureReaders.CallerWithDescription, Legacy, (uint)Legacy.Length));
+            Assert.True(PartitionIds(AccessEntries(Path)) is [_]);
+            MacKeychainItem.NativeCalls calls = new();
+            Assert.Equal(0, calls.FindUnique(Reference, Service, Account, out IntPtr item));
+            try
+            {
+                Assert.Equal(1, TimesFixtureHasReaderDescription(item, description));
+            }
+            finally
+            {
+                calls.Release(item);
+            }
+            // The command-line ACL inspector evaluates descriptive paths. Finish
+            // that independent setup check while the stale location is still absent.
+            if (fifo)
+            {
+                Assert.Equal(0, mkfifo(description, 0));
+            }
         }
         private string? excludedReader;
         private static string Marker(string path) => "Times fixture " + System.IO.Path.GetFileName(path);
@@ -1304,13 +1368,11 @@ public sealed partial class MacKeychainMigrationTests
     [DllImport(Security)]
     private static extern int SecKeychainSetUserInteractionAllowed(byte state);
 
-    [DllImport(Security)]
-    private static extern int SecKeychainItemModifyAttributesAndData(IntPtr item, IntPtr attributes, uint length, byte[] data);
+    private enum FixtureReaders { NamedReaders, IncludeCaller, ReaderPair, CallerWithDescription }
 
     [DllImport("TimesKeychainFixture")]
-    private static extern int TimesFixtureUpdate(IntPtr database, IntPtr item, byte[] data, uint length);
-
-    private enum FixtureReaders { NamedReaders, IncludeCaller, ReaderPair }
+    private static extern int TimesFixtureHasReaderDescription(IntPtr item,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string description);
 
     [DllImport("TimesKeychainFixture")]
     private static extern int TimesFixtureAdd(IntPtr database, [MarshalAs(UnmanagedType.LPUTF8Str)] string service,

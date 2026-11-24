@@ -338,6 +338,57 @@ public sealed partial class MacKeychainMigrationTests
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void WriteRefusal_DisagreementAcrossTheOnlyRead_RefusesBeforeSigning(bool changedVersion)
+    {
+        using PortableFixture fixture = new();
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] der = key.ExportPkcs8PrivateKey();
+        byte[] legacy = EncodeLegacy(der);
+        try
+        {
+            SigningKeyStoreTests.Item item = new(legacy, ["original reader"]);
+            fixture.Calls.Stored = item;
+            fixture.Calls.RemainingReads = 1;
+            if (changedVersion)
+            {
+                // Same logical item, bytes and endpoint policies, different committed revision.
+                fixture.Calls.AfterCopyContent = () => fixture.Calls.DatabaseVersion++;
+            }
+            else
+            {
+                // Independent pre-read observation. The authorized password copy and
+                // post-read policy both come from the sole-reader item.
+                fixture.Calls.NextPolicyObservation = new(legacy, ["original reader", "second reader"]);
+            }
+            MacKeychainSigningKeyStore store = new(null, new MacKeychainItem(fixture.Calls));
+            Assert.Equal(MacKeychainSigningKeyStore.SharedHostRefused, store.WriteRefusal);
+            File.WriteAllText(fixture.Ledger, "previous entry\n");
+            byte[] previous = File.ReadAllBytes(fixture.Ledger);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            Assert.Equal(1, RunIssue(store, fixture.Ledger, output, error));
+            Assert.True(error.ToString() == MigrationFailed + error.NewLine);
+            Assert.True(output.GetStringBuilder().Length == 0);
+            Assert.True(previous.AsSpan().SequenceEqual(File.ReadAllBytes(fixture.Ledger)));
+            Assert.Equal(1, fixture.Calls.DataRequests);
+            Assert.Equal(0, fixture.Calls.RemainingReads);
+            Assert.Empty(fixture.Calls.LockOrder);
+            Assert.Equal(0, fixture.Calls.Updates + fixture.Calls.Creates + fixture.Calls.Deletes);
+            Assert.Same(item, fixture.Calls.Stored);
+            Assert.True(CryptographicOperations.FixedTimeEquals(legacy, item.Data));
+            Assert.True(item.TrustedPaths.SequenceEqual(["original reader"]));
+            Assert.Equal(SigningKeyStoreTests.Item.OriginalPartition, item.Partition);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(legacy);
+            CryptographicOperations.ZeroMemory(der);
+        }
+    }
+
     [Fact]
     public async Task Issue_RegeneratedPhysicalId_PreservesTheLogicalItemAndTwoVerifiableLicences()
     {
@@ -611,8 +662,14 @@ public sealed partial class MacKeychainMigrationTests
                 // GraphicString has no C0 or C1 repertoire, even if the next character is graphic.
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 4, 0x1b, 0x21, 0x40, 65], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 4, 0x1b, 0x22, 0x43, 65], false, legacy);
-                // GeneralString permits the registered C1 control repertoire in this designation.
-                cases.Add("1.3.6.1.4.1.32473.11", [0x1b, 4, 0x1b, 0x22, 0x43, 65], true, legacy);
+                // Designate the C1 repertoire and use its NEXT LINE function (8-bit and 7-bit).
+                cases.Add("1.3.6.1.4.1.32473.11", [0x1b, 4, 0x1b, 0x22, 0x43, 0x85], true, legacy);
+                cases.Add("1.3.6.1.4.1.32473.11", [0x1b, 5, 0x1b, 0x22, 0x43, 0x1b, 0x45], true, legacy);
+                cases.Add("1.3.6.1.4.1.32473.11", [0x1b, 4, 0x1b, 0x22, 0x43, 65], false, legacy);
+                cases.Add("1.3.6.1.4.1.32473.11", [0x1b, 3, 0x1b, 0x22, 0x43], false, legacy);
+                cases.Add("1.3.6.1.4.1.32473.11", [0x1b, 4, 0x1b, 0x21, 0x40, 0x0d], false, legacy);
+                cases.Add("1.3.6.1.4.1.32473.11", [0x1b, 8, 0x1b, 0x22, 0x43, 0x85, 0x1b, 0x22, 0x43, 0x85], false, legacy);
+                cases.Add("1.3.6.1.4.1.32473.11", [0x1b, 8, 0x1b, 0x21, 0x45, 0x0d, 0x1b, 0x21, 0x40, 0x0d], true, legacy);
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 4, 0x1b, 0x28, 0x42, 65], false, legacy);
                 // ASCII is already G0. Designating it as G1 and invoking it is redundant.
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 4, 0x1b, 0x29, 0x42, 0xc1], false, legacy);
@@ -633,6 +690,9 @@ public sealed partial class MacKeychainMigrationTests
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 7, 0x1b, 0x24, 0x42, 0x24, 0x22, 0x24, 0x24], true, legacy);
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 6, 0x1b, 0x24, 0x29, 0x42, 0x0e, 0x24], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.6", [0x1f, 31, 8, .. "20240229"u8], true, legacy);
+                cases.Add("1.3.6.1.4.1.32473.6", [0x1f, 31, 8, .. "15820101"u8], true, legacy);
+                cases.Add("1.3.6.1.4.1.32473.6", [0x1f, 31, 8, .. "15811231"u8], false, legacy);
+                cases.Add("1.3.6.1.4.1.32473.6", [0x1f, 31, 8, .. "15000101"u8], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.6", [0x1f, 31, 8, .. "20230229"u8], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.6", [0x1f, 31, 10, .. "2024-02-29"u8], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.7", [0x1f, 32, 6, .. "123456"u8], true, legacy);
@@ -645,6 +705,8 @@ public sealed partial class MacKeychainMigrationTests
                 cases.Add("1.3.6.1.4.1.32473.7", [0x1f, 32, 6, .. "123461"u8], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.7", [0x1f, 32, 6, .. "1X0000"u8], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.8", [0x1f, 33, 14, .. "20240229123456"u8], true, legacy);
+                cases.Add("1.3.6.1.4.1.32473.8", [0x1f, 33, 14, .. "15820101000000"u8], true, legacy);
+                cases.Add("1.3.6.1.4.1.32473.8", [0x1f, 33, 14, .. "15000101120000"u8], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.8", [0x1f, 33, 14, .. "20240615123456"u8], true, legacy);
                 cases.Add("1.3.6.1.4.1.32473.8", [0x1f, 33, 14, .. "20230229123456"u8], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.8", [0x1f, 33, 14, .. "20240229126000"u8], false, legacy);
@@ -662,17 +724,44 @@ public sealed partial class MacKeychainMigrationTests
                 cases.Add("1.3.6.1.4.1.32473.10", TimeAttribute("1D"), false, legacy);
                 foreach (string time in new[] { "1985", "23:20:30Z", "19C", "1985-04", "-0002-04-12",
                     "+11985-04-12", "1985-102T23:50:30Z", "1985-W15-5", "2020-W53", "15:27.50+05:30",
-                    "24:00:00.0", "23Z", "1985-04-12/P1D", "P1W/1985-W15", "R2/P1Y6M",
+                    "24:00:00.0", "23Z", "1500-01-01", "1500-01-01T12:00:00", "23:59:60Z", "23:59:60.5Z",
+                    "2016-12-31T23:59:60Z", "00:59:60+01", "18:29:60-05:30", "00:00:00+01/00:59:60",
+                    "1985-04-12/P1D", "P1W/1985-W15", "R2/P1Y6M",
                     "R/12:30+02/13:30", "12:30Z/13:30Z", "12:30-05/13:30-04" })
                 {
                     cases.Add("1.3.6.1.4.1.32473.10", TimeAttribute(time), true, legacy);
                 }
                 foreach (string time in new[] { "", "19x5", "1985-02-29", "1985-366", "1985-W54", "+1985",
                     "-0000", "2021-W53", "25:01", "24:00.1", "23:20:30Zx", "23:20:61Z", "12:30,0",
+                    "12:00:60Z", "23:58:60Z", "2016-12-31T12:00:60Z", "23:59:60+01", "00:00:00+01/00:00:60",
                     "12:30+02:00", "12-15:01", "R/1985", "P1D/P2D", "12:30+02/13:30+02",
                     "12:30/13:30Z", "1985/12:30", "1985-W15/1985-04", "1985//1986" })
                 {
                     cases.Add("1.3.6.1.4.1.32473.10", TimeAttribute(time), false, legacy);
+                }
+                foreach (bool absolute in new[] { true, false })
+                {
+                    byte tag = absolute ? (byte)35 : (byte)36;
+                    void Iri(ReadOnlySpan<byte> label, bool valid)
+                    {
+                        cases.Add("1.3.6.1.4.1.32473.12", [0x1f, tag, checked((byte)label.Length), .. label], valid, legacy);
+                    }
+                    Iri(absolute ? "/ISO/Registration_Authority/19785.CBEFF"u8 : "Patron-formats/TLV-encoded"u8, true);
+                    Iri(absolute ? "/2/例/𐀀"u8 : "例/𐀀"u8, true);
+                    Iri("1"u8, !absolute);
+                    Iri("/1"u8, absolute);
+                    Iri(absolute ? "/0/39"u8 : "123456789012345678901234567890"u8, true);
+                    Iri(absolute ? "/3"u8 : "/relative"u8, false);
+                    Iri(absolute ? "/1/40"u8 : "0/40"u8, !absolute);
+                    Iri([], false);
+                    Iri(absolute ? "/2//1"u8 : "a//b"u8, false);
+                    Iri(absolute ? "/2/"u8 : "a/"u8, false);
+                    Iri(absolute ? "/2/01"u8 : "01"u8, false);
+                    Iri(absolute ? "/2/-a"u8 : "a-"u8, false);
+                    Iri(absolute ? "/2/𐀀a--b"u8 : "𐀀a--b"u8, false);
+                    Iri(absolute ? "/2/%20"u8 : "a b"u8, false);
+                    Iri(absolute ? "/2/\ue000"u8 : "\ue000"u8, false);
+                    Iri(absolute ? [(byte)'/', 0xc0, 0xaf] : [0xed, 0xa0, 0x80], false);
                 }
             }
 

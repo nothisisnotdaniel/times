@@ -42,7 +42,22 @@ static OSStatus fixtureReaderPair(const char *readerPath, SecTrustedApplicationR
     return status;
 }
 
-enum { NamedReaders, IncludeCaller, ReaderPair };
+static OSStatus fixtureCallerWithDescription(const char *description, SecTrustedApplicationRef *reader)
+{
+    SecCodeRef host = NULL;
+    SecStaticCodeRef code = NULL;
+    SecRequirementRef requirement = NULL;
+    OSStatus status = SecCodeCopySelf(0, &host);
+    if (!status) status = SecCodeCopyStaticCode(host, 0, &code);
+    if (!status) status = SecCodeCopyDesignatedRequirement(code, 0, &requirement);
+    if (!status) status = SecTrustedApplicationCreateFromRequirement(description, requirement, reader);
+    if (requirement) CFRelease(requirement);
+    if (code) CFRelease(code);
+    if (host) CFRelease(host);
+    return status;
+}
+
+enum { NamedReaders, IncludeCaller, ReaderPair, CallerWithDescription };
 
 OSStatus TimesFixtureAdd(SecKeychainRef database, const char *service, const char *first, const char *second,
                          int readerMode, const UInt8 *bytes, UInt32 length)
@@ -55,12 +70,15 @@ OSStatus TimesFixtureAdd(SecKeychainRef database, const char *service, const cha
     OSStatus status = errSecAllocate;
     if (!name || !readers || !value) goto done;
     const char *paths[] = {NULL, first, second};
-    if (readerMode == ReaderPair && !first) { status = errSecParam; goto done; }
-    int count = readerMode == ReaderPair ? 1 : 3;
+    bool customSubject = readerMode == ReaderPair || readerMode == CallerWithDescription;
+    if (customSubject && !first) { status = errSecParam; goto done; }
+    int count = customSubject ? 1 : 3;
     for (int i = readerMode == NamedReaders ? 1 : 0; i < count; ++i) {
         if (i != 0 && !paths[i]) continue;
         SecTrustedApplicationRef reader = NULL;
-        status = readerMode == ReaderPair ? fixtureReaderPair(first, &reader) : SecTrustedApplicationCreateFromPath(paths[i], &reader);
+        if (readerMode == ReaderPair) status = fixtureReaderPair(first, &reader);
+        else if (readerMode == CallerWithDescription) status = fixtureCallerWithDescription(first, &reader);
+        else status = SecTrustedApplicationCreateFromPath(paths[i], &reader);
         if (status) goto done;
         CFArrayAppendValue(readers, reader);
         CFRelease(reader);
@@ -80,6 +98,33 @@ done:
     if (readers) CFRelease(readers);
     if (name) CFRelease(name);
     return status;
+}
+
+// Observe the persisted informational bytes without opening the path they describe.
+int TimesFixtureHasReaderDescription(SecKeychainItemRef item, const char *expected)
+{
+    SecAccessRef access = NULL;
+    CFArrayRef grants = NULL, readers = NULL;
+    CFDataRef data = NULL;
+    CFStringRef description = NULL;
+    SecKeychainPromptSelector prompt = 0;
+    int matches = 0;
+    if (!item || !expected || SecKeychainItemCopyAccess(item, &access) || !access) goto done;
+    grants = SecAccessCopyMatchingACLList(access, kSecACLAuthorizationDecrypt);
+    if (!grants || CFArrayGetCount(grants) != 1 ||
+        SecACLCopyContents((SecACLRef)CFArrayGetValueAtIndex(grants, 0), &readers, &description, &prompt) ||
+        !readers || CFArrayGetCount(readers) != 1) goto done;
+    SecTrustedApplicationRef reader = (SecTrustedApplicationRef)CFArrayGetValueAtIndex(readers, 0);
+    if (SecTrustedApplicationCopyData(reader, &data) || !data) goto done;
+    size_t length = strlen(expected) + 1;
+    matches = CFDataGetLength(data) == (CFIndex)length && memcmp(CFDataGetBytePtr(data), expected, length) == 0;
+done:
+    if (data) CFRelease(data);
+    if (description) CFRelease(description);
+    if (readers) CFRelease(readers);
+    if (grants) CFRelease(grants);
+    if (access) CFRelease(access);
+    return matches;
 }
 
 OSStatus TimesFixtureRead(SecKeychainItemRef item, const UInt8 *expected, UInt32 expectedSize,

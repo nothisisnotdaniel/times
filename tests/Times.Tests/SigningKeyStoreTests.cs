@@ -778,6 +778,9 @@ public sealed class SigningKeyStoreTests : IDisposable
         public bool CacheOtherMiss { get; set; }
         public int? RemainingReads { get; set; }
         public bool RefuseRead { get; set; }
+        public Action? AfterCopyContent { get; set; }
+        public int DatabaseVersion { get; set; }
+        public Item? NextPolicyObservation { get; set; }
         public bool InteractionAllowed { get; private set; } = true;
         public bool OtherIsLocked => locked.Contains(OtherKeychain);
         public bool CheckedOtherUnderLock { get; private set; }
@@ -853,6 +856,7 @@ public sealed class SigningKeyStoreTests : IDisposable
             data = Marshal.AllocHGlobal(Math.Max(1, bytes.Length));
             buffers.Add(data, bytes.Length);
             Marshal.Copy(bytes, 0, data, bytes.Length);
+            AfterCopyContent?.Invoke();
             return 0;
         }
 
@@ -966,6 +970,17 @@ public sealed class SigningKeyStoreTests : IDisposable
             }
         }
 
+        public void WithStableRead(IntPtr keychain, Action read)
+        {
+            Assert.Contains(keychain, held);
+            int version = DatabaseVersion;
+            read();
+            if (DatabaseVersion != version)
+            {
+                throw new TokenStoreException(MacKeychainItem.MigrationFailed);
+            }
+        }
+
         public MacKeychainItem.IFileTransaction BeginTransaction(IntPtr keychain)
         {
             if (keychain == OtherKeychain)
@@ -1057,7 +1072,8 @@ public sealed class SigningKeyStoreTests : IDisposable
 
         public int CopyAccessSnapshot(IntPtr item, out IntPtr snapshot)
         {
-            Item current = GetItem(owners[item])!;
+            Item current = NextPolicyObservation ?? GetItem(owners[item])!;
+            NextPolicyObservation = null;
             snapshot = ++nextReference;
             policies.Add(snapshot, [current.Partition, .. current.TrustedPaths]);
             held.Add(snapshot);

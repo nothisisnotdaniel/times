@@ -477,6 +477,10 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
                 case UniversalTagNumber.RelativeObjectIdentifier:
                     ValidateOidComponents(reader.PeekContentBytes().Span);
                     break;
+                case UniversalTagNumber.ObjectIdentifierIRI:
+                case UniversalTagNumber.RelativeObjectIdentifierIRI:
+                    ValidateOidIri(reader.PeekContentBytes().Span, tag.TagValue == (int)UniversalTagNumber.ObjectIdentifierIRI);
+                    break;
                 case UniversalTagNumber.Real:
                     ValidateReal(reader.PeekContentBytes().Span);
                     break;
@@ -542,6 +546,67 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
         reader.ReadEncodedValue();
     }
 
+    // X.680 34-35 and X.660 7. Each slash separates nonempty Unicode labels.
+    // Work directly on the DER so optional key attributes never become strings.
+    private static void ValidateOidIri(ReadOnlySpan<byte> value, bool absolute)
+    {
+        if (absolute)
+        {
+            Require(value.StartsWith("/"u8));
+            value = value[1..];
+        }
+
+        bool smallSecondArc = false;
+        for (int arc = 0; ; arc++)
+        {
+            int slash = value.IndexOf((byte)'/');
+            ReadOnlySpan<byte> label = slash < 0 ? value : value[..slash];
+            Require(!label.IsEmpty && label[0] != '-' && label[^1] != '-');
+            if (Digits(label))
+            {
+                Require(label.Length == 1 || label[0] != '0');
+                if (absolute && arc == 0)
+                {
+                    Require(label.Length == 1 && label[0] <= '2');
+                    smallSecondArc = label[0] != '2';
+                }
+                if (smallSecondArc && arc == 1)
+                {
+                    Require(label.Length < 2 || label.Length == 2 && label[0] <= '3');
+                }
+            }
+            else
+            {
+                if (absolute && arc == 0)
+                {
+                    smallSecondArc = Ascii.EqualsIgnoreCase(label, "ISO"u8) || Ascii.EqualsIgnoreCase(label, "ITU-T"u8);
+                }
+                ValidateIriLabel(label);
+            }
+            if (slash < 0)
+            {
+                return;
+            }
+            value = value[(slash + 1)..];
+        }
+    }
+
+    private static void ValidateIriLabel(ReadOnlySpan<byte> label)
+    {
+        bool previousHyphen = false;
+        for (int position = 1; !label.IsEmpty; position++)
+        {
+            Require(Rune.DecodeFromUtf8(label, out Rune rune, out int length) == OperationStatus.Done);
+            int c = rune.Value;
+            Require(c is '-' or '.' or '_' or '~' or >= '0' and <= '9' or >= 'A' and <= 'Z' or >= 'a' and <= 'z'
+                or >= 0xa0 and <= 0xd7ff or >= 0xf900 and <= 0xfdcf or >= 0xfdf0 and <= 0xffef
+                || (c is >= 0x10000 and <= 0xdfffd or >= 0xe1000 and <= 0xefffd) && (c & 0xffff) <= 0xfffd);
+            Require(position != 4 || !previousHyphen || c != '-');
+            previousHyphen = c == '-';
+            label = label[length..];
+        }
+    }
+
     private static void ValidateDate(ReadOnlySpan<byte> value)
     {
         // X.690 8.26.2 encodes the calendar date as eight ASCII digits.
@@ -549,7 +614,7 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
         int year = (value[0] - '0') * 1000 + (value[1] - '0') * 100 + (value[2] - '0') * 10 + value[3] - '0';
         int month = (value[4] - '0') * 10 + value[5] - '0';
         int day = (value[6] - '0') * 10 + value[7] - '0';
-        Require(month is >= 1 and <= 12 && day >= 1 && day <= DateTime.DaysInMonth(year == 0 ? 400 : year, month));
+        Require(year >= 1582 && month is >= 1 and <= 12 && day >= 1 && day <= DateTime.DaysInMonth(year, month));
     }
 
     private static void ValidateTimeOfDay(ReadOnlySpan<byte> value)
@@ -612,6 +677,8 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
         Span<int> widths = [1, 0, 0, 0];
         Span<Range> designations = stackalloc Range[4];
         designations.Clear();
+        Span<Range> controlSets = stackalloc Range[2];
+        controlSets.Clear();
         Span<bool> sets96 = stackalloc bool[4];
         sets96.Clear();
         int left = 0, right = 1, single = -1;
@@ -628,7 +695,29 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
                 }
 
                 Require(i < value.Length && value[i] is >= 0x30 and <= 0x7e);
-                ReadGraphicEscape(value, start, i, graphicOnly, videotex, widths, sets96, designations, ref left, ref right, ref single);
+                if (start < i && value[start] is (byte)'!' or (byte)'"')
+                {
+                    Require(!graphicOnly);
+                    int slot = value[start] - '!';
+                    ReadOnlySpan<byte> active = value[controlSets[slot]];
+                    if (active.IsEmpty)
+                    {
+                        // X.690 Table 3 assumes ISO-IR 1 in C0, and ISO-IR 73
+                        // in C1 for VideotexString. GeneralString starts without C1.
+                        active = slot == 0 ? "@"u8 : videotex ? "A"u8 : default;
+                    }
+                    Range name = (start + 1)..(i + 1);
+                    Require(!active.SequenceEqual(value[name]) && UsesControlSet(value[(i + 1)..], slot));
+                    controlSets[slot] = name;
+                }
+                else
+                {
+                    if (!graphicOnly && start == i && value[i] is >= 0x40 and <= 0x5f)
+                    {
+                        Require(videotex || !value[controlSets[1]].IsEmpty);
+                    }
+                    ReadGraphicEscape(value, start, i, graphicOnly, videotex, widths, sets96, designations, ref left, ref right, ref single);
+                }
             }
             else if (current is 0x0e or 0x0f or 0x8e or 0x8f)
             {
@@ -645,6 +734,7 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
             else if (current is < 0x20 or >= 0x80 and < 0xa0)
             {
                 Require(!graphicOnly && single < 0);
+                Require(current < 0x20 || videotex || !value[controlSets[1]].IsEmpty);
             }
             else
             {
@@ -665,6 +755,20 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
         }
 
         Require(single < 0);
+    }
+
+    private static bool UsesControlSet(ReadOnlySpan<byte> next, int slot)
+    {
+        if (next.IsEmpty)
+        {
+            return false;
+        }
+        if (slot == 0)
+        {
+            return next[0] < 0x20 && next[0] != 0x1b;
+        }
+        // An eight-bit C1 function or its seven-bit ESC Fe representation.
+        return next[0] is >= 0x80 and <= 0x9f || next.Length >= 2 && next[0] == 0x1b && next[1] is >= 0x40 and <= 0x5f;
     }
 
     private static void ReadGraphicEscape(ReadOnlySpan<byte> value, int start, int end, bool graphicOnly, bool videotex,
@@ -705,12 +809,7 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
         {
             slot = intermediates[multibyte ? 1 : 0];
             nameStart = start + (multibyte ? 2 : 1);
-            if (slot is < '(' or > '/' or ',')
-            {
-                // Only types with a control repertoire can designate C0 (!) or C1 (").
-                Require(!graphicOnly && !multibyte && slot is '!' or '"');
-                return;
-            }
+            Require(slot is >= '(' and <= '/' and not ',');
         }
 
         int set = slot & 3;

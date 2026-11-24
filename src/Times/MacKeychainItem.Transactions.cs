@@ -41,11 +41,11 @@ internal sealed partial class MacKeychainItem
             public nint Database;
         }
 
-        public byte[] KeychainPath(IntPtr keychain)
+        public byte[] KeychainPath(IntPtr keychain, string failure = SaveFailed)
         {
             byte[] path = new byte[1024]; // macOS PATH_MAX, including the terminating NUL
             uint length = (uint)path.Length;
-            Check(Report("identify database path", SecKeychainGetPath(keychain, ref length, path)), SaveFailed);
+            Check(Report("identify database path", SecKeychainGetPath(keychain, ref length, path)), failure);
             return path.AsSpan(0, (int)length).ToArray();
         }
 
@@ -80,6 +80,21 @@ internal sealed partial class MacKeychainItem
                     }
                 }
             }
+        }
+
+        public void WithStableRead(IntPtr keychain, Action read)
+        {
+            // FileDL publishes each commit by renaming its temporary file. Pinning
+            // the inode detects even a change back to the original policy between
+            // observations. The descriptor never supplies the password or the ACL.
+            byte[] path = [.. KeychainPath(keychain, MigrationFailed), 0];
+            using SafeFileHandle version = new(OpenProbeDatabase(path), ownsHandle: true);
+            if (version.IsInvalid)
+            {
+                throw new TokenStoreException(MigrationFailed);
+            }
+            read();
+            Check(Report("verify database version", DatabaseAtPath(version, path)), MigrationFailed);
         }
 
         public virtual IFileTransaction BeginTransaction(IntPtr keychain)
@@ -246,7 +261,7 @@ internal sealed partial class MacKeychainItem
             }
         }
 
-        public int CopyAccessSnapshot(IntPtr item, out IntPtr snapshot) =>
+        public virtual int CopyAccessSnapshot(IntPtr item, out IntPtr snapshot) =>
             Report("copy access", CopyPasswordAccess(item, out snapshot));
 
         public int CopyLegacyReadPolicy(IntPtr item, bool writable, out IntPtr snapshot) =>

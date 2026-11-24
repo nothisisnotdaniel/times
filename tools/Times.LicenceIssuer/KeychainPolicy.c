@@ -4,7 +4,6 @@
 #include <Security/Security.h>
 #include <Security/cssmapple.h>
 #include <CommonCrypto/CommonDigest.h>
-#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -249,44 +248,32 @@ static OSStatus checkPassword(SecKeychainItemRef item, const uint8_t *expected, 
 extern OSStatus SecTrustedApplicationCopyRequirement(SecTrustedApplicationRef, SecRequirementRef *)
     __attribute__((weak_import));
 
-static OSStatus checkApplicationSubject(SecTrustedApplicationRef reader, bool requireCaller)
+static OSStatus checkApplicationSubject(SecTrustedApplicationRef reader)
 {
     SecRequirementRef stored = NULL;
     SecCodeRef caller = NULL;
     SecStaticCodeRef code = NULL;
-    CFDataRef path = NULL, actual = NULL, expected = NULL;
-    CFURLRef url = NULL;
+    CFDataRef actual = NULL, expected = NULL;
     CFDictionaryRef info = NULL;
     OSStatus status = errSecAuthFailed;
     if (!SecTrustedApplicationCopyRequirement || SecTrustedApplicationCopyRequirement(reader, &stored) || !stored)
         goto done;
-    if (requireCaller) {
-        if (SecCodeCopySelf(kSecCSDefaultFlags, &caller) ||
-            SecCodeCopyStaticCode(caller, kSecCSDefaultFlags, &code)) goto done;
-    } else {
-        // An already authorized read may belong to a different process. Use the
-        // recorded location only to obtain an independent identity for comparison.
-        if (SecTrustedApplicationCopyData(reader, &path) || !path) goto done;
-        CFIndex length = CFDataGetLength(path);
-        const UInt8 *bytes = CFDataGetBytePtr(path);
-        if (length < 2 || length > PATH_MAX || !bytes || bytes[0] != '/' ||
-            bytes[length - 1] != 0 || memchr(bytes, 0, (size_t)length - 1)) goto done;
-        url = CFURLCreateFromFileSystemRepresentation(NULL, bytes, length - 1, false);
-        if (!url || SecStaticCodeCreateWithPath(url, kSecCSDefaultFlags, &code)) goto done;
-    }
-    // Compare the entire requirement to the OS-derived identity. An executable
-    // can supply a custom designated requirement, including a group requirement.
-    if (!code || SecCodeCopySigningInformation(code, kSecCSRequirementInformation, &info) || !info) goto done;
+    // The ACL's description may be absent, stale or name a special file. The
+    // executing code supplies its own identity for either type of authorized read.
+    if (SecCodeCopySelf(kSecCSDefaultFlags, &caller) || !caller ||
+        SecCodeCopyStaticCode(caller, kSecCSDefaultFlags, &code) || !code ||
+        SecCodeCopySigningInformation(code, kSecCSRequirementInformation, &info) || !info) goto done;
     SecRequirementRef implicit = (SecRequirementRef)CFDictionaryGetValue(info, kSecCodeInfoImplicitDesignatedRequirement);
     if (!implicit || SecRequirementCopyData(implicit, kSecCSDefaultFlags, &expected) ||
         SecRequirementCopyData(stored, kSecCSDefaultFlags, &actual)) goto done;
-    if (expected && actual && CFEqual(expected, actual)) status = errSecSuccess;
+    // Membership in a group does not prove a sole reader. Require the entire
+    // OS-derived identity and validate the running process against that requirement.
+    if (expected && actual && CFEqual(expected, actual))
+        status = SecCodeCheckValidity(caller, kSecCSDefaultFlags, stored);
 done:
     if (actual) CFRelease(actual);
     if (expected) CFRelease(expected);
     if (info) CFRelease(info);
-    if (url) CFRelease(url);
-    if (path) CFRelease(path);
     if (code) CFRelease(code);
     if (caller) CFRelease(caller);
     if (stored) CFRelease(stored);
@@ -319,7 +306,7 @@ static OSStatus checkReaderPolicy(SecAccessRef access, CFArrayRef policy, bool w
     if (!readers || CFArrayGetCount(readers) != 1) goto done;
     SecTrustedApplicationRef reader = (SecTrustedApplicationRef)CFArrayGetValueAtIndex(readers, 0);
     if (CFGetTypeID(reader) != SecTrustedApplicationGetTypeID()) goto done;
-    status = checkApplicationSubject(reader, writable);
+    status = checkApplicationSubject(reader);
 done:
     if (description) CFRelease(description);
     if (readers) CFRelease(readers);

@@ -376,34 +376,51 @@ internal sealed partial class MacKeychainItem
 
             void ReadSelectedItem(IntPtr item)
             {
-                stamp = writable ? native.DataStamp(item) : null;
-                // A denied noninteractive read supplies no bytes. An identifiable unsafe policy
-                // still gets its fixed refusal without prompting or asking for the value again.
-                ReadContent(item, maxBytes, Decode, () => CopyPolicy(item));
+                Check(native.CopyItemKeychain(item, out owner), MigrationFailed);
+                native.WithStableRead(owner, () =>
+                {
+                    Check(native.CopyRecordId(item, out recordId), MigrationFailed);
+                    Check(native.CopyAccessSnapshot(item, out originalPolicy), MigrationFailed);
+                    stamp = writable ? native.DataStamp(item) : null;
+                    ReadContent(item, maxBytes, Decode, () => VerifyReadPolicy(item, legacy: true));
+                });
             }
 
-            void CopyPolicy(IntPtr item)
+            void VerifyReadPolicy(IntPtr item, bool legacy)
             {
-                Check(native.CopyLegacyReadPolicy(item, writable, out originalPolicy), MigrationFailed);
-                if (originalPolicy == IntPtr.Zero)
+                int status = legacy ? native.CopyLegacyReadPolicy(item, writable, out IntPtr policy)
+                    : native.CopyAccessSnapshot(item, out policy);
+                try
                 {
-                    throw new TokenStoreException(MigrationFailed);
+                    Check(status, MigrationFailed);
+                    if (originalPolicy == IntPtr.Zero || policy == IntPtr.Zero || !native.Equal(originalPolicy, policy))
+                    {
+                        throw new TokenStoreException(MigrationFailed);
+                    }
+                }
+                finally
+                {
+                    native.Release(policy);
                 }
             }
 
             void Decode(IntPtr item, ReadOnlySpan<byte> bytes)
             {
                 decoded = decode(bytes);
-                if (CryptographicOperations.FixedTimeEquals(bytes, decoded))
+                bool legacy = !CryptographicOperations.FixedTimeEquals(bytes, decoded);
+                Check(native.FindUnique(owner, service, account, out IntPtr selected), MigrationFailed);
+                try
                 {
-                    return;
+                    VerifyRecordId(selected, recordId);
+                    VerifyReadPolicy(selected, legacy);
+                }
+                finally
+                {
+                    native.Release(selected);
                 }
 
-                CopyPolicy(item);
-                if (writable)
+                if (legacy && writable)
                 {
-                    Check(native.CopyItemKeychain(item, out owner), MigrationFailed);
-                    Check(native.CopyRecordId(item, out recordId), MigrationFailed);
                     Check(native.CopyPersistentReference(item, out persistent), MigrationFailed);
                     expected = bytes.ToArray();
                 }
@@ -497,19 +514,7 @@ internal sealed partial class MacKeychainItem
                 IntPtr before = IntPtr.Zero;
                 try
                 {
-                    Check(native.CopyRecordId(current, out IntPtr currentId), MigrationFailed);
-                    try
-                    {
-                        if (recordId == IntPtr.Zero || currentId == IntPtr.Zero || !native.Equal(recordId, currentId))
-                        {
-                            throw new TokenStoreException(MigrationFailed);
-                        }
-                    }
-                    finally
-                    {
-                        native.Release(currentId);
-                    }
-
+                    VerifyRecordId(current, recordId);
                     Check(native.CopyAccessSnapshot(current, out before), MigrationFailed);
                     if (persistent == IntPtr.Zero || originalPolicy == IntPtr.Zero || before == IntPtr.Zero
                         || !native.Equal(originalPolicy, before))
@@ -554,11 +559,31 @@ internal sealed partial class MacKeychainItem
         }
     }
 
+    private void VerifyRecordId(IntPtr item, IntPtr expectedId)
+    {
+        if (item == IntPtr.Zero || expectedId == IntPtr.Zero)
+        {
+            throw new TokenStoreException(MigrationFailed);
+        }
+        int status = native.CopyRecordId(item, out IntPtr actualId);
+        try
+        {
+            Check(status, MigrationFailed);
+            if (actualId == IntPtr.Zero || !native.Equal(actualId, expectedId))
+            {
+                throw new TokenStoreException(MigrationFailed);
+            }
+        }
+        finally
+        {
+            native.Release(actualId);
+        }
+    }
+
     private void UpdatePreservingAccess(IntPtr owner, string service, string account, IntPtr item, IntPtr persistent,
         IntPtr before, byte[]? originalStamp, byte[] data)
     {
-        IntPtr after = IntPtr.Zero, resolved = IntPtr.Zero;
-        IntPtr unique = IntPtr.Zero, writtenId = IntPtr.Zero, resolvedId = IntPtr.Zero, uniqueId = IntPtr.Zero;
+        IntPtr resolved = IntPtr.Zero, unique = IntPtr.Zero, writtenId = IntPtr.Zero;
         try
         {
             if (originalStamp is null)
@@ -566,40 +591,45 @@ internal sealed partial class MacKeychainItem
                 throw new TokenStoreException(MigrationFailed);
             }
             Check(native.UpdateData(item, data), MigrationFailed);
-            // A persistent reference on its own can resolve any item with the same
-            // primary attributes. Bind both lookups to the provider's actual update.
-            Check(native.ResolvePassword(persistent, owner, service, account, out resolved), MigrationFailed);
-            if (resolved == IntPtr.Zero)
-            {
-                throw new TokenStoreException(MigrationFailed);
-            }
-            Check(native.CopyAccessSnapshot(resolved, out after), MigrationFailed);
-            byte[]? written = native.DataStamp(item, data.Length);
-            byte[]? selected = native.DataStamp(resolved, data.Length);
-            if (after == IntPtr.Zero || written is null || selected is null
-                || written.AsSpan().SequenceEqual(originalStamp) || !written.AsSpan().SequenceEqual(selected))
-            {
-                throw new TokenStoreException(MigrationFailed);
-            }
-            Check(native.CheckAccess(before, after, resolved, data), MigrationFailed);
-            Check(native.FindUnique(owner, service, account, out unique), MigrationFailed);
+            // FileDL may resolve the primary key from its cache while a cursor still
+            // sees the pre-update snapshot. Both observations must prove the staged value.
+            int resolveStatus = native.ResolvePassword(persistent, owner, service, account, out resolved);
+            int searchStatus = native.FindUnique(owner, service, account, out unique);
+            Check(resolveStatus, MigrationFailed);
+            Check(searchStatus, MigrationFailed);
             Check(native.CopyRecordId(item, out writtenId), MigrationFailed);
-            Check(native.CopyRecordId(resolved, out resolvedId), MigrationFailed);
-            Check(native.CopyRecordId(unique, out uniqueId), MigrationFailed);
-            if (writtenId == IntPtr.Zero || resolvedId == IntPtr.Zero || uniqueId == IntPtr.Zero
-                || !native.Equal(writtenId, resolvedId) || !native.Equal(writtenId, uniqueId))
+            byte[]? written = native.DataStamp(item, data.Length);
+            if (written is null || written.AsSpan().SequenceEqual(originalStamp))
             {
                 throw new TokenStoreException(MigrationFailed);
             }
+            VerifyStaged(resolved, written);
+            VerifyStaged(unique, written);
         }
         finally
         {
-            native.Release(uniqueId);
-            native.Release(resolvedId);
             native.Release(writtenId);
             native.Release(unique);
             native.Release(resolved);
-            native.Release(after);
+        }
+
+        void VerifyStaged(IntPtr selected, byte[] written)
+        {
+            VerifyRecordId(selected, writtenId);
+            if (!written.AsSpan().SequenceEqual(native.DataStamp(selected, data.Length)))
+            {
+                throw new TokenStoreException(MigrationFailed);
+            }
+            int status = native.CopyAccessSnapshot(selected, out IntPtr policy);
+            try
+            {
+                Check(status, MigrationFailed);
+                Check(native.CheckAccess(before, policy, selected, data), MigrationFailed);
+            }
+            finally
+            {
+                native.Release(policy);
+            }
         }
     }
 
@@ -791,6 +821,7 @@ internal sealed partial class MacKeychainItem
         public int CopyItemKeychain(IntPtr item, out IntPtr keychain);
         public bool WithSearchList(IntPtr target, Func<IReadOnlyList<IntPtr>, bool> action);
         public void WithoutInteraction(Action action);
+        public void WithStableRead(IntPtr keychain, Action read);
         public IFileTransaction BeginTransaction(IntPtr keychain);
         public int CopyRecordId(IntPtr item, out IntPtr recordId);
         public int CopyPersistentReference(IntPtr item, out IntPtr persistent);
