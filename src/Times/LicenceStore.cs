@@ -925,6 +925,7 @@ internal sealed partial class MacKeychainItem
     {
         public int Find(IntPtr keychain, string service, string account, out IntPtr item, bool createdOnly = false)
         {
+            RecoverPendingSessions(ReadFailed);
             byte[] serviceBytes = Encoding.UTF8.GetBytes(service);
             byte[] accountBytes = Encoding.UTF8.GetBytes(account);
             return createdOnly ? SearchPassword(keychain, serviceBytes, accountBytes, true, out item)
@@ -1036,39 +1037,80 @@ internal sealed partial class MacKeychainItem
             }
 
             // NULL denotes the running application in SecTrustedApplicationCreateFromPath.
-            // The issuer holds the target writer and adds the complete item in one call.
+            // The target writer keeps its public reservation invisible until
+            // the exact destination item has received the caller's DER.
             IntPtr access = MacKeychainItem.CreateAccess(null, description);
+            IntPtr reservation = IntPtr.Zero;
             try
             {
                 if (DatabaseAtPath(database, path) != 0)
                 {
                     return -25294;
                 }
-                int status = Report("provider add", CopyNewPassword(keychain, database, path, access, ref attributes,
-                    data, (uint)data.Length, out item));
+                AttributeList publicFields = attributes;
+                int status = Report("provider add", WithScratchPassword(stackalloc byte[32], stackalloc byte[64],
+                    password => ReservePassword(keychain, database, path, access, ref publicFields,
+                        password, (uint)password.Length, out reservation)));
                 if (status != 0)
                 {
                     return status;
                 }
-                status = CopyItemKeychain(item, out IntPtr owner);
-                bool inTarget = status == 0 && owner != IntPtr.Zero && Equal(owner, keychain) && DatabaseAtPath(database, path) == 0;
-                Release(owner);
-                if (inTarget)
+                status = CopyItemKeychain(reservation, out IntPtr owner);
+                try
                 {
-                    return 0;
+                    if (status != 0 || owner == IntPtr.Zero || !Equal(owner, keychain) || DatabaseAtPath(database, path) != 0)
+                    {
+                        return -25294;
+                    }
                 }
-                Release(item);
-                item = IntPtr.Zero;
-                return -25294;
+                finally
+                {
+                    ReleaseIfSet(owner);
+                }
+                status = UpdateData(reservation, data);
+                if (status != 0 || DatabaseAtPath(database, path) != 0)
+                {
+                    return status == 0 ? -25294 : status;
+                }
+                item = reservation;
+                reservation = IntPtr.Zero;
+                return 0;
             }
             finally
             {
+                ReleaseIfSet(reservation);
                 ReleaseIfSet(access);
             }
         }
 
         private static string CanonicalPath(string path) =>
             File.ResolveLinkTarget(path, returnFinalTarget: true)?.FullName ?? Path.GetFullPath(path);
+
+        internal delegate int ScratchKeychainOperation(ReadOnlySpan<byte> password);
+
+        internal static int WithScratchPassword(Span<byte> entropy, Span<byte> password, ScratchKeychainOperation operation)
+        {
+            try
+            {
+                if (entropy.Length != 32 || password.Length != 2 * entropy.Length)
+                {
+                    return -50;
+                }
+                ReadOnlySpan<byte> digits = "0123456789abcdef"u8;
+                RandomNumberGenerator.Fill(entropy);
+                for (int i = 0; i < entropy.Length; ++i)
+                {
+                    password[2 * i] = digits[entropy[i] >> 4];
+                    password[2 * i + 1] = digits[entropy[i] & 15];
+                }
+                return operation(password);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(entropy);
+                CryptographicOperations.ZeroMemory(password);
+            }
+        }
 
         public int CreateFromContent(uint itemClass, ref AttributeList attributes, byte[] data, IntPtr keychain,
             IntPtr access, out IntPtr item) =>
@@ -1096,9 +1138,9 @@ internal sealed partial class MacKeychainItem
     [LibraryImport("TimesIssuerKeychain", EntryPoint = "TimesCheckPasswordDatabase")]
     private static partial int CheckPasswordDatabase(IntPtr keychain);
 
-    [LibraryImport("TimesIssuerKeychain", EntryPoint = "TimesCopyNewPassword")]
-    private static partial int CopyNewPassword(IntPtr target, Microsoft.Win32.SafeHandles.SafeFileHandle database,
-        byte[] path, IntPtr access, ref AttributeList attributes, ReadOnlySpan<byte> data, uint length, out IntPtr item);
+    [LibraryImport("TimesIssuerKeychain", EntryPoint = "TimesReservePassword")]
+    private static partial int ReservePassword(IntPtr target, Microsoft.Win32.SafeHandles.SafeFileHandle database,
+        byte[] path, IntPtr access, ref AttributeList attributes, ReadOnlySpan<byte> password, uint passwordLength, out IntPtr item);
 
     [LibraryImport(Security)]
     private static partial int SecKeychainCopySearchList(out IntPtr list);

@@ -69,7 +69,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         Assert.Equal(key.ExportSubjectPublicKeyInfoPem() + output.NewLine, output.ToString());
         Assert.Empty(error.ToString());
         Assert.Equal(1, native.Creates);
-        Assert.Equal(0, native.Updates);
+        Assert.Equal(1, native.Updates);
         Assert.Equal(0, native.Deletes);
         AssertCleared(native.CreateBuffer!);
     }
@@ -176,7 +176,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         created.ImportPkcs8PrivateKey(only.Data, out _);
         Assert.Equal(created.ExportSubjectPublicKeyInfoPem() + winner.NewLine, winner.ToString());
         Assert.Equal(1, native.Creates);
-        Assert.Equal(0, native.Updates);
+        Assert.Equal(1, native.Updates);
         Assert.Equal(0, native.Deletes);
         Assert.Equal([5, 4, 4, 5], native.LockOrder);
     }
@@ -234,10 +234,11 @@ public sealed class SigningKeyStoreTests : IDisposable
     {
         native.DefaultNotSearched = true;
         Assert.Equal(0, Run(store, "create-key", "--kid", Kid));
+        int setupUpdates = native.Updates;
         LicencePublicKeys original = LicencePublicKeys.FromTable([(Kid, output.ToString().Trim())]);
         Assert.Equal(0, Issue(store));
         Assert.True(LicenceKey.TryVerify(output.ToString().Trim(), original, LicenceRevocations.None).IsValid);
-        Assert.Equal(0, native.Updates);
+        Assert.Equal(setupUpdates, native.Updates);
     }
 
     [Fact]
@@ -793,6 +794,12 @@ public sealed class SigningKeyStoreTests : IDisposable
         public bool RefuseUpdate { get; set; }
         public Action<Item>? AfterUpdate { get; set; }
         public bool RefuseCommit { get; set; }
+        public int RollbackFailures { get; set; }
+        public int RestoreFailures { get; set; }
+        public int RollbackAttempts { get; private set; }
+        public int RestoreAttempts { get; private set; }
+        public bool RecoveryPending => pending.Count != 0;
+        private readonly Dictionary<IntPtr, MacKeychainItem.NativeCalls.FileTransaction> pending = [];
         public bool DestinationUnavailable { get; set; }
         public Func<int>? SecondaryReply { get; set; }
         public Action<IntPtr>? BeforeDestinationInsert { get; set; }
@@ -819,6 +826,7 @@ public sealed class SigningKeyStoreTests : IDisposable
 
         public int Find(IntPtr keychain, string service, string account, out IntPtr item, bool createdOnly = false)
         {
+            RecoverPendingSessions();
             Assert.Equal(Service, service);
             Assert.Equal(Kid, account);
             Assert.True(keychain == IntPtr.Zero || keychain == DefaultKeychain || keychain == OtherKeychain);
@@ -1018,6 +1026,7 @@ public sealed class SigningKeyStoreTests : IDisposable
             InteractionAllowed = false;
             try
             {
+                RecoverPendingSessions();
                 action();
             }
             finally
@@ -1049,6 +1058,7 @@ public sealed class SigningKeyStoreTests : IDisposable
 
         public MacKeychainItem.IFileTransaction BeginTransaction(IntPtr keychain)
         {
+            Recover(keychain);
             if (keychain == OtherKeychain)
             {
                 BeforeOtherLock?.Invoke();
@@ -1059,17 +1069,36 @@ public sealed class SigningKeyStoreTests : IDisposable
             scheduled?.Invoke();
             Assert.True(locked.Add(keychain));
             LockOrder.Add((int)keychain);
-            return new Transaction(this, keychain);
+            return new Transaction(this, keychain).Begin();
         }
 
-        private sealed class Transaction : MacKeychainItem.IFileTransaction
+        private void Recover(IntPtr owner)
+        {
+            if (pending.TryGetValue(owner, out MacKeychainItem.NativeCalls.FileTransaction? cleanup))
+            {
+                if (cleanup.FinishCleanup() != 0)
+                {
+                    throw new TokenStoreException(MacKeychainItem.MigrationFailed);
+                }
+                pending.Remove(owner);
+            }
+        }
+
+        private void RecoverPendingSessions()
+        {
+            foreach (IntPtr owner in pending.Keys.ToArray())
+            {
+                Recover(owner);
+            }
+        }
+
+        private sealed class Transaction
         {
             private readonly FakeKeychain db;
             private readonly IntPtr owner;
             private readonly Item? before;
             private readonly byte[]? beforeData;
             private readonly string? beforePartition;
-            private bool committed;
 
             public Transaction(FakeKeychain db, IntPtr owner)
             {
@@ -1080,7 +1109,11 @@ public sealed class SigningKeyStoreTests : IDisposable
                 beforePartition = before?.Partition;
             }
 
-            public void Commit()
+            public MacKeychainItem.IFileTransaction Begin() =>
+                new MacKeychainItem.NativeCalls.FileTransaction(Commit, Rollback, Restore,
+                    cleanup => db.pending.Add(owner, cleanup), null);
+
+            private int Commit()
             {
                 if (db.creating)
                 {
@@ -1092,25 +1125,39 @@ public sealed class SigningKeyStoreTests : IDisposable
 
                 if (db.RefuseCommit)
                 {
-                    throw new TokenStoreException("Commit failed");
+                    return -1;
                 }
 
-                committed = true;
+                return 0;
             }
 
-            public void Dispose()
+            private int Rollback()
             {
-                if (!committed)
+                db.RollbackAttempts++;
+                if (owner == DefaultKeychain && db.RollbackFailures > 0)
                 {
-                    db.SetItem(owner, before);
-                    if (before is not null)
-                    {
-                        before.Data = beforeData!;
-                        before.Partition = beforePartition!;
-                    }
+                    db.RollbackFailures--;
+                    return -1;
                 }
+                db.SetItem(owner, before);
+                if (before is not null)
+                {
+                    before.Data = beforeData!;
+                    before.Partition = beforePartition!;
+                }
+                return 0;
+            }
 
+            private int Restore()
+            {
+                db.RestoreAttempts++;
+                if (owner == DefaultKeychain && db.RestoreFailures > 0)
+                {
+                    db.RestoreFailures--;
+                    return -1;
+                }
                 Assert.True(db.locked.Remove(owner));
+                return 0;
             }
         }
 
@@ -1185,6 +1232,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         {
             Assert.Equal(Service, description);
             Assert.Contains(keychain, locked);
+            CreateBuffer = data;
             BeforeDestinationInsert?.Invoke(keychain);
             if (DestinationUnavailable)
             {
@@ -1204,7 +1252,6 @@ public sealed class SigningKeyStoreTests : IDisposable
             Assert.Equal(Kid, values[0x61636374]);
             Assert.Equal(Service, values[0x6c61626c]);
             Creates++;
-            CreateBuffer = data;
             if (GetItem(keychain) is not null)
             {
                 item = IntPtr.Zero;
@@ -1212,9 +1259,16 @@ public sealed class SigningKeyStoreTests : IDisposable
             }
 
             Assert.Equal("Times.LicenceIssuer/create-key/v1", values[0x67656e61]);
-            Item created = new Item(data, [creatorPath]) { IssuerCreated = true };
+            Item created = new Item([0], [creatorPath]) { IssuerCreated = true };
             SetItem(keychain, created);
             item = Retain(created, keychain);
+            int status = UpdateData(item, data);
+            if (status != 0)
+            {
+                Release(item);
+                item = IntPtr.Zero;
+                return status;
+            }
             creating = true;
             return 0;
         }

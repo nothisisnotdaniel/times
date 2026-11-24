@@ -168,6 +168,7 @@ public sealed partial class MacKeychainMigrationTests
 
         SigningKeyStoreTests.Item duplicate = new(later.ExportPkcs8PrivateKey(), ["higher-priority reader"]);
         fixture.Calls.OtherStored = duplicate;
+        int setupUpdates = fixture.Calls.Updates;
         // A fresh issuer process has no in-memory record of the earlier create.
         MacKeychainSigningKeyStore reopened = new(fixture.Apphost, new MacKeychainItem(fixture.Calls));
         LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, pem)]);
@@ -175,7 +176,7 @@ public sealed partial class MacKeychainMigrationTests
         AssertIssued(reopened, fixture.Ledger, original);
         Assert.Same(duplicate, fixture.Calls.OtherStored);
         Assert.Equal(["higher-priority reader"], duplicate.TrustedPaths);
-        Assert.Equal(0, fixture.Calls.Updates);
+        Assert.Equal(setupUpdates, fixture.Calls.Updates);
     }
 
     [Theory]
@@ -359,6 +360,185 @@ public sealed partial class MacKeychainMigrationTests
             CryptographicOperations.ZeroMemory(legacy);
             CryptographicOperations.ZeroMemory(der);
         }
+    }
+
+    [Fact]
+    public void Issue_RollbackError_RetriesRollbackBeforeRestoringAutocommit()
+    {
+        using PortableFixture fixture = new();
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] der = key.ExportPkcs8PrivateKey();
+        byte[] legacy = EncodeLegacy(der);
+        try
+        {
+            SigningKeyStoreTests.Item item = new(legacy, [fixture.Apphost]);
+            fixture.Calls.Stored = item;
+            fixture.Calls.RefuseCommit = true;
+            fixture.Calls.RollbackFailures = 1;
+            File.WriteAllBytes(fixture.Ledger, [1, 2, 3]);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            Assert.Equal(1, RunIssue(fixture.Store, fixture.Ledger, output, error));
+            Assert.Equal(MigrationFailed + error.NewLine, error.ToString());
+            Assert.Empty(output.ToString());
+            Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(fixture.Ledger));
+            Assert.Same(item, fixture.Calls.Stored);
+            Assert.True(CryptographicOperations.FixedTimeEquals(legacy, item.Data));
+            Assert.Equal([fixture.Apphost], item.TrustedPaths);
+            Assert.Equal(SigningKeyStoreTests.Item.OriginalPartition, item.Partition);
+            Assert.Equal(2, fixture.Calls.RollbackAttempts);
+            Assert.Equal(1, fixture.Calls.RestoreAttempts);
+            Assert.False(fixture.Calls.RecoveryPending);
+            Assert.Equal(0, fixture.Calls.VerifiedRollbacks);
+
+            fixture.Calls.RefuseCommit = false;
+            LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]);
+            AssertIssued(fixture.Store, fixture.Ledger, original);
+            AssertIssued(fixture.Store, fixture.Ledger, original);
+            Assert.True(CryptographicOperations.FixedTimeEquals(der, item.Data));
+            Assert.Equal(2, fixture.Calls.Updates);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(legacy);
+            CryptographicOperations.ZeroMemory(der);
+        }
+    }
+
+    [Fact]
+    public void Issue_CommittedMigrationSurvivesCleanupErrorAndRecoversBeforeNextRead()
+    {
+        using PortableFixture fixture = new();
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] der = key.ExportPkcs8PrivateKey();
+        byte[] legacy = EncodeLegacy(der);
+        try
+        {
+            SigningKeyStoreTests.Item item = new(legacy, [fixture.Apphost]);
+            fixture.Calls.Stored = item;
+            fixture.Calls.RestoreFailures = 2;
+            LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]);
+            AssertIssued(fixture.Store, fixture.Ledger, original);
+            Assert.True(fixture.Calls.RecoveryPending);
+            Assert.Equal(2, fixture.Calls.RestoreAttempts);
+            Assert.Same(item, fixture.Calls.Stored);
+            Assert.True(CryptographicOperations.FixedTimeEquals(der, item.Data));
+            Assert.Equal([fixture.Apphost], item.TrustedPaths);
+            Assert.Equal(SigningKeyStoreTests.Item.OriginalPartition, item.Partition);
+            AssertIssued(fixture.Store, fixture.Ledger, original);
+            Assert.False(fixture.Calls.RecoveryPending);
+            Assert.Equal(3, fixture.Calls.RestoreAttempts);
+            Assert.Equal(0, fixture.Calls.RollbackAttempts);
+            Assert.Equal(1, fixture.Calls.Updates);
+            Assert.Equal(2, File.ReadAllLines(fixture.Ledger).Length);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(legacy);
+            CryptographicOperations.ZeroMemory(der);
+        }
+    }
+
+    [Fact]
+    public void CreateKey_CommittedInsertStillReturnsItsPublicKeyAfterCleanupError()
+    {
+        using PortableFixture fixture = new();
+        fixture.Calls.RestoreFailures = 2;
+        using StringWriter output = new();
+        using StringWriter error = new();
+        Assert.Equal(0, fixture.Create(output, error));
+        Assert.Empty(error.ToString());
+        SigningKeyStoreTests.Item item = Assert.IsType<SigningKeyStoreTests.Item>(fixture.Calls.Stored);
+        using ECDsa key = ECDsa.Create();
+        key.ImportPkcs8PrivateKey(item.Data, out int consumed);
+        Assert.Equal(item.Data.Length, consumed);
+        Assert.Equal(key.ExportSubjectPublicKeyInfoPem() + output.NewLine, output.ToString());
+        Assert.Equal([fixture.Apphost], item.TrustedPaths);
+        Assert.True(fixture.Calls.RecoveryPending);
+        Assert.False(Assert.IsType<byte[]>(fixture.Calls.CreateBuffer).AsSpan().ContainsAnyExcept((byte)0));
+        AssertIssued(fixture.Store, fixture.Ledger, LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]));
+        Assert.False(fixture.Calls.RecoveryPending);
+        Assert.Same(item, fixture.Calls.Stored);
+        Assert.Equal(1, fixture.Calls.Creates);
+        Assert.Equal(1, fixture.Calls.Updates);
+        Assert.Equal(0, fixture.Calls.Deletes);
+    }
+
+    [Fact]
+    public void CreateKey_PendingRollbackIsRecoveredBeforeAnExistenceCheck()
+    {
+        using PortableFixture fixture = new();
+        fixture.Calls.RefuseCommit = true;
+        fixture.Calls.RollbackFailures = 2;
+        using StringWriter output = new();
+        using StringWriter error = new();
+        Assert.Equal(1, fixture.Create(output, error));
+        Assert.Equal("The item could not be saved in the macOS Keychain." + error.NewLine, error.ToString());
+        Assert.Empty(output.ToString());
+        Assert.True(fixture.Calls.RecoveryPending);
+        Assert.False(Assert.IsType<byte[]>(fixture.Calls.CreateBuffer).AsSpan().ContainsAnyExcept((byte)0));
+        fixture.Calls.RefuseCommit = false;
+        Assert.False(fixture.Store.Exists(Account));
+        Assert.False(fixture.Calls.RecoveryPending);
+        Assert.Null(fixture.Calls.Stored);
+        Assert.Null(fixture.Calls.OtherStored);
+        error.GetStringBuilder().Clear();
+        Assert.Equal(0, fixture.Create(output, error));
+        Assert.Empty(error.ToString());
+        AssertIssued(fixture.Store, fixture.Ledger, LicencePublicKeys.FromTable([(Account, output.ToString().Trim())]));
+    }
+
+    [Fact]
+    public void CreateKey_RefusedDestinationSetterRollsBackThePublicReservationAndClearsTheInput()
+    {
+        using PortableFixture fixture = new();
+        fixture.Calls.RefuseUpdate = true;
+        using StringWriter output = new();
+        using StringWriter error = new();
+        Assert.Equal(1, fixture.Create(output, error));
+        Assert.Equal("The item could not be saved in the macOS Keychain." + error.NewLine, error.ToString());
+        Assert.Empty(output.ToString());
+        Assert.Null(fixture.Calls.Stored);
+        Assert.Null(fixture.Calls.OtherStored);
+        Assert.False(File.Exists(fixture.Ledger));
+        Assert.Equal(1, fixture.Calls.Creates);
+        Assert.Equal(1, fixture.Calls.Updates);
+        Assert.Equal(0, fixture.Calls.Deletes);
+        Assert.Same(fixture.Calls.CreateBuffer, fixture.Calls.UpdateBuffer);
+        Assert.False(Assert.IsType<byte[]>(fixture.Calls.CreateBuffer).AsSpan().ContainsAnyExcept((byte)0));
+        fixture.Calls.AssertReleased();
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-25294)]
+    public void CreationPassword_IsAsciiHexAndClearedAfterTheProviderReturns(int result)
+    {
+        byte[] entropy = new byte[32];
+        byte[] password = new byte[64];
+        bool consumed = false;
+        int status = MacKeychainItem.NativeCalls.WithScratchPassword(entropy, password, encoded =>
+        {
+            Assert.Equal(64, encoded.Length);
+            Span<byte> decoded = stackalloc byte[32];
+            try
+            {
+                Assert.Equal(OperationStatus.Done, Convert.FromHexString(encoded, decoded, out int read, out int written));
+                Assert.Equal(encoded.Length, read);
+                Assert.Equal(decoded.Length, written);
+                Assert.True(CryptographicOperations.FixedTimeEquals(entropy, decoded));
+                consumed = true;
+                return result;
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(decoded);
+            }
+        });
+        Assert.Equal(result, status);
+        Assert.True(consumed);
+        Assert.False(entropy.AsSpan().ContainsAnyExcept((byte)0));
+        Assert.False(password.AsSpan().ContainsAnyExcept((byte)0));
     }
 
     [Fact]
@@ -787,42 +967,43 @@ public sealed partial class MacKeychainMigrationTests
         using PortableFixture fixture = new();
         TaskCompletionSource validating = new(TaskCreationOptions.RunContinuationsAsynchronously);
         SettableTimeProvider time = new(DateTimeOffset.UnixEpoch);
-        using ManualResetEventSlim release = new();
-        TaskCompletionSource finished = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        bool resumed = false;
-        fixture.Calls.SecondaryReply = () => MacKeychainItem.NativeCalls.BoundedProbe(cancel =>
+        StalledImageCheck children = new();
+        fixture.Calls.SecondaryReply = () => MacKeychainItem.NativeCalls.BoundedProbe(_ => children, (probe, cancel) =>
         {
-            try
+            using CancellationTokenRegistration stop = cancel.Register(probe.Stop);
+            return MacKeychainItem.NativeCalls.AuthenticatedReply(() =>
             {
-                return MacKeychainItem.NativeCalls.AuthenticatedReply(() =>
-                {
-                    validating.SetResult();
-                    Assert.True(release.Wait(FixtureTimeout));
-                    return true;
-                }, () =>
-                {
-                    resumed = true;
-                    return 41;
-                }, cancel);
-            }
-            finally
+                validating.SetResult();
+                Assert.True(probe.Stopped.Wait(FixtureTimeout));
+                return false;
+            }, () =>
             {
-                finished.TrySetResult();
-            }
+                probe.Resumed = true;
+                return 41;
+            }, cancel);
         }, MacKeychainItem.NativeCalls.ProbeTimeout, time);
         Task creation = Task.Run(() => AssertCreationRefused(fixture));
-        try
+        await validating.Task.WaitAsync(FixtureTimeout);
+        time.WaitForTimer(1, FixtureTimeout).Fire();
+        await creation.WaitAsync(FixtureTimeout);
+        Assert.True(children.Reaped);
+        Assert.False(children.Resumed);
+    }
+
+    private sealed class StalledImageCheck : IDisposable
+    {
+        public ManualResetEventSlim Stopped { get; } = new();
+        public bool Resumed { get; set; }
+        public bool Reaped { get; private set; }
+
+        public void Stop() => Stopped.Set();
+
+        public void Dispose()
         {
-            await validating.Task.WaitAsync(FixtureTimeout);
-            time.WaitForTimer(1, FixtureTimeout).Fire();
-            await creation.WaitAsync(FixtureTimeout);
+            Assert.True(Stopped.IsSet);
+            Stopped.Dispose();
+            Reaped = true;
         }
-        finally
-        {
-            release.Set();
-            await Task.WhenAll(creation, finished.Task).WaitAsync(ChildCleanupTimeout);
-        }
-        Assert.False(resumed);
     }
 
     private static void AssertLostDestinationAtInsertion()
@@ -838,6 +1019,7 @@ public sealed partial class MacKeychainMigrationTests
         };
         AssertCreationRefused(fixture);
         Assert.True(reached);
+        Assert.False(Assert.IsType<byte[]>(fixture.Calls.CreateBuffer).AsSpan().ContainsAnyExcept((byte)0));
     }
 
     private static void AssertCreationRefused(PortableFixture fixture)
@@ -1021,6 +1203,18 @@ public sealed partial class MacKeychainMigrationTests
                 General(false, 0x1b, 0x2d, 0x46, 0xd3, 0x0e, 0x0f, 0x41);
                 General(true, 0x1b, 0x2d, 0x46, 0x0e, 0x53, 0x0f, 0x41);
                 General(true, 0x1b, 0x2d, 0x46, 0xd3); // ISO-IR 126 capital sigma.
+                General(true, 0x1b, 0x2d, 0x43, 0xa1); // ISO-IR 109 capital H with stroke.
+                General(true, 0x1b, 0x2d, 0x43, 0x0e, 0x21);
+                foreach (byte reserved in new byte[] { 0xa5, 0xae, 0xbe, 0xc3, 0xd0, 0xe3, 0xf0 })
+                {
+                    General(false, 0x1b, 0x2d, 0x43, reserved);
+                    General(false, 0x1b, 0x2d, 0x43, 0x0e, (byte)(reserved & 0x7f));
+                }
+                General(true, 0x1b, 0x28, 0x49, 0x5f); // Last assigned JIS X 0201 kana cell.
+                General(false, 0x1b, 0x28, 0x49, 0x60);
+                General(false, 0x1b, 0x24, 0x42, 0x29, 0x21); // Unassigned JIS X 0208 row.
+                General(true, 0x1b, 0x24, 0x28, 0x46, 0x21, 0x30); // Blissymbol ordinal zero.
+                General(false, 0x1b, 0x24, 0x28, 0x46, 0x21, 0x2f);
                 General(true, 0x1b, 0x2d, 0x47, 0xac); // ISO-IR 127 Arabic comma.
                 General(false, 0x1b, 0x2d, 0x47, 0xa1);
                 General(true, 0x1b, 0x2d, 0x47, 0x0e, 0x2c);

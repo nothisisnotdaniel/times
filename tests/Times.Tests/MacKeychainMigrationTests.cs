@@ -514,9 +514,8 @@ public sealed partial class MacKeychainMigrationTests
         public VerifierObservation(bool knownImage, Action<string, int> report) : base(false, report) =>
             this.knownImage = knownImage;
 
-        internal override bool IsVerifierImage(int pid)
+        internal override bool AcceptVerifierImage(bool verified)
         {
-            bool verified = base.IsVerifierImage(pid);
             if (verified)
             {
                 AuthenticatedChildren++;
@@ -540,7 +539,25 @@ public sealed partial class MacKeychainMigrationTests
             Assert.True(MacKeychainItem.Default.AddWithSearchList(target.Reference, [secondary.Reference],
                 Service, Account, data, Environment.ProcessPath!));
             target.AssertData(data);
-            Assert.True(MacKeychainItem.Default.Exists(target.Reference, Service, Account));
+            MacKeychainItem.NativeCalls calls = new();
+            Assert.Equal(0, calls.FindUnique(target.Reference, Service, Account, out IntPtr created));
+            try
+            {
+                int status = calls.CopyLegacyReadPolicy(created, writable: true, out IntPtr access);
+                try
+                {
+                    Assert.Equal(0, status);
+                    Assert.NotEqual(IntPtr.Zero, access);
+                }
+                finally
+                {
+                    calls.Release(access);
+                }
+            }
+            finally
+            {
+                calls.Release(created);
+            }
             Assert.Empty(Directory.GetDirectories(target.Directory, ".times-create.*"));
             Assert.True(Directory.GetFiles(secondary.Directory, ".fl*").Length == 1, "The lookup did not leave one lock file.");
             Assert.True(BusyLockFiles(target.Directory).Length == 0, "The target lock is still held.");

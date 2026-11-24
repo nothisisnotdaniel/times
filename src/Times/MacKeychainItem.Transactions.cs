@@ -70,6 +70,7 @@ internal sealed partial class MacKeychainItem
                 }
                 try
                 {
+                    RecoverPendingSessions(MigrationFailed);
                     action();
                 }
                 finally
@@ -84,6 +85,7 @@ internal sealed partial class MacKeychainItem
 
         public void WithStableRead(IntPtr keychain, Action read)
         {
+            RecoverSession(keychain);
             // FileDL publishes each commit by renaming its temporary file. Pinning
             // the inode detects even a change back to the original policy between
             // observations. The descriptor never supplies the password or the ACL.
@@ -109,39 +111,81 @@ internal sealed partial class MacKeychainItem
             return Report("verify committed item", result == ProbeFound ? 0 : -25293);
         }
 
-        // The worker owns only metadata, file descriptors and its suspended child.
-        // The caller's deadline includes opening the file, spawn, live validation and exit.
         private int RunMetadataProbe(byte[] path, string service, string account, byte[]? digest)
         {
-            return BoundedProbe(cancel =>
+            return BoundedProbe(Launch, (children, cancel) =>
+            {
+                using CancellationTokenRegistration stop = cancel.Register(children.Stop);
+                byte[] message = digest ?? [1];
+                return AuthenticatedReply(() => AcceptVerifierImage(WaitVerifier(children.Validator) == 0),
+                    () => ResumeVerifier(children.Reader, children.Request, message, message.Length), cancel);
+            }, ProbeTimeout);
+
+            VerifierChildren? Launch(CancellationToken cancel)
             {
                 string databasePath = KeychainFilename(path);
                 using SafeFileHandle database = new(OpenProbeDatabase([.. path, 0]), ownsHandle: true);
                 if (database.IsInvalid || cancel.IsCancellationRequested)
                 {
-                    return 1;
+                    return null;
                 }
                 string executable = Path.Combine(AppContext.BaseDirectory, "TimesKeychainView");
                 if (StartVerifier(executable, databasePath, service, account, digest is null ? 1 : 0, database,
                     out int pid, out int request) != 0)
                 {
-                    return 1;
+                    return null;
                 }
+                // Until ownership is handed back, a timeout may stop the reader
+                // even if spawning the system signature checker has stalled.
+                bool transferred = false;
                 try
                 {
                     using CancellationTokenRegistration stop = cancel.Register(() => StopVerifier(pid));
-                    byte[] message = digest ?? [1];
-                    return AuthenticatedReply(() => IsVerifierImage(pid),
-                        () => ResumeVerifier(pid, request, message, message.Length), cancel);
+                    if (cancel.IsCancellationRequested || StartImageCheck(pid, out int validator) != 0)
+                    {
+                        return null;
+                    }
+                    transferred = true;
+                    return new VerifierChildren(pid, request, validator);
                 }
                 finally
                 {
-                    ReleaseVerifier(pid, request);
+                    if (!transferred)
+                    {
+                        ReleaseVerifier(pid, request);
+                    }
                 }
-            }, ProbeTimeout);
+            }
         }
 
-        internal virtual bool IsVerifierImage(int pid) => CheckVerifierImage(pid) == 0;
+        internal virtual bool AcceptVerifierImage(bool verified) => verified;
+
+        private sealed class VerifierChildren : IDisposable
+        {
+            public int Reader { get; }
+            public int Request { get; }
+            public int Validator { get; }
+
+            public VerifierChildren(int reader, int request, int validator)
+            {
+                Reader = reader;
+                Request = request;
+                Validator = validator;
+            }
+
+            public void Stop()
+            {
+                StopVerifier(Validator);
+                StopVerifier(Reader);
+            }
+
+            public void Dispose()
+            {
+                Stop();
+                ReleaseVerifier(Validator, -1);
+                ReleaseVerifier(Reader, Request);
+            }
+        }
 
         internal static int AuthenticatedReply(Func<bool> verifySuspendedImage, Func<int> resumeAndRead,
             CancellationToken cancel)
@@ -153,33 +197,65 @@ internal sealed partial class MacKeychainItem
             return resumeAndRead();
         }
 
-        internal static int BoundedProbe(Func<CancellationToken, int> check, TimeSpan timeout, TimeProvider? time = null)
+        internal static int BoundedProbe<T>(Func<CancellationToken, T?> launch, Func<T, CancellationToken, int> check,
+            TimeSpan timeout, TimeProvider? time = null) where T : class, IDisposable
         {
-            using CancellationTokenSource deadline = new();
+            using CancellationTokenSource deadline = new(timeout, time ?? TimeProvider.System);
             CancellationToken token = deadline.Token;
-            Task<int> worker = Task.Run(() => check(token));
+            Task<T?> preparing = Task.Run(() => launch(token), token);
             try
             {
-                return worker.WaitAsync(timeout, time ?? TimeProvider.System).GetAwaiter().GetResult();
+                using T? children = TakeOwnership();
+                if (children is null || token.IsCancellationRequested)
+                {
+                    return 1;
+                }
+                // Validation and the reply run in killable child processes. The
+                // caller reaps both and closes the socket before returning.
+                int result = check(children, token);
+                return token.IsCancellationRequested ? 1 : result;
             }
-            catch (Exception ex) when (ex is TimeoutException or IOException or Win32Exception or DecoderFallbackException
+            catch (Exception ex) when (ex is IOException or Win32Exception or DecoderFallbackException
                 or TokenStoreException or InvalidOperationException or UnauthorizedAccessException
                 or TypeLoadException or BadImageFormatException)
             {
                 return 1;
             }
-            finally
+
+            T? TakeOwnership()
             {
-                deadline.Cancel();
+                try
+                {
+                    return preparing.WaitAsync(token).GetAwaiter().GetResult();
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    // If launch finishes late, dispose its suspended child and
+                    // validator. Only the caller can resume an authenticated child.
+                    _ = preparing.ContinueWith(task =>
+                    {
+                        if (task.IsCompletedSuccessfully)
+                        {
+                            task.Result?.Dispose();
+                        }
+                        else
+                        {
+                            _ = task.Exception;
+                        }
+                    }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                    return null;
+                }
             }
         }
 
         public virtual IFileTransaction BeginTransaction(IntPtr keychain)
         {
+            RecoverSession(keychain);
             SafeFileHandle? guard = OpenLocalLock(KeychainPath(keychain), lookup: false);
             try
             {
-                return new FileTransaction(FileDatabase(keychain), guard, this);
+                DatabaseHandle fileDb = FileDatabase(keychain);
+                return StartFileTransaction(fileDb, guard, cleanup => HoldForRecovery(keychain, cleanup));
             }
             catch
             {
@@ -283,58 +359,129 @@ internal sealed partial class MacKeychainItem
             }
         }
 
-        // Security.framework's nested password operations leave the commit to the caller
-        // when autocommit is off. Unmodified databases only release their file lock.
-        private sealed class FileTransaction : IFileTransaction
+        // A FileDL handle is borrowed from Security.framework. Keep its owner
+        // alive when cleanup fails, and finish only our own outstanding transaction
+        // before another issuer can read or write through this session.
+        private static readonly Dictionary<IntPtr, FileTransaction> PendingCleanup = [];
+
+        private static void HoldForRecovery(IntPtr keychain, FileTransaction transaction)
         {
-            private readonly DatabaseHandle fileDb;
-            private readonly SafeFileHandle? guard;
-            private readonly NativeCalls calls;
+            lock (PendingCleanup)
+            {
+                PendingCleanup.Add(CFRetain(keychain), transaction);
+            }
+        }
+
+        private static void RecoverSession(IntPtr keychain, string failure = SaveFailed)
+        {
+            lock (PendingCleanup)
+            {
+                if (PendingCleanup.TryGetValue(keychain, out FileTransaction? pending))
+                {
+                    Check(pending.FinishCleanup(), failure);
+                    PendingCleanup.Remove(keychain);
+                    CFRelease(keychain);
+                }
+            }
+        }
+
+        private static void RecoverPendingSessions(string failure)
+        {
+            lock (PendingCleanup)
+            {
+                foreach (IntPtr owner in PendingCleanup.Keys.ToArray())
+                {
+                    RecoverSession(owner, failure);
+                }
+            }
+        }
+
+        private unsafe FileTransaction StartFileTransaction(DatabaseHandle fileDb, SafeFileHandle? guard,
+            Action<FileTransaction> hold)
+        {
+            nint wasAutocommit = 0;
+            Check(Report("disable autocommit", CSSM_DL_PassThrough(fileDb, ToggleAutocommit, 0,
+                (IntPtr)(&wasAutocommit))), SaveFailed);
+            if (wasAutocommit == 0)
+            {
+                throw new TokenStoreException(SaveFailed);
+            }
+            FileTransaction transaction = new(
+                () => Report("commit database", CSSM_DL_PassThrough(fileDb, CommitDatabase, 0, 0)),
+                () => Report("rollback database", CSSM_DL_PassThrough(fileDb, Rollback, 0, 0)),
+                () => Report("restore autocommit", CSSM_DL_PassThrough(fileDb, ToggleAutocommit, 1, 0)), hold, guard);
+            try
+            {
+                Check(Report("lock database", CSSM_DL_PassThrough(fileDb, TakeFileLock, 0, 0)), SaveFailed);
+                if (guard is not null)
+                {
+                    Check(Report("verify writer lock", CheckWriterLock(guard)), SaveFailed);
+                }
+                return transaction;
+            }
+            catch
+            {
+                transaction.Dispose();
+                throw;
+            }
+        }
+
+        internal sealed class FileTransaction : IFileTransaction
+        {
+            private readonly Func<int> commit, rollback, restore;
+            private readonly Action<FileTransaction> hold;
+            private readonly IDisposable? guard;
+            private bool needsRollback = true;
             private bool committed;
 
-            public unsafe FileTransaction(DatabaseHandle fileDb, SafeFileHandle? guard, NativeCalls calls)
+            internal FileTransaction(Func<int> commit, Func<int> rollback, Func<int> restore,
+                Action<FileTransaction> hold, IDisposable? guard)
             {
-                this.fileDb = fileDb;
-                this.calls = calls;
-                nint wasAutocommit = 0;
-                Check(calls.Report("disable autocommit", CSSM_DL_PassThrough(fileDb, ToggleAutocommit, 0,
-                    (IntPtr)(&wasAutocommit))), SaveFailed);
-                if (wasAutocommit == 0)
-                {
-                    throw new TokenStoreException(SaveFailed);
-                }
-
-                try
-                {
-                    Check(calls.Report("lock database", CSSM_DL_PassThrough(fileDb, TakeFileLock, 0, 0)), SaveFailed);
-                    if (guard is not null)
-                    {
-                        Check(calls.Report("verify writer lock", CheckWriterLock(guard)), SaveFailed);
-                    }
-                }
-                catch
-                {
-                    Dispose();
-                    throw;
-                }
+                this.commit = commit;
+                this.rollback = rollback;
+                this.restore = restore;
+                this.hold = hold;
                 this.guard = guard;
             }
 
             public void Commit()
             {
-                Check(calls.Report("commit database", CSSM_DL_PassThrough(fileDb, CommitDatabase, 0, 0)), SaveFailed);
+                Check(commit(), SaveFailed);
+                needsRollback = false;
                 committed = true;
+            }
+
+            internal int FinishCleanup()
+            {
+                if (needsRollback)
+                {
+                    int status = rollback();
+                    if (status != 0)
+                    {
+                        return status;
+                    }
+                    needsRollback = false;
+                }
+                return restore();
             }
 
             public void Dispose()
             {
                 try
                 {
-                    if (!committed)
+                    int status = FinishCleanup();
+                    if (status != 0)
                     {
-                        Check(calls.Report("rollback database", CSSM_DL_PassThrough(fileDb, Rollback, 0, 0)), SaveFailed);
+                        status = FinishCleanup();
                     }
-                    Check(calls.Report("restore autocommit", CSSM_DL_PassThrough(fileDb, ToggleAutocommit, 1, 0)), SaveFailed);
+                    if (status != 0)
+                    {
+                        hold(this);
+                        if (!committed)
+                        {
+                            Check(status, SaveFailed);
+                        }
+                    }
                 }
                 finally
                 {
@@ -491,8 +638,11 @@ internal sealed partial class MacKeychainItem
         [LibraryImport(Security)]
         private static partial int SecKeychainGetUserInteractionAllowed(out byte allowed);
 
-        [LibraryImport("TimesIssuerKeychain", EntryPoint = "TimesCheckVerifierImage")]
-        private static partial int CheckVerifierImage(int pid);
+        [LibraryImport("TimesIssuerKeychain", EntryPoint = "TimesStartImageCheck")]
+        private static partial int StartImageCheck(int subject, out int pid);
+
+        [LibraryImport("TimesIssuerKeychain", EntryPoint = "TimesWaitVerifier")]
+        private static partial int WaitVerifier(int pid);
 
         [LibraryImport("TimesIssuerKeychain", EntryPoint = "TimesStartVerifier", StringMarshalling = StringMarshalling.Utf8)]
         private static partial int StartVerifier(string path, string databasePath, string service, string account,

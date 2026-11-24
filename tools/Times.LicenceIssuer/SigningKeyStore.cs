@@ -771,17 +771,7 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
                 byte low = (byte)((current & 0x80) + (sets96[set] ? 0x20 : 0x21));
                 byte high = (byte)((current & 0x80) + (sets96[set] ? 0x7f : 0x7e));
                 Require(width <= value.Length - i && !value.Slice(i, width).ContainsAnyExceptInRange(low, high));
-                if (sets96[set] && value[designations[set]].SequenceEqual("F"u8))
-                {
-                    // ISO-IR 126 (1986), including when invoked in GL.
-                    Require((current | 0x80) is not (0xa4 or 0xa5 or 0xaa or 0xae or 0xd2 or 0xff));
-                }
-                if (sets96[set] && value[designations[set]].SequenceEqual("G"u8))
-                {
-                    // ISO-IR 127, ECMA-114 Table 1. The same positions apply in GL and GR.
-                    Require((current | 0x80) is 0xa0 or 0xa4 or 0xac or 0xad or 0xbb or 0xbf
-                        or >= 0xc1 and <= 0xda or >= 0xe0 and <= 0xf2);
-                }
+                Require(Iso2022Repertoires.IsAssigned(value[designations[set]], sets96[set], value.Slice(i, width), videotex));
                 if (single < 0)
                 {
                     if (current < 0x80)

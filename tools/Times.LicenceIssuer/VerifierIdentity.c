@@ -1,5 +1,7 @@
 #define _DARWIN_C_SOURCE
-#include <Security/Security.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -10,26 +12,31 @@
 #include <unistd.h>
 #include "VerifierHashes.h"
 
-// The two linker-generated code directories identify only the native verifier
-// built alongside this bridge. Its only dynamic dependencies are system libraries.
-OSStatus TimesCheckVerifierImage(int pid)
+// The system verifier checks the suspended process itself. It inherits no
+// database or request descriptor and can be terminated even inside Security.
+int TimesStartImageCheck(int subject, int *pid)
 {
-    SecRequirementRef requirement = NULL;
-    CFStringRef expression = CFSTR("cdhash H\"" TIMES_VIEW_ARM64 "\" or cdhash H\"" TIMES_VIEW_X86_64 "\"");
-    OSStatus status = SecRequirementCreateWithString(expression, kSecCSDefaultFlags, &requirement);
-    if (status) return status;
-    SecCodeRef guest = NULL;
-    CFNumberRef number = CFNumberCreate(NULL, kCFNumberIntType, &pid);
-    const void *key = kSecGuestAttributePid, *value = number;
-    CFDictionaryRef attributes = number ? CFDictionaryCreate(NULL, &key, &value, 1,
-        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks) : NULL;
-    status = attributes ? SecCodeCopyGuestWithAttributes(NULL, attributes, kSecCSDefaultFlags, &guest) : errSecAllocate;
-    if (!status) status = SecCodeCheckValidity(guest, kSecCSDefaultFlags, requirement);
-    if (guest) CFRelease(guest);
-    if (attributes) CFRelease(attributes);
-    if (number) CFRelease(number);
-    CFRelease(requirement);
-    return status;
+    if (subject <= 0) return EINVAL;
+    char target[32];
+    snprintf(target, sizeof(target), "%d", subject);
+    char *argv[] = {"/usr/bin/codesign", "--verify",
+        "-R=cdhash H\"" TIMES_VIEW_ARM64 "\" or cdhash H\"" TIMES_VIEW_X86_64 "\"", target, NULL};
+    char *env[] = {NULL};
+    posix_spawnattr_t attr;
+    posix_spawn_file_actions_t io;
+    int rc = posix_spawnattr_init(&attr);
+    if (rc) return rc;
+    rc = posix_spawn_file_actions_init(&io);
+    if (!rc) {
+        rc = posix_spawnattr_setflags(&attr, POSIX_SPAWN_CLOEXEC_DEFAULT);
+        if (!rc) rc = posix_spawn_file_actions_addopen(&io, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+        if (!rc) rc = posix_spawn_file_actions_addopen(&io, STDOUT_FILENO, "/dev/null", O_WRONLY, 0);
+        if (!rc) rc = posix_spawn_file_actions_addopen(&io, STDERR_FILENO, "/dev/null", O_WRONLY, 0);
+        if (!rc) rc = posix_spawn(pid, argv[0], &io, &attr, argv, env);
+        posix_spawn_file_actions_destroy(&io);
+    }
+    posix_spawnattr_destroy(&attr);
+    return rc;
 }
 
 // START_SUSPENDED stops before the first userspace instruction, including dyld.
@@ -77,15 +84,20 @@ int TimesStartVerifier(const char *path, const char *database, const char *servi
     return rc;
 }
 
-int TimesResumeVerifier(int pid, int fd, const uint8_t *request, int size)
+int TimesWaitVerifier(int pid)
 {
-    if (kill(pid, SIGCONT) || send(fd, request, size, 0) != size || shutdown(fd, SHUT_WR)) return 1;
     // Leave the child waitable until the cancellation callback is unregistered.
     // Its PID therefore cannot be reused while the callback can still signal it.
     siginfo_t info = {0};
     int rc;
     do { rc = waitid(P_PID, (id_t)pid, &info, WEXITED | WNOWAIT); } while (rc && errno == EINTR);
     return !rc && info.si_code == CLD_EXITED ? info.si_status : 1;
+}
+
+int TimesResumeVerifier(int pid, int fd, const uint8_t *request, int size)
+{
+    if (kill(pid, SIGCONT) || send(fd, request, size, 0) != size || shutdown(fd, SHUT_WR)) return 1;
+    return TimesWaitVerifier(pid);
 }
 
 void TimesStopVerifier(int pid)
@@ -98,7 +110,7 @@ void TimesStopVerifier(int pid)
 
 void TimesReleaseVerifier(int pid, int fd)
 {
-    close(fd);
+    if (fd >= 0) close(fd);
     TimesStopVerifier(pid);
     while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {}
 }
