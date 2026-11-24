@@ -13,14 +13,14 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 45
     env:
-      FACTORY_TEST_COMMIT: "94e6976393c6e908ef96ab0fa490f1f3c4358a3d"
+      FACTORY_TEST_COMMIT: "28c600cafc215cd4396b11bc81d39be5557b4abe"
       DOTNET_NOLOGO: "1"
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
     steps:
       - name: Check out the exact Times build
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: "94e6976393c6e908ef96ab0fa490f1f3c4358a3d"
+          ref: "28c600cafc215cd4396b11bc81d39be5557b4abe"
           persist-credentials: false
       - name: Prepare the disposable Keychain test directory
         shell: bash
@@ -71,24 +71,21 @@ jobs:
           root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "times401"
           root.mkdir(exist_ok=True)
           prefix = "Times.Tests.MacKeychainMigrationTests."
-          original_reader = "LegacyMigration_PreservesNativeRecordAndReaders"
-          write_denial = "DeniedMigration_PreservesNativeRecordAccessAndLedgerForRetry"
           lookup_lock = "LookupGuard_UsesWriterLockAndRefusesUnsafeFiles"
           duplicate = "CreateKey_GuardedProbeSeesCommittedSecondary"
-          required = [
-              f"{original_reader}(extraReader: {extra}, oneTimeRead: {once})"
-              for extra, once in (("False", "False"), ("True", "False"), ("True", "True"))
-          ]
-          required += [f"{write_denial}(extraReader: {value})" for value in ("False", "True")]
-          required += [f"{lookup_lock}(kind: {kind})" for kind in ("regular", "symlink", "fifo")]
+          required = [f"{lookup_lock}(kind: {kind})" for kind in ("regular", "symlink", "fifo")]
           required += [f"{duplicate}(competingInsert: {value})" for value in ("False", "True")]
-          control = "DocumentedUpdate_OnMatchingDisposableItem_ReportsAuthorizationAndPreservation"
-          required += [
-              f"{control}(extraReader: {extra}, oneTimeRead: {once}, allowWriter: {writer})"
-              for extra, once, writer in (("False", "False", "True"), ("True", "False", "True"),
-                                          ("True", "True", "True"), ("True", "True", "False"))
-          ]
-          required.append("SeparateReadGrant_CannotAuthorizeAnExcludedWriter")
+          variants = (("False", "False", "True"), ("True", "False", "True"),
+                      ("True", "True", "True"), ("True", "True", "False"))
+          for control in ("DocumentedUpdate_OnMatchingDisposableItem_ReportsAuthorizationAndPreservation",
+                          "SecItemUpdate_OnMatchingDisposableItem_ReportsAuthorizationAndPreservation"):
+              required += [f"{control}(extraReader: {extra}, oneTimeRead: {once}, allowWriter: {writer})"
+                           for extra, once, writer in variants]
+
+          # Trace markers come from completed fixture assertions, independent of the builder's method names.
+          issued = {"original-reader", "original-reader-retry", "overlapping-original-reader"}
+          refused = {"multiple-readers", "single-read-grant", "excluded-writer", "multiple-readers-retry"}
+          marker = re.compile(r"factory401-proof ([a-z-]+) updates=(\d+) creates=(\d+) deletes=(\d+) licences=(\d+)")
           full_suite_classes = ("Times.Tests.LicenceIssuerTests.", "Times.Tests.SigningKeyStoreTests.")
           phases = {"control-allowed", "control-denied", "denied-read", "denied-write",
                     "issue-1", "issue-2", "retry-1", "retry-2"}
@@ -115,6 +112,11 @@ jobs:
               events = []
               for stream in output:
                   for line in (stream.text or "").splitlines():
+                      proof = marker.fullmatch(line.strip())
+                      if proof and proof[1] in issued | refused:
+                          events.append({"scenario": proof[1], "updates": int(proof[2]), "creates": int(proof[3]),
+                                         "deletes": int(proof[4]), "licences": int(proof[5])})
+                          continue
                       description, separator, value = line.strip().rpartition(" returned ")
                       if not separator or not re.fullmatch(r"-?[0-9]{1,10}", value):
                           continue
@@ -142,6 +144,7 @@ jobs:
               classes = set()
               failures = []
               diagnostics = []
+              decisions = {scenario: [] for scenario in sorted(issued | refused)}
               for node in results:
                   test_name = node.get("testName", "")
                   outcome = node.get("outcome", "Unknown")
@@ -155,8 +158,21 @@ jobs:
                       method = case.partition("(")[0]
                       if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,127}", method):
                           events = fixture_events(node)
-                          if events:
-                              diagnostics.append({"test": case if case in seen else method, "events": events})
+                          proofs = [event for event in events if "scenario" in event]
+                          trace = [event for event in events if "scenario" not in event]
+                          if trace:
+                              diagnostics.append({"test": case if case in seen else method, "events": trace})
+                          for evidence in proofs:
+                              scenario = evidence["scenario"]
+                              updates = [e for e in trace if e.get("operation") == "provider update"]
+                              expected_updates, expected_licences = (1, 2) if scenario in issued else (0, 0)
+                              measurements = (evidence["updates"], evidence["creates"], evidence["deletes"], evidence["licences"])
+                              # One result cannot substitute for two independent policy cases; both runs require each case.
+                              valid_case = (len(proofs) == 1 and outcome == "Passed" and
+                                            measurements == (expected_updates, 0, 0, expected_licences) and
+                                            len(updates) == expected_updates and all(e["status"] == 0 for e in updates))
+                              decisions[scenario].append({"test": method, "outcome": outcome, "valid": valid_case,
+                                                          "provider_updates": len(updates), **evidence})
                   if outcome not in ("Passed", "NotExecuted"):
                       failures.append(label)
                   for suite in full_suite_classes:
@@ -166,12 +182,13 @@ jobs:
                   "files": len(files), "cases": len(results), "outcomes": dict(counts),
                   "step": os.environ.get(status, "missing"), "required_native": seen,
                   "failed_tests": sorted(set(failures)),
-                  "fixture_diagnostics": diagnostics,
+                  "fixture_diagnostics": diagnostics, "product_decision": decisions,
               }
               report["suites"][name] = row
               valid &= (bool(files) and row["step"] == "success" and counts["Passed"] > 0
                         and set(counts) <= {"Passed", "NotExecuted"}
-                        and all(outcomes == ["Passed"] for outcomes in seen.values()))
+                        and all(outcomes == ["Passed"] for outcomes in seen.values())
+                        and all(len(rows) == 1 and rows[0]["valid"] for rows in decisions.values()))
               if name == "native":
                   valid &= counts["Passed"] == len(results)
               else:
@@ -193,6 +210,13 @@ jobs:
                               print(f"    - {phase}{event['check']} = {str(event['value']).lower()}", file=summary)
                           else:
                               print(f"    - {phase}{event['operation']} returned {event['status']}", file=summary)
+                  print("  - Product policy cases:", file=summary)
+                  for scenario, entries in row["product_decision"].items():
+                      if not entries:
+                          print(f"    - {scenario}: missing", file=summary)
+                      for entry in entries:
+                          print(f"    - {scenario}: {entry['test']}, {entry['outcome']}, verified {entry['valid']}, "
+                                f"{entry['provider_updates']} native updates, {entry['licences']} verified licences", file=summary)
               print("\n| Required native case | Targeted run | Full Release run |", file=summary)
               print("| --- | --- | --- |", file=summary)
               for case in required:
@@ -205,7 +229,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: times-401-macos-94e6976393c6e908ef96ab0fa490f1f3c4358a3d
+          name: times-401-macos-28c600cafc215cd4396b11bc81d39be5557b4abe
           path: ${{ runner.temp }}/times401/summary.json
           if-no-files-found: error
           retention-days: 14
