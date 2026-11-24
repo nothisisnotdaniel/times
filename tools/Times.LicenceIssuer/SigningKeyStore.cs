@@ -281,7 +281,7 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
     private static void ValidateAttributeValue(ReadOnlyMemory<byte> encoded)
     {
         // Attribute values have open types. Walk constructed values within their own bounds
-        // without using the call stack, including DER ordering on nested universal sets.
+        // without using the call stack. Tag 17 alone cannot distinguish SET from SET OF.
         Stack<AsnReader> levels = new Stack<AsnReader>();
         levels.Push(new AsnReader(encoded, AsnEncodingRules.DER));
         while (levels.TryPeek(out AsnReader? level))
@@ -295,7 +295,9 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
             Asn1Tag tag = level.PeekTag();
             if (tag == Asn1Tag.SetOf)
             {
-                levels.Push(level.ReadSetOf());
+                AsnReader children = level.ReadSetOf(skipSortOrderValidation: true);
+                ValidateOpenSetOrder(children.Clone());
+                levels.Push(children);
             }
             else if (tag.IsConstructed)
             {
@@ -322,6 +324,29 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
             {
                 ValidatePrimitive(level, tag);
             }
+        }
+    }
+
+    private static void ValidateOpenSetOrder(AsnReader members)
+    {
+        ReadOnlyMemory<byte> previous = default;
+        Asn1Tag previousTag = default;
+        bool set = true;
+        bool setOf = true;
+        while (members.HasData)
+        {
+            Asn1Tag tag = members.PeekTag();
+            ReadOnlyMemory<byte> current = members.ReadEncodedValue();
+            if (!previous.IsEmpty)
+            {
+                set &= tag.TagClass > previousTag.TagClass
+                    || tag.TagClass == previousTag.TagClass && tag.TagValue > previousTag.TagValue;
+                setOf &= previous.Span.SequenceCompareTo(current.Span) <= 0;
+                Require(set || setOf);
+            }
+
+            previous = current;
+            previousTag = tag;
         }
     }
 
@@ -375,7 +400,11 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
                 case UniversalTagNumber.GraphicString:
                 case UniversalTagNumber.GeneralString:
                 case UniversalTagNumber.VideotexString:
-                    // These strings carry registered ISO 2022 character sets.
+                    ValidateIso2022(reader.PeekContentBytes().Span,
+                        tag.TagValue is (int)UniversalTagNumber.GraphicString or (int)UniversalTagNumber.ObjectDescriptor);
+                    break;
+                case UniversalTagNumber.Date:
+                    ValidateDate(reader.PeekContentBytes().Span);
                     break;
                 case UniversalTagNumber.UniversalString:
                     ReadOnlySpan<byte> utf32 = reader.PeekContentBytes().Span;
@@ -413,6 +442,40 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
         reader.ReadEncodedValue();
     }
 
+    private static void ValidateDate(ReadOnlySpan<byte> value)
+    {
+        // X.690 8.26.2 encodes the calendar date as eight ASCII digits.
+        Require(value.Length == 8 && !value.ContainsAnyExceptInRange((byte)'0', (byte)'9'));
+        int year = (value[0] - '0') * 1000 + (value[1] - '0') * 100 + (value[2] - '0') * 10 + value[3] - '0';
+        int month = (value[4] - '0') * 10 + value[5] - '0';
+        int day = (value[6] - '0') * 10 + value[7] - '0';
+        Require(month is >= 1 and <= 12 && day >= 1 && day <= DateTime.DaysInMonth(year == 0 ? 400 : year, month));
+    }
+
+    private static void ValidateIso2022(ReadOnlySpan<byte> value, bool graphicOnly)
+    {
+        for (int i = 0; i < value.Length; i++)
+        {
+            if (value[i] == 0x1b)
+            {
+                // ISO 2022 escape sequences contain zero or more intermediate bytes
+                // followed by one final byte. Never consume data beyond this value.
+                i++;
+                while (i < value.Length && value[i] is >= 0x20 and <= 0x2f)
+                {
+                    i++;
+                }
+
+                Require(i < value.Length && value[i] is >= 0x30 and <= 0x7e);
+            }
+            else if (graphicOnly)
+            {
+                // Locking and single shifts can invoke a designated graphic repertoire.
+                Require(value[i] is >= 0x20 and <= 0x7e or >= 0xa0 or 0x0e or 0x0f or 0x8e or 0x8f);
+            }
+        }
+    }
+
     private static Asn1Tag Context(int number) => new(TagClass.ContextSpecific, number);
 
     private static void ReadExternal(AsnReader fields, Stack<AsnReader> levels)
@@ -433,7 +496,7 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
         Require(direct || indirect);
         if (fields.PeekTag() == new Asn1Tag(UniversalTagNumber.ObjectDescriptor))
         {
-            fields.ReadEncodedValue();
+            ValidatePrimitive(fields, fields.PeekTag());
         }
 
         Asn1Tag encoding = fields.PeekTag();

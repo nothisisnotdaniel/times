@@ -268,18 +268,14 @@ internal sealed partial class MacKeychainItem
     public bool TryCreate(string service, string account, byte[] data, string trustedPath)
     {
         Check(native.CopyDefaultKeychain(out IntPtr target), SaveFailed);
+        if (target == IntPtr.Zero)
+        {
+            throw new TokenStoreException(SaveFailed);
+        }
         try
         {
-            IntPtr access = native.CreateAccess(trustedPath, service);
-            try
-            {
-                return native.WithSearchList(target, others => AddWithSearchList(target, others, service, account,
-                    data, access, trustedPath));
-            }
-            finally
-            {
-                native.Release(access);
-            }
+            return native.WithSearchList(target, others => AddWithSearchList(target, others, service, account,
+                data, trustedPath, trustedPath));
         }
         finally
         {
@@ -288,16 +284,16 @@ internal sealed partial class MacKeychainItem
     }
 
     internal bool AddWithSearchList(IntPtr target, IReadOnlyList<IntPtr> others, string service, string account,
-        byte[] data, IntPtr access, string apphost)
+        byte[] data, string creatorPath, string apphost)
     {
         lock (TransactionLock)
         {
-            return AddWithSearchListLocked(target, others, service, account, data, access, apphost);
+            return AddWithSearchListLocked(target, others, service, account, data, creatorPath, apphost);
         }
     }
 
     private bool AddWithSearchListLocked(IntPtr target, IReadOnlyList<IntPtr> others, string service, string account,
-        byte[] data, IntPtr access, string apphost)
+        byte[] data, string creatorPath, string apphost)
     {
         // Paths have the same order across processes, even with different defaults or search orders.
         // The lookup and the target commit both run while every searchable database is locked.
@@ -323,7 +319,7 @@ internal sealed partial class MacKeychainItem
 
             if (Exists(target, service, account)
                 || others.Any(other => native.CommittedMatch(other, service, account, apphost))
-                || !TryAdd(target, service, account, data, access, issuerCreated: true))
+                || !TryAddToKeychain(target, service, account, data, creatorPath, issuerCreated: true))
             {
                 return false;
             }
@@ -351,8 +347,8 @@ internal sealed partial class MacKeychainItem
         IntPtr recordId = IntPtr.Zero;
         try
         {
-            bool ReadSelected(IntPtr scope, bool createdOnly = false) =>
-                WithItemData(scope, service, account, maxBytes, Decode, createdOnly,
+            bool ReadSelected(IntPtr scope) =>
+                WithItemData(scope, service, account, maxBytes, Decode, createdOnly: false,
                     writable ? item => stamp = native.DataStamp(item) : null);
 
             void Decode(IntPtr item, ReadOnlySpan<byte> bytes)
@@ -368,10 +364,7 @@ internal sealed partial class MacKeychainItem
 
             if (search != IntPtr.Zero)
             {
-                if (!ReadSelected(search, createdOnly: true))
-                {
-                    ReadSelected(search);
-                }
+                ReadSelected(search);
             }
             else
             {
@@ -386,8 +379,13 @@ internal sealed partial class MacKeychainItem
 
                 try
                 {
-                    if (!(target != IntPtr.Zero && ReadSelected(target, createdOnly: true))
-                        && !ReadSelected(search, createdOnly: true) && !ReadSelected(search) && target != IntPtr.Zero)
+                    bool marked = native.WithSearchList(target, others => WithPublishedKey(
+                        target == IntPtr.Zero ? others : others.Append(target), service, account, item =>
+                        {
+                            stamp = writable ? native.DataStamp(item) : null;
+                            ReadContent(item, maxBytes, Decode);
+                        }));
+                    if (!marked && !ReadSelected(search) && target != IntPtr.Zero)
                     {
                         ReadSelected(target);
                     }
@@ -417,6 +415,43 @@ internal sealed partial class MacKeychainItem
             CryptographicOperations.ZeroMemory(expected);
             native.Release(recordId);
             native.Release(owner);
+        }
+    }
+
+    private bool WithPublishedKey(IEnumerable<IntPtr> databases, string service, string account, Action<IntPtr> read)
+    {
+        IntPtr selected = IntPtr.Zero;
+        try
+        {
+            foreach (IntPtr database in databases)
+            {
+                int status = native.Find(database, service, account, out IntPtr match, createdOnly: true);
+                if (status == ErrSecItemNotFound)
+                {
+                    continue;
+                }
+
+                Check(status, ReadFailed);
+                if (selected != IntPtr.Zero)
+                {
+                    native.Release(match);
+                    throw new TokenStoreException("Multiple published signing keys have this ID. Check the Keychain search list.");
+                }
+
+                selected = match;
+            }
+
+            if (selected == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            read(selected);
+            return true;
+        }
+        finally
+        {
+            native.Release(selected);
         }
     }
 
@@ -579,8 +614,19 @@ internal sealed partial class MacKeychainItem
         return CFArrayCreate(IntPtr.Zero, (IntPtr)values, 1, callBacks);
     }
 
-    private unsafe bool TryAdd(IntPtr keychain, string service, string account, byte[] secret, IntPtr access,
+    internal bool TryAddToKeychain(IntPtr keychain, string service, string account, byte[] secret, string creatorPath,
         bool issuerCreated = false)
+    {
+        if (keychain == IntPtr.Zero || string.IsNullOrEmpty(creatorPath))
+        {
+            throw new TokenStoreException(SaveFailed);
+        }
+
+        return TryAdd(keychain, service, account, secret, IntPtr.Zero, creatorPath, issuerCreated);
+    }
+
+    private unsafe bool TryAdd(IntPtr keychain, string service, string account, byte[] secret, IntPtr access,
+        string? creatorPath = null, bool issuerCreated = false)
     {
         byte[] serviceBytes = Encoding.UTF8.GetBytes(service);
         byte[] accountBytes = Encoding.UTF8.GetBytes(account);
@@ -594,7 +640,9 @@ internal sealed partial class MacKeychainItem
             attributes[2] = new Attribute { Tag = LabelAttribute, Length = (uint)serviceBytes.Length, Data = (IntPtr)servicePointer };
             attributes[3] = new Attribute { Tag = GenericAttribute, Length = (uint)IssuerMarker.Length, Data = (IntPtr)marker };
             AttributeList list = new AttributeList { Count = issuerCreated ? 4u : 3u, Attributes = (IntPtr)attributes };
-            int status = native.CreateFromContent(GenericPasswordClass, ref list, secret, keychain, access, out IntPtr item);
+            int status = creatorPath is not null
+                ? native.AddToKeychain(keychain, ref list, secret, creatorPath, out IntPtr item)
+                : native.CreateFromContent(GenericPasswordClass, ref list, secret, keychain, access, out item);
             if (status == ErrSecDuplicateItem)
             {
                 return false;
@@ -656,6 +704,7 @@ internal sealed partial class MacKeychainItem
         public int CopyRecordId(IntPtr item, out IntPtr recordId);
         public bool Equal(IntPtr first, IntPtr second);
         public IntPtr CreateAccess(string path, string description);
+        public int AddToKeychain(IntPtr keychain, ref AttributeList attributes, byte[] data, string creatorPath, out IntPtr item);
         public int CreateFromContent(uint itemClass, ref AttributeList attributes, byte[] data, IntPtr keychain,
             IntPtr access, out IntPtr item);
         public int UpdateData(IntPtr owner, IntPtr item, ReadOnlyMemory<byte> data);
@@ -699,18 +748,20 @@ internal sealed partial class MacKeychainItem
                 }
             }
 
-            return SecKeychainFindGenericPassword(keychain, (uint)serviceBytes.Length, serviceBytes,
-                (uint)accountBytes.Length, accountBytes, 0, 0, out item);
+            return Report("find password record", SecKeychainFindGenericPassword(keychain, (uint)serviceBytes.Length,
+                serviceBytes, (uint)accountBytes.Length, accountBytes, 0, 0, out item));
         }
 
         public int CopyDefaultKeychain(out IntPtr keychain) => SecKeychainCopyDefault(out keychain);
 
         public virtual int CopyContent(IntPtr item, out uint length, out IntPtr data) =>
-            SecKeychainItemCopyContent(item, 0, 0, out length, out data);
+            Report("read password", SecKeychainItemCopyContent(item, 0, 0, out length, out data));
 
-        public int CopyItemKeychain(IntPtr item, out IntPtr keychain) => SecKeychainItemCopyKeychain(item, out keychain);
+        public int CopyItemKeychain(IntPtr item, out IntPtr keychain) =>
+            Report("identify owner", SecKeychainItemCopyKeychain(item, out keychain));
 
-        public int CopyRecordId(IntPtr item, out IntPtr recordId) => SecKeychainItemCopyRecordIdentifier(item, out recordId);
+        public int CopyRecordId(IntPtr item, out IntPtr recordId) =>
+            Report("identify record", SecKeychainItemCopyRecordIdentifier(item, out recordId));
 
         public bool Equal(IntPtr first, IntPtr second) => CFEqual(first, second) != 0;
 
@@ -723,7 +774,8 @@ internal sealed partial class MacKeychainItem
                 for (nint i = 0; i < CFArrayGetCount(list); i++)
                 {
                     IntPtr candidate = CFArrayGetValueAtIndex(list, i);
-                    if (CFEqual(candidate, target) == 0 && !others.Any(other => CFEqual(candidate, other) != 0))
+                    if ((target == IntPtr.Zero || CFEqual(candidate, target) == 0)
+                        && !others.Any(other => CFEqual(candidate, other) != 0))
                     {
                         others.Add(candidate);
                     }
@@ -739,13 +791,62 @@ internal sealed partial class MacKeychainItem
 
         public IntPtr CreateAccess(string path, string description) => MacKeychainItem.CreateAccess(path, description);
 
+        public unsafe int AddToKeychain(IntPtr keychain, ref AttributeList attributes, byte[] data, string creatorPath,
+            out IntPtr item)
+        {
+            // AddNoUI addresses only its explicit database. The file Keychain initializes
+            // a floating password's decrypt ACL to the calling executable.
+            item = IntPtr.Zero;
+            if (keychain == IntPtr.Zero || Environment.ProcessPath is not string executable
+                || CanonicalPath(creatorPath) != CanonicalPath(executable))
+            {
+                return -50; // errSecParam
+            }
+
+            byte[] path = [.. KeychainPath(keychain), 0];
+            using Microsoft.Win32.SafeHandles.SafeFileHandle database = new(OpenProbeDatabase(path), ownsHandle: true);
+            if (database.IsInvalid)
+            {
+                return -25294; // errSecNoSuchKeychain
+            }
+
+            int status = SecKeychainItemCreateNew(GenericPasswordClass, 0, (uint)data.Length, data, out IntPtr pending);
+            try
+            {
+                Attribute* entries = (Attribute*)attributes.Attributes;
+                for (int i = 0; status == 0 && i < attributes.Count; i++)
+                {
+                    status = SecKeychainItemSetAttribute(pending, in entries[i]);
+                }
+
+                if (status == 0)
+                {
+                    status = DatabaseAtPath(database, path) == 0 ? SecKeychainItemAddNoUI(keychain, pending) : -25294;
+                    if (status == 0)
+                    {
+                        item = pending;
+                        pending = IntPtr.Zero;
+                    }
+                }
+
+                return status;
+            }
+            finally
+            {
+                ReleaseIfSet(pending);
+            }
+        }
+
+        private static string CanonicalPath(string path) =>
+            File.ResolveLinkTarget(path, returnFinalTarget: true)?.FullName ?? Path.GetFullPath(path);
+
         public int CreateFromContent(uint itemClass, ref AttributeList attributes, byte[] data, IntPtr keychain,
             IntPtr access, out IntPtr item) =>
             SecKeychainItemCreateFromContent(itemClass, ref attributes, (uint)data.Length, data, keychain, access, out item);
 
         public int Delete(IntPtr item) => SecKeychainItemDelete(item);
 
-        public void FreeContent(IntPtr data) => SecKeychainItemFreeContent(IntPtr.Zero, data);
+        public virtual void FreeContent(IntPtr data) => SecKeychainItemFreeContent(IntPtr.Zero, data);
 
         public void Release(IntPtr reference) => ReleaseIfSet(reference);
     }
@@ -781,6 +882,15 @@ internal sealed partial class MacKeychainItem
 
     [LibraryImport(Security)]
     private static partial int SecAccessCreate(IntPtr descriptor, IntPtr trustedList, out IntPtr access);
+
+    [LibraryImport(Security)]
+    private static partial int SecKeychainItemCreateNew(uint itemClass, uint creator, uint length, byte[] data, out IntPtr item);
+
+    [LibraryImport(Security)]
+    private static partial int SecKeychainItemSetAttribute(IntPtr item, in Attribute attribute);
+
+    [LibraryImport(Security)]
+    private static partial int SecKeychainItemAddNoUI(IntPtr keychain, IntPtr item);
 
     [LibraryImport(Security)]
     private static partial int SecKeychainItemCreateFromContent(uint itemClass, ref AttributeList attrList, uint length,

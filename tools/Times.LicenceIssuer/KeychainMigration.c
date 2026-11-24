@@ -10,25 +10,31 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { GroupLabelSize = 20, IvSize = 8, PrefixSize = GroupLabelSize + IvSize };
+enum { GroupLabelSize = 20, IvSize = 8, PrefixSize = GroupLabelSize + IvSize, MaxCipherSize = 16384 + IvSize };
 
 // Compare the protected value across the read and the subsequent writer transaction.
 // A fresh IV means that a re-encryption also changes the stamp.
-OSStatus TimesPasswordStamp(SecKeychainItemRef item, uint8_t digest[CC_SHA256_DIGEST_LENGTH])
+OSStatus TimesPasswordStamp(SecKeychainItemRef item, uint8_t digest[CC_SHA256_DIGEST_LENGTH], const char **stage)
 {
     CSSM_DL_DB_HANDLE db;
     CSSM_API_MEMORY_FUNCS memory;
     const CSSM_DB_UNIQUE_RECORD *record;
-    if (!item || SecKeychainItemGetDLDBHandle(item, &db) || SecKeychainItemGetUniqueRecordID(item, &record) ||
-        CSSM_GetAPIMemoryFunctions(db.DLHandle, &memory)) {
-        return errSecParam;
-    }
+    *stage = "stamp database";
+    if (!item) return errSecParam;
+    OSStatus status = SecKeychainItemGetDLDBHandle(item, &db);
+    if (status) return status;
+    *stage = "stamp record";
+    if ((status = SecKeychainItemGetUniqueRecordID(item, &record))) return status;
+    *stage = "stamp allocator";
+    if ((status = CSSM_GetAPIMemoryFunctions(db.DLHandle, &memory))) return status;
     CSSM_DATA blob = {0};
     CSSM_DB_RECORD_ATTRIBUTE_DATA attrs = {0};
-    CSSM_RETURN status = CSSM_DL_DataGetFromUniqueRecordId(db, record, &attrs, &blob);
+    *stage = "read stamp data";
+    status = CSSM_DL_DataGetFromUniqueRecordId(db, record, &attrs, &blob);
     if (!status) {
-        if (attrs.DataRecordType != CSSM_DL_DB_RECORD_GENERIC_PASSWORD || blob.Length < PrefixSize + IvSize ||
-            blob.Length > 16384 + PrefixSize + IvSize || memcmp(blob.Data, "ssgp", 4) != 0) {
+        *stage = "validate stamp envelope";
+        if (attrs.DataRecordType != CSSM_DL_DB_RECORD_GENERIC_PASSWORD || !blob.Data || blob.Length < PrefixSize + IvSize ||
+            blob.Length > PrefixSize + MaxCipherSize || memcmp(blob.Data, "ssgp", 4) != 0) {
             status = errSecInvalidItemRef;
         } else {
             CC_SHA256(blob.Data, (CC_LONG)blob.Length, digest);
@@ -70,42 +76,57 @@ static CSSM_RETURN findGroup(CSSM_DL_DB_HANDLE db, CSSM_DATA label, CSSM_DATA *r
 // securityd must authorize ENCRYPT on the original reference key. Its key bytes
 // never leave the provider. Only the ciphertext and IV change in the database.
 static OSStatus encryptForGroup(CSSM_CSP_HANDLE csp, const CSSM_KEY *key, CSSM_DATA input,
-                                CSSM_DATA iv, CSSM_DATA *encrypted)
+                                CSSM_DATA label, CSSM_DATA iv, CSSM_DATA *blob, const char **stage)
 {
-    if (key->KeyHeader.BlobType != CSSM_KEYBLOB_REFERENCE ||
-        key->KeyHeader.AlgorithmId != CSSM_ALGID_3DES_3KEY) {
+    *stage = "group key header";
+    if (key->KeyHeader.BlobType != CSSM_KEYBLOB_REFERENCE || key->KeyHeader.KeyClass != CSSM_KEYCLASS_SESSION_KEY) {
         return errSecInvalidItemRef;
     }
+    *stage = "CSP allocator";
     CSSM_API_MEMORY_FUNCS memory;
     CSSM_RETURN status = CSSM_GetAPIMemoryFunctions(csp, &memory);
     if (status) {
         return status;
     }
     CSSM_CC_HANDLE context = CSSM_INVALID_HANDLE;
+    // The CSSM client supplies an empty credential object even for an operation
+    // with no samples. securityd still decides ENCRYPT and partition membership.
+    CSSM_ACCESS_CREDENTIALS credentials = {0};
+    *stage = "create encryption context";
     status = CSSM_CSP_CreateSymmetricContext(csp, key->KeyHeader.AlgorithmId,
-        CSSM_ALGMODE_CBCPadIV8, NULL, key, &iv, CSSM_PADDING_PKCS1, NULL, &context);
+        CSSM_ALGMODE_CBCPadIV8, &credentials, key, &iv, CSSM_PADDING_PKCS1, NULL, &context);
     if (status) {
         return status;
     }
     CSSM_DATA first = {0}, last = {0};
     CSSM_SIZE written = 0;
+    *stage = "initialize encryption";
     status = CSSM_EncryptDataInit(context);
     if (!status) {
+        *stage = "encrypt update";
         status = CSSM_EncryptDataUpdate(context, &input, 1, &first, 1, &written);
     }
     if (!status) {
+        *stage = "encrypt final";
         status = CSSM_EncryptDataFinal(context, &last);
     }
     if (!status) {
-        if (first.Length > encrypted->Length || last.Length != encrypted->Length - first.Length ||
-            (first.Length && !first.Data) || (last.Length && !last.Data)) {
+        *stage = "ciphertext length";
+        if (written > first.Length || written > MaxCipherSize || last.Length > MaxCipherSize - written ||
+            (written && !first.Data) || (last.Length && !last.Data) || !(written + last.Length)) {
             status = errSecInternalComponent;
         } else {
-            if (first.Length) {
-                memcpy(encrypted->Data, first.Data, first.Length);
-            }
-            if (last.Length) {
-                memcpy(encrypted->Data + first.Length, last.Data, last.Length);
+            // The provider owns the framing and reports how much each phase produced.
+            *stage = "allocate protected record";
+            blob->Length = PrefixSize + written + last.Length;
+            blob->Data = malloc(blob->Length);
+            if (!blob->Data) {
+                status = errSecAllocate;
+            } else {
+                memcpy(blob->Data, label.Data, GroupLabelSize);
+                memcpy(blob->Data + GroupLabelSize, iv.Data, IvSize);
+                if (written) memcpy(blob->Data + PrefixSize, first.Data, written);
+                if (last.Length) memcpy(blob->Data + PrefixSize + written, last.Data, last.Length);
             }
         }
     }
@@ -119,54 +140,69 @@ static OSStatus encryptForGroup(CSSM_CSP_HANDLE csp, const CSSM_KEY *key, CSSM_D
     return status;
 }
 
-OSStatus TimesUpdateProtectedPassword(SecKeychainRef owner, SecKeychainItemRef item, uint8_t *der, uint32_t length)
+OSStatus TimesUpdateProtectedPassword(SecKeychainRef owner, SecKeychainItemRef item, uint8_t *der, uint32_t length,
+                                      const char **stage)
 {
     CSSM_DL_DB_HANDLE db;
     CSSM_CSP_HANDLE csp;
     CSSM_API_MEMORY_FUNCS memory;
     const CSSM_DB_UNIQUE_RECORD *record;
     SecKeychainStatus permissions;
-    if (!owner || !item || !length || length > 16384 ||
-        SecKeychainGetStatus(owner, &permissions) || !(permissions & kSecWritePermStatus) ||
-        SecKeychainItemGetDLDBHandle(item, &db) || SecKeychainGetCSPHandle(owner, &csp) ||
-        SecKeychainItemGetUniqueRecordID(item, &record) || CSSM_GetAPIMemoryFunctions(db.DLHandle, &memory)) {
+    *stage = "migration arguments";
+    if (!owner || !item || !der || !length || length > 16384) {
         return errSecParam;
     }
+    *stage = "database write permission";
+    OSStatus status = SecKeychainGetStatus(owner, &permissions);
+    if (status || !(permissions & kSecWritePermStatus)) {
+        return status ? status : errSecAuthFailed;
+    }
+    *stage = "item database";
+    if ((status = SecKeychainItemGetDLDBHandle(item, &db))) return status;
+    *stage = "database CSP";
+    if ((status = SecKeychainGetCSPHandle(owner, &csp))) return status;
+    *stage = "item record";
+    if ((status = SecKeychainItemGetUniqueRecordID(item, &record))) return status;
+    *stage = "database allocator";
+    if ((status = CSSM_GetAPIMemoryFunctions(db.DLHandle, &memory))) return status;
     CSSM_DB_RECORD_ATTRIBUTE_DATA attrs = {0};
     CSSM_DATA original = {0}, reference = {0};
-    CSSM_RETURN status = CSSM_DL_DataGetFromUniqueRecordId(db, record, &attrs, &original);
+    CSSM_DATA replacement = {0};
+    *stage = "read protected record";
+    status = CSSM_DL_DataGetFromUniqueRecordId(db, record, &attrs, &original);
     if (status) {
-        return status;
+        goto cleanup;
     }
-    uint8_t *replacement = NULL;
-    if (attrs.DataRecordType != CSSM_DL_DB_RECORD_GENERIC_PASSWORD || original.Length < PrefixSize + IvSize ||
+    *stage = "validate record envelope";
+    if (attrs.DataRecordType != CSSM_DL_DB_RECORD_GENERIC_PASSWORD || !original.Data ||
+        original.Length < PrefixSize + IvSize || original.Length > PrefixSize + MaxCipherSize ||
         memcmp(original.Data, "ssgp", 4) != 0) {
         status = errSecInvalidItemRef;
         goto cleanup;
     }
     CSSM_DATA label = { GroupLabelSize, original.Data };
+    *stage = "find record group";
     status = findGroup(db, label, &reference);
-    if (status || reference.Length != sizeof(CSSM_KEY) || !reference.Data) {
+    if (status) {
+        goto cleanup;
+    }
+    *stage = "validate group reference";
+    if (reference.Length != sizeof(CSSM_KEY) || !reference.Data) {
         status = errSecInvalidItemRef;
         goto cleanup;
     }
-    size_t padded = (length / IvSize + 1) * IvSize;
-    replacement = malloc(PrefixSize + padded);
-    if (!replacement) {
-        status = errSecAllocate;
-        goto cleanup;
-    }
-    memcpy(replacement, label.Data, label.Length);
-    CSSM_DATA iv = { IvSize, replacement + GroupLabelSize };
+    uint8_t ivBytes[IvSize];
+    CSSM_DATA iv = { sizeof(ivBytes), ivBytes };
+    *stage = "generate IV";
     status = SecRandomCopyBytes(kSecRandomDefault, iv.Length, iv.Data);
     if (!status) {
-        CSSM_DATA input = { length, der }, ciphertext = { padded, replacement + PrefixSize };
-        status = encryptForGroup(csp, (const CSSM_KEY *)reference.Data, input, iv, &ciphertext);
+        CSSM_DATA input = { length, der };
+        status = encryptForGroup(csp, (const CSSM_KEY *)reference.Data, input, label, iv, &replacement, stage);
     }
     if (!status) {
-        CSSM_DATA blob = { PrefixSize + padded, replacement };
+        *stage = "update record data";
         status = CSSM_DL_DataModify(db, attrs.DataRecordType, (CSSM_DB_UNIQUE_RECORD_PTR)record,
-                                    NULL, &blob, CSSM_DB_MODIFY_ATTRIBUTE_NONE);
+                                    NULL, &replacement, CSSM_DB_MODIFY_ATTRIBUTE_NONE);
     }
 cleanup:
     if (reference.Data) {
@@ -179,7 +215,7 @@ cleanup:
         memset_s(original.Data, original.Length, 0, original.Length);
         memory.free_func(original.Data, memory.AllocRef);
     }
-    free(replacement);
+    free(replacement.Data);
     return status;
 }
 

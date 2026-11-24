@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Buffers.Text;
+using System.Diagnostics;
 using System.Formats.Asn1;
 using System.Security.Cryptography;
 using Times.LicenceIssuer;
@@ -107,6 +108,88 @@ public sealed partial class MacKeychainMigrationTests
         }
     }
 
+    [Fact]
+    public void Issue_TwoPublishedKeysAfterAChangeOfDefault_RefusesBeforeReadingEither()
+    {
+        using PortableFixture fixture = new();
+        using StringWriter output = new();
+        using StringWriter error = new();
+        Assert.Equal(0, fixture.Create(output, error));
+        string firstPem = output.ToString();
+        SigningKeyStoreTests.Item first = Assert.IsType<SigningKeyStoreTests.Item>(fixture.Calls.Stored);
+        fixture.Calls.Stored = null; // the first database is offline for the second creation
+        fixture.Calls.DefaultIsOther = true;
+        output.GetStringBuilder().Clear();
+        Assert.Equal(0, fixture.Create(output, error));
+        Assert.NotEqual(firstPem, output.ToString());
+        fixture.Calls.Stored = first;
+        File.WriteAllText(fixture.Ledger, "previous entry\n");
+        foreach (bool otherDefault in new[] { true, false })
+        {
+            fixture.Calls.DefaultIsOther = otherDefault;
+            output.GetStringBuilder().Clear();
+            error.GetStringBuilder().Clear();
+            Assert.Equal(1, RunIssue(fixture.Store, fixture.Ledger, output, error));
+            Assert.Contains("Multiple published signing keys", error.ToString(), StringComparison.Ordinal);
+            Assert.Empty(output.ToString());
+            Assert.Equal("previous entry\n", File.ReadAllText(fixture.Ledger));
+        }
+
+        Assert.Equal(0, fixture.Calls.DataRequests);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CreateKey_UnavailableDestinationOrStalledProbe_ReleasesLocksAndPublishesNothing(bool stall)
+    {
+        using PortableFixture fixture = new();
+        if (stall)
+        {
+            // This child cannot finish until the parent closes stdin. A zero deadline
+            // exercises the production timeout independent of process startup speed.
+            ProcessStartInfo info = new(OperatingSystem.IsWindows() ? "cmd.exe" : "/bin/cat")
+            {
+                UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true,
+                RedirectStandardError = true, CreateNoWindow = true,
+            };
+            if (OperatingSystem.IsWindows())
+            {
+                foreach (string argument in new[] { "/d", "/q", "/c", "set /p fixture=" })
+                {
+                    info.ArgumentList.Add(argument);
+                }
+            }
+
+            fixture.Calls.DuringProbe = () =>
+            {
+                using Process child = Process.Start(info)!;
+                try
+                {
+                    MacKeychainItem.NativeCalls.WaitForProbe(child, TimeSpan.Zero);
+                }
+                finally
+                {
+                    Assert.True(child.HasExited, "The timed-out probe was still running.");
+                }
+            };
+        }
+        else
+        {
+            fixture.Calls.DestinationUnavailable = true;
+        }
+
+        using StringWriter output = new();
+        using StringWriter error = new();
+        Assert.Equal(1, fixture.Create(output, error));
+        Assert.Empty(output.ToString());
+        Assert.Equal("The item could not be saved in the macOS Keychain." + error.NewLine, error.ToString());
+        Assert.Null(fixture.Calls.Stored);
+        Assert.Null(fixture.Calls.OtherStored);
+        Assert.Equal(0, fixture.Calls.Creates);
+        fixture.Calls.AssertReleased();
+    }
+
     public static TheoryData<string, byte[], bool, bool> AttributeCases
     {
         get
@@ -121,6 +204,14 @@ public sealed partial class MacKeychainMigrationTests
                 cases.Add("1.3.6.1.4.1.32473.2", [0x28, 9, 6, 2, 42, 3, 0xa0, 3, 2, 1, 0], true, legacy);
                 cases.Add("1.3.6.1.4.1.32473.2", [0x28, 0], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.2", [0x28, 4, 6, 2, 42, 3], false, legacy);
+                // Ordinary SET fields are sorted by class and tag number, ignoring the constructed bit.
+                cases.Add("1.3.6.1.4.1.32473.3", [0x31, 5, 0x30, 0, 0x13, 1, 65], true, legacy);
+                cases.Add("1.3.6.1.4.1.32473.4", [0x31, 5, 0xa0, 0, 0x81, 1, 1], true, legacy);
+                cases.Add("1.3.6.1.4.1.32473.5", [0x19, 2, 0x1b, 0x28], false, legacy);
+                cases.Add("1.3.6.1.4.1.32473.5", [0x19, 1, 65], true, legacy);
+                cases.Add("1.3.6.1.4.1.32473.6", [0x1f, 31, 8, .. "20240229"u8], true, legacy);
+                cases.Add("1.3.6.1.4.1.32473.6", [0x1f, 31, 8, .. "20230229"u8], false, legacy);
+                cases.Add("1.3.6.1.4.1.32473.6", [0x1f, 31, 10, .. "2024-02-29"u8], false, legacy);
             }
 
             return cases;

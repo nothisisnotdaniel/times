@@ -60,7 +60,7 @@ public sealed class LicenceIssuerTests : IDisposable
         int exit = Run(null, "create-key", "--kid", "k1");
 
         Assert.NotEqual(0, exit);
-        Assert.Equal(before, keys.Keys["k1"]);
+        SigningKeyStoreTests.AssertData(before, keys.Keys["k1"]);
         Assert.Equal(1, keys.WriteCount);
         Assert.Equal(string.Empty, output.ToString());
         Assert.Equal("A signing key named k1 already exists; it was left as it is.", error.ToString().Trim());

@@ -81,8 +81,8 @@ public sealed class SigningKeyStoreTests : IDisposable
         byte[] original = der.ToArray();
 
         Assert.True(store.TryCreate(Kid, der));
-        Assert.Equal(original, native.Stored!.Data);
-        Assert.Equal(original, der);
+        AssertData(original, native.Stored!.Data);
+        AssertData(original, der);
     }
 
     [Theory]
@@ -106,7 +106,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         Assert.Equal($"A signing key named {Kid} already exists; it was left as it is." + error.NewLine, error.ToString());
         Assert.Empty(output.ToString());
         Assert.Same(existing, native.Stored);
-        Assert.Equal(original, existing.Data);
+        AssertData(original, existing.Data);
         Assert.Equal(["original app", "another app"], existing.TrustedPaths);
         Assert.Equal(0, native.Creates);
         Assert.Equal(0, native.Updates);
@@ -142,7 +142,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         Assert.Equal($"A signing key named {Kid} already exists; it was left as it is." + error.NewLine, error.ToString());
         Assert.Null(native.Stored);
         Assert.Same(existing, native.OtherStored);
-        Assert.Equal(original, existing.Data);
+        AssertData(original, existing.Data);
         Assert.Equal(["other reader"], existing.TrustedPaths);
         Assert.Equal(Item.OriginalPartition, existing.Partition);
         Assert.Equal(0, native.Updates);
@@ -221,9 +221,9 @@ public sealed class SigningKeyStoreTests : IDisposable
         }
 
         Assert.Equal(1, native.Updates);
-        Assert.Equal(der, native.OtherStored.Data);
+        AssertData(der, native.OtherStored.Data);
         Assert.Equal(["other reader"], native.OtherStored.TrustedPaths);
-        Assert.Equal(untouched, native.Stored.Data);
+        AssertData(untouched, native.Stored.Data);
         Assert.Equal(["default reader"], native.Stored.TrustedPaths);
     }
 
@@ -276,14 +276,14 @@ public sealed class SigningKeyStoreTests : IDisposable
             Assert.True(LicenceKey.TryVerify(output.ToString().Trim(), original, LicenceRevocations.None).IsValid);
             Assert.Empty(error.ToString());
             Assert.Same(item, otherKeychain ? native.OtherStored : native.Stored);
-            Assert.Equal(der, item.Data);
+            AssertData(der, item.Data);
             Assert.Equal(["previous app", "keeper"], item.TrustedPaths);
             Assert.Equal(Item.OriginalPartition, item.Partition);
             Assert.Equal(legacy ? 1 : 0, native.Updates);
         }
 
         Assert.Equal(2, File.ReadAllLines(Ledger).Length);
-        Assert.Equal(der, store.Read(Kid));
+        AssertRead(store, der);
         Assert.Equal(3, native.Frees);
         Assert.Equal(0, native.Creates);
         Assert.Equal(0, native.Deletes);
@@ -316,12 +316,12 @@ public sealed class SigningKeyStoreTests : IDisposable
         byte[] before = legacy ? Legacy(der) : der;
         Item item = new Item(before, ["authorized reader"]);
         native.Stored = item;
-        Assert.Equal(der, refused.Read(Kid));
+        AssertRead(refused, der);
         Assert.Equal(0, Issue(refused));
         LicencePublicKeys original = LicencePublicKeys.FromTable([(Kid, key.ExportSubjectPublicKeyInfoPem())]);
         Assert.True(LicenceKey.TryVerify(output.ToString().Trim(), original, LicenceRevocations.None).IsValid);
         Assert.Same(item, native.Stored);
-        Assert.Equal(before, item.Data);
+        AssertData(before, item.Data);
         Assert.Equal(["authorized reader"], item.TrustedPaths);
         Assert.Equal(0, native.AccessCreations);
         Assert.Equal(0, native.Creates);
@@ -348,7 +348,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         Assert.Empty(output.ToString());
         Assert.Equal("previous entry\n", File.ReadAllText(Ledger));
         Assert.Same(item, native.Stored);
-        Assert.Equal(legacy, item.Data);
+        AssertData(legacy, item.Data);
         Assert.Equal(["original app"], item.TrustedPaths);
         Assert.Equal(Item.OriginalPartition, item.Partition);
         AssertCleared(native.UpdateBuffer!);
@@ -359,7 +359,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         Assert.Equal(0, Issue(store));
         LicencePublicKeys original = LicencePublicKeys.FromTable([(Kid, key.ExportSubjectPublicKeyInfoPem())]);
         Assert.True(LicenceKey.TryVerify(output.ToString().Trim(), original, LicenceRevocations.None).IsValid);
-        Assert.Equal(der, item.Data);
+        AssertData(der, item.Data);
         Assert.Equal(Item.OriginalPartition, item.Partition);
         Assert.Equal(2, native.Updates);
         Assert.Equal(2, native.Frees);
@@ -385,7 +385,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         Assert.Empty(error.ToString());
         Assert.Equal(2, File.ReadAllLines(Ledger).Length);
         Assert.Equal(1, native.Updates);
-        Assert.Equal(der, native.Stored.Data);
+        AssertData(der, native.Stored.Data);
         Assert.Equal([apphost], native.Stored.TrustedPaths);
         Assert.Equal(Item.OriginalPartition, native.Stored.Partition);
     }
@@ -427,7 +427,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         Assert.Same(current, native.Stored);
         if (current is not null)
         {
-            Assert.Equal(expected, current.Data);
+            AssertData(expected, current.Data);
             Assert.Equal(partition, current.Partition);
             Assert.Equal(change == "replaced" ? ["replacement reader"] : new[] { apphost }, current.TrustedPaths);
         }
@@ -459,8 +459,8 @@ public sealed class SigningKeyStoreTests : IDisposable
         Legacy(der).CopyTo(stored, 1);
         native.Stored = new Item(stored, [apphost]);
 
-        Assert.Equal(der, store.Read(Kid));
-        Assert.Equal(der, native.Stored.Data);
+        AssertRead(store, der);
+        AssertData(der, native.Stored.Data);
         Assert.Equal(1, native.Updates);
     }
 
@@ -503,7 +503,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         Assert.Empty(output.ToString());
         Assert.False(File.Exists(Ledger));
         Assert.Same(item, native.Stored);
-        Assert.Equal(original, item.Data);
+        AssertData(original, item.Data);
         Assert.Equal(["original app"], item.TrustedPaths);
         Assert.Equal(1, native.Frees);
         Assert.Equal(0, native.Updates);
@@ -553,7 +553,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         Assert.Empty(output.ToString());
         Assert.Equal("previous entry\n", File.ReadAllText(Ledger));
         Assert.Same(item, native.Stored);
-        Assert.Equal(original, item.Data);
+        AssertData(original, item.Data);
         Assert.Equal(["previous reader"], item.TrustedPaths);
         Assert.Equal(Item.OriginalPartition, item.Partition);
         Assert.Equal(0, native.Updates);
@@ -570,8 +570,8 @@ public sealed class SigningKeyStoreTests : IDisposable
         using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         byte[] der = WithPkcs8Fields(key.ExportPkcs8PrivateKey(), "sorted attributes");
         native.Stored = new Item(legacy ? Legacy(der) : der, [apphost]);
-        Assert.Equal(der, store.Read(Kid));
-        Assert.Equal(der, native.Stored.Data);
+        AssertRead(store, der);
+        AssertData(der, native.Stored.Data);
         Assert.Equal(legacy ? 1 : 0, native.Updates);
     }
 
@@ -710,6 +710,22 @@ public sealed class SigningKeyStoreTests : IDisposable
         return writer.Encode();
     }
 
+    private static void AssertRead(ISigningKeyStore store, byte[] expected)
+    {
+        byte[]? actual = store.Read(Kid);
+        try
+        {
+            AssertData(expected, actual);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(actual);
+        }
+    }
+
+    internal static void AssertData(ReadOnlySpan<byte> expected, ReadOnlySpan<byte> actual) =>
+        Assert.True(CryptographicOperations.FixedTimeEquals(expected, actual), "Stored signing-key data differs.");
+
     private static void AssertCleared(byte[] bytes)
     {
         Assert.NotEmpty(bytes);
@@ -744,7 +760,6 @@ public sealed class SigningKeyStoreTests : IDisposable
         private readonly Dictionary<IntPtr, IntPtr> owners = [];
         private readonly Dictionary<IntPtr, int> buffers = [];
         private int nextReference = 10;
-        private string? trustedPath;
         private bool creating;
 
         public Item? Stored { get; set; }
@@ -763,6 +778,8 @@ public sealed class SigningKeyStoreTests : IDisposable
         public List<int> LockOrder { get; } = [];
         public bool RefuseUpdate { get; set; }
         public bool RefuseCommit { get; set; }
+        public bool DestinationUnavailable { get; set; }
+        public Action? DuringProbe { get; set; }
         public int Finds { get; private set; }
         public int DataRequests { get; private set; }
         public int AccessCreations { get; private set; }
@@ -835,6 +852,7 @@ public sealed class SigningKeyStoreTests : IDisposable
                 CheckedOtherUnderLock = true;
             }
 
+            DuringProbe?.Invoke();
             return GetItem(keychain) is not null;
         }
 
@@ -987,17 +1005,23 @@ public sealed class SigningKeyStoreTests : IDisposable
             Assert.Equal(Service, description);
             held.Add(AccessRef);
             AccessCreations++;
-            trustedPath = path;
             return AccessRef;
         }
 
         public int CreateFromContent(uint itemClass, ref MacKeychainItem.AttributeList attributes, byte[] data,
-            IntPtr keychain, IntPtr access, out IntPtr item)
+            IntPtr keychain, IntPtr access, out IntPtr item) =>
+            throw new InvalidOperationException("A signing key must have an explicit destination.");
+
+        public int AddToKeychain(IntPtr keychain, ref MacKeychainItem.AttributeList attributes, byte[] data,
+            string creatorPath, out IntPtr item)
         {
-            Assert.Equal(0x67656e70u, itemClass);
             Assert.Contains(keychain, locked);
-            Assert.Equal((IntPtr)AccessRef, access);
-            Assert.Contains(access, held);
+            if (DestinationUnavailable)
+            {
+                item = IntPtr.Zero;
+                return -25294; // errSecNoSuchKeychain
+            }
+
             Dictionary<uint, string> values = [];
             for (int i = 0; i < attributes.Count; i++)
             {
@@ -1018,7 +1042,7 @@ public sealed class SigningKeyStoreTests : IDisposable
             }
 
             Assert.Equal("Times.LicenceIssuer/create-key/v1", values[0x67656e61]);
-            Item created = new Item(data, [trustedPath!]) { IssuerCreated = true };
+            Item created = new Item(data, [creatorPath]) { IssuerCreated = true };
             SetItem(keychain, created);
             item = Retain(created, keychain);
             creating = true;
