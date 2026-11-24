@@ -401,13 +401,20 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
                 case UniversalTagNumber.GeneralString:
                 case UniversalTagNumber.VideotexString:
                     ValidateIso2022(reader.PeekContentBytes().Span,
-                        tag.TagValue is (int)UniversalTagNumber.GraphicString or (int)UniversalTagNumber.ObjectDescriptor);
+                        tag.TagValue is (int)UniversalTagNumber.GraphicString or (int)UniversalTagNumber.ObjectDescriptor,
+                        tag.TagValue == (int)UniversalTagNumber.VideotexString);
                     break;
                 case UniversalTagNumber.Date:
                     ValidateDate(reader.PeekContentBytes().Span);
                     break;
                 case UniversalTagNumber.TimeOfDay:
                     ValidateTimeOfDay(reader.PeekContentBytes().Span);
+                    break;
+                case UniversalTagNumber.DateTime:
+                    ReadOnlySpan<byte> dateTime = reader.PeekContentBytes().Span;
+                    Require(dateTime.Length == 14);
+                    ValidateDate(dateTime[..8]);
+                    ValidateTimeOfDay(dateTime[8..]);
                     break;
                 case UniversalTagNumber.UniversalString:
                     ReadOnlySpan<byte> utf32 = reader.PeekContentBytes().Span;
@@ -465,11 +472,13 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
         Require(hour < 24 && minute < 60 && second <= 60 || hour == 24 && minute == 0 && second == 0);
     }
 
-    private static void ValidateIso2022(ReadOnlySpan<byte> value, bool graphicOnly)
+    private static void ValidateIso2022(ReadOnlySpan<byte> value, bool graphicOnly, bool videotex)
     {
         // ISO 2022 designates sets G0..G3 independently of the left/right or single shift
         // that invokes one. A designation can change the width of a graphic character.
         Span<int> widths = [1, 0, 0, 0];
+        Span<Range> designations = stackalloc Range[4];
+        designations.Clear();
         Span<bool> sets96 = stackalloc bool[4];
         sets96.Clear();
         int left = 0, right = 1, single = -1;
@@ -486,7 +495,7 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
                 }
 
                 Require(i < value.Length && value[i] is >= 0x30 and <= 0x7e);
-                ReadGraphicEscape(value[start..i], value[i], widths, sets96, ref left, ref right, ref single);
+                ReadGraphicEscape(value, start, i, videotex, widths, sets96, designations, ref left, ref right, ref single);
             }
             else if (current is 0x0e or 0x0f or 0x8e or 0x8f)
             {
@@ -525,9 +534,11 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
         Require(single < 0);
     }
 
-    private static void ReadGraphicEscape(ReadOnlySpan<byte> intermediates, byte final, Span<int> widths,
-        Span<bool> sets96, ref int left, ref int right, ref int single)
+    private static void ReadGraphicEscape(ReadOnlySpan<byte> value, int start, int end, bool videotex,
+        Span<int> widths, Span<bool> sets96, Span<Range> designations, ref int left, ref int right, ref int single)
     {
+        ReadOnlySpan<byte> intermediates = value[start..end];
+        byte final = value[end];
         if (intermediates.IsEmpty)
         {
             switch (final)
@@ -547,14 +558,17 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
 
         bool multibyte = intermediates[0] == '$';
         int slot;
+        int nameStart;
         if (multibyte && intermediates.Length == 1)
         {
             Require(final is >= 0x40 and <= 0x42); // original multibyte G0 designations
             slot = '(';
+            nameStart = end;
         }
         else
         {
             slot = intermediates[multibyte ? 1 : 0];
+            nameStart = start + (multibyte ? 2 : 1);
             if (slot is < '(' or > '/' or ',')
             {
                 Require(!multibyte);
@@ -563,10 +577,23 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
         }
 
         int set = slot & 3;
-        sets96[set] = slot >= '-';
         // ECMA-35 14.3.3 gives the widths of the registered multibyte sets.
         Require(!multibyte || final is >= 0x40 and < 0x70);
-        widths[set] = multibyte ? (final < 0x60 ? 2 : 3) : 1;
+        int width = multibyte ? (final < 0x60 ? 2 : 3) : 1;
+        bool is96 = slot >= '-';
+        Range name = nameStart..(end + 1);
+        if (widths[set] == width && sets96[set] == is96)
+        {
+            ReadOnlySpan<byte> previous = value[designations[set]];
+            if (previous.IsEmpty)
+            {
+                previous = videotex ? "u"u8 : "B"u8; // X.690 table 3, initial G0
+            }
+            Require(!previous.SequenceEqual(value[name]));
+        }
+        designations[set] = name;
+        widths[set] = width;
+        sets96[set] = is96;
     }
 
     private static Asn1Tag Context(int number) => new(TagClass.ContextSpecific, number);

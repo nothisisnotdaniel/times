@@ -13,8 +13,8 @@ public sealed partial class MacKeychainMigrationTests
     public void CreateKey_CommittedSecondaryInsertAfterCachedMiss_RefusesPublication()
     {
         using PortableFixture fixture = new();
-        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
-        SigningKeyStoreTests.Item competing = new(key.ExportPkcs8PrivateKey(), ["competing reader"]);
+        byte[] original = RandomNumberGenerator.GetBytes(32);
+        SigningKeyStoreTests.Item competing = new(original, ["competing reader"]);
         fixture.Calls.CacheOtherMiss = true;
         fixture.Calls.AfterMissingLookup = () => fixture.Calls.OtherStored = competing;
         using StringWriter output = new();
@@ -24,6 +24,7 @@ public sealed partial class MacKeychainMigrationTests
         Assert.Contains("already exists", error.ToString(), StringComparison.Ordinal);
         Assert.True(fixture.Calls.CheckedOtherUnderLock);
         Assert.Same(competing, fixture.Calls.OtherStored);
+        Assert.True(CryptographicOperations.FixedTimeEquals(original, competing.Data));
         Assert.Equal(["competing reader"], competing.TrustedPaths);
         Assert.Equal(SigningKeyStoreTests.Item.OriginalPartition, competing.Partition);
         Assert.Null(fixture.Calls.Stored);
@@ -162,6 +163,37 @@ public sealed partial class MacKeychainMigrationTests
     }
 
     [Fact]
+    public void Issue_RegeneratedPhysicalId_PreservesTheLogicalItemAndTwoVerifiableLicences()
+    {
+        using PortableFixture fixture = new();
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] der = key.ExportPkcs8PrivateKey();
+        byte[] legacy = EncodeLegacy(der);
+        SigningKeyStoreTests.Item item = new(legacy, ["first reader", "second reader"]);
+        fixture.Calls.Stored = item;
+        fixture.Calls.AfterUpdate = updated => updated.PhysicalVersion++;
+        try
+        {
+            LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]);
+            AssertIssued(fixture.Store, fixture.Ledger, original);
+            AssertIssued(fixture.Store, fixture.Ledger, original);
+            Assert.Equal(2, File.ReadAllLines(fixture.Ledger).Length);
+            Assert.Same(item, fixture.Calls.Stored);
+            Assert.Equal(1, item.PhysicalVersion);
+            Assert.True(CryptographicOperations.FixedTimeEquals(der, item.Data));
+            Assert.Equal(["first reader", "second reader"], item.TrustedPaths);
+            Assert.Equal(SigningKeyStoreTests.Item.OriginalPartition, item.Partition);
+            Assert.Equal(1, fixture.Calls.Updates);
+            Assert.Equal(0, fixture.Calls.Creates + fixture.Calls.Deletes);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(legacy);
+            CryptographicOperations.ZeroMemory(der);
+        }
+    }
+
+    [Fact]
     public void Issue_TwoPublishedKeysAfterAChangeOfDefault_RefusesBeforeReadingEither()
     {
         using PortableFixture fixture = new();
@@ -230,6 +262,86 @@ public sealed partial class MacKeychainMigrationTests
     }
 
     private static readonly TimeSpan ChildCleanupTimeout = TimeSpan.FromSeconds(30);
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CreateKey_StalledSecondary_ReleasesTargetBeforeTheSecondaryResumes(bool preparation)
+    {
+        using PortableFixture fixture = new();
+        using ManualResetEventSlim resume = new();
+        TaskCompletionSource stalled = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource finished = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        byte[] sample = RandomNumberGenerator.GetBytes(32);
+        SigningKeyStoreTests.Item competitor = new(sample, ["another reader"]);
+        fixture.Calls.OtherStored = competitor;
+        fixture.Calls.CacheOtherMiss = true;
+        void Stall()
+        {
+            stalled.TrySetResult();
+            if (!resume.Wait(FixtureTimeout))
+            {
+                throw new TokenStoreException("The fixture secondary did not resume.");
+            }
+        }
+        fixture.Calls.LookupWorker = acquire => MacKeychainItem.NativeCalls.LookupTransaction.Acquire(() =>
+        {
+            if (preparation)
+            {
+                Stall();
+            }
+            IDisposable guard = acquire();
+            return new FixtureCleanup(() =>
+            {
+                if (!preparation)
+                {
+                    Stall();
+                }
+                guard.Dispose();
+            });
+        }, () => finished.TrySetResult(), preparation ? TimeSpan.Zero : FixtureTimeout);
+
+        using StringWriter output = new();
+        using StringWriter error = new();
+        Task<int> creation = Task.Run(() => fixture.Create(output, error));
+        try
+        {
+            await stalled.Task.WaitAsync(FixtureTimeout);
+            if (preparation)
+            {
+                Assert.Equal(1, await creation.WaitAsync(FixtureTimeout));
+            }
+            // A separately authorized writer can commit to the same target before the secondary resumes.
+            using (MacKeychainItem.IFileTransaction target = fixture.Calls.BeginTransaction((IntPtr)4))
+            {
+                fixture.Calls.Stored = new SigningKeyStoreTests.Item([7], ["target writer"]);
+                target.Commit();
+            }
+            Assert.True(fixture.Calls.Stored.Data.AsSpan().SequenceEqual(new byte[] {7}));
+            Assert.False(finished.Task.IsCompleted);
+        }
+        finally
+        {
+            resume.Set();
+            await finished.Task.WaitAsync(ChildCleanupTimeout);
+            await creation.WaitAsync(ChildCleanupTimeout);
+        }
+        Assert.Equal(1, await creation);
+        Assert.Empty(output.ToString());
+        Assert.Equal((preparation ? "The item could not be saved in the macOS Keychain."
+            : "A signing key named maker already exists; it was left as it is.") + error.NewLine, error.ToString());
+        Assert.Same(competitor, fixture.Calls.OtherStored);
+        Assert.True(CryptographicOperations.FixedTimeEquals(sample, competitor.Data));
+        Assert.Equal(["another reader"], competitor.TrustedPaths);
+        Assert.Equal(0, fixture.Calls.Creates + fixture.Calls.Updates + fixture.Calls.Deletes);
+    }
+
+    private sealed class FixtureCleanup : IDisposable
+    {
+        private readonly Action cleanup;
+        public FixtureCleanup(Action cleanup) => this.cleanup = cleanup;
+        public void Dispose() => cleanup();
+    }
 
     [Theory]
     [InlineData(false)]
@@ -309,6 +421,9 @@ public sealed partial class MacKeychainMigrationTests
                 cases.Add("1.3.6.1.4.1.32473.4", [0x31, 5, 0xa0, 0, 0x81, 1, 1], true, legacy);
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 2, 0x1b, 0x28], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 1, 65], true, legacy);
+                cases.Add("1.3.6.1.4.1.32473.5", [0x19, 4, 0x1b, 0x28, 0x42, 65], false, legacy);
+                cases.Add("1.3.6.1.4.1.32473.5", [0x19, 8, 0x1b, 0x28, 0x4a, 0x5c, 0x1b, 0x28, 0x4a, 0x5c], false, legacy);
+                cases.Add("1.3.6.1.4.1.32473.5", [0x19, 8, 0x1b, 0x28, 0x4a, 0x5c, 0x1b, 0x28, 0x42, 0x5c], true, legacy);
                 // JIS X 0208 designates a two-byte repertoire. A shift or a new
                 // designation can only occur between complete graphic characters.
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 5, 0x1b, 0x24, 0x42, 0x24, 0x22], true, legacy);
@@ -328,6 +443,11 @@ public sealed partial class MacKeychainMigrationTests
                 cases.Add("1.3.6.1.4.1.32473.7", [0x1f, 32, 6, .. "126000"u8], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.7", [0x1f, 32, 6, .. "123461"u8], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.7", [0x1f, 32, 6, .. "1X0000"u8], false, legacy);
+                cases.Add("1.3.6.1.4.1.32473.8", [0x1f, 33, 14, .. "20240229123456"u8], true, legacy);
+                cases.Add("1.3.6.1.4.1.32473.8", [0x1f, 33, 14, .. "20240615123456"u8], true, legacy);
+                cases.Add("1.3.6.1.4.1.32473.8", [0x1f, 33, 14, .. "20230229123456"u8], false, legacy);
+                cases.Add("1.3.6.1.4.1.32473.8", [0x1f, 33, 14, .. "20240229126000"u8], false, legacy);
+                cases.Add("1.3.6.1.4.1.32473.8", [0x1f, 33, 15, .. "20240229T123456"u8], false, legacy);
             }
 
             return cases;

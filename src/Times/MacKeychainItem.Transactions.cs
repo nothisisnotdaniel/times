@@ -20,7 +20,7 @@ internal sealed partial class MacKeychainItem
         private const uint CommitDatabase = 1;
         private const uint Rollback = 2;
         private const uint TakeFileLock = 3;
-        private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(10);
+        internal static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(10);
         private readonly Action<string, int>? reportStatus;
 
         public NativeCalls(Action<string, int>? reportStatus = null)
@@ -57,7 +57,7 @@ internal sealed partial class MacKeychainItem
             return fileDb;
         }
 
-        public IFileTransaction BeginTransaction(IntPtr keychain, bool nonInteractive = false)
+        public virtual IFileTransaction BeginTransaction(IntPtr keychain, bool nonInteractive = false)
         {
             bool restoreInteraction = false;
             SafeFileHandle? guard = null;
@@ -86,18 +86,35 @@ internal sealed partial class MacKeychainItem
             }
         }
 
-        public IDisposable LockForLookup(IntPtr keychain, byte[] path)
+        public IDisposable GuardMatch(IntPtr keychain, string service, string account, string apphost,
+            TimeSpan timeout, out bool found)
         {
-            SafeFileHandle? local = OpenLocalLock(path, lookup: true);
-            if (local is not null)
-            {
-                return local;
-            }
-
-            // Network FileDL has its own locking protocol and no try-lock. Bound the
-            // caller's wait. A late read-only transaction releases itself on acquisition.
+            // Path discovery, mount inspection, provider locks and the fresh committed
+            // lookup all run under one caller deadline. A late worker owns its reference.
             IntPtr retained = CFRetain(keychain);
-            return LookupTransaction.Acquire(() => BeginTransaction(retained), () => CFRelease(retained), ProbeTimeout);
+            bool match = false;
+            LookupTransaction guarded = LookupTransaction.Acquire(() =>
+            {
+                byte[] path = KeychainPath(retained);
+                IDisposable guard = LockForLookup(retained, path);
+                try
+                {
+                    match = CommittedMatch(path, service, account, apphost);
+                    return guard;
+                }
+                catch
+                {
+                    guard.Dispose();
+                    throw;
+                }
+            }, () => CFRelease(retained), timeout);
+            found = match;
+            return guarded;
+        }
+
+        internal virtual IDisposable LockForLookup(IntPtr keychain, byte[] path)
+        {
+            return (IDisposable?)OpenLocalLock(path, lookup: true) ?? BeginTransaction(keychain);
         }
 
         internal sealed class LookupTransaction : IDisposable
@@ -158,7 +175,9 @@ internal sealed partial class MacKeychainItem
             public void Dispose()
             {
                 release.TrySetResult();
-                worker.GetAwaiter().GetResult();
+                // Late cleanup keeps the retained secondary alive on its own worker.
+                // It must not prevent release of the remaining lookup guards.
+                worker.Wait(ProbeTimeout);
             }
         }
 
@@ -226,15 +245,24 @@ internal sealed partial class MacKeychainItem
         public int CopyAccessSnapshot(IntPtr item, out IntPtr snapshot) =>
             Report("copy access", CopyPasswordAccess(item, out snapshot));
 
-        public int UpdateData(IntPtr item, ReadOnlyMemory<byte> data) =>
+        public int CheckAccess(IntPtr before, IntPtr after, IntPtr item, byte[] expected) =>
+            Report("check access", CheckPasswordPolicy(before, after, item, expected, (nuint)expected.Length));
+
+        public int CopyPersistentReference(IntPtr item, out IntPtr persistent) =>
+            Report("persistent reference", CopyPasswordReference(item, out persistent));
+
+        public int ResolvePassword(IntPtr persistent, IntPtr owner, string service, string account, out IntPtr item) =>
+            Report("resolve persistent reference", ResolvePasswordReference(persistent, owner, service, account, out item));
+
+        public virtual int UpdateData(IntPtr item, ReadOnlyMemory<byte> data) =>
             Report("provider update", SecKeychainItemModifyAttributesAndData(item, 0, (uint)data.Length, data.Span));
 
-        public byte[]? DataStamp(IntPtr item)
+        public byte[]? DataStamp(IntPtr item, int expectedLength = -1)
         {
             byte[] digest = new byte[32];
             try
             {
-                int status = PasswordStamp(item, digest, out IntPtr stage);
+                int status = PasswordStamp(item, expectedLength, digest, out IntPtr stage);
                 if (status == 0)
                 {
                     return digest;
@@ -252,9 +280,8 @@ internal sealed partial class MacKeychainItem
 
         // The writer transaction refreshes its FileDL snapshot. A shared reader lock does
         // not, so resolve secondary matches in a process with no cached database view.
-        public bool CommittedMatch(IntPtr keychain, string service, string account, string apphost)
+        private static bool CommittedMatch(byte[] path, string service, string account, string apphost)
         {
-            byte[] path = KeychainPath(keychain);
             try
             {
                 string filename = new(new UTF8Encoding(false, true).GetChars(path));
@@ -355,8 +382,19 @@ internal sealed partial class MacKeychainItem
         [LibraryImport("TimesIssuerKeychain", EntryPoint = "TimesCopyPasswordAccess")]
         private static partial int CopyPasswordAccess(IntPtr item, out IntPtr snapshot);
 
+        [LibraryImport("TimesIssuerKeychain", EntryPoint = "TimesCheckPasswordPolicy")]
+        private static partial int CheckPasswordPolicy(IntPtr before, IntPtr after, IntPtr item,
+            ReadOnlySpan<byte> expected, nuint length);
+
+        [LibraryImport("TimesIssuerKeychain", EntryPoint = "TimesCopyPasswordReference")]
+        private static partial int CopyPasswordReference(IntPtr item, out IntPtr persistent);
+
+        [LibraryImport("TimesIssuerKeychain", EntryPoint = "TimesResolvePassword", StringMarshalling = StringMarshalling.Utf8)]
+        private static partial int ResolvePasswordReference(IntPtr persistent, IntPtr owner, string service,
+            string account, out IntPtr item);
+
         [LibraryImport("TimesIssuerKeychain", EntryPoint = "TimesPasswordStamp")]
-        private static partial int PasswordStamp(IntPtr item, [Out] byte[] digest, out IntPtr stage);
+        private static partial int PasswordStamp(IntPtr item, int expectedLength, [Out] byte[] digest, out IntPtr stage);
 
         [LibraryImport(Security, StringMarshalling = StringMarshalling.Utf8)]
         private static partial int SecKeychainOpen(string path, out IntPtr keychain);

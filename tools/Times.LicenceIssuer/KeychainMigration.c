@@ -12,7 +12,8 @@ enum { GroupLabelSize = 20, IvSize = 8, PrefixSize = GroupLabelSize + IvSize, Ma
 
 // Compare the protected value across the read and the subsequent writer transaction.
 // A fresh IV means that a re-encryption also changes the stamp.
-OSStatus TimesPasswordStamp(SecKeychainItemRef item, uint8_t digest[CC_SHA256_DIGEST_LENGTH], const char **stage)
+OSStatus TimesPasswordStamp(SecKeychainItemRef item, int expectedLength, uint8_t digest[CC_SHA256_DIGEST_LENGTH],
+                            const char **stage)
 {
     CSSM_DL_DB_HANDLE db;
     CSSM_API_MEMORY_FUNCS memory;
@@ -32,7 +33,8 @@ OSStatus TimesPasswordStamp(SecKeychainItemRef item, uint8_t digest[CC_SHA256_DI
     if (!status) {
         *stage = "validate stamp envelope";
         if (attrs.DataRecordType != CSSM_DL_DB_RECORD_GENERIC_PASSWORD || !blob.Data || blob.Length < PrefixSize + IvSize ||
-            blob.Length > PrefixSize + MaxCipherSize || memcmp(blob.Data, "ssgp", 4) != 0) {
+            blob.Length > PrefixSize + MaxCipherSize || memcmp(blob.Data, "ssgp", 4) != 0 ||
+            (expectedLength >= 0 && blob.Length != PrefixSize + ((size_t)expectedLength / IvSize + 1) * IvSize)) {
             status = errSecInvalidItemRef;
         } else {
             CC_SHA256(blob.Data, (CC_LONG)blob.Length, digest);
@@ -45,95 +47,69 @@ OSStatus TimesPasswordStamp(SecKeychainItemRef item, uint8_t digest[CC_SHA256_DI
     return status;
 }
 
-// Compare the provider's ACL entries by value. A trusted application's external
-// representation includes its code requirement as well as its path.
-extern OSStatus SecTrustedApplicationCopyExternalRepresentation(SecTrustedApplicationRef, CFDataRef *);
-
-static OSStatus copyAccessEntry(SecACLRef acl, CFArrayRef *result)
+// Restrict both forms of the reference query to the selected file Keychain.
+static OSStatus copyReference(SecKeychainRef owner, CFStringRef input, CFTypeRef value,
+                              CFStringRef output, CFTypeRef *result)
 {
-    CFArrayRef apps = NULL;
-    CFStringRef description = NULL;
-    CSSM_ACL_KEYCHAIN_PROMPT_SELECTOR prompt = {0};
-    OSStatus status = SecACLCopySimpleContents(acl, &apps, &description, &prompt);
-    CFMutableArrayRef readers = NULL;
-    CSSM_ACL_AUTHORIZATION_TAG *tags = NULL;
-    CFDataRef rights = NULL, selector = NULL;
-    if (status) goto done;
-
-    // Keep numeric authorizations, including vendor-specific rights. The string
-    // API maps unfamiliar authorizations to "any".
-    uint32_t count = 0;
-    CSSM_ACL_AUTHORIZATION_TAG unused = 0;
-    status = SecACLGetAuthorizations(acl, &unused, &count);
-    if (count && status == errSecParam) {
-        tags = calloc(count, sizeof(*tags));
-        if (!tags) { status = errSecAllocate; goto done; }
-        status = SecACLGetAuthorizations(acl, tags, &count);
-    }
-    if (status) goto done;
-    rights = CFDataCreate(NULL, (const UInt8 *)(tags ? tags : &unused), (CFIndex)count * sizeof(*tags));
-    selector = CFDataCreate(NULL, (const UInt8 *)&prompt, sizeof(prompt));
-    if (!rights || !selector) { status = errSecAllocate; goto done; }
-
-    if (apps) {
-        readers = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
-        if (!readers) { status = errSecAllocate; goto done; }
-        for (CFIndex i = 0; i < CFArrayGetCount(apps); i++) {
-            CFDataRef application = NULL;
-            status = SecTrustedApplicationCopyExternalRepresentation(
-                (SecTrustedApplicationRef)CFArrayGetValueAtIndex(apps, i), &application);
-            if (!status && !application) status = errSecInvalidItemRef;
-            if (status) {
-                if (application) CFRelease(application);
-                goto done;
-            }
-            CFArrayAppendValue(readers, application);
-            CFRelease(application);
-        }
-    }
-    const void *fields[] = { rights, selector, description ? (CFTypeRef)description : kCFNull,
-                            readers ? (CFTypeRef)readers : kCFNull };
-    *result = CFArrayCreate(NULL, fields, 4, &kCFTypeArrayCallBacks);
-    if (!*result) status = errSecAllocate;
-done:
-    free(tags);
-    if (rights) CFRelease(rights);
-    if (selector) CFRelease(selector);
-    if (readers) CFRelease(readers);
-    if (description) CFRelease(description);
-    if (apps) CFRelease(apps);
+    *result = NULL;
+    const void *database = owner;
+    CFArrayRef scope = CFArrayCreate(NULL, &database, 1, &kCFTypeArrayCallBacks);
+    if (!scope) return errSecAllocate;
+    const void *keys[] = {kSecClass, kSecMatchSearchList, input, output, kSecMatchLimit};
+    const void *values[] = {kSecClassGenericPassword, scope, value, kCFBooleanTrue, kSecMatchLimitOne};
+    CFDictionaryRef query = CFDictionaryCreate(NULL, keys, values, 5,
+        &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    OSStatus status = query ? SecItemCopyMatching(query, result) : errSecAllocate;
+    if (query) CFRelease(query);
+    CFRelease(scope);
     return status;
 }
 
-// SecAccessCopyACLList includes the owner entry, partition and integrity rules.
-// Keep duplicate entries, ignoring only enumeration order. A policy the provider
-// cannot describe causes the surrounding file transaction to roll back.
-OSStatus TimesCopyPasswordAccess(SecKeychainItemRef item, CFBagRef *result)
+OSStatus TimesCopyPasswordReference(SecKeychainItemRef item, CFDataRef *result)
 {
     *result = NULL;
-    SecAccessRef access = NULL;
-    CFArrayRef entries = NULL;
-    CFMutableBagRef policy = NULL;
-    OSStatus status = SecKeychainItemCopyAccess(item, &access);
-    if (!status && !access) status = errSecInvalidItemRef;
-    if (!status) status = SecAccessCopyACLList(access, &entries);
-    if (!status && (!entries || !CFArrayGetCount(entries))) status = errSecInvalidItemRef;
-    if (status) goto done;
-    policy = CFBagCreateMutable(NULL, 0, &kCFTypeBagCallBacks);
-    if (!policy) { status = errSecAllocate; goto done; }
-    for (CFIndex i = 0; i < CFArrayGetCount(entries); i++) {
-        CFArrayRef entry = NULL;
-        status = copyAccessEntry((SecACLRef)CFArrayGetValueAtIndex(entries, i), &entry);
-        if (status) goto done;
-        CFBagAddValue(policy, entry);
-        CFRelease(entry);
+    SecKeychainRef database = NULL;
+    CFTypeRef reference = NULL;
+    OSStatus status = item ? SecKeychainItemCopyKeychain(item, &database) : errSecParam;
+    if (!status && !database) status = errSecInvalidItemRef;
+    if (!status) status = copyReference(database, kSecValueRef, item, kSecReturnPersistentRef, &reference);
+    if (!status && (!reference || CFGetTypeID(reference) != CFDataGetTypeID())) status = errSecInvalidItemRef;
+    if (status && reference) CFRelease(reference);
+    if (!status) *result = (CFDataRef)reference;
+    if (database) CFRelease(database);
+    return status;
+}
+
+// The reference comes from the selected file Keychain. Recheck its owner, class
+// and primary attributes before using the resolved item for a postcondition.
+OSStatus TimesResolvePassword(CFDataRef persistent, SecKeychainRef owner, const char *service,
+                              const char *account, SecKeychainItemRef *result)
+{
+    *result = NULL;
+    if (!persistent || !owner || !service || !account) return errSecParam;
+    SecKeychainItemRef item = NULL;
+    SecKeychainRef database = NULL;
+    CFTypeRef resolved = NULL;
+    OSStatus status = copyReference(owner, kSecValuePersistentRef, persistent, kSecReturnRef, &resolved);
+    if (!status && (!resolved || CFGetTypeID(resolved) != SecKeychainItemGetTypeID())) status = errSecInvalidItemRef;
+    if (!status) item = (SecKeychainItemRef)resolved;
+    if (!status) status = SecKeychainItemCopyKeychain(item, &database);
+    if (!status && (!database || !CFEqual(owner, database))) status = errSecInvalidItemRef;
+    if (!status) {
+        SecItemClass kind = 0;
+        SecKeychainAttribute attrs[] = { {kSecServiceItemAttr, 0, NULL}, {kSecAccountItemAttr, 0, NULL} };
+        SecKeychainAttributeList list = {2, attrs};
+        status = SecKeychainItemCopyContent(item, &kind, &list, NULL, NULL);
+        if (!status && (kind != kSecGenericPasswordItemClass || !attrs[0].data || !attrs[1].data ||
+            attrs[0].length != strlen(service) || memcmp(attrs[0].data, service, attrs[0].length) ||
+            attrs[1].length != strlen(account) || memcmp(attrs[1].data, account, attrs[1].length))) {
+            status = errSecInvalidItemRef;
+        }
+        SecKeychainItemFreeContent(&list, NULL);
     }
-    *result = policy;
-    policy = NULL;
-done:
-    if (policy) CFRelease(policy);
-    if (entries) CFRelease(entries);
-    if (access) CFRelease(access);
+    if (database) CFRelease(database);
+    if (status && resolved) CFRelease(resolved);
+    if (!status) *result = item;
     return status;
 }
 

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -286,38 +287,44 @@ internal sealed partial class MacKeychainItem
     internal bool AddWithSearchList(IntPtr target, IReadOnlyList<IntPtr> others, string service, string account,
         byte[] data, string creatorPath, string apphost)
     {
-        lock (TransactionLock)
-        {
-            return AddWithSearchListLocked(target, others, service, account, data, creatorPath, apphost);
-        }
-    }
-
-    private bool AddWithSearchListLocked(IntPtr target, IReadOnlyList<IntPtr> others, string service, string account,
-        byte[] data, string creatorPath, string apphost)
-    {
-        // FileDL can wait for the writer. Take it before holding any other database,
-        // then acquire only bounded lookup guards and keep them through the commit.
-        using IFileTransaction targetTransaction = native.BeginTransaction(target);
         Stack<IDisposable> held = new(others.Count);
         try
         {
-            foreach (IntPtr keychain in others)
+            lock (TransactionLock)
             {
-                held.Push(native.LockForLookup(keychain, native.KeychainPath(keychain)));
-            }
+                using IFileTransaction writer = native.BeginTransaction(target);
+                if (Exists(target, service, account))
+                {
+                    return false;
+                }
 
-            if (Exists(target, service, account)
-                || others.Any(other => native.CommittedMatch(other, service, account, apphost))
-                || !TryAddToKeychain(target, service, account, data, creatorPath, issuerCreated: true))
-            {
-                return false;
-            }
+                long start = Stopwatch.GetTimestamp();
+                foreach (IntPtr database in others)
+                {
+                    TimeSpan remaining = NativeCalls.ProbeTimeout - Stopwatch.GetElapsedTime(start);
+                    if (remaining <= TimeSpan.Zero)
+                    {
+                        throw new TokenStoreException(SaveFailed);
+                    }
+                    held.Push(native.GuardMatch(database, service, account, apphost, remaining, out bool found));
+                    if (found)
+                    {
+                        return false;
+                    }
+                }
 
-            targetTransaction.Commit();
-            return true;
+                if (!TryAddToKeychain(target, service, account, data, creatorPath, issuerCreated: true))
+                {
+                    return false;
+                }
+                writer.Commit();
+                return true;
+            }
         }
         finally
         {
+            // FileDL cleanup on an unresponsive secondary may block. At this point
+            // both the target file transaction and the process lock have ended.
             foreach (IDisposable guard in held)
             {
                 guard.Dispose();
@@ -452,7 +459,7 @@ internal sealed partial class MacKeychainItem
             lock (TransactionLock)
             {
                 using IFileTransaction transaction = native.BeginTransaction(owner, nonInteractive: true);
-                Check(native.Find(owner, service, account, out IntPtr current), MigrationFailed);
+                Check(native.FindUnique(owner, service, account, out IntPtr current), MigrationFailed);
                 try
                 {
                     Check(native.CopyRecordId(current, out IntPtr currentId), MigrationFailed);
@@ -488,7 +495,7 @@ internal sealed partial class MacKeychainItem
                         }
                     }
 
-                    UpdatePreservingAccess(owner, service, account, current, recordId, lockedStamp, data);
+                    UpdatePreservingAccess(owner, service, account, current, lockedStamp, data);
                     transaction.Commit();
                 }
                 finally
@@ -503,39 +510,41 @@ internal sealed partial class MacKeychainItem
         }
     }
 
-    private void UpdatePreservingAccess(IntPtr owner, string service, string account, IntPtr item, IntPtr recordId,
+    private void UpdatePreservingAccess(IntPtr owner, string service, string account, IntPtr item,
         byte[]? originalStamp, byte[] data)
     {
-        IntPtr before = IntPtr.Zero, after = IntPtr.Zero, updated = IntPtr.Zero, updatedId = IntPtr.Zero;
+        IntPtr before = IntPtr.Zero, after = IntPtr.Zero, persistent = IntPtr.Zero, resolved = IntPtr.Zero;
         try
         {
+            Check(native.CopyPersistentReference(item, out persistent), MigrationFailed);
             Check(native.CopyAccessSnapshot(item, out before), MigrationFailed);
-            if (before == IntPtr.Zero)
+            if (before == IntPtr.Zero || persistent == IntPtr.Zero || originalStamp is null)
             {
                 throw new TokenStoreException(MigrationFailed);
             }
             Check(native.UpdateData(item, data), MigrationFailed);
-            // Resolve the stored record again inside the transaction. A password update
-            // can produce a different record or storage group under the same service and account.
-            Check(native.Find(owner, service, account, out updated), MigrationFailed);
-            if (updated == IntPtr.Zero)
+            // FileDL cursors enumerate the pre-transaction snapshot. The live item is
+            // updated by Keychain Services and can be checked while rollback is possible.
+            // Resolve the original reference independently and check both protected values.
+            Check(native.ResolvePassword(persistent, owner, service, account, out resolved), MigrationFailed);
+            if (resolved == IntPtr.Zero)
             {
                 throw new TokenStoreException(MigrationFailed);
             }
-            Check(native.CopyRecordId(updated, out updatedId), MigrationFailed);
-            Check(native.CopyAccessSnapshot(updated, out after), MigrationFailed);
-            byte[]? updatedStamp = native.DataStamp(updated);
-            if (updatedId == IntPtr.Zero || after == IntPtr.Zero || !native.Equal(recordId, updatedId)
-                || !native.Equal(before, after) || updatedStamp is null
-                || updatedStamp.AsSpan().SequenceEqual(originalStamp))
+            Check(native.CopyAccessSnapshot(resolved, out after), MigrationFailed);
+            byte[]? written = native.DataStamp(item, data.Length);
+            byte[]? selected = native.DataStamp(resolved, data.Length);
+            if (after == IntPtr.Zero || written is null || selected is null
+                || written.AsSpan().SequenceEqual(originalStamp) || !written.AsSpan().SequenceEqual(selected))
             {
                 throw new TokenStoreException(MigrationFailed);
             }
+            Check(native.CheckAccess(before, after, resolved, data), MigrationFailed);
         }
         finally
         {
-            native.Release(updatedId);
-            native.Release(updated);
+            native.Release(resolved);
+            native.Release(persistent);
             native.Release(after);
             native.Release(before);
         }
@@ -720,17 +729,20 @@ internal sealed partial class MacKeychainItem
     internal interface INativeCalls
     {
         public int Find(IntPtr keychain, string service, string account, out IntPtr item, bool createdOnly = false);
-        public bool CommittedMatch(IntPtr keychain, string service, string account, string apphost);
+        public int FindUnique(IntPtr keychain, string service, string account, out IntPtr item);
+        public IDisposable GuardMatch(IntPtr keychain, string service, string account, string apphost,
+            TimeSpan timeout, out bool found);
         public int CopyContent(IntPtr item, out uint length, out IntPtr data);
-        public byte[]? DataStamp(IntPtr item);
+        public byte[]? DataStamp(IntPtr item, int expectedLength = -1);
         public int CopyDefaultKeychain(out IntPtr keychain);
         public int CopyItemKeychain(IntPtr item, out IntPtr keychain);
         public bool WithSearchList(IntPtr target, Func<IReadOnlyList<IntPtr>, bool> action);
-        public byte[] KeychainPath(IntPtr keychain);
-        public IDisposable LockForLookup(IntPtr keychain, byte[] path);
         public IFileTransaction BeginTransaction(IntPtr keychain, bool nonInteractive = false);
         public int CopyRecordId(IntPtr item, out IntPtr recordId);
+        public int CopyPersistentReference(IntPtr item, out IntPtr persistent);
+        public int ResolvePassword(IntPtr persistent, IntPtr owner, string service, string account, out IntPtr item);
         public int CopyAccessSnapshot(IntPtr item, out IntPtr snapshot);
+        public int CheckAccess(IntPtr before, IntPtr after, IntPtr item, byte[] expected);
         public bool Equal(IntPtr first, IntPtr second);
         public IntPtr CreateAccess(string path, string description);
         public int AddToKeychain(IntPtr keychain, ref AttributeList attributes, byte[] data, string creatorPath, out IntPtr item);
@@ -744,41 +756,61 @@ internal sealed partial class MacKeychainItem
 
     internal partial class NativeCalls : INativeCalls
     {
-        public unsafe int Find(IntPtr keychain, string service, string account, out IntPtr item, bool createdOnly = false)
+        public int Find(IntPtr keychain, string service, string account, out IntPtr item, bool createdOnly = false)
         {
             byte[] serviceBytes = Encoding.UTF8.GetBytes(service);
             byte[] accountBytes = Encoding.UTF8.GetBytes(account);
-            if (createdOnly)
-            {
-                fixed (byte* servicePointer = serviceBytes)
-                fixed (byte* accountPointer = accountBytes)
-                fixed (byte* marker = IssuerMarker)
-                {
-                    Attribute* attrs = stackalloc Attribute[3];
-                    attrs[0] = new Attribute { Tag = ServiceAttribute, Length = (uint)serviceBytes.Length, Data = (IntPtr)servicePointer };
-                    attrs[1] = new Attribute { Tag = AccountAttribute, Length = (uint)accountBytes.Length, Data = (IntPtr)accountPointer };
-                    attrs[2] = new Attribute { Tag = GenericAttribute, Length = (uint)IssuerMarker.Length, Data = (IntPtr)marker };
-                    AttributeList list = new() { Count = 3, Attributes = (IntPtr)attrs };
-                    item = IntPtr.Zero;
-                    int status = SecKeychainSearchCreateFromAttributes(keychain, GenericPasswordClass, ref list, out IntPtr search);
-                    try
-                    {
-                        if (status == 0)
-                        {
-                            status = SecKeychainSearchCopyNext(search, out item);
-                        }
+            return createdOnly ? SearchPassword(keychain, serviceBytes, accountBytes, true, out item)
+                : Report("find password record", SecKeychainFindGenericPassword(keychain, (uint)serviceBytes.Length,
+                    serviceBytes, (uint)accountBytes.Length, accountBytes, 0, 0, out item));
+        }
 
-                        return status;
-                    }
-                    finally
+        public int FindUnique(IntPtr keychain, string service, string account, out IntPtr item) =>
+            Report("unique lookup", SearchPassword(keychain, Encoding.UTF8.GetBytes(service), Encoding.UTF8.GetBytes(account),
+                false, out item));
+
+        private static unsafe int SearchPassword(IntPtr keychain, byte[] serviceBytes, byte[] accountBytes,
+            bool marked, out IntPtr item)
+        {
+            item = IntPtr.Zero;
+            if (keychain == IntPtr.Zero)
+            {
+                return -50;
+            }
+            fixed (byte* servicePointer = serviceBytes)
+            fixed (byte* accountPointer = accountBytes)
+            fixed (byte* marker = IssuerMarker)
+            {
+                Attribute* attrs = stackalloc Attribute[3];
+                attrs[0] = new Attribute { Tag = ServiceAttribute, Length = (uint)serviceBytes.Length, Data = (IntPtr)servicePointer };
+                attrs[1] = new Attribute { Tag = AccountAttribute, Length = (uint)accountBytes.Length, Data = (IntPtr)accountPointer };
+                attrs[2] = new Attribute { Tag = GenericAttribute, Length = (uint)IssuerMarker.Length, Data = (IntPtr)marker };
+                AttributeList list = new() { Count = marked ? 3u : 2u, Attributes = (IntPtr)attrs };
+                int status = SecKeychainSearchCreateFromAttributes(keychain, GenericPasswordClass, ref list, out IntPtr search);
+                try
+                {
+                    if (status == 0)
                     {
-                        ReleaseIfSet(search);
+                        status = SecKeychainSearchCopyNext(search, out item);
                     }
+                    if (status == 0)
+                    {
+                        int next = SecKeychainSearchCopyNext(search, out IntPtr duplicate);
+                        ReleaseIfSet(duplicate);
+                        if (next != ErrSecItemNotFound)
+                        {
+                            ReleaseIfSet(item);
+                            item = IntPtr.Zero;
+                            return next == 0 ? ErrSecDuplicateItem : next;
+                        }
+                    }
+                    return status;
+                }
+                finally
+                {
+                    ReleaseIfSet(search);
                 }
             }
-
-            return Report("find password record", SecKeychainFindGenericPassword(keychain, (uint)serviceBytes.Length,
-                serviceBytes, (uint)accountBytes.Length, accountBytes, 0, 0, out item));
         }
 
         public int CopyDefaultKeychain(out IntPtr keychain) => SecKeychainCopyDefault(out keychain);
@@ -850,7 +882,8 @@ internal sealed partial class MacKeychainItem
 
                 if (status == 0)
                 {
-                    status = DatabaseAtPath(database, path) == 0 ? SecKeychainItemAddNoUI(keychain, pending) : -25294;
+                    status = DatabaseAtPath(database, path) == 0
+                        ? Report("provider add", SecKeychainItemAddNoUI(keychain, pending)) : -25294;
                     if (status == 0)
                     {
                         item = pending;
@@ -871,9 +904,10 @@ internal sealed partial class MacKeychainItem
 
         public int CreateFromContent(uint itemClass, ref AttributeList attributes, byte[] data, IntPtr keychain,
             IntPtr access, out IntPtr item) =>
-            SecKeychainItemCreateFromContent(itemClass, ref attributes, (uint)data.Length, data, keychain, access, out item);
+            Report("provider add", SecKeychainItemCreateFromContent(itemClass, ref attributes, (uint)data.Length, data,
+                keychain, access, out item));
 
-        public int Delete(IntPtr item) => SecKeychainItemDelete(item);
+        public int Delete(IntPtr item) => Report("provider delete", SecKeychainItemDelete(item));
 
         public virtual void FreeContent(IntPtr data) => SecKeychainItemFreeContent(IntPtr.Zero, data);
 

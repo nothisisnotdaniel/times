@@ -745,6 +745,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         public string[] TrustedPaths { get; }
         public string Partition { get; set; } = OriginalPartition;
         public IntPtr Reference { get; set; }
+        public int PhysicalVersion { get; set; }
         public bool IssuerCreated { get; init; }
     }
 
@@ -782,6 +783,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         public bool RefuseCommit { get; set; }
         public bool DestinationUnavailable { get; set; }
         public Action? DuringProbe { get; set; }
+        public Func<Func<IDisposable>, IDisposable>? LookupWorker { get; set; }
         public int Finds { get; private set; }
         public int DataRequests { get; private set; }
         public int AccessCreations { get; private set; }
@@ -843,9 +845,31 @@ public sealed class SigningKeyStoreTests : IDisposable
             return 0;
         }
 
-        public byte[] DataStamp(IntPtr item) => SHA256.HashData(GetItem(owners[item])!.Data);
+        public byte[]? DataStamp(IntPtr item, int expectedLength = -1)
+        {
+            Item? current = GetItem(owners[item]);
+            return current?.Reference == item && (expectedLength < 0 || current.Data.Length == expectedLength)
+                ? SHA256.HashData(current.Data) : null;
+        }
 
-        public bool CommittedMatch(IntPtr keychain, string service, string account, string apphost)
+        public int FindUnique(IntPtr keychain, string service, string account, out IntPtr item) =>
+            Find(keychain, service, account, out item);
+
+        public int CopyPersistentReference(IntPtr item, out IntPtr persistent)
+        {
+            Assert.Contains(item, held);
+            persistent = owners[item]; // like FileDL, the database and primary key identify the logical item
+            held.Add(persistent);
+            return 0;
+        }
+
+        public int ResolvePassword(IntPtr persistent, IntPtr owner, string service, string account, out IntPtr item)
+        {
+            Assert.Equal(owner, persistent);
+            return Find(owner, service, account, out item);
+        }
+
+        private bool CommittedMatch(IntPtr keychain, string service, string account)
         {
             Assert.Contains(keychain, locked);
             Assert.Equal(Service, service);
@@ -894,12 +918,27 @@ public sealed class SigningKeyStoreTests : IDisposable
             return action([target == DefaultKeychain ? OtherKeychain : DefaultKeychain]);
         }
 
-        public byte[] KeychainPath(IntPtr keychain) => [(byte)keychain];
-
-        public IDisposable LockForLookup(IntPtr keychain, byte[] path)
+        public IDisposable GuardMatch(IntPtr keychain, string service, string account, string apphost,
+            TimeSpan timeout, out bool found)
         {
-            Assert.Equal(KeychainPath(keychain), path);
-            return BeginTransaction(keychain);
+            bool match = false;
+            IDisposable Acquire()
+            {
+                IDisposable guard = BeginTransaction(keychain);
+                try
+                {
+                    match = CommittedMatch(keychain, service, account);
+                    return guard;
+                }
+                catch
+                {
+                    guard.Dispose();
+                    throw;
+                }
+            }
+            IDisposable lockedMatch = LookupWorker is null ? Acquire() : LookupWorker(Acquire);
+            found = match;
+            return lockedMatch;
         }
 
         public MacKeychainItem.IFileTransaction BeginTransaction(IntPtr keychain, bool nonInteractive = false)
@@ -986,7 +1025,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         public int CopyRecordId(IntPtr item, out IntPtr recordId)
         {
             Assert.Contains(item, held);
-            recordId = -item;
+            recordId = -item - GetItem(owners[item])!.PhysicalVersion;
             held.Add(recordId);
             return 0;
         }
@@ -1002,6 +1041,9 @@ public sealed class SigningKeyStoreTests : IDisposable
 
         public bool Equal(IntPtr first, IntPtr second) => policies.TryGetValue(first, out string[]? policy)
             ? policy.SequenceEqual(policies[second], StringComparer.Ordinal) : first == second;
+
+        public int CheckAccess(IntPtr before, IntPtr after, IntPtr item, byte[] expected) =>
+            Equal(before, after) && CryptographicOperations.FixedTimeEquals(GetItem(owners[item])!.Data, expected) ? 0 : -1;
 
         private Item WritableItem(IntPtr item)
         {
