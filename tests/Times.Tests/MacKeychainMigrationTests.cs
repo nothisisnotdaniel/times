@@ -55,15 +55,19 @@ public sealed partial class MacKeychainMigrationTests
         using (TempFolder folder = new())
         using (ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256))
         using (ManualResetEventSlim secondReading = new())
+        using (ManualResetEventSlim firstObserved = new())
         {
             byte[] der = key.ExportPkcs8PrivateKey();
             try
             {
-                fixture.AddLegacy(der);
+                string[] access = fixture.AddLegacy(der);
                 byte[] legacy = fixture.Legacy!;
+                byte[] identity = fixture.Identity();
                 using Observation before = new(fixture, legacy, legacy);
                 LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]);
                 string ledger = Path.Combine(folder.Path, "ledger.tsv");
+                File.WriteAllText(ledger, "previous entry\n");
+                byte[] previousLedger = File.ReadAllBytes(ledger);
                 TaskCompletionSource firstReading = new(TaskCreationOptions.RunContinuationsAsynchronously);
                 TestKeychainStore first = new(fixture.Reference, new ReadGrant(true, (operation, status) =>
                 {
@@ -76,20 +80,54 @@ public sealed partial class MacKeychainMigrationTests
                 TestKeychainStore second = new(fixture.Reference, new ReadGrant(true,
                     (operation, status) => evidence.ObserveCall("issue-2", operation, status),
                     (item, committing) => ObserveStaged(fixture, before, "issue-2", item, der, committing, evidence)),
-                    readContended: secondReading.Set);
-                void Issue(TestKeychainStore store, string name)
+                    readContended: () =>
+                    {
+                        secondReading.Set();
+                        Assert.True(firstObserved.Wait(FixtureTimeout), "First issuance did not complete its observations.");
+                    });
+                bool Issue(TestKeychainStore store, string name, string phase)
                 {
                     using StringWriter output = new();
                     using StringWriter error = new();
-                    Assert.Equal(0, RunIssue(store, ledger, output, error, name));
-                    Assert.True(error.GetStringBuilder().Length == 0, "The fixture issuer produced an error.");
-                    Assert.Equal(1, evidence.VerifyOutput(output.ToString(), original));
+                    int result = RunIssue(store, ledger, output, error, name);
+                    int verified = evidence.VerifyOutput(output.ToString(), original);
+                    using Observation after = new(fixture, der, legacy, before);
+                    if (result == 0)
+                    {
+                        AssertObservation(phase, before, after, false, requireOriginal: false, requirePhysical: false);
+                        Assert.True(error.GetStringBuilder().Length == 0);
+                        Assert.Equal(1, verified);
+                        return true;
+                    }
+                    Assert.Equal(1, result);
+                    Assert.True(error.ToString() == MigrationFailed + error.NewLine);
+                    Assert.True(output.GetStringBuilder().Length == 0);
+                    Assert.Equal(0, verified);
+                    AssertObservation(phase, before, after, false, requireOriginal: true, requirePhysical: true);
+                    fixture.AssertData(legacy);
+                    fixture.AssertPolicyAndIdentity(access, identity);
+                    Assert.True(previousLedger.AsSpan().SequenceEqual(File.ReadAllBytes(ledger)));
+                    evidence.CountPrecommitRefusal(phase);
+                    return false;
                 }
+                bool firstIssued = false, secondIssued = false;
                 await RunOverlappingIssues(firstReading.Task, secondReading,
-                    () => Issue(first, "Ada"), () => Issue(second, "Bob"));
-                using Observation after = new(fixture, der, legacy, before);
-                AssertObservation("issue-2", before, after, false, requireOriginal: false, requirePhysical: false);
-                Assert.Equal(["Ada", "Bob"], File.ReadAllLines(ledger).Select(line => line.Split('\t')[1]).Order());
+                    () =>
+                    {
+                        try
+                        {
+                            firstIssued = Issue(first, "Ada", "issue-1");
+                        }
+                        finally
+                        {
+                            firstObserved.Set();
+                        }
+                    }, () => secondIssued = Issue(second, "Bob", "issue-2"));
+                Assert.Equal(firstIssued, secondIssued);
+                if (firstIssued)
+                {
+                    Assert.Equal(["Ada", "Bob"], File.ReadAllLines(ledger).Skip(1).Select(line => line.Split('\t')[1]).Order());
+                }
             }
             finally
             {
@@ -150,7 +188,7 @@ public sealed partial class MacKeychainMigrationTests
 
             // The target writer sorts first. Refusing the secondary must release it.
             Assert.Throws<TokenStoreException>(() => MacKeychainItem.Default.AddWithSearchList(
-                target.Reference, [fixture.Reference], Service, Account, [], Environment.ProcessPath!, IssuerApphost));
+                target.Reference, [fixture.Reference], Service, Account, [], Environment.ProcessPath!));
             Assert.True(BusyLockFiles(target.Directory).Length == 0, "The target lock is still held.");
             Assert.Throws<TokenStoreException>(() => calls.BeginTransaction(fixture.Reference));
         }
@@ -201,7 +239,7 @@ public sealed partial class MacKeychainMigrationTests
             Assert.True(BusyLockFiles(target.Directory).Length == 0, "The refused issuer retained the target writer lock.");
 
             // The second writer must commit before the competing secondary lock is released.
-            nextWriter = Task.Run(() => MacKeychainItem.Default.TryAddToKeychain(target.Reference,
+            nextWriter = Task.Run(() => MacKeychainItem.Default.AddWithSearchList(target.Reference, [],
                 "Times fixture next writer", Account, [1], Environment.ProcessPath!));
             Assert.True(await nextWriter.WaitAsync(FixtureTimeout));
             Assert.True(MacKeychainItem.Default.Exists(target.Reference, "Times fixture next writer", Account));
@@ -232,7 +270,7 @@ public sealed partial class MacKeychainMigrationTests
             secondary.AddLegacy([7]); // The committed duplicate will trigger secondary cleanup.
         }
         bool Add() => items.AddWithSearchList(target.Reference, [secondary.Reference], Service, Account,
-            [1], Environment.ProcessPath!, IssuerApphost);
+            [1], Environment.ProcessPath!);
         Task first = Task.Run(() =>
         {
             if (preparation)
@@ -249,7 +287,7 @@ public sealed partial class MacKeychainMigrationTests
         {
             await calls.Entered.Task.WaitAsync(FixtureTimeout);
             other = Task.Run(() => MacKeychainItem.Default.AddWithSearchList(target.Reference, [],
-                "Times fixture other writer", Account, [2], Environment.ProcessPath!, IssuerApphost));
+                "Times fixture other writer", Account, [2], Environment.ProcessPath!));
             Assert.True(await other.WaitAsync(FixtureTimeout));
             Assert.True(MacKeychainItem.Default.Exists(target.Reference, "Times fixture other writer", Account));
             Assert.False(calls.Released.Task.IsCompleted);
@@ -476,10 +514,10 @@ public sealed partial class MacKeychainMigrationTests
         public VerifierObservation(bool knownImage, Action<string, int> report) : base(false, report) =>
             this.knownImage = knownImage;
 
-        internal override bool IsVerifierImage(string executable, int pid)
+        internal override bool IsVerifierImage(int pid)
         {
-            bool verified = base.IsVerifierImage(executable, pid);
-            if (verified && pid != 0)
+            bool verified = base.IsVerifierImage(pid);
+            if (verified)
             {
                 AuthenticatedChildren++;
                 return knownImage;
@@ -500,8 +538,10 @@ public sealed partial class MacKeychainMigrationTests
         try
         {
             Assert.True(MacKeychainItem.Default.AddWithSearchList(target.Reference, [secondary.Reference],
-                Service, Account, data, Environment.ProcessPath!, IssuerApphost));
+                Service, Account, data, Environment.ProcessPath!));
             target.AssertData(data);
+            Assert.True(MacKeychainItem.Default.Exists(target.Reference, Service, Account));
+            Assert.Empty(Directory.GetDirectories(target.Directory, ".times-create.*"));
             Assert.True(Directory.GetFiles(secondary.Directory, ".fl*").Length == 1, "The lookup did not leave one lock file.");
             Assert.True(BusyLockFiles(target.Directory).Length == 0, "The target lock is still held.");
             Assert.True(BusyLockFiles(secondary.Directory).Length == 0, "The secondary lock is still held.");
@@ -668,22 +708,7 @@ public sealed partial class MacKeychainMigrationTests
     [MacKeychainFact]
     public void ExplicitAdd_RefusesWhenTheDisposableDatabaseDisappears()
     {
-        using Fixture target = new();
-        using Fixture other = new();
-        string saved = target.Path + ".saved";
-        File.Move(target.Path, saved);
-        try
-        {
-            Assert.Throws<TokenStoreException>(() =>
-                MacKeychainItem.Default.TryAddToKeychain(target.Reference, Service, Account, [1], Environment.ProcessPath!));
-            Assert.False(File.Exists(target.Path));
-            Assert.False(MacKeychainItem.Default.Exists(other.Reference, Service, Account));
-        }
-        finally
-        {
-            File.Move(saved, target.Path);
-        }
-        Assert.False(MacKeychainItem.Default.Exists(target.Reference, Service, Account));
+        AssertLostDestinationAtInsertion();
     }
 
     [MacKeychainTheory]
@@ -727,7 +752,7 @@ public sealed partial class MacKeychainMigrationTests
             }
             using Observation? before = competingInsert ? new(secondary, secondary.Legacy!, secondary.Legacy!) : null;
             bool created = MacKeychainItem.Default.AddWithSearchList(target.Reference, [secondary.Reference],
-                Service, Account, der, Environment.ProcessPath!, IssuerApphost);
+                Service, Account, der, Environment.ProcessPath!);
             Assert.Equal(!competingInsert, created);
             Assert.Equal(created, MacKeychainItem.Default.Exists(target.Reference, Service, Account));
             if (competingInsert)
@@ -764,18 +789,62 @@ public sealed partial class MacKeychainMigrationTests
     {
         private readonly ITestOutputHelper log;
         private int updates, creates, deletes, licences, verifiedStagedWrites;
+        private int precommitRefusals, rollbacks;
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, AttemptTrace> attempts = new();
+
+        private sealed class AttemptTrace
+        {
+            public int Setters;
+            public bool Staged, MissingView, RolledBack, Restored, KnownLimitation, Counted;
+        }
 
         public IssuerEvidence(ITestOutputHelper log) => this.log = log;
 
         public void ObserveCall(string phase, string operation, int status)
         {
+            AttemptTrace attempt = attempts.GetOrAdd(phase, _ => new AttemptTrace());
             switch (operation)
             {
-                case "provider update": Interlocked.Increment(ref updates); break;
+                case "provider update":
+                    Interlocked.Increment(ref updates);
+                    attempt.Setters++;
+                    attempt.Staged = status == 0;
+                    break;
+                case "rollback database" when attempt.Staged && status == 0:
+                    attempt.RolledBack = true;
+                    break;
+                case "file Keychain staged view unavailable after rollback" when status == -25300:
+                    attempt.Restored = true;
+                    break;
+                case "known file Keychain staged view unavailable" when status == -25300:
+                    attempt.KnownLimitation = true;
+                    break;
                 case "provider add": Interlocked.Increment(ref creates); break;
                 case "provider delete": Interlocked.Increment(ref deletes); break;
             }
             log.WriteLine("{0} | {1} returned {2}", phase, operation, status);
+        }
+
+        public void ObservedMissingStagedView(string phase) => attempts[phase].MissingView = true;
+
+        public void CountPrecommitRefusal(string phase)
+        {
+            AttemptTrace attempt = attempts[phase];
+            Assert.False(attempt.Counted);
+            if (attempt.KnownLimitation)
+            {
+                Assert.Equal(0, attempt.Setters);
+                Assert.Contains(attempts.Values, prior => prior.Counted && prior.MissingView && prior.Restored);
+            }
+            else
+            {
+                Assert.Equal(1, attempt.Setters);
+                Assert.True(attempt.Staged && attempt.MissingView && attempt.RolledBack && attempt.Restored,
+                    "The file Keychain limitation and completed rollback were not observed on this issuance.");
+                Interlocked.Increment(ref rollbacks);
+            }
+            attempt.Counted = true;
+            Interlocked.Increment(ref precommitRefusals);
         }
 
         public int VerifyOutput(string output, LicencePublicKeys original)
@@ -802,6 +871,16 @@ public sealed partial class MacKeychainMigrationTests
 
         public void Prove(string scenario, bool permitted)
         {
+            if (precommitRefusals != 0)
+            {
+                Assert.True(permitted);
+                Assert.Equal(scenario == "overlapping-original-reader" ? 2 : 1, precommitRefusals);
+                AssertCounts(rollbacks, 0);
+                Assert.Equal(0, verifiedStagedWrites);
+                log.WriteLine("factory401-proof {0} updates={1} creates={2} deletes={3} licences={4} precommit-refusals={5} rollbacks={6}",
+                    scenario, updates, creates, deletes, licences, precommitRefusals, rollbacks);
+                return;
+            }
             AssertCounts(permitted ? 1 : 0, permitted ? 2 : 0);
             Assert.Equal(updates, verifiedStagedWrites);
             log.WriteLine("factory401-proof {0} updates={1} creates={2} deletes={3} licences={4}",
@@ -840,7 +919,7 @@ public sealed partial class MacKeychainMigrationTests
                     (item, committing) => ObserveStaged(fixture, before, phase, item, der, committing, evidence));
                 TestKeychainStore store = new(fixture.Reference, grant);
 
-                void Attempt(TestKeychainStore issuerStore, bool permitted, bool readOnlyDirectory = false,
+                bool Attempt(TestKeychainStore issuerStore, bool permitted, bool readOnlyDirectory = false,
                     bool useGrant = true)
                 {
                     bool second = phase is "issue-2" or "retry-2";
@@ -891,13 +970,23 @@ public sealed partial class MacKeychainMigrationTests
                         Assert.True(previousLedger.AsSpan().SequenceEqual(File.ReadAllBytes(ledger)), "The fixture ledger changed.");
                         fixture.AssertData(previous);
                     }
-                    Assert.Equal(permitted ? 0 : 1, result);
-                    Assert.Equal(permitted ? 1 : 0, verified);
-                    if (!permitted)
+                    Assert.Equal(result == 0 ? 1 : 0, verified);
+                    if (result == 1)
                     {
                         fixture.AssertPolicyAndIdentity(access, identity);
-                        evidence.AssertCounts(0, 0);
+                        if (permitted)
+                        {
+                            evidence.CountPrecommitRefusal(phase);
+                        }
+                        else
+                        {
+                            evidence.AssertCounts(0, 0);
+                        }
+                        return false;
                     }
+                    Assert.True(permitted);
+                    Assert.Equal(0, result);
+                    return true;
                 }
 
                 if (oneTimeRead)
@@ -925,12 +1014,11 @@ public sealed partial class MacKeychainMigrationTests
                 }
 
                 phase = retry ? "retry-1" : allowWriter ? "issue-1" : "denied-write";
-                Attempt(store, !extraReader);
-                if (!extraReader)
+                if (Attempt(store, !extraReader))
                 {
                     evidence.AssertCounts(1, 1);
                     phase = retry ? "retry-2" : "issue-2";
-                    Attempt(store, true);
+                    Assert.True(Attempt(store, true));
                     Assert.Equal(3, File.ReadAllLines(ledger).Length);
                 }
             }
@@ -1268,7 +1356,7 @@ public sealed partial class MacKeychainMigrationTests
             Assert.Equal(0, calls.Find(Reference, Service, Account, out IntPtr item));
             try
             {
-                Assert.Equal(0, calls.CopyRecordId(item, out IntPtr id));
+                Assert.Equal(0, calls.CopyPersistentReference(item, out IntPtr id));
                 try
                 {
                     byte[] bytes = new byte[checked((int)CFDataGetLength(id))];
@@ -1290,7 +1378,7 @@ public sealed partial class MacKeychainMigrationTests
         public void AssertPolicyAndIdentity(string[] access, byte[] identity)
         {
             Assert.True(access.SequenceEqual(AccessEntries(Path), StringComparer.Ordinal), "Fixture access policy changed.");
-            Assert.True(identity.AsSpan().SequenceEqual(Identity()), "Fixture record identifier changed.");
+            Assert.True(identity.AsSpan().SequenceEqual(Identity()), "Fixture persistent reference changed.");
         }
 
         public void AssertData(byte[] expected)
@@ -1397,7 +1485,7 @@ public sealed partial class MacKeychainMigrationTests
         public bool Exists(string keyId) => items.Exists(keychain, Service, keyId)
             || secondaries.Any(other => items.Exists(other, Service, keyId));
         public bool TryCreate(string keyId, byte[] pkcs8) => items.AddWithSearchList(keychain, secondaries,
-            Service, keyId, pkcs8, Environment.ProcessPath!, IssuerApphost);
+            Service, keyId, pkcs8, Environment.ProcessPath!);
     }
 
     private static string[] AccessEntries(string path, string service = Service)

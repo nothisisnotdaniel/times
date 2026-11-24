@@ -46,6 +46,20 @@ int TimesDatabaseAtPath(int fd, const char *path)
     return 0;
 }
 
+static void fileLockName(const char *name, char lock[12])
+{
+    unsigned char digest[CC_SHA1_DIGEST_LENGTH];
+    CC_SHA1(name, (CC_LONG)strlen(name), digest);
+    snprintf(lock, 12, ".fl%02X%02X%02X%02X", digest[0], digest[1], digest[2], digest[3]);
+}
+
+int TimesRemoveScratchLock(int directory, const char *name)
+{
+    char lock[12];
+    fileLockName(name, lock);
+    return unlinkat(directory, lock, 0) && errno != ENOENT ? errno : 0;
+}
+
 int TimesOpenKeychainLock(const char *path, int lookup, int *result)
 {
     *result = -1;
@@ -81,10 +95,8 @@ int TimesOpenKeychainLock(const char *path, int lookup, int *result)
         || (directory.st_mode & (S_IWGRP | S_IWOTH))) {
         goto done;
     }
-    unsigned char digest[CC_SHA1_DIGEST_LENGTH];
-    CC_SHA1(name + 1, (CC_LONG)strlen(name + 1), digest);
     char lock[12];
-    snprintf(lock, sizeof(lock), ".fl%02X%02X%02X%02X", digest[0], digest[1], digest[2], digest[3]);
+    fileLockName(name + 1, lock);
     int flags = O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK;
     int fd = openat(dir, lock, flags);
     if (fd < 0 && errno == ENOENT) {

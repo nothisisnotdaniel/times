@@ -1,6 +1,5 @@
 using System.Buffers;
 using System.Buffers.Text;
-using System.Diagnostics;
 using System.Formats.Asn1;
 using System.Security.Cryptography;
 using Times.LicenceIssuer;
@@ -34,6 +33,7 @@ public sealed partial class MacKeychainMigrationTests
     [Theory]
     [InlineData("reader-list")]
     [InlineData("malformed-legacy")]
+    [InlineData("oversized-protected-legacy")]
     [InlineData("fresh-view")]
     [InlineData("revision")]
     public void RefusedPolicy_PrecedesAllPrivateKeyDecoding(string reason)
@@ -41,10 +41,10 @@ public sealed partial class MacKeychainMigrationTests
         using PortableFixture fixture = new();
         using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         byte[] der = key.ExportPkcs8PrivateKey();
-        byte[] stored = EncodeLegacy(der);
+        byte[] stored = reason == "oversized-protected-legacy" ? Enumerable.Repeat((byte)'M', 16385).ToArray() : EncodeLegacy(der);
         try
         {
-            bool multiReader = reason is "reader-list" or "malformed-legacy";
+            bool multiReader = reason is "reader-list" or "malformed-legacy" or "oversized-protected-legacy";
             if (reason == "malformed-legacy")
             {
                 stored[^1] = (byte)'!';
@@ -94,14 +94,53 @@ public sealed partial class MacKeychainMigrationTests
 
     [Theory]
     [InlineData(false, 40, false)]
+    [InlineData(false, 41, false)]
     [InlineData(true, 1, false)]
     [InlineData(true, 40, true)]
     public void MetadataReply_RequiresTheRunningVerifierImage(bool authenticated, int status, bool accepted)
     {
-        byte[] metadata = RandomNumberGenerator.GetBytes(SHA256.HashSizeInBytes);
-        using MemoryStream request = new();
-        Assert.Equal(accepted, MacKeychainItem.NativeCalls.VerifyReply(authenticated, metadata, request, () => status));
-        Assert.True(request.ToArray().AsSpan().SequenceEqual(authenticated ? metadata : []));
+        bool resumed = false;
+        int result = MacKeychainItem.NativeCalls.AuthenticatedReply(() => authenticated, () =>
+        {
+            resumed = true;
+            return status;
+        }, CancellationToken.None);
+        Assert.Equal(authenticated, resumed);
+        Assert.Equal(accepted, result == 40);
+        if (!authenticated)
+        {
+            Assert.NotEqual(41, result);
+        }
+    }
+
+    [Fact]
+    public void CreateKey_UnverifiedMissingReply_PreservesCompetingKey()
+    {
+        using PortableFixture fixture = new();
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] der = key.ExportPkcs8PrivateKey();
+        try
+        {
+            SigningKeyStoreTests.Item competing = new(der, ["original reader"]);
+            fixture.Calls.OtherStored = competing;
+            fixture.Calls.CacheOtherMiss = true;
+            fixture.Calls.SecondaryReply = () => MacKeychainItem.NativeCalls.AuthenticatedReply(
+                () => false, () => 41, CancellationToken.None);
+            using StringWriter output = new();
+            using StringWriter error = new();
+            Assert.Equal(1, fixture.Create(output, error));
+            Assert.Empty(output.ToString());
+            Assert.True(error.ToString() == "The item could not be saved in the macOS Keychain." + error.NewLine);
+            Assert.Null(fixture.Calls.Stored);
+            Assert.Same(competing, fixture.Calls.OtherStored);
+            Assert.True(CryptographicOperations.FixedTimeEquals(der, competing.Data));
+            Assert.Equal(["original reader"], competing.TrustedPaths);
+            Assert.Equal(0, fixture.Calls.Creates + fixture.Calls.Updates + fixture.Calls.Deletes);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(der);
+        }
     }
 
     [Theory]
@@ -228,8 +267,12 @@ public sealed partial class MacKeychainMigrationTests
         }
     }
 
-    [Fact]
-    public void Issue_SameNameReplacementAlreadyHoldingExactDer_RefusesBeforeAnyWrite()
+    [Theory]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(false, false)]
+    public void Issue_SameNameReplacementAlreadyHoldingExactDer_RefusesBeforeAnyWrite(bool instanceBound, bool raw)
     {
         using PortableFixture fixture = new();
         using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
@@ -238,7 +281,9 @@ public sealed partial class MacKeychainMigrationTests
         try
         {
             SigningKeyStoreTests.Item initial = new(legacy, ["original reader"]);
-            SigningKeyStoreTests.Item competing = new(der, ["original reader"]);
+            byte[] replacement = raw ? der : legacy;
+            SigningKeyStoreTests.Item competing = new(replacement, ["original reader"]);
+            fixture.Calls.InstanceBoundPersistentReferences = instanceBound;
             fixture.Calls.Stored = initial;
             fixture.Calls.BeforeOwnerLock = () => fixture.Calls.Stored = competing;
             File.WriteAllText(fixture.Ledger, "previous entry\n");
@@ -249,7 +294,7 @@ public sealed partial class MacKeychainMigrationTests
             Assert.True(error.ToString() == MigrationFailed + error.NewLine, "Unexpected migration error.");
             Assert.True(File.ReadAllText(fixture.Ledger) == "previous entry\n", "The fixture ledger changed.");
             Assert.True(ReferenceEquals(competing, fixture.Calls.Stored), "The competing item changed.");
-            Assert.True(CryptographicOperations.FixedTimeEquals(der, competing.Data));
+            Assert.True(CryptographicOperations.FixedTimeEquals(replacement, competing.Data));
             Assert.True(competing.TrustedPaths.SequenceEqual(["original reader"]), "The competing reader list changed.");
             Assert.True(competing.Partition == SigningKeyStoreTests.Item.OriginalPartition, "The competing partition changed.");
             Assert.Equal(0, fixture.Calls.Updates + fixture.Calls.Creates + fixture.Calls.Deletes);
@@ -308,6 +353,55 @@ public sealed partial class MacKeychainMigrationTests
             Assert.Equal(2, fixture.Calls.Updates);
             Assert.Equal(0, fixture.Calls.Creates + fixture.Calls.Deletes);
             Assert.Equal(3, File.ReadAllLines(fixture.Ledger).Length);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(legacy);
+            CryptographicOperations.ZeroMemory(der);
+        }
+    }
+
+    [Fact]
+    public void SoleReader_FileStagedGroupMissing_VerifiesRollbackThenRefusesBeforeAnotherSetter()
+    {
+        using PortableFixture fixture = new();
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] der = key.ExportPkcs8PrivateKey();
+        byte[] legacy = EncodeLegacy(der);
+        try
+        {
+            SigningKeyStoreTests.Item item = new(legacy, ["original reader"]);
+            fixture.Calls.Stored = item;
+            fixture.Calls.InstanceBoundPersistentReferences = false;
+            fixture.Calls.StagedGroupUnavailable = true;
+            fixture.Calls.AfterUpdate = _ => fixture.Calls.MissNextUniqueLookup = true;
+            File.WriteAllBytes(fixture.Ledger, [1, 2, 3]);
+            for (int attempt = 0; attempt < 2; attempt++)
+            {
+                using StringWriter output = new();
+                using StringWriter error = new();
+                Assert.Equal(1, RunIssue(fixture.Store, fixture.Ledger, output, error));
+                Assert.True(error.ToString() == MigrationFailed + error.NewLine);
+                Assert.Empty(output.ToString());
+                Assert.Same(item, fixture.Calls.Stored);
+                Assert.True(CryptographicOperations.FixedTimeEquals(legacy, item.Data));
+                Assert.True(item.TrustedPaths.SequenceEqual(["original reader"]));
+                Assert.Equal(SigningKeyStoreTests.Item.OriginalPartition, item.Partition);
+                Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(fixture.Ledger));
+                Assert.Equal(1, fixture.Calls.Updates);
+                Assert.Equal(1, fixture.Calls.VerifiedRollbacks);
+                Assert.Equal(0, fixture.Calls.Creates + fixture.Calls.Deletes);
+            }
+
+            // A distinct generated envelope at the same names gets its own decision.
+            fixture.Calls.Stored = new(legacy, ["original reader"]);
+            fixture.Calls.AfterUpdate = null;
+            fixture.Calls.StagedGroupUnavailable = false;
+            LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]);
+            AssertIssued(fixture.Store, fixture.Ledger, original);
+            AssertIssued(fixture.Store, fixture.Ledger, original);
+            Assert.Equal(2, fixture.Calls.Updates);
+            Assert.True(CryptographicOperations.FixedTimeEquals(der, fixture.Calls.Stored.Data));
         }
         finally
         {
@@ -683,39 +777,80 @@ public sealed partial class MacKeychainMigrationTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void CreateKey_UnavailableDestinationOrStalledProbe_ReleasesLocksAndPublishesNothing(bool stall)
+    public async Task CreateKey_UnavailableDestinationOrStalledProbe_ReleasesLocksAndPublishesNothing(bool stall)
     {
+        if (!stall)
+        {
+            AssertLostDestinationAtInsertion();
+            return;
+        }
         using PortableFixture fixture = new();
-        using Process? child = stall ? StartStalledProbe() : null;
-        if (stall)
+        TaskCompletionSource validating = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        SettableTimeProvider time = new(DateTimeOffset.UnixEpoch);
+        using ManualResetEventSlim release = new();
+        TaskCompletionSource finished = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool resumed = false;
+        fixture.Calls.SecondaryReply = () => MacKeychainItem.NativeCalls.BoundedProbe(cancel =>
         {
-            fixture.Calls.DuringProbe = () => MacKeychainItem.NativeCalls.WaitForProbe(child!, TimeSpan.Zero);
-        }
-        else
-        {
-            fixture.Calls.DestinationUnavailable = true;
-        }
-
-        using StringWriter output = new();
-        using StringWriter error = new();
+            try
+            {
+                return MacKeychainItem.NativeCalls.AuthenticatedReply(() =>
+                {
+                    validating.SetResult();
+                    Assert.True(release.Wait(FixtureTimeout));
+                    return true;
+                }, () =>
+                {
+                    resumed = true;
+                    return 41;
+                }, cancel);
+            }
+            finally
+            {
+                finished.TrySetResult();
+            }
+        }, MacKeychainItem.NativeCalls.ProbeTimeout, time);
+        Task creation = Task.Run(() => AssertCreationRefused(fixture));
         try
         {
-            Assert.Equal(1, fixture.Create(output, error));
-            Assert.Empty(output.ToString());
-            Assert.Equal("The item could not be saved in the macOS Keychain." + error.NewLine, error.ToString());
-            Assert.Null(fixture.Calls.Stored);
-            Assert.Null(fixture.Calls.OtherStored);
-            Assert.Equal(0, fixture.Calls.Creates);
-            fixture.Calls.AssertReleased();
+            await validating.Task.WaitAsync(FixtureTimeout);
+            time.WaitForTimer(1, FixtureTimeout).Fire();
+            await creation.WaitAsync(FixtureTimeout);
         }
         finally
         {
-            if (child is not null)
-            {
-                child.StandardInput.Close();
-                Assert.True(child.WaitForExit(ChildCleanupTimeout), "The fixture probe did not exit during cleanup.");
-            }
+            release.Set();
+            await Task.WhenAll(creation, finished.Task).WaitAsync(ChildCleanupTimeout);
         }
+        Assert.False(resumed);
+    }
+
+    private static void AssertLostDestinationAtInsertion()
+    {
+        using PortableFixture fixture = new();
+        bool reached = false;
+        fixture.Calls.BeforeDestinationInsert = target =>
+        {
+            Assert.Equal((IntPtr)4, target);
+            fixture.Calls.DefaultIsOther = true;
+            fixture.Calls.DestinationUnavailable = true;
+            reached = true;
+        };
+        AssertCreationRefused(fixture);
+        Assert.True(reached);
+    }
+
+    private static void AssertCreationRefused(PortableFixture fixture)
+    {
+        using StringWriter output = new();
+        using StringWriter error = new();
+        Assert.Equal(1, fixture.Create(output, error));
+        Assert.Empty(output.ToString());
+        Assert.Equal("The item could not be saved in the macOS Keychain." + error.NewLine, error.ToString());
+        Assert.Null(fixture.Calls.Stored);
+        Assert.Null(fixture.Calls.OtherStored);
+        Assert.Equal(0, fixture.Calls.Creates + fixture.Calls.Updates + fixture.Calls.Deletes);
+        fixture.Calls.AssertReleased();
     }
 
     private static readonly TimeSpan ChildCleanupTimeout = TimeSpan.FromSeconds(30);
@@ -840,25 +975,6 @@ public sealed partial class MacKeychainMigrationTests
         Assert.False(providerGuard.CanRead);
     }
 
-    private static Process StartStalledProbe()
-    {
-        // The child waits for input, so a zero production deadline is independent of startup speed.
-        ProcessStartInfo info = new(OperatingSystem.IsWindows() ? "cmd.exe" : "/bin/cat")
-        {
-            UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true,
-            RedirectStandardError = true, CreateNoWindow = true,
-        };
-        if (OperatingSystem.IsWindows())
-        {
-            foreach (string argument in new[] { "/d", "/q", "/c", "set /p fixture=" })
-            {
-                info.ArgumentList.Add(argument);
-            }
-        }
-
-        return Process.Start(info)!;
-    }
-
     public static TheoryData<string, byte[], bool, bool> AttributeCases
     {
         get
@@ -905,6 +1021,10 @@ public sealed partial class MacKeychainMigrationTests
                 General(false, 0x1b, 0x2d, 0x46, 0xd3, 0x0e, 0x0f, 0x41);
                 General(true, 0x1b, 0x2d, 0x46, 0x0e, 0x53, 0x0f, 0x41);
                 General(true, 0x1b, 0x2d, 0x46, 0xd3); // ISO-IR 126 capital sigma.
+                General(true, 0x1b, 0x2d, 0x47, 0xac); // ISO-IR 127 Arabic comma.
+                General(false, 0x1b, 0x2d, 0x47, 0xa1);
+                General(true, 0x1b, 0x2d, 0x47, 0x0e, 0x2c);
+                General(false, 0x1b, 0x2d, 0x47, 0x0e, 0x21);
                 foreach (byte unassigned in new byte[] { 0xa4, 0xa5, 0xaa, 0xae, 0xd2, 0xff })
                 {
                     General(false, 0x1b, 0x2d, 0x46, unassigned);

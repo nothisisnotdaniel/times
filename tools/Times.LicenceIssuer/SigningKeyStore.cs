@@ -103,8 +103,8 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
         }
 
         // File Keychain persistent references can resolve a replacement with the same
-        // primary attributes. Serialize issuer reads before selecting the physical
-        // record, so the native writer can still reject every intervening replacement.
+        // primary attributes. Serialize issuer reads before selecting the item so
+        // the writer can require the original protected value up to its own setter.
         // Public issuer IDs have a bounded, filename-safe alphabet. Other direct
         // store callers share the service mutex without putting input into its name.
         string name = LicenceKey.IsValidKeyId(keyId) ? "Times.LicenceIssuer." + keyId : "Times.LicenceIssuer";
@@ -775,6 +775,12 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
                 {
                     // ISO-IR 126 (1986), including when invoked in GL.
                     Require((current | 0x80) is not (0xa4 or 0xa5 or 0xaa or 0xae or 0xd2 or 0xff));
+                }
+                if (sets96[set] && value[designations[set]].SequenceEqual("G"u8))
+                {
+                    // ISO-IR 127, ECMA-114 Table 1. The same positions apply in GL and GR.
+                    Require((current | 0x80) is 0xa0 or 0xa4 or 0xac or 0xad or 0xbb or 0xbf
+                        or >= 0xc1 and <= 0xda or >= 0xe0 and <= 0xf2);
                 }
                 if (single < 0)
                 {

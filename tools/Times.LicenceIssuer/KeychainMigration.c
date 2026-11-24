@@ -10,20 +10,6 @@
 
 enum { GroupLabelSize = 20, IvSize = 8, PrefixSize = GroupLabelSize + IvSize, MaxCipherSize = 16384 + IvSize };
 
-// Both callers keep the owning database explicit. Copy the opaque identifier
-// while the public CSSM bridge's borrowed record is still valid.
-OSStatus TimesCopyRecordId(SecKeychainItemRef item, CFDataRef *result)
-{
-    *result = NULL;
-    const CSSM_DB_UNIQUE_RECORD *record = NULL;
-    OSStatus status = item ? SecKeychainItemGetUniqueRecordID(item, &record) : errSecParam;
-    if (status) return status;
-    if (!record || !record->RecordIdentifier.Data || !record->RecordIdentifier.Length ||
-        record->RecordIdentifier.Length > 1024) return errSecInvalidItemRef;
-    *result = CFDataCreate(NULL, record->RecordIdentifier.Data, (CFIndex)record->RecordIdentifier.Length);
-    return *result ? errSecSuccess : errSecAllocate;
-}
-
 OSStatus TimesCheckPasswordDatabase(SecKeychainRef database)
 {
     SecKeychainAttributeInfo *info = NULL;

@@ -749,6 +749,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         public string Partition { get; set; } = OriginalPartition;
         public IntPtr Reference { get; set; }
         public int PhysicalVersion { get; set; }
+        public byte[] ProtectionGroup { get; } = RandomNumberGenerator.GetBytes(16);
         public bool IssuerCreated { get; init; }
     }
 
@@ -762,6 +763,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         private readonly List<IntPtr> held = [];
         private readonly HashSet<IntPtr> locked = [];
         private readonly Dictionary<IntPtr, IntPtr> owners = [];
+        private readonly Dictionary<IntPtr, Item> referents = [];
         private readonly Dictionary<IntPtr, string[]> policies = [];
         private readonly Dictionary<IntPtr, int> buffers = [];
         private int nextReference = 10;
@@ -792,7 +794,8 @@ public sealed class SigningKeyStoreTests : IDisposable
         public Action<Item>? AfterUpdate { get; set; }
         public bool RefuseCommit { get; set; }
         public bool DestinationUnavailable { get; set; }
-        public Action? DuringProbe { get; set; }
+        public Func<int>? SecondaryReply { get; set; }
+        public Action<IntPtr>? BeforeDestinationInsert { get; set; }
         public Func<Func<IDisposable>, IDisposable>? LookupWorker { get; set; }
         public int Finds { get; private set; }
         public int DataRequests { get; private set; }
@@ -807,6 +810,8 @@ public sealed class SigningKeyStoreTests : IDisposable
         public void AssertReleased()
         {
             Assert.Empty(held);
+            Assert.Empty(referents);
+            Assert.Empty(owners);
             Assert.Empty(locked);
             Assert.Empty(buffers);
             Assert.Empty(policies);
@@ -854,7 +859,7 @@ public sealed class SigningKeyStoreTests : IDisposable
             }
             Assert.False(RemainingReads == 0, "A one-time read was requested again.");
             RemainingReads--;
-            byte[] bytes = GetItem(owners[item])!.Data;
+            byte[] bytes = referents[item].Data;
             length = (uint)bytes.Length;
             data = Marshal.AllocHGlobal(Math.Max(1, bytes.Length));
             buffers.Add(data, bytes.Length);
@@ -866,8 +871,17 @@ public sealed class SigningKeyStoreTests : IDisposable
         public byte[]? DataStamp(IntPtr item, int expectedLength = -1)
         {
             Item? current = GetItem(owners[item]);
-            return current?.Reference == item && (expectedLength < 0 || current.Data.Length == expectedLength)
-                ? SHA256.HashData(current.Data) : null;
+            return current is not null && ReferenceEquals(current, referents[item]) && (expectedLength < 0 || current.Data.Length == expectedLength)
+                ? ProtectedStamp(current) : null;
+        }
+
+        private static byte[] ProtectedStamp(Item current)
+        {
+            using IncrementalHash digest = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            digest.AppendData(current.ProtectionGroup);
+            digest.AppendData(BitConverter.GetBytes(current.PhysicalVersion));
+            digest.AppendData(current.Data);
+            return digest.GetHashAndReset();
         }
 
         public int FindUnique(IntPtr keychain, string service, string account, out IntPtr item)
@@ -881,18 +895,43 @@ public sealed class SigningKeyStoreTests : IDisposable
             return Find(keychain, service, account, out item);
         }
 
+        public bool InstanceBoundPersistentReferences { get; set; } = true;
+        public bool StagedGroupUnavailable { get; set; }
+        public int VerifiedRollbacks { get; private set; }
+        private (IntPtr Owner, byte[] Stamp)? limitation;
+
+        public bool StagedProtectionGroupMissing(IntPtr item, byte[] der) =>
+            StagedGroupUnavailable && locked.Contains(owners[item]) && referents[item].Data.AsSpan().SequenceEqual(der);
+
+        public bool HasStagingLimitation(IntPtr owner, string service, string account, byte[] stamp) =>
+            limitation is { } known && known.Owner == owner && known.Stamp.AsSpan().SequenceEqual(stamp);
+
+        public void RememberStagingLimitation(IntPtr owner, string service, string account, byte[] stamp)
+        {
+            Assert.DoesNotContain(owner, locked);
+            Assert.True(stamp.AsSpan().SequenceEqual(ProtectedStamp(GetItem(owner)!)));
+            limitation = (owner, stamp);
+            VerifiedRollbacks++;
+        }
+
         public int CopyPersistentReference(IntPtr item, out IntPtr persistent)
         {
             Assert.Contains(item, held);
-            persistent = owners[item]; // like FileDL, the database and primary key identify the logical item
+            persistent = InstanceBoundPersistentReferences ? -referents[item].Reference : owners[item];
             held.Add(persistent);
             return 0;
         }
 
         public int ResolvePassword(IntPtr persistent, IntPtr owner, string service, string account, out IntPtr item)
         {
-            Assert.Equal(owner, persistent);
-            return Find(owner, service, account, out item);
+            int status = Find(owner, service, account, out item);
+            if (status == 0 && persistent != (InstanceBoundPersistentReferences ? -referents[item].Reference : owner))
+            {
+                Release(item);
+                item = IntPtr.Zero;
+                return -25300;
+            }
+            return status;
         }
 
         private bool CommittedMatch(IntPtr keychain, string service, string account)
@@ -905,7 +944,10 @@ public sealed class SigningKeyStoreTests : IDisposable
                 CheckedOtherUnderLock = true;
             }
 
-            DuringProbe?.Invoke();
+            if (SecondaryReply is not null)
+            {
+                return MacKeychainItem.NativeCalls.PresenceResult(SecondaryReply());
+            }
             return GetItem(keychain) is not null;
         }
 
@@ -914,11 +956,14 @@ public sealed class SigningKeyStoreTests : IDisposable
             if (item.Reference == IntPtr.Zero)
             {
                 item.Reference = ++nextReference;
-                owners.Add(item.Reference, owner);
             }
 
-            held.Add(item.Reference);
-            return item.Reference;
+            // Security can return a fresh handle for the same scoped logical item.
+            IntPtr handle = ++nextReference;
+            owners.Add(handle, owner);
+            referents.Add(handle, item);
+            held.Add(handle);
+            return handle;
         }
 
         public int CopyDefaultKeychain(out IntPtr keychain)
@@ -944,7 +989,7 @@ public sealed class SigningKeyStoreTests : IDisposable
             return action([target == DefaultKeychain ? OtherKeychain : DefaultKeychain]);
         }
 
-        public IDisposable GuardMatch(IntPtr keychain, string service, string account, string apphost,
+        public IDisposable GuardMatch(IntPtr keychain, string service, string account,
             TimeSpan timeout, out bool found)
         {
             bool match = false;
@@ -997,8 +1042,8 @@ public sealed class SigningKeyStoreTests : IDisposable
         {
             Item current = GetItem(keychain)!;
             Item committed = CommittedReadView ?? current;
-            return persistent == keychain && stamp is not null
-                && SHA256.HashData(committed.Data).AsSpan().SequenceEqual(stamp)
+            return persistent == (InstanceBoundPersistentReferences ? -current.Reference : keychain) && stamp is not null
+                && ProtectedStamp(committed).AsSpan().SequenceEqual(stamp)
                 && policies[policy].SequenceEqual([committed.Partition, .. committed.TrustedPaths]) ? 0 : -25293;
         }
 
@@ -1083,17 +1128,9 @@ public sealed class SigningKeyStoreTests : IDisposable
             }
         }
 
-        public int CopyRecordId(IntPtr item, out IntPtr recordId)
-        {
-            Assert.Contains(item, held);
-            recordId = -item - GetItem(owners[item])!.PhysicalVersion;
-            held.Add(recordId);
-            return 0;
-        }
-
         public int CopyAccessSnapshot(IntPtr item, out IntPtr snapshot)
         {
-            Item current = NextPolicyObservation ?? GetItem(owners[item])!;
+            Item current = NextPolicyObservation ?? referents[item];
             NextPolicyObservation = null;
             snapshot = ++nextReference;
             policies.Add(snapshot, [current.Partition, .. current.TrustedPaths]);
@@ -1105,16 +1142,16 @@ public sealed class SigningKeyStoreTests : IDisposable
             ? policy.SequenceEqual(policies[second], StringComparer.Ordinal) : first == second;
 
         public int CheckAccess(IntPtr before, IntPtr after, IntPtr item, byte[] expected) =>
-            Equal(before, after) && CryptographicOperations.FixedTimeEquals(GetItem(owners[item])!.Data, expected) ? 0 : -1;
+            Equal(before, after) && CryptographicOperations.FixedTimeEquals(referents[item].Data, expected) ? 0 : -1;
 
         public int CheckMigrationReader(IntPtr item, IntPtr policy, byte[] expected) =>
             policies[policy].Length == 2 && policies[policy][0] == Item.OriginalPartition
-            && RemainingReads is null && CryptographicOperations.FixedTimeEquals(GetItem(owners[item])!.Data, expected)
+            && RemainingReads is null && CryptographicOperations.FixedTimeEquals(referents[item].Data, expected)
                 ? 0 : -25293;
 
         public int CopyLegacyReadPolicy(IntPtr item, bool writable, out IntPtr snapshot)
         {
-            Item current = GetItem(owners[item])!;
+            Item current = referents[item];
             snapshot = IntPtr.Zero;
             bool allowed = current.Partition.Length == 0 ? !writable
                 : current.TrustedPaths.Length == 1 && !current.Partition.Contains(',');
@@ -1127,7 +1164,7 @@ public sealed class SigningKeyStoreTests : IDisposable
             IntPtr owner = owners[item];
             Assert.Contains(owner, locked);
             Item current = Assert.IsType<Item>(GetItem(owner));
-            Assert.Equal(current.Reference, item);
+            Assert.Same(current, referents[item]);
             return current;
         }
 
@@ -1148,6 +1185,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         {
             Assert.Equal(Service, description);
             Assert.Contains(keychain, locked);
+            BeforeDestinationInsert?.Invoke(keychain);
             if (DestinationUnavailable)
             {
                 item = IntPtr.Zero;
@@ -1223,6 +1261,8 @@ public sealed class SigningKeyStoreTests : IDisposable
         {
             if (reference != IntPtr.Zero)
             {
+                owners.Remove(reference);
+                referents.Remove(reference);
                 policies.Remove(reference);
                 Assert.True(held.Remove(reference));
             }

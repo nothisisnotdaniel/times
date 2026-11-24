@@ -14,7 +14,7 @@ public sealed partial class MacKeychainMigrationTests
         private readonly MacKeychainItem.NativeCalls calls = new();
         public IntPtr Persistent { get; }
         public IntPtr Policy { get; }
-        public IntPtr Physical { get; }
+        public byte[]? ProtectedValue { get; }
         public int LookupStatus { get; }
         public int ResolveStatus { get; }
         public bool Bound { get; }
@@ -38,15 +38,14 @@ public sealed partial class MacKeychainMigrationTests
                     {
                         Policy = policy;
                     }
-                    if (calls.CopyRecordId(unique, out IntPtr physical) == 0)
-                    {
-                        Physical = physical;
-                    }
+                    ProtectedValue = calls.DataStamp(unique);
                 }
                 IntPtr anchor = baseline is null ? Persistent : baseline.Persistent;
                 ResolveStatus = calls.ResolvePassword(anchor, fixture.Reference, Service, Account, out resolved);
                 Bound = ResolveStatus == 0 && resolved != IntPtr.Zero
-                    && calls.CopyRecordId(resolved, out resolvedId) == 0 && Same(Physical, resolvedId);
+                    && calls.CopyPersistentReference(resolved, out resolvedId) == 0 && Same(anchor, resolvedId)
+                    && Same(anchor, Persistent) && ProtectedValue is not null
+                    && ProtectedValue.AsSpan().SequenceEqual(calls.DataStamp(resolved));
                 Caller = ReadSample(unique, expected, original);
                 ResolvedRead = ReadSample(resolved, expected, original);
                 Readers = fixture.ProbeReaders(expected, original);
@@ -78,7 +77,6 @@ public sealed partial class MacKeychainMigrationTests
 
         public void Dispose()
         {
-            calls.Release(Physical);
             calls.Release(Policy);
             calls.Release(Persistent);
         }
@@ -98,8 +96,9 @@ public sealed partial class MacKeychainMigrationTests
     private void AssertObservation(string phase, Observation before, Observation after, bool oneTimeRead,
         bool requireOriginal, bool requirePhysical)
     {
-        bool logical = before.Bound && after.Bound;
-        bool physical = before.Same(before.Physical, after.Physical);
+        bool logical = before.Bound && after.Bound && before.Same(before.Persistent, after.Persistent);
+        bool originalEnvelope = before.ProtectedValue is not null
+            && before.ProtectedValue.AsSpan().SequenceEqual(after.ProtectedValue);
         bool completeAccess = before.Same(before.Policy, after.Policy);
         bool owner = before.SameComponent(after, 0);
         bool entries = before.SameComponent(after, 1);
@@ -132,7 +131,8 @@ public sealed partial class MacKeychainMigrationTests
         ReportReads("before", before);
         ReportReads("after", after);
         Compare(phase, "persistent reference resolves", logical);
-        Compare(phase, "control identity equal", physical);
+        Compare(phase, "control identity equal", logical);
+        Compare(phase, "original protected value retained", originalEnvelope);
         Compare(phase, "control access equal", completeAccess);
         Compare(phase, "ordinary entries equal", entries);
         Compare(phase, "reader access equal", readers);
@@ -154,7 +154,7 @@ public sealed partial class MacKeychainMigrationTests
         Assert.True(requireOriginal ? original : value, "The expected fixture value was not verified.");
         if (requirePhysical)
         {
-            Assert.True(physical && completeAccess, "Refusal changed the original record or its access entries.");
+            Assert.True(originalEnvelope && completeAccess, "Refusal changed the original protected value or access entries.");
         }
     }
 
@@ -165,11 +165,12 @@ public sealed partial class MacKeychainMigrationTests
         int search = calls.FindUnique(fixture.Reference, Service, Account, out IntPtr unique);
         int resolve = calls.ResolvePassword(before.Persistent, fixture.Reference, Service, Account, out IntPtr resolved);
         IntPtr writtenId = IntPtr.Zero, livePolicy = IntPtr.Zero;
+        bool resolvedProtectionMissing = false;
         try
         {
             ReportStatus(phase, "staged unique lookup", search);
             ReportStatus(phase, "staged persistent lookup", resolve);
-            int idStatus = calls.CopyRecordId(live, out writtenId);
+            int idStatus = calls.CopyPersistentReference(live, out writtenId);
             int policyStatus = calls.CopyAccessSnapshot(live, out livePolicy);
             ReportStatus(phase, "staged write identity", idStatus);
             ReportStatus(phase, "staged live policy", policyStatus);
@@ -178,9 +179,15 @@ public sealed partial class MacKeychainMigrationTests
             bool resolvedVerified = resolve == 0 && VerifyView("resolved", resolved, writtenStamp);
             if (committing)
             {
-                Assert.True(idStatus == 0 && policyStatus == 0 && uniqueVerified && resolvedVerified,
+                Assert.True(idStatus == 0 && before.Same(before.Persistent, writtenId)
+                    && policyStatus == 0 && uniqueVerified && resolvedVerified,
                     "The staged write failed independent verification.");
                 evidence.VerifiedStagedWrite();
+            }
+            else if (resolve == 0 && resolved != IntPtr.Zero && search == -25300 && policyStatus == -25300
+                && resolvedProtectionMissing)
+            {
+                evidence.ObservedMissingStagedView(phase);
             }
         }
         finally
@@ -198,15 +205,19 @@ public sealed partial class MacKeychainMigrationTests
                 return false;
             }
             int policyStatus = calls.CopyAccessSnapshot(item, out IntPtr policy);
-            int idStatus = calls.CopyRecordId(item, out IntPtr id);
+            int idStatus = calls.CopyPersistentReference(item, out IntPtr id);
             try
             {
                 ReportStatus(phase, "staged " + reference + " policy", policyStatus);
-                bool identity = idStatus == 0 && before.Same(id, writtenId);
+                bool identity = idStatus == 0 && before.Same(id, writtenId) && before.Same(id, before.Persistent);
                 byte[]? stamp = calls.DataStamp(item, der.Length);
                 bool sameValue = writtenStamp is not null && stamp is not null && writtenStamp.AsSpan().SequenceEqual(stamp);
                 SampleRead read = ReadSample(item, der, fixture.Legacy!);
                 ReportStatus(phase, "staged " + reference + " read", read.Status);
+                if (reference == "resolved")
+                {
+                    resolvedProtectionMissing = policyStatus == -25300 && read.Status == -25300;
+                }
                 // The normal authorized read authenticates the protected data. The new
                 // digest may differ from the original, but both staged views must agree.
                 bool effective = policyStatus == 0 && before.HasIntegrity && before.HasPartitions

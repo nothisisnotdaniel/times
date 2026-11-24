@@ -17,5 +17,5 @@ for arch in arm64 x86_64; do
     esac
 done
 printf '#define TIMES_VIEW_ARM64 "%s"\n#define TIMES_VIEW_X86_64 "%s"\n' "$arm" "$intel" > "$out/VerifierHashes.h"
-compile -dynamiclib -I"$out" VerifierIdentity.c KeychainMigration.c KeychainPolicy.c KeychainFiles.c \
+compile -dynamiclib -I"$out" -framework CoreServices VerifierIdentity.c KeychainCreate.c KeychainMigration.c KeychainPolicy.c KeychainFiles.c \
     -o "$out/libTimesIssuerKeychain.dylib"

@@ -27,7 +27,7 @@
   </ItemGroup>
 
   <Target Name="BuildIssuerKeychain" BeforeTargets="PrepareForBuild" Condition="$([MSBuild]::IsOSPlatform('OSX'))"
-          Inputs="KeychainMigration.c;KeychainPolicy.c;KeychainFiles.c;KeychainView.c;VerifierIdentity.c;build-keychain.sh;$(MSBuildProjectFile)"
+          Inputs="KeychainCreate.c;KeychainMigration.c;KeychainPolicy.c;KeychainFiles.c;KeychainView.c;VerifierIdentity.c;build-keychain.sh;$(MSBuildProjectFile)"
           Outputs="$(IssuerNativeDir)/libTimesIssuerKeychain.dylib;$(IssuerNativeDir)/TimesKeychainView">
     <MakeDir Directories="$(IssuerNativeDir)" />
     <Exec Command="/bin/sh build-keychain.sh &quot;$(IssuerNativeDir)&quot;" WorkingDirectory="$(MSBuildProjectDirectory)" />

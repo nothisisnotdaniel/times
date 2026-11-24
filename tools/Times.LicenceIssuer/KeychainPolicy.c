@@ -400,7 +400,7 @@ OSStatus TimesReadViewDigest(CFDataRef persistent, CFArrayRef policy, const uint
 
 // The normal password read authenticates the item's integrity under the caller's
 // existing rights. The issuer disables interaction for the entire transaction.
-static OSStatus checkPassword(SecKeychainItemRef item, const uint8_t *expected, size_t length)
+OSStatus TimesCheckPasswordData(SecKeychainItemRef item, const uint8_t *expected, size_t length)
 {
     UInt32 size = 0;
     void *bytes = NULL;
@@ -498,7 +498,7 @@ OSStatus TimesCheckMigrationReader(SecKeychainItemRef item, CFArrayRef policy, c
     if (!status && (!policy || !current || !CFEqual(current, policy))) status = errSecInvalidItemRef;
     if (current) CFRelease(current);
     // Authenticate the existing value under the writer's own code identity and partition.
-    return status ? status : checkPassword(item, expected, length);
+    return status ? status : TimesCheckPasswordData(item, expected, length);
 }
 
 OSStatus TimesCheckPasswordPolicy(CFArrayRef before, CFArrayRef after, SecKeychainItemRef item,
@@ -509,5 +509,5 @@ OSStatus TimesCheckPasswordPolicy(CFArrayRef before, CFArrayRef after, SecKeycha
         if (!CFEqual(CFArrayGetValueAtIndex(before, i), CFArrayGetValueAtIndex(after, i))) return errSecInvalidItemRef;
     }
     if (CFArrayGetValueAtIndex(after, 6) == kCFNull) return errSecInvalidItemRef;
-    return checkPassword(item, expected, length);
+    return TimesCheckPasswordData(item, expected, length);
 }
