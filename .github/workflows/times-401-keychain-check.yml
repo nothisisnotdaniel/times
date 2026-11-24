@@ -13,14 +13,14 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 45
     env:
-      FACTORY_TEST_COMMIT: "48f1f3c198cb82658c42f991918ec7fe8c9be561"
+      FACTORY_TEST_COMMIT: "2497a4fa961fbd55270da09238adf2a4f5d9e2d2"
       DOTNET_NOLOGO: "1"
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
     steps:
       - name: Check out the exact Times build
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: "48f1f3c198cb82658c42f991918ec7fe8c9be561"
+          ref: "2497a4fa961fbd55270da09238adf2a4f5d9e2d2"
           persist-credentials: false
       - name: Prepare the disposable Keychain test directory
         shell: bash
@@ -75,12 +75,9 @@ jobs:
           duplicate = "CreateKey_GuardedProbeSeesCommittedSecondary"
           required = [f"{lookup_lock}(kind: {kind})" for kind in ("regular", "symlink", "fifo")]
           required += [f"{duplicate}(competingInsert: {value})" for value in ("False", "True")]
-          variants = (("False", "False", "True"), ("True", "False", "True"),
-                      ("True", "True", "True"), ("True", "True", "False"))
-          for control in ("DocumentedUpdate_OnMatchingDisposableItem_ReportsAuthorizationAndPreservation",
-                          "SecItemUpdate_OnMatchingDisposableItem_ReportsAuthorizationAndPreservation"):
-              required += [f"{control}(extraReader: {extra}, oneTimeRead: {once}, allowWriter: {writer})"
-                           for extra, once, writer in variants]
+          sole_reader_controls = {"DocumentedUpdate_SoleReader_PreservesAccessAndLogicalItem",
+                                  "SecItemUpdate_SoleReader_PreservesAccessAndLogicalItem"}
+          required.extend(sorted(sole_reader_controls))
 
           # Trace markers come from completed fixture assertions, independent of the builder's method names.
           issued = {"original-reader", "original-reader-retry", "overlapping-original-reader"}
@@ -141,6 +138,7 @@ jobs:
                   results.extend(ET.parse(trx).findall(".//{*}UnitTestResult"))
               counts = collections.Counter(node.get("outcome", "Unknown") for node in results)
               seen = {case: [] for case in required}
+              observed_controls = set()
               classes = set()
               failures = []
               diagnostics = []
@@ -160,6 +158,10 @@ jobs:
                           events = fixture_events(node)
                           proofs = [event for event in events if "scenario" in event]
                           trace = [event for event in events if "scenario" not in event]
+                          if (case in sole_reader_controls and outcome == "Passed" and
+                                  [e["status"] for e in trace if e.get("phase") == "control-allowed" and
+                                   e.get("operation") == "control update"] == [0]):
+                              observed_controls.add(case)
                           if trace:
                               diagnostics.append({"test": case if case in seen else method, "events": trace})
                           for evidence in proofs:
@@ -182,12 +184,14 @@ jobs:
                   "files": len(files), "cases": len(results), "outcomes": dict(counts),
                   "step": os.environ.get(status, "missing"), "required_native": seen,
                   "failed_tests": sorted(set(failures)),
+                  "sole_reader_controls": sorted(observed_controls),
                   "fixture_diagnostics": diagnostics, "product_decision": decisions,
               }
               report["suites"][name] = row
               valid &= (bool(files) and row["step"] == "success" and counts["Passed"] > 0
                         and set(counts) <= {"Passed", "NotExecuted"}
                         and all(outcomes == ["Passed"] for outcomes in seen.values())
+                        and observed_controls == sole_reader_controls
                         and all(len(rows) == 1 and rows[0]["valid"] for rows in decisions.values()))
               if name == "native":
                   valid &= counts["Passed"] == len(results)
@@ -229,7 +233,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: times-401-macos-48f1f3c198cb82658c42f991918ec7fe8c9be561
+          name: times-401-macos-2497a4fa961fbd55270da09238adf2a4f5d9e2d2
           path: ${{ runner.temp }}/times401/summary.json
           if-no-files-found: error
           retention-days: 14
