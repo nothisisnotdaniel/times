@@ -295,26 +295,15 @@ internal sealed partial class MacKeychainItem
     private bool AddWithSearchListLocked(IntPtr target, IReadOnlyList<IntPtr> others, string service, string account,
         byte[] data, string creatorPath, string apphost)
     {
-        // Paths have the same order across processes, even with different defaults or search orders.
-        // The lookup and the target commit both run while every searchable database is locked.
-        IEnumerable<(IntPtr Keychain, byte[] Path)> ordered = others.Append(target)
-            .Select(keychain => (Keychain: keychain, Path: native.KeychainPath(keychain)))
-            .OrderBy(entry => entry.Path, Comparer<byte[]>.Create((a, b) => a.AsSpan().SequenceCompareTo(b)));
-        Stack<IDisposable> held = new(others.Count + 1);
-        IFileTransaction? targetTransaction = null;
+        // FileDL can wait for the writer. Take it before holding any other database,
+        // then acquire only bounded lookup guards and keep them through the commit.
+        using IFileTransaction targetTransaction = native.BeginTransaction(target);
+        Stack<IDisposable> held = new(others.Count);
         try
         {
-            foreach ((IntPtr keychain, byte[] path) in ordered)
+            foreach (IntPtr keychain in others)
             {
-                if (keychain == target)
-                {
-                    targetTransaction = native.BeginTransaction(keychain);
-                    held.Push(targetTransaction);
-                }
-                else
-                {
-                    held.Push(native.LockForLookup(keychain, path));
-                }
+                held.Push(native.LockForLookup(keychain, native.KeychainPath(keychain)));
             }
 
             if (Exists(target, service, account)
@@ -324,7 +313,7 @@ internal sealed partial class MacKeychainItem
                 return false;
             }
 
-            targetTransaction!.Commit();
+            targetTransaction.Commit();
             return true;
         }
         finally
@@ -462,14 +451,14 @@ internal sealed partial class MacKeychainItem
         {
             lock (TransactionLock)
             {
-                using IFileTransaction transaction = native.BeginTransaction(owner);
+                using IFileTransaction transaction = native.BeginTransaction(owner, nonInteractive: true);
                 Check(native.Find(owner, service, account, out IntPtr current), MigrationFailed);
                 try
                 {
                     Check(native.CopyRecordId(current, out IntPtr currentId), MigrationFailed);
                     try
                     {
-                        if (!native.Equal(recordId, currentId))
+                        if (recordId == IntPtr.Zero || currentId == IntPtr.Zero || !native.Equal(recordId, currentId))
                         {
                             throw new TokenStoreException(MigrationFailed);
                         }
@@ -481,7 +470,8 @@ internal sealed partial class MacKeychainItem
 
                     // An unchanged protected record needs only the original authorized read.
                     // Recheck plaintext only if another writer changed it or no stamp was available.
-                    if (stamp is null || !stamp.AsSpan().SequenceEqual(native.DataStamp(current)))
+                    byte[]? lockedStamp = native.DataStamp(current);
+                    if (stamp is null || !stamp.AsSpan().SequenceEqual(lockedStamp))
                     {
                         bool migrated = false;
                         ReadContent(current, Math.Max(expected.Length, data.Length), (_, bytes) =>
@@ -498,7 +488,7 @@ internal sealed partial class MacKeychainItem
                         }
                     }
 
-                    Check(native.UpdateData(owner, current, data), MigrationFailed);
+                    UpdatePreservingAccess(owner, service, account, current, recordId, lockedStamp, data);
                     transaction.Commit();
                 }
                 finally
@@ -510,6 +500,44 @@ internal sealed partial class MacKeychainItem
         catch (Exception ex) when (ex is TokenStoreException or TypeLoadException or BadImageFormatException)
         {
             throw new TokenStoreException(MigrationFailed);
+        }
+    }
+
+    private void UpdatePreservingAccess(IntPtr owner, string service, string account, IntPtr item, IntPtr recordId,
+        byte[]? originalStamp, byte[] data)
+    {
+        IntPtr before = IntPtr.Zero, after = IntPtr.Zero, updated = IntPtr.Zero, updatedId = IntPtr.Zero;
+        try
+        {
+            Check(native.CopyAccessSnapshot(item, out before), MigrationFailed);
+            if (before == IntPtr.Zero)
+            {
+                throw new TokenStoreException(MigrationFailed);
+            }
+            Check(native.UpdateData(item, data), MigrationFailed);
+            // Resolve the stored record again inside the transaction. A password update
+            // can produce a different record or storage group under the same service and account.
+            Check(native.Find(owner, service, account, out updated), MigrationFailed);
+            if (updated == IntPtr.Zero)
+            {
+                throw new TokenStoreException(MigrationFailed);
+            }
+            Check(native.CopyRecordId(updated, out updatedId), MigrationFailed);
+            Check(native.CopyAccessSnapshot(updated, out after), MigrationFailed);
+            byte[]? updatedStamp = native.DataStamp(updated);
+            if (updatedId == IntPtr.Zero || after == IntPtr.Zero || !native.Equal(recordId, updatedId)
+                || !native.Equal(before, after) || updatedStamp is null
+                || updatedStamp.AsSpan().SequenceEqual(originalStamp))
+            {
+                throw new TokenStoreException(MigrationFailed);
+            }
+        }
+        finally
+        {
+            native.Release(updatedId);
+            native.Release(updated);
+            native.Release(after);
+            native.Release(before);
         }
     }
 
@@ -700,14 +728,15 @@ internal sealed partial class MacKeychainItem
         public bool WithSearchList(IntPtr target, Func<IReadOnlyList<IntPtr>, bool> action);
         public byte[] KeychainPath(IntPtr keychain);
         public IDisposable LockForLookup(IntPtr keychain, byte[] path);
-        public IFileTransaction BeginTransaction(IntPtr keychain);
+        public IFileTransaction BeginTransaction(IntPtr keychain, bool nonInteractive = false);
         public int CopyRecordId(IntPtr item, out IntPtr recordId);
+        public int CopyAccessSnapshot(IntPtr item, out IntPtr snapshot);
         public bool Equal(IntPtr first, IntPtr second);
         public IntPtr CreateAccess(string path, string description);
         public int AddToKeychain(IntPtr keychain, ref AttributeList attributes, byte[] data, string creatorPath, out IntPtr item);
         public int CreateFromContent(uint itemClass, ref AttributeList attributes, byte[] data, IntPtr keychain,
             IntPtr access, out IntPtr item);
-        public int UpdateData(IntPtr owner, IntPtr item, ReadOnlyMemory<byte> data);
+        public int UpdateData(IntPtr item, ReadOnlyMemory<byte> data);
         public int Delete(IntPtr item);
         public void FreeContent(IntPtr data);
         public void Release(IntPtr reference);

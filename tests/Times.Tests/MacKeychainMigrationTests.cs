@@ -19,6 +19,7 @@ public sealed partial class MacKeychainMigrationTests
 
     private const string MigrationFailed = "Signing-key migration failed. Check Keychain write access and retry.";
     private const UnixFileMode OwnerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+    private static readonly TimeSpan FixtureTimeout = TimeSpan.FromSeconds(30);
 
     private readonly ITestOutputHelper log;
 
@@ -27,7 +28,11 @@ public sealed partial class MacKeychainMigrationTests
         this.log = log;
     }
 
-    private void ReportFailure(string operation, int status) => log.WriteLine("{0} returned {1}", operation, status);
+    private void ReportStatus(string phase, string operation, int status) =>
+        log.WriteLine("{0} | {1} returned {2}", phase, operation, status);
+
+    private static bool IsAuthorizationDenied(int status) =>
+        status is -25293 or -60005 or -2147416032; // errSecAuthFailed, errAuthorizationDenied, CSSMERR_CSP_OPERATION_AUTH_DENIED
 
     [MacKeychainTheory]
     [InlineData(false, false)]
@@ -45,20 +50,20 @@ public sealed partial class MacKeychainMigrationTests
             string[] before = fixture.Readers(extraReader, oneTimeRead);
             byte[] identity = fixture.Identity();
             LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]);
-            ReadGrant grant = new(ReportFailure);
+            string phase = "issue-1";
+            ReadGrant grant = new((operation, status) =>
+                ReportStatus(oneTimeRead && operation == "read password" && status != 0 ? "denied-read" : phase, operation, status));
             TestKeychainStore store = new(fixture.Reference, grant);
             string ledger = Path.Combine(folder.Path, "ledger.tsv");
             for (int i = 0; i < 2; i++)
             {
+                phase = i == 0 ? "issue-1" : "issue-2";
                 if (oneTimeRead)
                 {
                     grant.AllowOnce(fixture, i == 0 ? fixture.Legacy! : der);
                 }
-                AssertIssued(store, ledger, original);
+                AssertFixtureIssue(fixture, store, ledger, original, i == 0 ? fixture.Legacy! : der, der, before, identity);
                 Assert.False(grant.HasOutstandingGrant);
-                fixture.AssertData(der);
-                Assert.Equal(identity, fixture.Identity());
-                Assert.Equal(before, AccessEntries(fixture.Path));
             }
 
             Assert.Equal(2, File.ReadAllLines(ledger).Length);
@@ -90,15 +95,17 @@ public sealed partial class MacKeychainMigrationTests
             File.WriteAllText(ledger, "previous entry\n");
             string[] before = fixture.Readers(extraReader);
             byte[] identity = fixture.Identity();
-            TestKeychainStore store = new(fixture.Reference, new MacKeychainItem.NativeCalls(ReportFailure));
+            string phase = "denied-write";
+            TestKeychainStore store = new(fixture.Reference,
+                new MacKeychainItem.NativeCalls((operation, status) => ReportStatus(phase, operation, status)));
             File.SetUnixFileMode(fixture.Directory, UnixFileMode.UserRead | UnixFileMode.UserExecute);
             try
             {
                 using StringWriter output = new();
                 using StringWriter error = new();
                 Assert.Equal(1, RunIssue(store, ledger, output, error));
-                Assert.Empty(output.ToString());
-                Assert.Equal(MigrationFailed + error.NewLine, error.ToString());
+                Assert.True(output.GetStringBuilder().Length == 0, "The refused issuer produced output.");
+                Assert.True(error.ToString() == MigrationFailed + error.NewLine, "The refused issuer returned an unexpected error.");
             }
             finally
             {
@@ -106,15 +113,13 @@ public sealed partial class MacKeychainMigrationTests
             }
 
             fixture.AssertData(fixture.Legacy!);
-            Assert.Equal(before, AccessEntries(fixture.Path));
-            Assert.Equal(identity, fixture.Identity());
-            Assert.Equal("previous entry\n", File.ReadAllText(ledger));
+            fixture.AssertPolicyAndIdentity(before, identity);
+            Assert.True(File.ReadAllText(ledger) == "previous entry\n", "The refused issuer changed the fixture ledger.");
             LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]);
-            AssertIssued(store, ledger, original);
-            AssertIssued(store, ledger, original);
-            fixture.AssertData(der);
-            Assert.Equal(before, AccessEntries(fixture.Path));
-            Assert.Equal(identity, fixture.Identity());
+            phase = "retry-1";
+            AssertFixtureIssue(fixture, store, ledger, original, fixture.Legacy!, der, before, identity);
+            phase = "retry-2";
+            AssertFixtureIssue(fixture, store, ledger, original, der, der, before, identity);
             Assert.Equal(3, File.ReadAllLines(ledger).Length);
         }
         finally
@@ -140,7 +145,7 @@ public sealed partial class MacKeychainMigrationTests
             return;
         }
 
-        string lockPath = Assert.Single(Directory.GetFiles(fixture.Directory, ".fl*"));
+        string lockPath = Directory.GetFiles(fixture.Directory, ".fl*").Single();
         string saved = lockPath + ".original";
         File.Move(lockPath, saved);
         try
@@ -157,7 +162,7 @@ public sealed partial class MacKeychainMigrationTests
             // The target writer sorts first. Refusing the secondary must release it.
             Assert.Throws<TokenStoreException>(() => MacKeychainItem.Default.AddWithSearchList(
                 target.Reference, [fixture.Reference], Service, Account, [], Environment.ProcessPath!, IssuerApphost));
-            Assert.Empty(BusyLockFiles(target.Directory));
+            Assert.True(BusyLockFiles(target.Directory).Length == 0, "The target lock is still held.");
             Assert.Throws<TokenStoreException>(() => calls.BeginTransaction(fixture.Reference));
         }
         finally
@@ -168,6 +173,101 @@ public sealed partial class MacKeychainMigrationTests
     }
 
     private static string IssuerApphost => Path.Combine(AppContext.BaseDirectory, "Times.LicenceIssuer");
+
+    [MacKeychainFact]
+    public async Task CreateKey_ContendedSecondary_RefusesAndReleasesTargetForAnotherWriter()
+    {
+        using Fixture first = new();
+        using Fixture second = new();
+        (Fixture target, Fixture secondary) = string.CompareOrdinal(first.Path, second.Path) < 0
+            ? (first, second) : (second, first);
+        using TempFolder folder = new();
+        using StringWriter output = new();
+        using StringWriter error = new();
+        using LicenceIssuerTests.CountingRandom random = new();
+        List<int> lookupStatuses = [];
+        MacKeychainItem.NativeCalls calls = new((operation, status) =>
+        {
+            if (operation == "open lookup lock")
+            {
+                lookupStatuses.Add(status);
+            }
+        });
+        TestKeychainStore store = new(target.Reference, calls, secondary.Reference);
+        Issuer issuer = new(output, error, store, random, FixedTimeProvider.At20261027(), Path.Combine(folder.Path, "ledger.tsv"));
+        using SafeFileHandle competing = new(OpenReadOnly(Directory.GetFiles(secondary.Directory, ".fl*").Single(), 0), true);
+        Assert.False(competing.IsInvalid);
+        Assert.Equal(0, flock(competing, 2 | 4)); // LOCK_EX | LOCK_NB on the actual FileDL lock
+        Task<int> creation = Task.Run(() => issuer.Run(["create-key", "--kid", Account]));
+        Task<bool>? nextWriter = null;
+        try
+        {
+            Assert.Equal(1, await creation.WaitAsync(FixtureTimeout));
+            Assert.True(output.GetStringBuilder().Length == 0, "The refused issuer produced output.");
+            Assert.True(error.ToString() == "The item could not be saved in the macOS Keychain." + error.NewLine,
+                "The refused issuer returned an unexpected error.");
+            Assert.Equal([35], lookupStatuses); // Darwin EWOULDBLOCK
+            Assert.False(MacKeychainItem.Default.Exists(target.Reference, Service, Account));
+            Assert.False(MacKeychainItem.Default.Exists(secondary.Reference, Service, Account));
+            Assert.True(BusyLockFiles(target.Directory).Length == 0, "The refused issuer retained the target writer lock.");
+
+            // The second writer must commit before the competing secondary lock is released.
+            nextWriter = Task.Run(() => MacKeychainItem.Default.TryAddToKeychain(target.Reference,
+                "Times fixture next writer", Account, [1], Environment.ProcessPath!));
+            Assert.True(await nextWriter.WaitAsync(FixtureTimeout));
+            Assert.True(MacKeychainItem.Default.Exists(target.Reference, "Times fixture next writer", Account));
+        }
+        finally
+        {
+            competing.Dispose();
+            await creation.WaitAsync(FixtureTimeout);
+            if (nextWriter is not null)
+            {
+                await nextWriter.WaitAsync(FixtureTimeout);
+            }
+        }
+    }
+
+    [MacKeychainTheory]
+    [InlineData(false, false, true)]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, true)]
+    [InlineData(true, true, false)]
+    public void DocumentedUpdate_OnMatchingDisposableItem_ReportsAuthorizationAndPreservation(
+        bool extraReader, bool oneTimeRead, bool allowWriter)
+    {
+        using Fixture fixture = new();
+        byte[] sample = RandomNumberGenerator.GetBytes(32);
+        fixture.AddLegacy(sample);
+        string[] before = fixture.Readers(extraReader, oneTimeRead, allowWriter);
+        byte[] identity = fixture.Identity();
+        fixture.AssertData(fixture.Legacy!);
+
+        MacKeychainItem.NativeCalls calls = new();
+        Assert.Equal(0, calls.Find(fixture.Reference, Service, Account, out IntPtr item));
+        int status;
+        try
+        {
+            // Direct Keychain Services call from the same process as the issuer fixture.
+            // Only a dummy value is changed. This control is independent of the product transaction.
+            status = SecKeychainItemModifyAttributesAndData(item, 0, (uint)sample.Length, sample);
+        }
+        finally
+        {
+            calls.Release(item);
+        }
+
+        string phase = allowWriter ? "control-allowed" : "control-denied";
+        ReportStatus(phase, "control update", status);
+        bool sameId = identity.AsSpan().SequenceEqual(fixture.Identity());
+        bool sameAccess = before.SequenceEqual(AccessEntries(fixture.Path), StringComparer.Ordinal);
+        ReportStatus(phase, "control identity equal", sameId ? 1 : 0);
+        ReportStatus(phase, "control access equal", sameAccess ? 1 : 0);
+        Assert.True(allowWriter ? status == 0 : IsAuthorizationDenied(status), "Unexpected provider authorization result.");
+        Assert.True(sameId, "The provider changed the fixture record identifier.");
+        Assert.True(sameAccess, "The provider changed the fixture access policy.");
+        fixture.AssertData(allowWriter ? sample : fixture.Legacy!);
+    }
 
     [MacKeychainFact]
     public void SeparateReadGrant_CannotAuthorizeAnExcludedWriter()
@@ -181,11 +281,14 @@ public sealed partial class MacKeychainMigrationTests
             fixture.AddLegacy(der);
             string[] access = fixture.Readers(extra: true, oneTimeRead: true, allowWriter: false);
             byte[] identity = fixture.Identity();
-            List<string> denied = [];
+            List<int> writes = [];
             ReadGrant grant = new((operation, status) =>
             {
-                ReportFailure(operation, status);
-                denied.Add(operation);
+                ReportStatus(operation == "read password" && status != 0 ? "denied-read" : "denied-write", operation, status);
+                if (operation == "provider update")
+                {
+                    writes.Add(status);
+                }
             });
             grant.AllowOnce(fixture, fixture.Legacy!);
             string ledger = Path.Combine(folder.Path, "ledger.tsv");
@@ -194,14 +297,12 @@ public sealed partial class MacKeychainMigrationTests
             using StringWriter error = new();
             Assert.Equal(1, RunIssue(new TestKeychainStore(fixture.Reference, grant), ledger, output, error));
             Assert.False(grant.HasOutstandingGrant);
-            Assert.Empty(output.ToString());
-            Assert.Equal(MigrationFailed + error.NewLine, error.ToString());
-            Assert.Contains(denied, stage => stage is "create encryption context" or "initialize encryption"
-                or "encrypt update" or "encrypt final");
+            Assert.True(output.GetStringBuilder().Length == 0, "The refused issuer produced output.");
+            Assert.True(error.ToString() == MigrationFailed + error.NewLine, "The refused issuer returned an unexpected error.");
             fixture.AssertData(fixture.Legacy!);
-            Assert.Equal(identity, fixture.Identity());
-            Assert.Equal(access, AccessEntries(fixture.Path));
-            Assert.Equal("previous entry\n", File.ReadAllText(ledger));
+            fixture.AssertPolicyAndIdentity(access, identity);
+            Assert.True(File.ReadAllText(ledger) == "previous entry\n", "The refused issuer changed the fixture ledger.");
+            Assert.True(IsAuthorizationDenied(Assert.Single(writes)), "The provider must deny this writer.");
         }
         finally
         {
@@ -214,7 +315,7 @@ public sealed partial class MacKeychainMigrationTests
     {
         using Fixture target = new();
         using Fixture secondary = new();
-        File.Delete(Assert.Single(Directory.GetFiles(secondary.Directory, ".fl*")));
+        File.Delete(Directory.GetFiles(secondary.Directory, ".fl*").Single());
 
         using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         byte[] data = key.ExportPkcs8PrivateKey();
@@ -223,9 +324,9 @@ public sealed partial class MacKeychainMigrationTests
             Assert.True(MacKeychainItem.Default.AddWithSearchList(target.Reference, [secondary.Reference],
                 Service, Account, data, Environment.ProcessPath!, IssuerApphost));
             target.AssertData(data);
-            Assert.Single(Directory.GetFiles(secondary.Directory, ".fl*"));
-            Assert.Empty(BusyLockFiles(target.Directory));
-            Assert.Empty(BusyLockFiles(secondary.Directory));
+            Assert.True(Directory.GetFiles(secondary.Directory, ".fl*").Length == 1, "The lookup did not leave one lock file.");
+            Assert.True(BusyLockFiles(target.Directory).Length == 0, "The target lock is still held.");
+            Assert.True(BusyLockFiles(secondary.Directory).Length == 0, "The secondary lock is still held.");
         }
         finally
         {
@@ -302,8 +403,7 @@ public sealed partial class MacKeychainMigrationTests
             if (competingInsert)
             {
                 secondary.AssertData(secondary.Legacy!);
-                Assert.Equal(id, secondary.Identity());
-                Assert.Equal(entries, AccessEntries(secondary.Path));
+                secondary.AssertPolicyAndIdentity(entries!, id!);
             }
             else
             {
@@ -311,8 +411,8 @@ public sealed partial class MacKeychainMigrationTests
                 calls.Release(marked);
             }
 
-            Assert.Empty(BusyLockFiles(target.Directory));
-            Assert.Empty(BusyLockFiles(secondary.Directory));
+            Assert.True(BusyLockFiles(target.Directory).Length == 0, "The target lock is still held.");
+            Assert.True(BusyLockFiles(secondary.Directory).Length == 0, "The secondary lock is still held.");
         }
         finally
         {
@@ -327,13 +427,34 @@ public sealed partial class MacKeychainMigrationTests
         return issuer.Run(["issue", "--kid", Account, "--name", "Ada", "--until", "2027-12-31"]);
     }
 
-    private static void AssertIssued(ISigningKeyStore store, string ledger, LicencePublicKeys original)
+    private static void AssertFixtureIssue(Fixture fixture, ISigningKeyStore store, string ledger,
+        LicencePublicKeys original, byte[] previous, byte[] der, string[] access, byte[] identity)
+    {
+        string? previousLedger = File.Exists(ledger) ? File.ReadAllText(ledger) : null;
+        AssertIssued(store, ledger, original, () =>
+        {
+            fixture.AssertData(previous);
+            fixture.AssertPolicyAndIdentity(access, identity);
+            string? currentLedger = File.Exists(ledger) ? File.ReadAllText(ledger) : null;
+            Assert.True(previousLedger == currentLedger, "The refused issuer changed the fixture ledger.");
+        });
+        fixture.AssertData(der);
+        fixture.AssertPolicyAndIdentity(access, identity);
+    }
+
+    private static void AssertIssued(ISigningKeyStore store, string ledger, LicencePublicKeys original, Action? verifyRefusal = null)
     {
         using StringWriter output = new();
         using StringWriter error = new();
         int result = RunIssue(store, ledger, output, error);
-        Assert.True(result == 0, error.ToString());
-        Assert.Empty(error.ToString());
+        if (result != 0 && verifyRefusal is not null)
+        {
+            verifyRefusal();
+            Assert.True(output.GetStringBuilder().Length == 0, "The refused issuer produced output.");
+            Assert.True(error.ToString() == MigrationFailed + error.NewLine, "The refused issuer returned an unexpected error.");
+        }
+        Assert.True(result == 0, "The fixture issuer did not issue a verifiable licence.");
+        Assert.True(error.GetStringBuilder().Length == 0, "The fixture issuer produced an error.");
         Assert.True(LicenceKey.TryVerify(output.ToString().Trim(), original, LicenceRevocations.None).IsValid);
     }
 
@@ -343,7 +464,7 @@ public sealed partial class MacKeychainMigrationTests
         private byte[]? sample;
         private IntPtr grantedData;
 
-        public ReadGrant(Action<string, int> reportFailure) : base(reportFailure)
+        public ReadGrant(Action<string, int> reportStatus) : base(reportStatus)
         {
         }
 
@@ -424,11 +545,11 @@ public sealed partial class MacKeychainMigrationTests
                 "Library", "Keychains");
             Assert.True(System.IO.Path.IsPathFullyQualified(root));
             root = System.IO.Path.TrimEndingDirectorySeparator(System.IO.Path.GetFullPath(root));
-            Assert.StartsWith(parent + "/", root, StringComparison.Ordinal);
+            Assert.True(root.StartsWith(parent + "/", StringComparison.Ordinal), "The fixture root is outside the harness.");
             Assert.Equal(OwnerOnly, File.GetUnixFileMode(root));
             for (DirectoryInfo? entry = new(root); entry is not null && entry.FullName != parent; entry = entry.Parent)
             {
-                Assert.Null(entry.LinkTarget);
+                Assert.True(entry.LinkTarget is null, "A fixture directory is a symbolic link.");
             }
 
             Directory = System.IO.Path.Combine(root, Guid.NewGuid().ToString("N"));
@@ -444,10 +565,11 @@ public sealed partial class MacKeychainMigrationTests
                 Assert.NotEqual(IntPtr.Zero, Reference);
                 Assert.Equal(0, SecKeychainGetKeychainVersion(Reference, out uint version));
                 Assert.True(version >= 0x200, $"Fixture file Keychain version 0x{version:x} lacks partition support.");
-                Assert.Equal(Path, Encoding.UTF8.GetString(new MacKeychainItem.NativeCalls().KeychainPath(Reference)));
+                Assert.True(Path == Encoding.UTF8.GetString(new MacKeychainItem.NativeCalls().KeychainPath(Reference)),
+                    "Keychain Services opened a different database.");
                 const string CheckService = "Times fixture partition check";
                 Assert.True(MacKeychainItem.Default.TryAddToKeychain(Reference, CheckService, Account, [1], Environment.ProcessPath!));
-                Assert.NotEmpty(PartitionIds(AccessEntries(Path, CheckService)));
+                Assert.True(PartitionIds(AccessEntries(Path, CheckService)).Length > 0, "The marker lacks a partition.");
             }
             catch
             {
@@ -471,7 +593,7 @@ public sealed partial class MacKeychainMigrationTests
         {
             string[] before = AccessEntries(Path);
             string[] partitions = PartitionIds(before);
-            Assert.Contains(before, entry => entry.Contains(" decrypt", StringComparison.Ordinal));
+            Assert.True(before.Any(entry => entry.Contains(" decrypt", StringComparison.Ordinal)), "The fixture lacks a decrypt ACL.");
             if (!extra)
             {
                 return before;
@@ -495,12 +617,12 @@ public sealed partial class MacKeychainMigrationTests
                     $"-DFIXTURE_DB=\"{Path}\"", $"-DFIRST_READER=\"{first}\"", $"-DSECOND_READER=\"{second}\"",
                     $"-DREADER_SERVICE=\"{marker}\"", $"-DFIXTURE_SERVICE=\"{Service}\"", source, "-o", reader]);
                 RunFixtureProcess(reader, ["register"]);
-                readerPartitions.Add(Assert.Single(PartitionIds(AccessEntries(Path, marker))));
+                readerPartitions.Add(PartitionIds(AccessEntries(Path, marker)).Single());
                 readers.Add(reader);
             }
 
             Assert.Equal(2, readerPartitions.Distinct(StringComparer.Ordinal).Count());
-            Assert.All(readerPartitions, partition => Assert.DoesNotContain(partition, partitions));
+            Assert.False(readerPartitions.Intersect(partitions, StringComparer.Ordinal).Any(), "A fixture reader shares the issuer partition.");
             string[] expected = allowWriter ? [.. partitions, .. readerPartitions] : [.. readerPartitions];
             RunSecurity("set-generic-password-partition-list", "-s", Service, "-a", Account, "-S",
                 string.Join(',', expected), "-k", password, Path);
@@ -515,7 +637,8 @@ public sealed partial class MacKeychainMigrationTests
             }
 
             before = AccessEntries(Path);
-            Assert.Equal(expected.Order(StringComparer.Ordinal), PartitionIds(before).Order(StringComparer.Ordinal));
+            Assert.True(expected.Order(StringComparer.Ordinal).SequenceEqual(PartitionIds(before).Order(StringComparer.Ordinal)),
+                "The fixture was created with different partitions.");
             VerifyReaders(Legacy!);
             return before;
         }
@@ -532,13 +655,13 @@ public sealed partial class MacKeychainMigrationTests
 
         private static string[] PartitionIds(string[] entries)
         {
-            string partition = Assert.Single(entries, entry => entry.Contains(" partition_id", StringComparison.Ordinal));
+            string partition = entries.Single(entry => entry.Contains(" partition_id", StringComparison.Ordinal));
             string description = partition.Split('\n').Select(line => line.Trim())
                 .Single(line => line.StartsWith("description:", StringComparison.Ordinal))["description:".Length..].Trim();
-            Assert.DoesNotContain("invalid partition ID", description, StringComparison.Ordinal);
-            Assert.NotEqual("<NULL>", description);
+            Assert.False(description.Contains("invalid partition ID", StringComparison.Ordinal) || description == "<NULL>",
+                "The fixture has an invalid partition list.");
             string[] ids = description.Split(',', StringSplitOptions.TrimEntries);
-            Assert.All(ids, id => Assert.NotEmpty(id));
+            Assert.False(ids.Any(string.IsNullOrEmpty), "The fixture contains an empty partition.");
             return ids;
         }
 
@@ -565,6 +688,12 @@ public sealed partial class MacKeychainMigrationTests
             {
                 calls.Release(item);
             }
+        }
+
+        public void AssertPolicyAndIdentity(string[] access, byte[] identity)
+        {
+            Assert.True(access.SequenceEqual(AccessEntries(Path), StringComparer.Ordinal), "Fixture access policy changed.");
+            Assert.True(identity.AsSpan().SequenceEqual(Identity()), "Fixture record identifier changed.");
         }
 
         public void AssertData(byte[] expected)
@@ -613,16 +742,16 @@ public sealed partial class MacKeychainMigrationTests
         string writerLock;
         using (native.BeginTransaction(keychain))
         {
-            writerLock = Assert.Single(BusyLockFiles(directory));
+            writerLock = BusyLockFiles(directory).Single();
         }
 
         using (IDisposable guard = native.LockForLookup(keychain, native.KeychainPath(keychain)))
         {
             Assert.IsType<SafeFileHandle>(guard); // a read-only guard on the local temporary volume
-            Assert.Equal([writerLock], BusyLockFiles(directory));
+            Assert.True(BusyLockFiles(directory).SequenceEqual([writerLock]), "The shared guard did not lock the writer's file.");
         }
 
-        Assert.Empty(BusyLockFiles(directory));
+        Assert.True(BusyLockFiles(directory).Length == 0, "A fixture lock is still held.");
     }
 
     private static string[] BusyLockFiles(string directory)
@@ -647,20 +776,27 @@ public sealed partial class MacKeychainMigrationTests
     private sealed class TestKeychainStore : ISigningKeyStore
     {
         private readonly MacKeychainSigningKeyStore store;
+        private readonly MacKeychainItem items;
         private readonly IntPtr keychain;
+        private readonly IntPtr[] secondaries;
 
-        public TestKeychainStore(IntPtr keychain, MacKeychainItem.NativeCalls? calls = null)
+        public TestKeychainStore(IntPtr keychain, MacKeychainItem.NativeCalls? calls = null, IntPtr secondary = default)
         {
-            store = new MacKeychainSigningKeyStore(IssuerApphost, new MacKeychainItem(calls ?? new MacKeychainItem.NativeCalls()));
+            Assert.NotEqual(IntPtr.Zero, keychain);
+            items = new MacKeychainItem(calls ?? new MacKeychainItem.NativeCalls());
+            store = new MacKeychainSigningKeyStore(IssuerApphost, items);
             Assert.Null(store.WriteRefusal);
             this.keychain = keychain;
+            secondaries = secondary == IntPtr.Zero ? [] : [secondary];
         }
 
         public bool IsSupported => store.IsSupported;
         public string? WriteRefusal => store.WriteRefusal;
         public byte[]? Read(string keyId) => store.Read(keychain, keyId);
-        public bool Exists(string keyId) => throw new NotSupportedException();
-        public bool TryCreate(string keyId, byte[] pkcs8) => throw new NotSupportedException();
+        public bool Exists(string keyId) => items.Exists(keychain, Service, keyId)
+            || secondaries.Any(other => items.Exists(other, Service, keyId));
+        public bool TryCreate(string keyId, byte[] pkcs8) => items.AddWithSearchList(keychain, secondaries,
+            Service, keyId, pkcs8, Environment.ProcessPath!, IssuerApphost);
     }
 
     private static string[] AccessEntries(string path, string service = Service)
@@ -674,39 +810,55 @@ public sealed partial class MacKeychainMigrationTests
 
     private static void RunFixtureProcess(string file, string[] args, byte[]? input = null)
     {
-        ProcessStartInfo info = new(file) { UseShellExecute = false, RedirectStandardInput = true };
+        ProcessStartInfo info = new(file)
+        {
+            UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
+        };
         foreach (string arg in args)
         {
             info.ArgumentList.Add(arg);
         }
 
         using Process child = Process.Start(info)!;
+        Task stdout = child.StandardOutput.BaseStream.CopyToAsync(Stream.Null);
+        Task stderr = child.StandardError.BaseStream.CopyToAsync(Stream.Null);
         if (input is not null)
         {
             child.StandardInput.BaseStream.Write(input);
         }
         child.StandardInput.Close();
-        if (!child.WaitForExit(TimeSpan.FromSeconds(30)))
-        {
-            child.Kill(entireProcessTree: true);
-            Assert.Fail("The disposable Keychain reader timed out.");
-        }
-        Assert.Equal(0, child.ExitCode);
+        WaitForFixture(child);
+        Task.WhenAll(stdout, stderr).GetAwaiter().GetResult();
     }
 
     private static string RunSecurity(params string[] arguments)
     {
-        ProcessStartInfo info = new ProcessStartInfo("/usr/bin/security") { RedirectStandardOutput = true };
+        ProcessStartInfo info = new("/usr/bin/security")
+        {
+            UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true,
+        };
         foreach (string argument in arguments)
         {
             info.ArgumentList.Add(argument);
         }
 
         using Process process = Process.Start(info)!;
-        string output = process.StandardOutput.ReadToEnd();
-        process.WaitForExit();
+        Task<string> output = process.StandardOutput.ReadToEndAsync();
+        Task stderr = process.StandardError.BaseStream.CopyToAsync(Stream.Null);
+        WaitForFixture(process);
+        stderr.GetAwaiter().GetResult();
+        return output.GetAwaiter().GetResult();
+    }
+
+    private static void WaitForFixture(Process process)
+    {
+        if (!process.WaitForExit(FixtureTimeout))
+        {
+            process.Kill(entireProcessTree: true);
+            Assert.True(process.WaitForExit(ChildCleanupTimeout), "The disposable helper did not exit during cleanup.");
+            Assert.Fail("The disposable Keychain helper timed out.");
+        }
         Assert.Equal(0, process.ExitCode);
-        return output;
     }
 
     private static string? NativeSkip => !OperatingSystem.IsMacOS() ? "Requires the macOS file Keychain." :
@@ -735,6 +887,9 @@ public sealed partial class MacKeychainMigrationTests
 
     [DllImport(Security)]
     private static extern int SecKeychainGetKeychainVersion(IntPtr keychain, out uint version);
+
+    [DllImport(Security)]
+    private static extern int SecKeychainItemModifyAttributesAndData(IntPtr item, IntPtr attributes, uint length, byte[] data);
 
     [DllImport("libc")]
     private static extern int mkfifo([MarshalAs(UnmanagedType.LPUTF8Str)] string path, ushort mode);

@@ -21,20 +21,16 @@ internal sealed partial class MacKeychainItem
         private const uint Rollback = 2;
         private const uint TakeFileLock = 3;
         private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(10);
-        private readonly Action<string, int>? reportFailure;
+        private readonly Action<string, int>? reportStatus;
 
-        public NativeCalls(Action<string, int>? reportFailure = null)
+        public NativeCalls(Action<string, int>? reportStatus = null)
         {
-            this.reportFailure = reportFailure;
+            this.reportStatus = reportStatus;
         }
 
         private int Report(string stage, int status)
         {
-            if (status != 0)
-            {
-                reportFailure?.Invoke(stage, status);
-            }
-
+            reportStatus?.Invoke(stage, status);
             return status;
         }
 
@@ -61,23 +57,109 @@ internal sealed partial class MacKeychainItem
             return fileDb;
         }
 
-        public IFileTransaction BeginTransaction(IntPtr keychain)
+        public IFileTransaction BeginTransaction(IntPtr keychain, bool nonInteractive = false)
         {
-            SafeFileHandle? guard = OpenLocalLock(KeychainPath(keychain), lookup: false);
+            bool restoreInteraction = false;
+            SafeFileHandle? guard = null;
             try
             {
-                return new FileTransaction(FileDatabase(keychain), guard, this);
+                if (nonInteractive)
+                {
+                    Check(Report("get interaction", SecKeychainGetUserInteractionAllowed(out byte allowed)), SaveFailed);
+                    if (allowed != 0)
+                    {
+                        Check(Report("disable interaction", SecKeychainSetUserInteractionAllowed(0)), SaveFailed);
+                        restoreInteraction = true;
+                    }
+                }
+                guard = OpenLocalLock(KeychainPath(keychain), lookup: false);
+                return new FileTransaction(FileDatabase(keychain), guard, this, restoreInteraction);
             }
             catch
             {
                 guard?.Dispose();
+                if (restoreInteraction)
+                {
+                    SecKeychainSetUserInteractionAllowed(1);
+                }
                 throw;
             }
         }
 
         public IDisposable LockForLookup(IntPtr keychain, byte[] path)
         {
-            return (IDisposable?)OpenLocalLock(path, lookup: true) ?? BeginTransaction(keychain);
+            SafeFileHandle? local = OpenLocalLock(path, lookup: true);
+            if (local is not null)
+            {
+                return local;
+            }
+
+            // Network FileDL has its own locking protocol and no try-lock. Bound the
+            // caller's wait. A late read-only transaction releases itself on acquisition.
+            IntPtr retained = CFRetain(keychain);
+            return LookupTransaction.Acquire(() => BeginTransaction(retained), () => CFRelease(retained), ProbeTimeout);
+        }
+
+        internal sealed class LookupTransaction : IDisposable
+        {
+            private readonly TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            private readonly Task worker;
+
+            private LookupTransaction(Func<IDisposable> acquire, Action releaseReference, TaskCompletionSource<bool> ready)
+            {
+                worker = Task.Factory.StartNew(() =>
+                {
+                    try
+                    {
+                        using IDisposable transaction = acquire();
+                        ready.TrySetResult(true);
+                        release.Task.GetAwaiter().GetResult();
+                    }
+                    catch (Exception ex) when (ex is TokenStoreException or TypeLoadException or BadImageFormatException)
+                    {
+                        ready.TrySetResult(false);
+                    }
+                    finally
+                    {
+                        ready.TrySetResult(false);
+                        releaseReference();
+                    }
+                }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            }
+
+            internal static LookupTransaction Acquire(Func<IDisposable> acquire, Action releaseReference, TimeSpan timeout)
+            {
+                TaskCompletionSource<bool> ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                LookupTransaction guard;
+                try
+                {
+                    guard = new LookupTransaction(acquire, releaseReference, ready);
+                }
+                catch
+                {
+                    releaseReference();
+                    throw;
+                }
+                try
+                {
+                    if (ready.Task.Wait(timeout) && ready.Task.Result)
+                    {
+                        return guard;
+                    }
+                    throw new TokenStoreException(SaveFailed);
+                }
+                catch
+                {
+                    guard.release.TrySetResult();
+                    throw;
+                }
+            }
+
+            public void Dispose()
+            {
+                release.TrySetResult();
+                worker.GetAwaiter().GetResult();
+            }
         }
 
         // Security.framework's nested password operations leave the commit to the caller
@@ -87,12 +169,12 @@ internal sealed partial class MacKeychainItem
             private readonly DatabaseHandle fileDb;
             private readonly SafeFileHandle? guard;
             private readonly NativeCalls calls;
+            private readonly bool restoreInteraction;
             private bool committed;
 
-            public unsafe FileTransaction(DatabaseHandle fileDb, SafeFileHandle? guard, NativeCalls calls)
+            public unsafe FileTransaction(DatabaseHandle fileDb, SafeFileHandle? guard, NativeCalls calls, bool restoreInteraction)
             {
                 this.fileDb = fileDb;
-                this.guard = guard;
                 this.calls = calls;
                 nint wasAutocommit = 0;
                 Check(calls.Report("disable autocommit", CSSM_DL_PassThrough(fileDb, ToggleAutocommit, 0,
@@ -115,6 +197,8 @@ internal sealed partial class MacKeychainItem
                     Dispose();
                     throw;
                 }
+                this.guard = guard;
+                this.restoreInteraction = restoreInteraction;
             }
 
             public void Commit()
@@ -131,15 +215,19 @@ internal sealed partial class MacKeychainItem
                 }
 
                 CSSM_DL_PassThrough(fileDb, ToggleAutocommit, 1, 0);
+                if (restoreInteraction)
+                {
+                    SecKeychainSetUserInteractionAllowed(1);
+                }
                 guard?.Dispose();
             }
         }
 
-        public int UpdateData(IntPtr owner, IntPtr item, ReadOnlyMemory<byte> data)
-        {
-            int status = UpdateProtectedPassword(owner, item, data.Span, (uint)data.Length, out IntPtr stage);
-            return status == 0 ? 0 : Report(Marshal.PtrToStringAnsi(stage) ?? "update password", status);
-        }
+        public int CopyAccessSnapshot(IntPtr item, out IntPtr snapshot) =>
+            Report("copy access", CopyPasswordAccess(item, out snapshot));
+
+        public int UpdateData(IntPtr item, ReadOnlyMemory<byte> data) =>
+            Report("provider update", SecKeychainItemModifyAttributesAndData(item, 0, (uint)data.Length, data.Span));
 
         public byte[]? DataStamp(IntPtr item)
         {
@@ -209,7 +297,6 @@ internal sealed partial class MacKeychainItem
             try
             {
                 child.Kill(entireProcessTree: true);
-                child.WaitForExit(TimeSpan.FromSeconds(1));
             }
             catch (InvalidOperationException) when (child.HasExited)
             {
@@ -258,9 +345,15 @@ internal sealed partial class MacKeychainItem
             }
         }
 
-        [LibraryImport("TimesIssuerKeychain", EntryPoint = "TimesUpdateProtectedPassword")]
-        private static partial int UpdateProtectedPassword(IntPtr owner, IntPtr item, ReadOnlySpan<byte> data, uint length,
-            out IntPtr stage);
+        [LibraryImport(CoreFoundation)]
+        private static partial IntPtr CFRetain(IntPtr value);
+
+        [LibraryImport(Security)]
+        private static partial int SecKeychainItemModifyAttributesAndData(IntPtr item, IntPtr attributes, uint length,
+            ReadOnlySpan<byte> data);
+
+        [LibraryImport("TimesIssuerKeychain", EntryPoint = "TimesCopyPasswordAccess")]
+        private static partial int CopyPasswordAccess(IntPtr item, out IntPtr snapshot);
 
         [LibraryImport("TimesIssuerKeychain", EntryPoint = "TimesPasswordStamp")]
         private static partial int PasswordStamp(IntPtr item, [Out] byte[] digest, out IntPtr stage);
@@ -270,6 +363,9 @@ internal sealed partial class MacKeychainItem
 
         [LibraryImport(Security)]
         private static partial int SecKeychainSetUserInteractionAllowed(byte allowed);
+
+        [LibraryImport(Security)]
+        private static partial int SecKeychainGetUserInteractionAllowed(out byte allowed);
 
         [LibraryImport(Security)]
         private static partial int SecKeychainGetStatus(IntPtr keychain, out uint status);

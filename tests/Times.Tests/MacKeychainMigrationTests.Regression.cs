@@ -108,6 +108,59 @@ public sealed partial class MacKeychainMigrationTests
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Issue_ProviderChangesPolicyOrRecord_RollsBackBeforeIssuingAndCanRetry(bool replaceRecord)
+    {
+        using PortableFixture fixture = new();
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] der = key.ExportPkcs8PrivateKey();
+        byte[] legacy = EncodeLegacy(der);
+        SigningKeyStoreTests.Item item = new(legacy, ["original reader", "second reader"]);
+        fixture.Calls.Stored = item;
+        fixture.Calls.AfterUpdate = updated =>
+        {
+            if (replaceRecord)
+            {
+                fixture.Calls.Stored = new SigningKeyStoreTests.Item(updated.Data, updated.TrustedPaths);
+            }
+            else
+            {
+                updated.Partition = "different partition";
+            }
+        };
+        File.WriteAllText(fixture.Ledger, "previous entry\n");
+        try
+        {
+            using StringWriter output = new();
+            using StringWriter error = new();
+            Assert.Equal(1, RunIssue(fixture.Store, fixture.Ledger, output, error));
+            Assert.Empty(output.ToString());
+            Assert.Equal(MigrationFailed + error.NewLine, error.ToString());
+            Assert.Same(item, fixture.Calls.Stored);
+            Assert.True(CryptographicOperations.FixedTimeEquals(legacy, item.Data));
+            Assert.Equal(SigningKeyStoreTests.Item.OriginalPartition, item.Partition);
+            Assert.Equal(["original reader", "second reader"], item.TrustedPaths);
+            Assert.Equal("previous entry\n", File.ReadAllText(fixture.Ledger));
+
+            fixture.Calls.AfterUpdate = null;
+            LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]);
+            AssertIssued(fixture.Store, fixture.Ledger, original);
+            AssertIssued(fixture.Store, fixture.Ledger, original);
+            Assert.Same(item, fixture.Calls.Stored);
+            Assert.True(CryptographicOperations.FixedTimeEquals(der, item.Data));
+            Assert.Equal(SigningKeyStoreTests.Item.OriginalPartition, item.Partition);
+            Assert.Equal(["original reader", "second reader"], item.TrustedPaths);
+            Assert.Equal(3, File.ReadAllLines(fixture.Ledger).Length);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(legacy);
+            CryptographicOperations.ZeroMemory(der);
+        }
+    }
+
     [Fact]
     public void Issue_TwoPublishedKeysAfterAChangeOfDefault_RefusesBeforeReadingEither()
     {
@@ -144,35 +197,10 @@ public sealed partial class MacKeychainMigrationTests
     public void CreateKey_UnavailableDestinationOrStalledProbe_ReleasesLocksAndPublishesNothing(bool stall)
     {
         using PortableFixture fixture = new();
+        using Process? child = stall ? StartStalledProbe() : null;
         if (stall)
         {
-            // This child cannot finish until the parent closes stdin. A zero deadline
-            // exercises the production timeout independent of process startup speed.
-            ProcessStartInfo info = new(OperatingSystem.IsWindows() ? "cmd.exe" : "/bin/cat")
-            {
-                UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true,
-                RedirectStandardError = true, CreateNoWindow = true,
-            };
-            if (OperatingSystem.IsWindows())
-            {
-                foreach (string argument in new[] { "/d", "/q", "/c", "set /p fixture=" })
-                {
-                    info.ArgumentList.Add(argument);
-                }
-            }
-
-            fixture.Calls.DuringProbe = () =>
-            {
-                using Process child = Process.Start(info)!;
-                try
-                {
-                    MacKeychainItem.NativeCalls.WaitForProbe(child, TimeSpan.Zero);
-                }
-                finally
-                {
-                    Assert.True(child.HasExited, "The timed-out probe was still running.");
-                }
-            };
+            fixture.Calls.DuringProbe = () => MacKeychainItem.NativeCalls.WaitForProbe(child!, TimeSpan.Zero);
         }
         else
         {
@@ -181,13 +209,85 @@ public sealed partial class MacKeychainMigrationTests
 
         using StringWriter output = new();
         using StringWriter error = new();
-        Assert.Equal(1, fixture.Create(output, error));
-        Assert.Empty(output.ToString());
-        Assert.Equal("The item could not be saved in the macOS Keychain." + error.NewLine, error.ToString());
-        Assert.Null(fixture.Calls.Stored);
-        Assert.Null(fixture.Calls.OtherStored);
-        Assert.Equal(0, fixture.Calls.Creates);
-        fixture.Calls.AssertReleased();
+        try
+        {
+            Assert.Equal(1, fixture.Create(output, error));
+            Assert.Empty(output.ToString());
+            Assert.Equal("The item could not be saved in the macOS Keychain." + error.NewLine, error.ToString());
+            Assert.Null(fixture.Calls.Stored);
+            Assert.Null(fixture.Calls.OtherStored);
+            Assert.Equal(0, fixture.Calls.Creates);
+            fixture.Calls.AssertReleased();
+        }
+        finally
+        {
+            if (child is not null)
+            {
+                child.StandardInput.Close();
+                Assert.True(child.WaitForExit(ChildCleanupTimeout), "The fixture probe did not exit during cleanup.");
+            }
+        }
+    }
+
+    private static readonly TimeSpan ChildCleanupTimeout = TimeSpan.FromSeconds(30);
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task LookupTransaction_ReleasesTheProviderGuardAfterSuccessOrTimeout(bool stall)
+    {
+        using ManualResetEventSlim available = new(!stall);
+        using MemoryStream providerGuard = new();
+        TaskCompletionSource released = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        IDisposable Acquire()
+        {
+            if (!available.Wait(FixtureTimeout))
+            {
+                throw new TokenStoreException("The fixture provider timed out.");
+            }
+            return providerGuard;
+        }
+
+        try
+        {
+            if (stall)
+            {
+                Assert.Throws<TokenStoreException>(() => MacKeychainItem.NativeCalls.LookupTransaction.Acquire(
+                    Acquire, () => released.SetResult(), TimeSpan.Zero));
+            }
+            else
+            {
+                using IDisposable guard = MacKeychainItem.NativeCalls.LookupTransaction.Acquire(
+                    Acquire, () => released.SetResult(), FixtureTimeout);
+                Assert.True(providerGuard.CanRead);
+                Assert.False(released.Task.IsCompleted);
+            }
+        }
+        finally
+        {
+            available.Set();
+            await released.Task.WaitAsync(ChildCleanupTimeout);
+        }
+        Assert.False(providerGuard.CanRead);
+    }
+
+    private static Process StartStalledProbe()
+    {
+        // The child waits for input, so a zero production deadline is independent of startup speed.
+        ProcessStartInfo info = new(OperatingSystem.IsWindows() ? "cmd.exe" : "/bin/cat")
+        {
+            UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true,
+            RedirectStandardError = true, CreateNoWindow = true,
+        };
+        if (OperatingSystem.IsWindows())
+        {
+            foreach (string argument in new[] { "/d", "/q", "/c", "set /p fixture=" })
+            {
+                info.ArgumentList.Add(argument);
+            }
+        }
+
+        return Process.Start(info)!;
     }
 
     public static TheoryData<string, byte[], bool, bool> AttributeCases
@@ -209,9 +309,25 @@ public sealed partial class MacKeychainMigrationTests
                 cases.Add("1.3.6.1.4.1.32473.4", [0x31, 5, 0xa0, 0, 0x81, 1, 1], true, legacy);
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 2, 0x1b, 0x28], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 1, 65], true, legacy);
+                // JIS X 0208 designates a two-byte repertoire. A shift or a new
+                // designation can only occur between complete graphic characters.
+                cases.Add("1.3.6.1.4.1.32473.5", [0x19, 5, 0x1b, 0x24, 0x42, 0x24, 0x22], true, legacy);
+                cases.Add("1.3.6.1.4.1.32473.5", [0x19, 4, 0x1b, 0x24, 0x42, 0x24], false, legacy);
+                cases.Add("1.3.6.1.4.1.32473.5", [0x19, 7, 0x1b, 0x24, 0x42, 0x24, 0x1b, 0x28, 0x42], false, legacy);
+                cases.Add("1.3.6.1.4.1.32473.5", [0x19, 7, 0x1b, 0x24, 0x42, 0x24, 0x22, 0x24, 0x24], true, legacy);
+                cases.Add("1.3.6.1.4.1.32473.5", [0x19, 6, 0x1b, 0x24, 0x29, 0x42, 0x0e, 0x24], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.6", [0x1f, 31, 8, .. "20240229"u8], true, legacy);
                 cases.Add("1.3.6.1.4.1.32473.6", [0x1f, 31, 8, .. "20230229"u8], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.6", [0x1f, 31, 10, .. "2024-02-29"u8], false, legacy);
+                cases.Add("1.3.6.1.4.1.32473.7", [0x1f, 32, 6, .. "123456"u8], true, legacy);
+                cases.Add("1.3.6.1.4.1.32473.7", [0x1f, 32, 6, .. "000000"u8], true, legacy);
+                cases.Add("1.3.6.1.4.1.32473.7", [0x1f, 32, 6, .. "240000"u8], true, legacy);
+                cases.Add("1.3.6.1.4.1.32473.7", [0x1f, 32, 6, .. "235960"u8], true, legacy);
+                cases.Add("1.3.6.1.4.1.32473.7", [0x1f, 32, 8, .. "12:34:56"u8], false, legacy);
+                cases.Add("1.3.6.1.4.1.32473.7", [0x1f, 32, 6, .. "240001"u8], false, legacy);
+                cases.Add("1.3.6.1.4.1.32473.7", [0x1f, 32, 6, .. "126000"u8], false, legacy);
+                cases.Add("1.3.6.1.4.1.32473.7", [0x1f, 32, 6, .. "123461"u8], false, legacy);
+                cases.Add("1.3.6.1.4.1.32473.7", [0x1f, 32, 6, .. "1X0000"u8], false, legacy);
             }
 
             return cases;

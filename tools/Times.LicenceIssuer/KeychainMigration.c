@@ -1,8 +1,6 @@
-// File Keychain generic passwords are encrypted with a per-item securityd group.
-// Keep that group and its complete ACL. The normal password setter creates a new
-// group with the calling process's partition. See Apple's securestorage.cpp,
-// SSDbUniqueRecordImpl::modify and SSGroupImpl::encodeDataBlob.
+// Helpers for a read-only stamp of a file Keychain item and its access policy.
 #define __STDC_WANT_LIB_EXT1__ 1
+#include <CoreFoundation/CoreFoundation.h>
 #include <Security/Security.h>
 #include <Security/cssm.h>
 #include <Security/cssmapple.h>
@@ -47,175 +45,95 @@ OSStatus TimesPasswordStamp(SecKeychainItemRef item, uint8_t digest[CC_SHA256_DI
     return status;
 }
 
-static CSSM_RETURN findGroup(CSSM_DL_DB_HANDLE db, CSSM_DATA label, CSSM_DATA *reference)
-{
-    CSSM_SELECTION_PREDICATE predicate = {
-        .DbOperator = CSSM_DB_EQUAL,
-        .Attribute = {
-            .Info = { .AttributeNameFormat = CSSM_DB_ATTRIBUTE_NAME_AS_STRING,
-                      .Label.AttributeName = "Label", .AttributeFormat = CSSM_DB_ATTRIBUTE_FORMAT_BLOB },
-            .NumberOfValues = 1, .Value = &label
-        }
-    };
-    CSSM_QUERY query = {
-        .RecordType = CSSM_DL_DB_RECORD_SYMMETRIC_KEY, .Conjunctive = CSSM_DB_AND,
-        .NumSelectionPredicates = 1, .SelectionPredicate = &predicate
-    };
-    CSSM_HANDLE cursor = CSSM_INVALID_HANDLE;
-    CSSM_DB_UNIQUE_RECORD_PTR record = NULL;
-    CSSM_RETURN status = CSSM_DL_DataGetFirst(db, &query, &cursor, NULL, reference, &record);
-    if (record) {
-        CSSM_DL_FreeUniqueRecord(db, record);
-    }
-    if (cursor != CSSM_INVALID_HANDLE) {
-        CSSM_DL_DataAbortQuery(db, cursor);
-    }
-    return status;
-}
+// Compare the provider's ACL entries by value. A trusted application's external
+// representation includes its code requirement as well as its path.
+extern OSStatus SecTrustedApplicationCopyExternalRepresentation(SecTrustedApplicationRef, CFDataRef *);
 
-// securityd must authorize ENCRYPT on the original reference key. Its key bytes
-// never leave the provider. Only the ciphertext and IV change in the database.
-static OSStatus encryptForGroup(CSSM_CSP_HANDLE csp, const CSSM_KEY *key, CSSM_DATA input,
-                                CSSM_DATA label, CSSM_DATA iv, CSSM_DATA *blob, const char **stage)
+static OSStatus copyAccessEntry(SecACLRef acl, CFArrayRef *result)
 {
-    *stage = "group key header";
-    if (key->KeyHeader.BlobType != CSSM_KEYBLOB_REFERENCE || key->KeyHeader.KeyClass != CSSM_KEYCLASS_SESSION_KEY) {
-        return errSecInvalidItemRef;
+    CFArrayRef apps = NULL;
+    CFStringRef description = NULL;
+    CSSM_ACL_KEYCHAIN_PROMPT_SELECTOR prompt = {0};
+    OSStatus status = SecACLCopySimpleContents(acl, &apps, &description, &prompt);
+    CFMutableArrayRef readers = NULL;
+    CSSM_ACL_AUTHORIZATION_TAG *tags = NULL;
+    CFDataRef rights = NULL, selector = NULL;
+    if (status) goto done;
+
+    // Keep numeric authorizations, including vendor-specific rights. The string
+    // API maps unfamiliar authorizations to "any".
+    uint32_t count = 0;
+    CSSM_ACL_AUTHORIZATION_TAG unused = 0;
+    status = SecACLGetAuthorizations(acl, &unused, &count);
+    if (count && status == errSecParam) {
+        tags = calloc(count, sizeof(*tags));
+        if (!tags) { status = errSecAllocate; goto done; }
+        status = SecACLGetAuthorizations(acl, tags, &count);
     }
-    *stage = "CSP allocator";
-    CSSM_API_MEMORY_FUNCS memory;
-    CSSM_RETURN status = CSSM_GetAPIMemoryFunctions(csp, &memory);
-    if (status) {
-        return status;
-    }
-    CSSM_CC_HANDLE context = CSSM_INVALID_HANDLE;
-    // The CSSM client supplies an empty credential object even for an operation
-    // with no samples. securityd still decides ENCRYPT and partition membership.
-    CSSM_ACCESS_CREDENTIALS credentials = {0};
-    *stage = "create encryption context";
-    status = CSSM_CSP_CreateSymmetricContext(csp, key->KeyHeader.AlgorithmId,
-        CSSM_ALGMODE_CBCPadIV8, &credentials, key, &iv, CSSM_PADDING_PKCS1, NULL, &context);
-    if (status) {
-        return status;
-    }
-    CSSM_DATA first = {0}, last = {0};
-    CSSM_SIZE written = 0;
-    *stage = "initialize encryption";
-    status = CSSM_EncryptDataInit(context);
-    if (!status) {
-        *stage = "encrypt update";
-        status = CSSM_EncryptDataUpdate(context, &input, 1, &first, 1, &written);
-    }
-    if (!status) {
-        *stage = "encrypt final";
-        status = CSSM_EncryptDataFinal(context, &last);
-    }
-    if (!status) {
-        *stage = "ciphertext length";
-        if (written > first.Length || written > MaxCipherSize || last.Length > MaxCipherSize - written ||
-            (written && !first.Data) || (last.Length && !last.Data) || !(written + last.Length)) {
-            status = errSecInternalComponent;
-        } else {
-            // The provider owns the framing and reports how much each phase produced.
-            *stage = "allocate protected record";
-            blob->Length = PrefixSize + written + last.Length;
-            blob->Data = malloc(blob->Length);
-            if (!blob->Data) {
-                status = errSecAllocate;
-            } else {
-                memcpy(blob->Data, label.Data, GroupLabelSize);
-                memcpy(blob->Data + GroupLabelSize, iv.Data, IvSize);
-                if (written) memcpy(blob->Data + PrefixSize, first.Data, written);
-                if (last.Length) memcpy(blob->Data + PrefixSize + written, last.Data, last.Length);
+    if (status) goto done;
+    rights = CFDataCreate(NULL, (const UInt8 *)(tags ? tags : &unused), (CFIndex)count * sizeof(*tags));
+    selector = CFDataCreate(NULL, (const UInt8 *)&prompt, sizeof(prompt));
+    if (!rights || !selector) { status = errSecAllocate; goto done; }
+
+    if (apps) {
+        readers = CFArrayCreateMutable(NULL, 0, &kCFTypeArrayCallBacks);
+        if (!readers) { status = errSecAllocate; goto done; }
+        for (CFIndex i = 0; i < CFArrayGetCount(apps); i++) {
+            CFDataRef application = NULL;
+            status = SecTrustedApplicationCopyExternalRepresentation(
+                (SecTrustedApplicationRef)CFArrayGetValueAtIndex(apps, i), &application);
+            if (!status && !application) status = errSecInvalidItemRef;
+            if (status) {
+                if (application) CFRelease(application);
+                goto done;
             }
+            CFArrayAppendValue(readers, application);
+            CFRelease(application);
         }
     }
-    if (first.Data) {
-        memory.free_func(first.Data, memory.AllocRef);
-    }
-    if (last.Data) {
-        memory.free_func(last.Data, memory.AllocRef);
-    }
-    CSSM_DeleteContext(context);
+    const void *fields[] = { rights, selector, description ? (CFTypeRef)description : kCFNull,
+                            readers ? (CFTypeRef)readers : kCFNull };
+    *result = CFArrayCreate(NULL, fields, 4, &kCFTypeArrayCallBacks);
+    if (!*result) status = errSecAllocate;
+done:
+    free(tags);
+    if (rights) CFRelease(rights);
+    if (selector) CFRelease(selector);
+    if (readers) CFRelease(readers);
+    if (description) CFRelease(description);
+    if (apps) CFRelease(apps);
     return status;
 }
 
-OSStatus TimesUpdateProtectedPassword(SecKeychainRef owner, SecKeychainItemRef item, uint8_t *der, uint32_t length,
-                                      const char **stage)
+// SecAccessCopyACLList includes the owner entry, partition and integrity rules.
+// Keep duplicate entries, ignoring only enumeration order. A policy the provider
+// cannot describe causes the surrounding file transaction to roll back.
+OSStatus TimesCopyPasswordAccess(SecKeychainItemRef item, CFBagRef *result)
 {
-    CSSM_DL_DB_HANDLE db;
-    CSSM_CSP_HANDLE csp;
-    CSSM_API_MEMORY_FUNCS memory;
-    const CSSM_DB_UNIQUE_RECORD *record;
-    SecKeychainStatus permissions;
-    *stage = "migration arguments";
-    if (!owner || !item || !der || !length || length > 16384) {
-        return errSecParam;
+    *result = NULL;
+    SecAccessRef access = NULL;
+    CFArrayRef entries = NULL;
+    CFMutableBagRef policy = NULL;
+    OSStatus status = SecKeychainItemCopyAccess(item, &access);
+    if (!status && !access) status = errSecInvalidItemRef;
+    if (!status) status = SecAccessCopyACLList(access, &entries);
+    if (!status && (!entries || !CFArrayGetCount(entries))) status = errSecInvalidItemRef;
+    if (status) goto done;
+    policy = CFBagCreateMutable(NULL, 0, &kCFTypeBagCallBacks);
+    if (!policy) { status = errSecAllocate; goto done; }
+    for (CFIndex i = 0; i < CFArrayGetCount(entries); i++) {
+        CFArrayRef entry = NULL;
+        status = copyAccessEntry((SecACLRef)CFArrayGetValueAtIndex(entries, i), &entry);
+        if (status) goto done;
+        CFBagAddValue(policy, entry);
+        CFRelease(entry);
     }
-    *stage = "database write permission";
-    OSStatus status = SecKeychainGetStatus(owner, &permissions);
-    if (status || !(permissions & kSecWritePermStatus)) {
-        return status ? status : errSecAuthFailed;
-    }
-    *stage = "item database";
-    if ((status = SecKeychainItemGetDLDBHandle(item, &db))) return status;
-    *stage = "database CSP";
-    if ((status = SecKeychainGetCSPHandle(owner, &csp))) return status;
-    *stage = "item record";
-    if ((status = SecKeychainItemGetUniqueRecordID(item, &record))) return status;
-    *stage = "database allocator";
-    if ((status = CSSM_GetAPIMemoryFunctions(db.DLHandle, &memory))) return status;
-    CSSM_DB_RECORD_ATTRIBUTE_DATA attrs = {0};
-    CSSM_DATA original = {0}, reference = {0};
-    CSSM_DATA replacement = {0};
-    *stage = "read protected record";
-    status = CSSM_DL_DataGetFromUniqueRecordId(db, record, &attrs, &original);
-    if (status) {
-        goto cleanup;
-    }
-    *stage = "validate record envelope";
-    if (attrs.DataRecordType != CSSM_DL_DB_RECORD_GENERIC_PASSWORD || !original.Data ||
-        original.Length < PrefixSize + IvSize || original.Length > PrefixSize + MaxCipherSize ||
-        memcmp(original.Data, "ssgp", 4) != 0) {
-        status = errSecInvalidItemRef;
-        goto cleanup;
-    }
-    CSSM_DATA label = { GroupLabelSize, original.Data };
-    *stage = "find record group";
-    status = findGroup(db, label, &reference);
-    if (status) {
-        goto cleanup;
-    }
-    *stage = "validate group reference";
-    if (reference.Length != sizeof(CSSM_KEY) || !reference.Data) {
-        status = errSecInvalidItemRef;
-        goto cleanup;
-    }
-    uint8_t ivBytes[IvSize];
-    CSSM_DATA iv = { sizeof(ivBytes), ivBytes };
-    *stage = "generate IV";
-    status = SecRandomCopyBytes(kSecRandomDefault, iv.Length, iv.Data);
-    if (!status) {
-        CSSM_DATA input = { length, der };
-        status = encryptForGroup(csp, (const CSSM_KEY *)reference.Data, input, label, iv, &replacement, stage);
-    }
-    if (!status) {
-        *stage = "update record data";
-        status = CSSM_DL_DataModify(db, attrs.DataRecordType, (CSSM_DB_UNIQUE_RECORD_PTR)record,
-                                    NULL, &replacement, CSSM_DB_MODIFY_ATTRIBUTE_NONE);
-    }
-cleanup:
-    if (reference.Data) {
-        if (reference.Length == sizeof(CSSM_KEY)) {
-            CSSM_FreeKey(csp, NULL, (CSSM_KEY *)reference.Data, CSSM_FALSE);
-        }
-        memory.free_func(reference.Data, memory.AllocRef);
-    }
-    if (original.Data) {
-        memset_s(original.Data, original.Length, 0, original.Length);
-        memory.free_func(original.Data, memory.AllocRef);
-    }
-    free(replacement.Data);
+    *result = policy;
+    policy = NULL;
+done:
+    if (policy) CFRelease(policy);
+    if (entries) CFRelease(entries);
+    if (access) CFRelease(access);
     return status;
 }
 

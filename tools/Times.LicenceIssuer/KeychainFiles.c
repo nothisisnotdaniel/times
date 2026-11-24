@@ -97,9 +97,11 @@ int TimesOpenKeychainLock(const char *path, int lookup, int *result)
     if (regularFile(fd)) {
         int locked = 0;
         if (lookup) {
-            do {
-                locked = flock(fd, LOCK_SH);
-            } while (locked != 0 && errno == EINTR);
+            // The caller can already own a different database's writer lock.
+            locked = flock(fd, LOCK_SH | LOCK_NB);
+            if (locked != 0) {
+                error = errno;
+            }
         }
         struct stat pinned, named;
         if (!locked && !fstat(fd, &pinned) && !fstatat(dir, lock, &named, AT_SYMLINK_NOFOLLOW)

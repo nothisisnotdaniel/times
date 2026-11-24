@@ -406,6 +406,9 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
                 case UniversalTagNumber.Date:
                     ValidateDate(reader.PeekContentBytes().Span);
                     break;
+                case UniversalTagNumber.TimeOfDay:
+                    ValidateTimeOfDay(reader.PeekContentBytes().Span);
+                    break;
                 case UniversalTagNumber.UniversalString:
                     ReadOnlySpan<byte> utf32 = reader.PeekContentBytes().Span;
                     Require(utf32.Length % 4 == 0);
@@ -452,28 +455,118 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
         Require(month is >= 1 and <= 12 && day >= 1 && day <= DateTime.DaysInMonth(year == 0 ? 400 : year, month));
     }
 
+    private static void ValidateTimeOfDay(ReadOnlySpan<byte> value)
+    {
+        // X.680 38.4.2 and X.690 8.26.3: local HHMMSS, including end-of-day midnight.
+        Require(value.Length == 6 && !value.ContainsAnyExceptInRange((byte)'0', (byte)'9'));
+        int hour = (value[0] - '0') * 10 + value[1] - '0';
+        int minute = (value[2] - '0') * 10 + value[3] - '0';
+        int second = (value[4] - '0') * 10 + value[5] - '0';
+        Require(hour < 24 && minute < 60 && second <= 60 || hour == 24 && minute == 0 && second == 0);
+    }
+
     private static void ValidateIso2022(ReadOnlySpan<byte> value, bool graphicOnly)
     {
+        // ISO 2022 designates sets G0..G3 independently of the left/right or single shift
+        // that invokes one. A designation can change the width of a graphic character.
+        Span<int> widths = [1, 0, 0, 0];
+        Span<bool> sets96 = stackalloc bool[4];
+        sets96.Clear();
+        int left = 0, right = 1, single = -1;
         for (int i = 0; i < value.Length; i++)
         {
-            if (value[i] == 0x1b)
+            byte current = value[i];
+            if (current == 0x1b)
             {
-                // ISO 2022 escape sequences contain zero or more intermediate bytes
-                // followed by one final byte. Never consume data beyond this value.
-                i++;
+                Require(single < 0);
+                int start = ++i;
                 while (i < value.Length && value[i] is >= 0x20 and <= 0x2f)
                 {
                     i++;
                 }
 
                 Require(i < value.Length && value[i] is >= 0x30 and <= 0x7e);
+                ReadGraphicEscape(value[start..i], value[i], widths, sets96, ref left, ref right, ref single);
             }
-            else if (graphicOnly)
+            else if (current is 0x0e or 0x0f or 0x8e or 0x8f)
             {
-                // Locking and single shifts can invoke a designated graphic repertoire.
-                Require(value[i] is >= 0x20 and <= 0x7e or >= 0xa0 or 0x0e or 0x0f or 0x8e or 0x8f);
+                Require(single < 0);
+                if (current < 0x80)
+                {
+                    left = current == 0x0e ? 1 : 0;
+                }
+                else
+                {
+                    single = current - 0x8c;
+                }
+            }
+            else if (current is < 0x20 or >= 0x80 and < 0xa0)
+            {
+                Require(!graphicOnly && single < 0);
+            }
+            else
+            {
+                int set = single >= 0 ? single : current < 0x80 ? left : right;
+                int width = widths[set];
+                Require(width > 0);
+                single = -1;
+                if (!sets96[set] && current == 0x20)
+                {
+                    continue; // SPACE in the left half of a 94-character repertoire
+                }
+
+                byte low = (byte)((current & 0x80) + (sets96[set] ? 0x20 : 0x21));
+                byte high = (byte)((current & 0x80) + (sets96[set] ? 0x7f : 0x7e));
+                Require(width <= value.Length - i && !value.Slice(i, width).ContainsAnyExceptInRange(low, high));
+                i += width - 1;
             }
         }
+
+        Require(single < 0);
+    }
+
+    private static void ReadGraphicEscape(ReadOnlySpan<byte> intermediates, byte final, Span<int> widths,
+        Span<bool> sets96, ref int left, ref int right, ref int single)
+    {
+        if (intermediates.IsEmpty)
+        {
+            switch (final)
+            {
+                case (byte)'N' or (byte)'O':
+                    single = final - 'N' + 2;
+                    break;
+                case (byte)'n' or (byte)'o':
+                    left = final - 'n' + 2;
+                    break;
+                case (byte)'~' or (byte)'}' or (byte)'|':
+                    right = '~' - final + 1;
+                    break;
+            }
+            return;
+        }
+
+        bool multibyte = intermediates[0] == '$';
+        int slot;
+        if (multibyte && intermediates.Length == 1)
+        {
+            Require(final is >= 0x40 and <= 0x42); // original multibyte G0 designations
+            slot = '(';
+        }
+        else
+        {
+            slot = intermediates[multibyte ? 1 : 0];
+            if (slot is < '(' or > '/' or ',')
+            {
+                Require(!multibyte);
+                return; // e.g. designation of a control set
+            }
+        }
+
+        int set = slot & 3;
+        sets96[set] = slot >= '-';
+        // ECMA-35 14.3.3 gives the widths of the registered multibyte sets.
+        Require(!multibyte || final is >= 0x40 and < 0x70);
+        widths[set] = multibyte ? (final < 0x60 ? 2 : 3) : 1;
     }
 
     private static Asn1Tag Context(int number) => new(TagClass.ContextSpecific, number);

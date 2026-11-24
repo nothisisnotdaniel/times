@@ -176,7 +176,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         Assert.Equal(1, native.Creates);
         Assert.Equal(0, native.Updates);
         Assert.Equal(0, native.Deletes);
-        Assert.Equal([4, 5, 4, 5], native.LockOrder);
+        Assert.Equal([5, 4, 4, 5], native.LockOrder);
     }
 
     [Fact]
@@ -758,6 +758,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         private readonly List<IntPtr> held = [];
         private readonly HashSet<IntPtr> locked = [];
         private readonly Dictionary<IntPtr, IntPtr> owners = [];
+        private readonly Dictionary<IntPtr, string[]> policies = [];
         private readonly Dictionary<IntPtr, int> buffers = [];
         private int nextReference = 10;
         private bool creating;
@@ -777,6 +778,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         public bool CheckedOtherUnderLock { get; private set; }
         public List<int> LockOrder { get; } = [];
         public bool RefuseUpdate { get; set; }
+        public Action<Item>? AfterUpdate { get; set; }
         public bool RefuseCommit { get; set; }
         public bool DestinationUnavailable { get; set; }
         public Action? DuringProbe { get; set; }
@@ -795,6 +797,7 @@ public sealed class SigningKeyStoreTests : IDisposable
             Assert.Empty(held);
             Assert.Empty(locked);
             Assert.Empty(buffers);
+            Assert.Empty(policies);
         }
 
         public int Find(IntPtr keychain, string service, string account, out IntPtr item, bool createdOnly = false)
@@ -899,7 +902,7 @@ public sealed class SigningKeyStoreTests : IDisposable
             return BeginTransaction(keychain);
         }
 
-        public MacKeychainItem.IFileTransaction BeginTransaction(IntPtr keychain)
+        public MacKeychainItem.IFileTransaction BeginTransaction(IntPtr keychain, bool nonInteractive = false)
         {
             if (keychain == OtherKeychain)
             {
@@ -988,7 +991,17 @@ public sealed class SigningKeyStoreTests : IDisposable
             return 0;
         }
 
-        public bool Equal(IntPtr first, IntPtr second) => first == second;
+        public int CopyAccessSnapshot(IntPtr item, out IntPtr snapshot)
+        {
+            Item current = GetItem(owners[item])!;
+            snapshot = ++nextReference;
+            policies.Add(snapshot, [current.Partition, .. current.TrustedPaths]);
+            held.Add(snapshot);
+            return 0;
+        }
+
+        public bool Equal(IntPtr first, IntPtr second) => policies.TryGetValue(first, out string[]? policy)
+            ? policy.SequenceEqual(policies[second], StringComparer.Ordinal) : first == second;
 
         private Item WritableItem(IntPtr item)
         {
@@ -1049,10 +1062,9 @@ public sealed class SigningKeyStoreTests : IDisposable
             return 0;
         }
 
-        public int UpdateData(IntPtr owner, IntPtr item, ReadOnlyMemory<byte> data)
+        public int UpdateData(IntPtr item, ReadOnlyMemory<byte> data)
         {
             Item updated = WritableItem(item);
-            Assert.Equal(owner, owners[item]);
             Updates++;
             Assert.True(MemoryMarshal.TryGetArray(data, out ArraySegment<byte> segment));
             UpdateBuffer = segment.Array;
@@ -1062,6 +1074,7 @@ public sealed class SigningKeyStoreTests : IDisposable
             }
 
             updated.Data = data.ToArray();
+            AfterUpdate?.Invoke(updated);
             return 0;
         }
 
@@ -1091,6 +1104,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         {
             if (reference != IntPtr.Zero)
             {
+                policies.Remove(reference);
                 Assert.True(held.Remove(reference));
             }
         }
