@@ -13,14 +13,14 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 45
     env:
-      FACTORY_TEST_COMMIT: "a1dde9b75be0aa4fc921edfe19d9c9835a175c0e"
+      FACTORY_TEST_COMMIT: "48f1f3c198cb82658c42f991918ec7fe8c9be561"
       DOTNET_NOLOGO: "1"
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
     steps:
       - name: Check out the exact Times build
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: "a1dde9b75be0aa4fc921edfe19d9c9835a175c0e"
+          ref: "48f1f3c198cb82658c42f991918ec7fe8c9be561"
           persist-credentials: false
       - name: Prepare the disposable Keychain test directory
         shell: bash
@@ -229,7 +229,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: times-401-macos-a1dde9b75be0aa4fc921edfe19d9c9835a175c0e
+          name: times-401-macos-48f1f3c198cb82658c42f991918ec7fe8c9be561
           path: ${{ runner.temp }}/times401/summary.json
           if-no-files-found: error
           retention-days: 14
