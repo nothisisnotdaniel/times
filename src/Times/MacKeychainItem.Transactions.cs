@@ -245,6 +245,9 @@ internal sealed partial class MacKeychainItem
         public int CopyAccessSnapshot(IntPtr item, out IntPtr snapshot) =>
             Report("copy access", CopyPasswordAccess(item, out snapshot));
 
+        public int CheckMigrationReader(IntPtr item, IntPtr policy, byte[] expected) =>
+            Report("check migration reader", CheckOriginalReader(item, policy, expected, (nuint)expected.Length));
+
         public int CheckAccess(IntPtr before, IntPtr after, IntPtr item, byte[] expected) =>
             Report("check access", CheckPasswordPolicy(before, after, item, expected, (nuint)expected.Length));
 
@@ -381,6 +384,9 @@ internal sealed partial class MacKeychainItem
 
         [LibraryImport("TimesIssuerKeychain", EntryPoint = "TimesCopyPasswordAccess")]
         private static partial int CopyPasswordAccess(IntPtr item, out IntPtr snapshot);
+
+        [LibraryImport("TimesIssuerKeychain", EntryPoint = "TimesCheckMigrationReader")]
+        private static partial int CheckOriginalReader(IntPtr item, IntPtr policy, ReadOnlySpan<byte> expected, nuint length);
 
         [LibraryImport("TimesIssuerKeychain", EntryPoint = "TimesCheckPasswordPolicy")]
         private static partial int CheckPasswordPolicy(IntPtr before, IntPtr after, IntPtr item,

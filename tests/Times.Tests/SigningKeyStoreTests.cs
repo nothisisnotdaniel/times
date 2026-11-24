@@ -123,7 +123,8 @@ public sealed class SigningKeyStoreTests : IDisposable
     {
         using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         byte[] original = Legacy(key.ExportPkcs8PrivateKey());
-        Item existing = new Item(original, ["other reader"]);
+        const string CompetingPartition = "teamid:writer,teamid:keeper";
+        Item existing = new Item(original, ["other reader"]) { Partition = CompetingPartition };
         switch (arrival)
         {
             case "existing":
@@ -144,7 +145,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         Assert.Same(existing, native.OtherStored);
         AssertData(original, existing.Data);
         Assert.Equal(["other reader"], existing.TrustedPaths);
-        Assert.Equal(Item.OriginalPartition, existing.Partition);
+        Assert.True(existing.Partition == CompetingPartition, "The competing item's partition changed.");
         Assert.Equal(0, native.Updates);
         Assert.Equal(0, native.Deletes);
         Assert.Equal(0, native.Frees);
@@ -260,7 +261,8 @@ public sealed class SigningKeyStoreTests : IDisposable
         using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         byte[] der = key.ExportPkcs8PrivateKey();
         LicencePublicKeys original = LicencePublicKeys.FromTable([(Kid, key.ExportSubjectPublicKeyInfoPem())]);
-        Item item = new Item(legacy ? Legacy(der) : der, ["previous app", "keeper"]);
+        string[] readers = legacy ? [apphost] : ["previous app", "keeper"];
+        Item item = new Item(legacy ? Legacy(der) : der, [.. readers]);
         if (otherKeychain)
         {
             native.OtherStored = item;
@@ -277,7 +279,7 @@ public sealed class SigningKeyStoreTests : IDisposable
             Assert.Empty(error.ToString());
             Assert.Same(item, otherKeychain ? native.OtherStored : native.Stored);
             AssertData(der, item.Data);
-            Assert.Equal(["previous app", "keeper"], item.TrustedPaths);
+            Assert.True(readers.SequenceEqual(item.TrustedPaths), "The stored reader list changed.");
             Assert.Equal(Item.OriginalPartition, item.Partition);
             Assert.Equal(legacy ? 1 : 0, native.Updates);
         }
@@ -734,7 +736,7 @@ public sealed class SigningKeyStoreTests : IDisposable
 
     internal sealed class Item
     {
-        public const string OriginalPartition = "teamid:writer,teamid:keeper";
+        public const string OriginalPartition = "teamid:writer";
         public Item(byte[] data, string[] trustedPaths)
         {
             Data = data.ToArray();
@@ -1044,6 +1046,11 @@ public sealed class SigningKeyStoreTests : IDisposable
 
         public int CheckAccess(IntPtr before, IntPtr after, IntPtr item, byte[] expected) =>
             Equal(before, after) && CryptographicOperations.FixedTimeEquals(GetItem(owners[item])!.Data, expected) ? 0 : -1;
+
+        public int CheckMigrationReader(IntPtr item, IntPtr policy, byte[] expected) =>
+            policies[policy].Length == 2 && policies[policy][0] == Item.OriginalPartition
+            && RemainingReads is null && CryptographicOperations.FixedTimeEquals(GetItem(owners[item])!.Data, expected)
+                ? 0 : -25293;
 
         private Item WritableItem(IntPtr item)
         {

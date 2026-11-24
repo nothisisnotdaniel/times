@@ -96,7 +96,7 @@ public sealed partial class MacKeychainMigrationTests
     private void Compare(string phase, string label, bool value) => ReportStatus(phase, label, value ? 1 : 0);
 
     private void AssertObservation(string phase, Observation before, Observation after, bool oneTimeRead,
-        bool requireOriginal, bool requirePhysical, bool authorizationCorrect = true)
+        bool requireOriginal, bool requirePhysical, bool controlLostReaders = false)
     {
         bool logical = before.Bound && after.Bound;
         bool physical = before.Same(before.Physical, after.Physical);
@@ -107,8 +107,8 @@ public sealed partial class MacKeychainMigrationTests
         bool rights = before.SameComponent(after, 4);
         bool prompts = before.SameComponent(after, 5);
         // A successful normal password read verifies the provider's integrity protection.
-        bool integrity = before.HasIntegrity && after.HasIntegrity && before.SameComponent(after, 3)
-            && before.SuccessfulReads.Any() && after.SuccessfulReads.Any();
+        bool integrityRule = before.HasIntegrity && after.HasIntegrity && before.SameComponent(after, 3);
+        bool integrity = integrityRule && before.SuccessfulReads.Any() && after.SuccessfulReads.Any();
         int[] callerStatuses = [before.Caller.Status, after.Caller.Status, before.ResolvedRead.Status, after.ResolvedRead.Status];
         bool caller = oneTimeRead ? callerStatuses.All(ReadDenied) : callerStatuses.All(status => status == 0);
         bool readers = caller && before.Readers.Length == after.Readers.Length
@@ -147,10 +147,25 @@ public sealed partial class MacKeychainMigrationTests
 
         Assert.True(before.SuccessfulReads.Any() && before.SuccessfulReads.All(read => read.Original),
             "The original fixture value was not verified.");
-        Assert.True(authorizationCorrect, "Unexpected provider authorization result.");
         Assert.True(logical, "The original persistent reference and unique scoped lookup did not identify the same item.");
-        Assert.True(owner && entries && rights && prompts && partitions && integrity, "The effective fixture policy changed.");
-        Assert.True(readers && excluded, "A fixture reader's authorization changed.");
+        Assert.True(owner && entries && rights && prompts && integrityRule, "A fixture policy component changed.");
+        Assert.True(caller && excluded, "Unexpected caller or excluded-reader authorization.");
+        if (controlLostReaders)
+        {
+            // These standalone provider controls measure the R7 behavior that makes
+            // the product refuse this policy before attempting either setter.
+            Assert.True(before.HasPartitions && after.HasPartitions && !partitions && !completeAccess);
+            Assert.Equal(3, before.Readers.Length);
+            Assert.Equal(before.Readers.Length, after.Readers.Length);
+            Assert.All(before.Readers[..^1], read => Assert.Equal(0, read.Status));
+            Assert.All(after.Readers[..^1], read => Assert.Equal(-25293, read.Status));
+            Assert.False(original);
+            Assert.Equal(!oneTimeRead, after.SuccessfulReads.Any());
+            Assert.Equal(!oneTimeRead, integrity);
+            Assert.Equal(!oneTimeRead, value);
+            return;
+        }
+        Assert.True(partitions && integrity && readers, "Fixture partitions, integrity or reader access changed.");
         Assert.True(requireOriginal ? original : value, "The expected fixture value was not verified.");
         if (requirePhysical)
         {

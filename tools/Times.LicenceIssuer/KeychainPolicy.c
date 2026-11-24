@@ -227,20 +227,10 @@ OSStatus TimesCopyPasswordAccess(SecKeychainItemRef item, CFArrayRef *result)
     return status;
 }
 
-// With the original authenticated integrity rule, the caller can verify the
-// documented setter's staged record without consuming a second read approval.
-// A regenerated digest, or a legacy store without this rule, needs an exact
-// noninteractive readback from the resolved item while rollback is possible.
-OSStatus TimesCheckPasswordPolicy(CFArrayRef before, CFArrayRef after, SecKeychainItemRef item,
-                                  const uint8_t *expected, size_t length)
+// The normal password read authenticates the item's integrity under the caller's
+// existing rights. The issuer disables interaction for the entire transaction.
+static OSStatus checkPassword(SecKeychainItemRef item, const uint8_t *expected, size_t length)
 {
-    if (!before || !after || CFArrayGetCount(before) != 7 || CFArrayGetCount(after) != 7) return errSecInvalidItemRef;
-    for (int i = 0; i < 6; ++i) {
-        if (!CFEqual(CFArrayGetValueAtIndex(before, i), CFArrayGetValueAtIndex(after, i))) return errSecInvalidItemRef;
-    }
-    CFTypeRef original = CFArrayGetValueAtIndex(before, 6), current = CFArrayGetValueAtIndex(after, 6);
-    if ((original == kCFNull) != (current == kCFNull)) return errSecInvalidItemRef;
-    if (original != kCFNull && CFEqual(original, current)) return errSecSuccess;
     UInt32 size = 0;
     void *bytes = NULL;
     OSStatus status = SecKeychainItemCopyContent(item, NULL, NULL, &size, &bytes);
@@ -250,4 +240,62 @@ OSStatus TimesCheckPasswordPolicy(CFArrayRef before, CFArrayRef after, SecKeycha
         SecKeychainItemFreeContent(NULL, bytes);
     }
     return status;
+}
+
+OSStatus TimesCheckMigrationReader(SecKeychainItemRef item, CFArrayRef policy, const uint8_t *expected, size_t length)
+{
+    if (!item || !policy || CFArrayGetCount(policy) != 7) return errSecInvalidItemRef;
+    CFBagRef partitions = CFArrayGetValueAtIndex(policy, 2);
+    CFBagRef integrity = CFArrayGetValueAtIndex(policy, 3);
+    if (CFBagGetCount(partitions) != 1 || CFBagGetCount(integrity) != 1) return errSecAuthFailed;
+    const void *entry = NULL;
+    CFBagGetValues(partitions, &entry);
+    CFBagRef membership = CFArrayGetValueAtIndex((CFArrayRef)entry, 2);
+    if (CFBagGetCount(membership) != 1) return errSecAuthFailed;
+
+    SecAccessRef access = NULL;
+    CFArrayRef grants = NULL, readers = NULL;
+    CFStringRef description = NULL;
+    SecKeychainPromptSelector prompt = 0;
+    SecTrustedApplicationRef caller = NULL;
+    CFDataRef callerPath = NULL, readerPath = NULL;
+    OSStatus status = SecKeychainItemCopyAccess(item, &access);
+    if (status) goto done;
+    status = errSecAuthFailed;
+    if (!access) goto done;
+    grants = SecAccessCopyMatchingACLList(access, kSecACLAuthorizationDecrypt);
+    if (!grants || CFArrayGetCount(grants) != 1) goto done;
+    status = SecACLCopyContents((SecACLRef)CFArrayGetValueAtIndex(grants, 0), &readers, &description, &prompt);
+    if (status) goto done;
+    status = errSecAuthFailed;
+    if (!readers || CFArrayGetCount(readers) != 1) goto done;
+    SecTrustedApplicationRef reader = (SecTrustedApplicationRef)CFArrayGetValueAtIndex(readers, 0);
+    if (CFGetTypeID(reader) != SecTrustedApplicationGetTypeID()) goto done;
+    if ((status = SecTrustedApplicationCreateFromPath(NULL, &caller))) goto done;
+    if ((status = SecTrustedApplicationCopyData(caller, &callerPath))) goto done;
+    if ((status = SecTrustedApplicationCopyData(reader, &readerPath))) goto done;
+    // The trusted path identifies the named reader. The separate provider read
+    // checks its effective code identity and partition, even after a single read grant.
+    status = callerPath && readerPath && CFEqual(callerPath, readerPath)
+        ? checkPassword(item, expected, length) : errSecAuthFailed;
+done:
+    if (readerPath) CFRelease(readerPath);
+    if (callerPath) CFRelease(callerPath);
+    if (caller) CFRelease(caller);
+    if (description) CFRelease(description);
+    if (readers) CFRelease(readers);
+    if (grants) CFRelease(grants);
+    if (access) CFRelease(access);
+    return status;
+}
+
+OSStatus TimesCheckPasswordPolicy(CFArrayRef before, CFArrayRef after, SecKeychainItemRef item,
+                                  const uint8_t *expected, size_t length)
+{
+    if (!before || !after || CFArrayGetCount(before) != 7 || CFArrayGetCount(after) != 7) return errSecInvalidItemRef;
+    for (int i = 0; i < 6; ++i) {
+        if (!CFEqual(CFArrayGetValueAtIndex(before, i), CFArrayGetValueAtIndex(after, i))) return errSecInvalidItemRef;
+    }
+    if (CFArrayGetValueAtIndex(after, 6) == kCFNull) return errSecInvalidItemRef;
+    return checkPassword(item, expected, length);
 }

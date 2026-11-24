@@ -82,25 +82,18 @@ public sealed partial class MacKeychainMigrationTests
         File.WriteAllText(fixture.Ledger, "previous entry\n");
         try
         {
-            if (denyWrite)
-            {
-                using StringWriter output = new();
-                using StringWriter error = new();
-                Assert.Equal(1, RunIssue(fixture.Store, fixture.Ledger, output, error));
-                Assert.Equal(MigrationFailed + error.NewLine, error.ToString());
-                Assert.Empty(output.ToString());
-                Assert.Equal("previous entry\n", File.ReadAllText(fixture.Ledger));
-            }
-            else
-            {
-                AssertIssued(fixture.Store, fixture.Ledger, LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]));
-            }
-
+            using StringWriter output = new();
+            using StringWriter error = new();
+            Assert.Equal(1, RunIssue(fixture.Store, fixture.Ledger, output, error));
+            Assert.True(error.ToString() == MigrationFailed + error.NewLine, "Unexpected migration error.");
+            Assert.True(output.GetStringBuilder().Length == 0, "The refused issuer produced output.");
+            Assert.True(File.ReadAllText(fixture.Ledger) == "previous entry\n", "The fixture ledger changed.");
+            Assert.Equal(0, fixture.Calls.Updates + fixture.Calls.Creates + fixture.Calls.Deletes);
             Assert.Equal(0, fixture.Calls.RemainingReads);
-            Assert.Same(item, fixture.Calls.Stored);
-            Assert.True(CryptographicOperations.FixedTimeEquals(denyWrite ? legacy : der, item.Data));
-            Assert.Equal(["original reader"], item.TrustedPaths);
-            Assert.Equal("teamid:original-reader", item.Partition);
+            Assert.True(ReferenceEquals(item, fixture.Calls.Stored), "The stored item changed.");
+            Assert.True(CryptographicOperations.FixedTimeEquals(legacy, item.Data));
+            Assert.True(item.TrustedPaths.SequenceEqual(["original reader"]), "The stored reader list changed.");
+            Assert.True(item.Partition == "teamid:original-reader", "The partition changed.");
         }
         finally
         {
@@ -118,7 +111,7 @@ public sealed partial class MacKeychainMigrationTests
         using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         byte[] der = key.ExportPkcs8PrivateKey();
         byte[] legacy = EncodeLegacy(der);
-        SigningKeyStoreTests.Item item = new(legacy, ["original reader", "second reader"]);
+        SigningKeyStoreTests.Item item = new(legacy, ["original reader"]);
         fixture.Calls.Stored = item;
         fixture.Calls.AfterUpdate = updated =>
         {
@@ -137,13 +130,13 @@ public sealed partial class MacKeychainMigrationTests
             using StringWriter output = new();
             using StringWriter error = new();
             Assert.Equal(1, RunIssue(fixture.Store, fixture.Ledger, output, error));
-            Assert.Empty(output.ToString());
-            Assert.Equal(MigrationFailed + error.NewLine, error.ToString());
-            Assert.Same(item, fixture.Calls.Stored);
+            Assert.True(output.GetStringBuilder().Length == 0, "The refused issuer produced output.");
+            Assert.True(error.ToString() == MigrationFailed + error.NewLine, "Unexpected migration error.");
+            Assert.True(ReferenceEquals(item, fixture.Calls.Stored), "The stored item changed.");
             Assert.True(CryptographicOperations.FixedTimeEquals(legacy, item.Data));
-            Assert.Equal(SigningKeyStoreTests.Item.OriginalPartition, item.Partition);
-            Assert.Equal(["original reader", "second reader"], item.TrustedPaths);
-            Assert.Equal("previous entry\n", File.ReadAllText(fixture.Ledger));
+            Assert.True(item.Partition == SigningKeyStoreTests.Item.OriginalPartition, "The partition changed.");
+            Assert.True(item.TrustedPaths.SequenceEqual(["original reader"]), "The stored reader list changed.");
+            Assert.True(File.ReadAllText(fixture.Ledger) == "previous entry\n", "The fixture ledger changed.");
 
             fixture.Calls.AfterUpdate = null;
             LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]);
@@ -152,7 +145,7 @@ public sealed partial class MacKeychainMigrationTests
             Assert.Same(item, fixture.Calls.Stored);
             Assert.True(CryptographicOperations.FixedTimeEquals(der, item.Data));
             Assert.Equal(SigningKeyStoreTests.Item.OriginalPartition, item.Partition);
-            Assert.Equal(["original reader", "second reader"], item.TrustedPaths);
+            Assert.Equal(["original reader"], item.TrustedPaths);
             Assert.Equal(3, File.ReadAllLines(fixture.Ledger).Length);
         }
         finally
@@ -163,26 +156,109 @@ public sealed partial class MacKeychainMigrationTests
     }
 
     [Fact]
-    public void Issue_RegeneratedPhysicalId_PreservesTheLogicalItemAndTwoVerifiableLicences()
+    public void Issue_SameNameReplacementAlreadyHoldingExactDer_RefusesBeforeAnyWrite()
     {
         using PortableFixture fixture = new();
         using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         byte[] der = key.ExportPkcs8PrivateKey();
         byte[] legacy = EncodeLegacy(der);
-        SigningKeyStoreTests.Item item = new(legacy, ["first reader", "second reader"]);
+        try
+        {
+            SigningKeyStoreTests.Item initial = new(legacy, ["original reader"]);
+            SigningKeyStoreTests.Item competing = new(der, ["original reader"]);
+            fixture.Calls.Stored = initial;
+            fixture.Calls.BeforeOwnerLock = () => fixture.Calls.Stored = competing;
+            File.WriteAllText(fixture.Ledger, "previous entry\n");
+            using StringWriter output = new();
+            using StringWriter error = new();
+            Assert.Equal(1, RunIssue(fixture.Store, fixture.Ledger, output, error));
+            Assert.True(output.GetStringBuilder().Length == 0);
+            Assert.True(error.ToString() == MigrationFailed + error.NewLine, "Unexpected migration error.");
+            Assert.True(File.ReadAllText(fixture.Ledger) == "previous entry\n", "The fixture ledger changed.");
+            Assert.True(ReferenceEquals(competing, fixture.Calls.Stored), "The competing item changed.");
+            Assert.True(CryptographicOperations.FixedTimeEquals(der, competing.Data));
+            Assert.True(competing.TrustedPaths.SequenceEqual(["original reader"]), "The competing reader list changed.");
+            Assert.True(competing.Partition == SigningKeyStoreTests.Item.OriginalPartition, "The competing partition changed.");
+            Assert.Equal(0, fixture.Calls.Updates + fixture.Calls.Creates + fixture.Calls.Deletes);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(der);
+            CryptographicOperations.ZeroMemory(legacy);
+        }
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public void Issue_AdditionalReaderOrPartition_RefusesBeforeTheSetter(bool extraApplication, bool extraPartition)
+    {
+        using PortableFixture fixture = new();
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] der = key.ExportPkcs8PrivateKey();
+        byte[] legacy = EncodeLegacy(der);
+        try
+        {
+            string[] readers = extraApplication ? ["original reader", "another reader"] : ["original reader"];
+            string partition = SigningKeyStoreTests.Item.OriginalPartition + (extraPartition ? ",teamid:keeper" : "");
+            SigningKeyStoreTests.Item initial = new(legacy, [.. readers]) { Partition = partition };
+            fixture.Calls.Stored = initial;
+            using StringWriter output = new();
+            using StringWriter error = new();
+            Assert.Equal(1, RunIssue(fixture.Store, fixture.Ledger, output, error));
+            Assert.True(output.GetStringBuilder().Length == 0);
+            Assert.True(error.ToString() == MigrationFailed + error.NewLine, "Unexpected migration error.");
+            Assert.False(File.Exists(fixture.Ledger));
+            Assert.True(ReferenceEquals(initial, fixture.Calls.Stored), "The stored item changed.");
+            Assert.True(CryptographicOperations.FixedTimeEquals(legacy, initial.Data));
+            Assert.True(readers.SequenceEqual(initial.TrustedPaths), "The stored reader list changed.");
+            Assert.True(partition == initial.Partition, "The partition changed.");
+            Assert.Equal(0, fixture.Calls.Updates + fixture.Calls.Creates + fixture.Calls.Deletes);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(der);
+            CryptographicOperations.ZeroMemory(legacy);
+        }
+    }
+
+    [Fact]
+    public async Task Issue_RegeneratedPhysicalId_PreservesTheLogicalItemAndTwoVerifiableLicences()
+    {
+        using PortableFixture fixture = new();
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using ManualResetEventSlim secondReading = new();
+        byte[] der = key.ExportPkcs8PrivateKey();
+        byte[] legacy = EncodeLegacy(der);
+        SigningKeyStoreTests.Item item = new(legacy, ["original reader"]);
         fixture.Calls.Stored = item;
         fixture.Calls.AfterUpdate = updated => updated.PhysicalVersion++;
         try
         {
             LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]);
-            AssertIssued(fixture.Store, fixture.Ledger, original);
-            AssertIssued(fixture.Store, fixture.Ledger, original);
-            Assert.Equal(2, File.ReadAllLines(fixture.Ledger).Length);
-            Assert.Same(item, fixture.Calls.Stored);
+            TaskCompletionSource firstReading = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            fixture.Calls.BeforeOwnerLock = () =>
+            {
+                firstReading.SetResult();
+                Assert.True(secondReading.Wait(FixtureTimeout), "The competing issuer did not start.");
+            };
+            MacKeychainSigningKeyStore second = new(fixture.Apphost, new MacKeychainItem(fixture.Calls));
+            string secondLedger = Path.ChangeExtension(fixture.Ledger, ".second.tsv");
+            await RunOverlappingIssues(firstReading.Task, secondReading,
+                () => AssertIssued(fixture.Store, fixture.Ledger, original),
+                () =>
+                {
+                    secondReading.Set();
+                    AssertIssued(second, secondLedger, original);
+                });
+            Assert.Single(File.ReadAllLines(fixture.Ledger));
+            Assert.Single(File.ReadAllLines(secondLedger));
+            Assert.True(ReferenceEquals(item, fixture.Calls.Stored), "The stored item changed.");
             Assert.Equal(1, item.PhysicalVersion);
             Assert.True(CryptographicOperations.FixedTimeEquals(der, item.Data));
-            Assert.Equal(["first reader", "second reader"], item.TrustedPaths);
-            Assert.Equal(SigningKeyStoreTests.Item.OriginalPartition, item.Partition);
+            Assert.True(item.TrustedPaths.SequenceEqual(["original reader"]), "The stored reader list changed.");
+            Assert.True(item.Partition == SigningKeyStoreTests.Item.OriginalPartition, "The partition changed.");
             Assert.Equal(1, fixture.Calls.Updates);
             Assert.Equal(0, fixture.Calls.Creates + fixture.Calls.Deletes);
         }
@@ -422,6 +498,9 @@ public sealed partial class MacKeychainMigrationTests
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 2, 0x1b, 0x28], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 1, 65], true, legacy);
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 4, 0x1b, 0x28, 0x42, 65], false, legacy);
+                // ASCII is already G0. Designating it as G1 and invoking it is redundant.
+                cases.Add("1.3.6.1.4.1.32473.5", [0x19, 4, 0x1b, 0x29, 0x42, 0xc1], false, legacy);
+                cases.Add("1.3.6.1.4.1.32473.5", [0x19, 5, 0x1b, 0x29, 0x42, 0x0e, 65], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 8, 0x1b, 0x28, 0x4a, 0x5c, 0x1b, 0x28, 0x4a, 0x5c], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 8, 0x1b, 0x28, 0x4a, 0x5c, 0x1b, 0x28, 0x42, 0x5c], true, legacy);
                 // JIS X 0208 designates a two-byte repertoire. A shift or a new
@@ -448,11 +527,22 @@ public sealed partial class MacKeychainMigrationTests
                 cases.Add("1.3.6.1.4.1.32473.8", [0x1f, 33, 14, .. "20230229123456"u8], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.8", [0x1f, 33, 14, .. "20240229126000"u8], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.8", [0x1f, 33, 15, .. "20240229T123456"u8], false, legacy);
+                foreach (string duration in new[] { "1D", "0W", "2.50W", "1Y3MT0.00S", "T12H5M0S" })
+                {
+                    cases.Add("1.3.6.1.4.1.32473.9", DurationAttribute(duration), true, legacy);
+                }
+                foreach (string duration in new[] { "", "P1D", "01D", "1D0YT1S", "0DT1H", "T", "1WT2S", "1.5DT1H", "T1,5S", "1.X", "TT1S" })
+                {
+                    cases.Add("1.3.6.1.4.1.32473.9", DurationAttribute(duration), false, legacy);
+                }
             }
 
             return cases;
         }
     }
+
+    private static byte[] DurationAttribute(string sample) =>
+        [0x1f, 34, checked((byte)sample.Length), .. System.Text.Encoding.ASCII.GetBytes(sample)];
 
     [Theory]
     [MemberData(nameof(AttributeCases))]
@@ -479,16 +569,18 @@ public sealed partial class MacKeychainMigrationTests
                 using StringWriter output = new();
                 using StringWriter error = new();
                 Assert.Equal(1, RunIssue(fixture.Store, fixture.Ledger, output, error));
-                Assert.Equal("The stored signing key is not readable." + error.NewLine, error.ToString());
-                Assert.Empty(output.ToString());
-                Assert.Equal("previous entry\n", File.ReadAllText(fixture.Ledger));
+                Assert.True(error.ToString() == "The stored signing key is not readable." + error.NewLine,
+                    "Unexpected stored-key error.");
+                Assert.True(output.GetStringBuilder().Length == 0, "The refused issuer produced output.");
+                Assert.True(File.ReadAllText(fixture.Ledger) == "previous entry\n", "The fixture ledger changed.");
             }
 
-            Assert.Same(item, fixture.Calls.Stored);
+            Assert.True(ReferenceEquals(item, fixture.Calls.Stored), "The stored item changed.");
             Assert.True(CryptographicOperations.FixedTimeEquals(valid ? der : stored, item.Data));
-            Assert.Equal(["example reader"], item.TrustedPaths);
-            Assert.Equal(SigningKeyStoreTests.Item.OriginalPartition, item.Partition);
+            Assert.True(item.TrustedPaths.SequenceEqual(["example reader"]), "The stored reader list changed.");
+            Assert.True(item.Partition == SigningKeyStoreTests.Item.OriginalPartition, "The partition changed.");
             Assert.Equal(valid && legacy ? 1 : 0, fixture.Calls.Updates);
+            Assert.Equal(0, fixture.Calls.Creates + fixture.Calls.Deletes);
         }
         finally
         {

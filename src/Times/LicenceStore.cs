@@ -167,7 +167,7 @@ internal sealed partial class MacKeychainItem
 
     private const string ReadFailed = "The macOS Keychain could not be read.";
     private const string SaveFailed = "The item could not be saved in the macOS Keychain.";
-    private const string MigrationFailed = "Signing-key migration failed. Check Keychain write access and retry.";
+    internal const string MigrationFailed = "Signing-key migration failed. Check Keychain write access and retry.";
 
     public static readonly MacKeychainItem Default = new(new NativeCalls());
 
@@ -341,6 +341,8 @@ internal sealed partial class MacKeychainItem
         byte[]? stamp = null;
         IntPtr owner = IntPtr.Zero;
         IntPtr recordId = IntPtr.Zero;
+        IntPtr originalPolicy = IntPtr.Zero;
+        IntPtr persistent = IntPtr.Zero;
         try
         {
             bool ReadSelected(IntPtr scope) =>
@@ -352,8 +354,17 @@ internal sealed partial class MacKeychainItem
                 decoded = decode(bytes);
                 if (writable && !CryptographicOperations.FixedTimeEquals(bytes, decoded))
                 {
-                    Check(native.CopyItemKeychain(item, out owner), MigrationFailed);
-                    Check(native.CopyRecordId(item, out recordId), MigrationFailed);
+                    try
+                    {
+                        Check(native.CopyItemKeychain(item, out owner), MigrationFailed);
+                        Check(native.CopyRecordId(item, out recordId), MigrationFailed);
+                        Check(native.CopyPersistentReference(item, out persistent), MigrationFailed);
+                        Check(native.CopyAccessSnapshot(item, out originalPolicy), MigrationFailed);
+                    }
+                    catch (Exception ex) when (ex is TypeLoadException or BadImageFormatException)
+                    {
+                        throw new TokenStoreException(MigrationFailed);
+                    }
                     expected = bytes.ToArray();
                 }
             }
@@ -396,7 +407,7 @@ internal sealed partial class MacKeychainItem
             {
                 // Release the initial item before looking it up again. Security.framework
                 // caches live item references by primary key, including their old record handles.
-                Migrate(owner, recordId, service, account, expected, decoded!, stamp);
+                Migrate(owner, recordId, persistent, originalPolicy, service, account, expected, decoded!, stamp);
             }
 
             return decoded;
@@ -409,6 +420,8 @@ internal sealed partial class MacKeychainItem
         finally
         {
             CryptographicOperations.ZeroMemory(expected);
+            native.Release(originalPolicy);
+            native.Release(persistent);
             native.Release(recordId);
             native.Release(owner);
         }
@@ -451,8 +464,8 @@ internal sealed partial class MacKeychainItem
         }
     }
 
-    private void Migrate(IntPtr owner, IntPtr recordId, string service, string account, byte[] expected, byte[] data,
-        byte[]? stamp)
+    private void Migrate(IntPtr owner, IntPtr recordId, IntPtr persistent, IntPtr originalPolicy, string service,
+        string account, byte[] expected, byte[] data, byte[]? stamp)
     {
         try
         {
@@ -460,6 +473,7 @@ internal sealed partial class MacKeychainItem
             {
                 using IFileTransaction transaction = native.BeginTransaction(owner, nonInteractive: true);
                 Check(native.FindUnique(owner, service, account, out IntPtr current), MigrationFailed);
+                IntPtr before = IntPtr.Zero;
                 try
                 {
                     Check(native.CopyRecordId(current, out IntPtr currentId), MigrationFailed);
@@ -475,8 +489,14 @@ internal sealed partial class MacKeychainItem
                         native.Release(currentId);
                     }
 
-                    // An unchanged protected record needs only the original authorized read.
-                    // Recheck plaintext only if another writer changed it or no stamp was available.
+                    Check(native.CopyAccessSnapshot(current, out before), MigrationFailed);
+                    if (persistent == IntPtr.Zero || originalPolicy == IntPtr.Zero || before == IntPtr.Zero
+                        || !native.Equal(originalPolicy, before))
+                    {
+                        throw new TokenStoreException(MigrationFailed);
+                    }
+
+                    // A provider can change the value without changing the physical ID.
                     byte[]? lockedStamp = native.DataStamp(current);
                     if (stamp is null || !stamp.AsSpan().SequenceEqual(lockedStamp))
                     {
@@ -491,15 +511,18 @@ internal sealed partial class MacKeychainItem
                         });
                         if (migrated)
                         {
+                            Check(native.CheckMigrationReader(current, before, data), MigrationFailed);
                             return;
                         }
                     }
 
-                    UpdatePreservingAccess(owner, service, account, current, lockedStamp, data);
+                    Check(native.CheckMigrationReader(current, before, expected), MigrationFailed);
+                    UpdatePreservingAccess(owner, service, account, current, persistent, before, lockedStamp, data);
                     transaction.Commit();
                 }
                 finally
                 {
+                    native.Release(before);
                     native.Release(current);
                 }
             }
@@ -510,22 +533,20 @@ internal sealed partial class MacKeychainItem
         }
     }
 
-    private void UpdatePreservingAccess(IntPtr owner, string service, string account, IntPtr item,
-        byte[]? originalStamp, byte[] data)
+    private void UpdatePreservingAccess(IntPtr owner, string service, string account, IntPtr item, IntPtr persistent,
+        IntPtr before, byte[]? originalStamp, byte[] data)
     {
-        IntPtr before = IntPtr.Zero, after = IntPtr.Zero, persistent = IntPtr.Zero, resolved = IntPtr.Zero;
+        IntPtr after = IntPtr.Zero, resolved = IntPtr.Zero;
+        IntPtr unique = IntPtr.Zero, writtenId = IntPtr.Zero, resolvedId = IntPtr.Zero, uniqueId = IntPtr.Zero;
         try
         {
-            Check(native.CopyPersistentReference(item, out persistent), MigrationFailed);
-            Check(native.CopyAccessSnapshot(item, out before), MigrationFailed);
-            if (before == IntPtr.Zero || persistent == IntPtr.Zero || originalStamp is null)
+            if (originalStamp is null)
             {
                 throw new TokenStoreException(MigrationFailed);
             }
             Check(native.UpdateData(item, data), MigrationFailed);
-            // FileDL cursors enumerate the pre-transaction snapshot. The live item is
-            // updated by Keychain Services and can be checked while rollback is possible.
-            // Resolve the original reference independently and check both protected values.
+            // A persistent reference on its own can resolve any item with the same
+            // primary attributes. Bind both lookups to the provider's actual update.
             Check(native.ResolvePassword(persistent, owner, service, account, out resolved), MigrationFailed);
             if (resolved == IntPtr.Zero)
             {
@@ -540,13 +561,24 @@ internal sealed partial class MacKeychainItem
                 throw new TokenStoreException(MigrationFailed);
             }
             Check(native.CheckAccess(before, after, resolved, data), MigrationFailed);
+            Check(native.FindUnique(owner, service, account, out unique), MigrationFailed);
+            Check(native.CopyRecordId(item, out writtenId), MigrationFailed);
+            Check(native.CopyRecordId(resolved, out resolvedId), MigrationFailed);
+            Check(native.CopyRecordId(unique, out uniqueId), MigrationFailed);
+            if (writtenId == IntPtr.Zero || resolvedId == IntPtr.Zero || uniqueId == IntPtr.Zero
+                || !native.Equal(writtenId, resolvedId) || !native.Equal(writtenId, uniqueId))
+            {
+                throw new TokenStoreException(MigrationFailed);
+            }
         }
         finally
         {
+            native.Release(uniqueId);
+            native.Release(resolvedId);
+            native.Release(writtenId);
+            native.Release(unique);
             native.Release(resolved);
-            native.Release(persistent);
             native.Release(after);
-            native.Release(before);
         }
     }
 
@@ -742,6 +774,7 @@ internal sealed partial class MacKeychainItem
         public int CopyPersistentReference(IntPtr item, out IntPtr persistent);
         public int ResolvePassword(IntPtr persistent, IntPtr owner, string service, string account, out IntPtr item);
         public int CopyAccessSnapshot(IntPtr item, out IntPtr snapshot);
+        public int CheckMigrationReader(IntPtr item, IntPtr policy, byte[] expected);
         public int CheckAccess(IntPtr before, IntPtr after, IntPtr item, byte[] expected);
         public bool Equal(IntPtr first, IntPtr second);
         public IntPtr CreateAccess(string path, string description);

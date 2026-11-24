@@ -37,104 +37,97 @@ public sealed partial class MacKeychainMigrationTests
     [InlineData(false, false)]
     [InlineData(true, false)]
     [InlineData(true, true)]
-    public void LegacyMigration_PreservesNativeRecordAndReaders(bool extraReader, bool oneTimeRead)
-    {
-        using Fixture fixture = new();
-        using TempFolder folder = new();
-        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
-        byte[] der = key.ExportPkcs8PrivateKey();
-        try
-        {
-            fixture.AddLegacy(der, extraReader, oneTimeRead);
-            using Observation before = new(fixture, fixture.Legacy!, fixture.Legacy!);
-            LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]);
-            string phase = "issue-1";
-            List<string> mutations = [];
-            ReadGrant grant = new((operation, status) => RecordOperation(mutations,
-                oneTimeRead && operation == "read password" && status != 0 ? "denied-read" : phase, operation, status),
-                item => ObserveStaged(fixture, before, phase, item));
-            TestKeychainStore store = new(fixture.Reference, grant);
-            string ledger = Path.Combine(folder.Path, "ledger.tsv");
-            for (int i = 0; i < 2; i++)
-            {
-                phase = i == 0 ? "issue-1" : "issue-2";
-                if (oneTimeRead)
-                {
-                    grant.AllowOnce(fixture, i == 0 ? fixture.Legacy! : der);
-                }
-                AssertFixtureIssue(fixture, store, ledger, original, i == 0 ? fixture.Legacy! : der, der, before, phase, oneTimeRead);
-                Assert.False(grant.HasOutstandingGrant);
-                Assert.Equal(["provider update"], mutations);
-            }
-
-            Assert.Equal(2, File.ReadAllLines(ledger).Length);
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(der);
-        }
-    }
+    public void LegacyMigration_PreservesNativeRecordAndReaders(bool extraReader, bool oneTimeRead) =>
+        ExerciseMigration(oneTimeRead ? "single-read-grant" : extraReader ? "multiple-readers" : "original-reader",
+            extraReader, oneTimeRead);
 
     [MacKeychainTheory]
     [InlineData(false)]
     [InlineData(true)]
-    public void DeniedMigration_PreservesNativeRecordAccessAndLedgerForRetry(bool extraReader)
-    {
-        if (!OperatingSystem.IsMacOS())
-        {
-            throw new PlatformNotSupportedException();
-        }
+    public void DeniedMigration_PreservesNativeRecordAccessAndLedgerForRetry(bool extraReader) =>
+        ExerciseMigration(extraReader ? "multiple-readers-retry" : "original-reader-retry", extraReader, retry: true);
 
-        using Fixture fixture = new();
-        using TempFolder folder = new();
-        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
-        byte[] der = key.ExportPkcs8PrivateKey();
-        try
+    [MacKeychainFact]
+    public async Task OverlappingIssues_OriginalReader_VerifiesBothLicencesAcrossPhysicalReplacement()
+    {
+        IssuerEvidence evidence = new(log);
+        using (Fixture fixture = new())
+        using (TempFolder folder = new())
+        using (ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256))
+        using (ManualResetEventSlim secondReading = new())
+        using (ManualResetEventSlim firstIssued = new())
         {
-            string[] access = fixture.AddLegacy(der, extraReader);
-            string ledger = Path.Combine(folder.Path, "ledger.tsv");
-            File.WriteAllText(ledger, "previous entry\n");
-            byte[] identity = fixture.Identity();
-            using Observation before = new(fixture, fixture.Legacy!, fixture.Legacy!);
-            string phase = "denied-write";
-            List<string> mutations = [];
-            TestKeychainStore store = new(fixture.Reference, new ReadGrant(
-                (operation, status) => RecordOperation(mutations, phase, operation, status),
-                item => ObserveStaged(fixture, before, phase, item)));
-            File.SetUnixFileMode(fixture.Directory, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+            byte[] der = key.ExportPkcs8PrivateKey();
             try
             {
-                using StringWriter output = new();
-                using StringWriter error = new();
-                Assert.Equal(1, RunIssue(store, ledger, output, error));
-                Assert.True(output.GetStringBuilder().Length == 0, "The refused issuer produced output.");
-                Assert.True(error.ToString() == MigrationFailed + error.NewLine, "The refused issuer returned an unexpected error.");
+                fixture.AddLegacy(der);
+                byte[] legacy = fixture.Legacy!;
+                using Observation before = new(fixture, legacy, legacy);
+                LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]);
+                string ledger = Path.Combine(folder.Path, "ledger.tsv");
+                TaskCompletionSource firstReading = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                TestKeychainStore first = new(fixture.Reference, new MacKeychainItem.NativeCalls((operation, status) =>
+                {
+                    evidence.ObserveCall("issue-1", operation, status);
+                    if (operation == "read password" && status == 0 && firstReading.TrySetResult())
+                    {
+                        Assert.True(secondReading.Wait(FixtureTimeout), "The second issuer did not enter its key read.");
+                    }
+                }));
+                TestKeychainStore second = new(fixture.Reference, new MacKeychainItem.NativeCalls(
+                    (operation, status) => evidence.ObserveCall("issue-2", operation, status)))
+                {
+                    BeforeRead = secondReading.Set,
+                    // The two key-store calls overlap. Order the independent ledger appends.
+                    AfterRead = () => Assert.True(firstIssued.Wait(FixtureTimeout), "The first issuer did not finish."),
+                };
+                void Issue(TestKeychainStore store, string name)
+                {
+                    using StringWriter output = new();
+                    using StringWriter error = new();
+                    Assert.Equal(0, RunIssue(store, ledger, output, error, name));
+                    Assert.True(error.GetStringBuilder().Length == 0, "The fixture issuer produced an error.");
+                    Assert.Equal(1, evidence.VerifyOutput(output.ToString(), original));
+                }
+                await RunOverlappingIssues(firstReading.Task, secondReading, () =>
+                {
+                    try
+                    {
+                        Issue(first, "Ada");
+                    }
+                    finally
+                    {
+                        firstIssued.Set();
+                    }
+                }, () => Issue(second, "Bob"));
+                using Observation after = new(fixture, der, legacy, before);
+                AssertObservation("issue-2", before, after, false, requireOriginal: false, requirePhysical: false);
+                Assert.False(before.Same(before.Physical, after.Physical), "This fixture must exercise a regenerated physical ID.");
+                Assert.Equal(2, File.ReadAllLines(ledger).Length);
             }
             finally
             {
-                File.SetUnixFileMode(fixture.Directory, OwnerOnly);
+                CryptographicOperations.ZeroMemory(der);
             }
+        }
+        evidence.Prove("overlapping-original-reader", permitted: true);
+    }
 
-            fixture.AssertData(fixture.Legacy!);
-            fixture.AssertPolicyAndIdentity(access, identity);
-            using (Observation refused = new(fixture, der, fixture.Legacy!, before))
-            {
-                AssertObservation(phase, before, refused, false, requireOriginal: true, requirePhysical: true);
-            }
-            Assert.Empty(mutations);
-            Assert.True(File.ReadAllText(ledger) == "previous entry\n", "The refused issuer changed the fixture ledger.");
-            LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]);
-            phase = "retry-1";
-            AssertFixtureIssue(fixture, store, ledger, original, fixture.Legacy!, der, before, phase, false);
-            Assert.Equal(["provider update"], mutations);
-            phase = "retry-2";
-            AssertFixtureIssue(fixture, store, ledger, original, der, der, before, phase, false);
-            Assert.Equal(["provider update"], mutations);
-            Assert.Equal(3, File.ReadAllLines(ledger).Length);
+    private static async Task RunOverlappingIssues(Task firstReading, ManualResetEventSlim secondReading,
+        Action firstIssue, Action secondIssue)
+    {
+        Task first = Task.Run(firstIssue);
+        Task? second = null;
+        try
+        {
+            await firstReading.WaitAsync(FixtureTimeout);
+            second = Task.Run(secondIssue);
+            await Task.WhenAll(first, second).WaitAsync(FixtureTimeout);
         }
         finally
         {
-            CryptographicOperations.ZeroMemory(der);
+            secondReading.Set();
+            await Task.WhenAll(first, second ?? Task.CompletedTask).WaitAsync(ChildCleanupTimeout);
         }
     }
 
@@ -388,8 +381,9 @@ public sealed partial class MacKeychainMigrationTests
             string phase = allowWriter ? "control-allowed" : "control-denied";
             ReportStatus(phase, "control update", status);
             using Observation after = new(fixture, sample, fixture.Legacy!, before);
-            AssertObservation(phase, before, after, oneTimeRead, requireOriginal: !allowWriter, requirePhysical: !allowWriter,
-                authorizationCorrect: allowWriter ? status == 0 : IsAuthorizationDenied(status));
+            AssertObservation(phase, before, after, oneTimeRead, requireOriginal: false, requirePhysical: false,
+                controlLostReaders: extraReader);
+            Assert.Equal(0, status);
         }
         finally
         {
@@ -398,50 +392,8 @@ public sealed partial class MacKeychainMigrationTests
     }
 
     [MacKeychainFact]
-    public void SeparateReadGrant_CannotAuthorizeAnExcludedWriter()
-    {
-        using Fixture fixture = new();
-        using TempFolder folder = new();
-        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
-        byte[] der = key.ExportPkcs8PrivateKey();
-        try
-        {
-            string[] access = fixture.AddLegacy(der, extra: true, oneTimeRead: true, allowWriter: false);
-            using Observation before = new(fixture, fixture.Legacy!, fixture.Legacy!);
-            byte[] identity = fixture.Identity();
-            List<int> writes = [];
-            ReadGrant grant = new((operation, status) =>
-            {
-                ReportStatus(operation == "read password" && status != 0 ? "denied-read" : "denied-write", operation, status);
-                if (operation == "provider update")
-                {
-                    writes.Add(status);
-                }
-            }, item => ObserveStaged(fixture, before, "denied-write", item));
-            grant.AllowOnce(fixture, fixture.Legacy!);
-            string ledger = Path.Combine(folder.Path, "ledger.tsv");
-            File.WriteAllText(ledger, "previous entry\n");
-            using StringWriter output = new();
-            using StringWriter error = new();
-            int result = RunIssue(new TestKeychainStore(fixture.Reference, grant), ledger, output, error);
-            using Observation after = new(fixture, der, fixture.Legacy!, before);
-            bool ledgerIntact = File.ReadAllText(ledger) == "previous entry\n";
-            Compare("denied-write", "ledger unchanged", ledgerIntact);
-            AssertObservation("denied-write", before, after, true, requireOriginal: true, requirePhysical: true);
-            Assert.Equal(1, result);
-            Assert.False(grant.HasOutstandingGrant);
-            Assert.True(output.GetStringBuilder().Length == 0, "The refused issuer produced output.");
-            Assert.True(error.ToString() == MigrationFailed + error.NewLine, "The refused issuer returned an unexpected error.");
-            fixture.AssertData(fixture.Legacy!);
-            fixture.AssertPolicyAndIdentity(access, identity);
-            Assert.True(ledgerIntact, "The refused issuer changed the fixture ledger.");
-            Assert.True(IsAuthorizationDenied(Assert.Single(writes)), "The provider must deny this writer.");
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(der);
-        }
-    }
+    public void SeparateReadGrant_CannotAuthorizeAnExcludedWriter() =>
+        ExerciseMigration("excluded-writer", extraReader: true, oneTimeRead: true, allowWriter: false);
 
     [MacKeychainFact]
     public void CreateKey_SecondaryWithoutLock_CreatesAndReleasesFileLock()
@@ -554,50 +506,173 @@ public sealed partial class MacKeychainMigrationTests
         }
     }
 
-    private static int RunIssue(ISigningKeyStore store, string ledger, TextWriter output, TextWriter error)
+    private static int RunIssue(ISigningKeyStore store, string ledger, TextWriter output, TextWriter error,
+        string name = "Ada")
     {
         using LicenceIssuerTests.CountingRandom random = new();
         Issuer issuer = new(output, error, store, random, FixedTimeProvider.At20261027(), ledger);
-        return issuer.Run(["issue", "--kid", Account, "--name", "Ada", "--until", "2027-12-31"]);
+        return issuer.Run(["issue", "--kid", Account, "--name", name, "--until", "2027-12-31"]);
     }
 
-    private void RecordOperation(List<string> mutations, string phase, string operation, int status)
+    private sealed class IssuerEvidence
     {
-        if (operation is "provider update" or "provider add" or "provider delete")
+        private readonly ITestOutputHelper log;
+        private int updates, creates, deletes, licences;
+
+        public IssuerEvidence(ITestOutputHelper log) => this.log = log;
+
+        public void ObserveCall(string phase, string operation, int status)
         {
-            mutations.Add(operation);
+            switch (operation)
+            {
+                case "provider update": Interlocked.Increment(ref updates); break;
+                case "provider add": Interlocked.Increment(ref creates); break;
+                case "provider delete": Interlocked.Increment(ref deletes); break;
+            }
+            log.WriteLine("{0} | {1} returned {2}", phase, operation, status);
         }
-        ReportStatus(phase, operation, status);
-    }
 
-    private void AssertFixtureIssue(Fixture fixture, ISigningKeyStore store, string ledger,
-        LicencePublicKeys original, byte[] previous, byte[] der, Observation baseline, string phase, bool oneTimeRead)
-    {
-        using Observation atStart = new(fixture, previous, previous, baseline);
-        string? previousLedger = File.Exists(ledger) ? File.ReadAllText(ledger) : null;
-        AssertIssued(store, ledger, original, () =>
+        public int VerifyOutput(string output, LicencePublicKeys original)
         {
-            using Observation refused = new(fixture, der, previous, baseline);
-            AssertObservation(phase, atStart, refused, oneTimeRead, requireOriginal: true, requirePhysical: true);
-            string? currentLedger = File.Exists(ledger) ? File.ReadAllText(ledger) : null;
-            Assert.True(previousLedger == currentLedger, "The refused issuer changed the fixture ledger.");
-        });
-        using Observation after = new(fixture, der, previous, baseline);
-        AssertObservation(phase, baseline, after, oneTimeRead, requireOriginal: false, requirePhysical: false);
+            using StringReader lines = new(output);
+            int verified = 0;
+            while (lines.ReadLine() is { } token)
+            {
+                Assert.True(LicenceKey.TryVerify(token, original, LicenceRevocations.None).IsValid,
+                    "Issuer output failed verification with the original fixture key.");
+                verified++;
+                Interlocked.Increment(ref licences);
+            }
+            return verified;
+        }
+
+        public void AssertCounts(int expectedUpdates, int expectedLicences)
+        {
+            Assert.Equal(expectedUpdates, updates);
+            Assert.Equal(0, creates);
+            Assert.Equal(0, deletes);
+            Assert.Equal(expectedLicences, licences);
+        }
+
+        public void Prove(string scenario, bool permitted)
+        {
+            AssertCounts(permitted ? 1 : 0, permitted ? 2 : 0);
+            log.WriteLine("factory401-proof {0} updates={1} creates={2} deletes={3} licences={4}",
+                scenario, updates, creates, deletes, licences);
+        }
     }
 
-    private static void AssertIssued(ISigningKeyStore store, string ledger, LicencePublicKeys original, Action? verifyRefusal = null)
+    private void ExerciseMigration(string scenario, bool extraReader, bool oneTimeRead = false,
+        bool allowWriter = true, bool retry = false)
+    {
+        if (!OperatingSystem.IsMacOS())
+        {
+            throw new PlatformNotSupportedException();
+        }
+
+        IssuerEvidence evidence = new(log);
+        using (Fixture fixture = new())
+        using (TempFolder folder = new())
+        using (ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256))
+        {
+            byte[] der = key.ExportPkcs8PrivateKey();
+            try
+            {
+                string[] access = fixture.AddLegacy(der, extraReader, oneTimeRead, allowWriter);
+                byte[] legacy = fixture.Legacy!;
+                byte[] identity = fixture.Identity();
+                using Observation before = new(fixture, legacy, legacy);
+                LicencePublicKeys original = LicencePublicKeys.FromTable([(Account, key.ExportSubjectPublicKeyInfoPem())]);
+                string ledger = Path.Combine(folder.Path, "ledger.tsv");
+                File.WriteAllText(ledger, "previous entry\n");
+                string phase = "issue-1";
+                ReadGrant grant = new((operation, status) => evidence.ObserveCall(
+                    oneTimeRead && operation == "read password" && status != 0 ? "denied-read" : phase, operation, status),
+                    item => ObserveStaged(fixture, before, phase, item));
+                TestKeychainStore store = new(fixture.Reference, grant);
+
+                void Attempt(bool permitted, bool readOnlyDirectory = false)
+                {
+                    bool second = phase is "issue-2" or "retry-2";
+                    byte[] previous = second ? der : legacy;
+                    using Observation start = new(fixture, previous, previous, before);
+                    if (oneTimeRead)
+                    {
+                        grant.AllowOnce(fixture, legacy);
+                    }
+                    byte[] previousLedger = File.ReadAllBytes(ledger);
+                    using StringWriter output = new();
+                    using StringWriter error = new();
+                    if (readOnlyDirectory)
+                    {
+                        File.SetUnixFileMode(fixture.Directory, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+                    }
+                    int result;
+                    try
+                    {
+                        result = RunIssue(store, ledger, output, error, second ? "Bob" : "Ada");
+                    }
+                    finally
+                    {
+                        if (readOnlyDirectory)
+                        {
+                            File.SetUnixFileMode(fixture.Directory, OwnerOnly);
+                        }
+                    }
+                    Assert.False(grant.HasOutstandingGrant);
+                    int verified = evidence.VerifyOutput(output.ToString(), original);
+                    using Observation after = new(fixture, der, previous, before);
+                    if (result == 0)
+                    {
+                        AssertObservation(phase, before, after, oneTimeRead, requireOriginal: false, requirePhysical: false);
+                        Assert.True(error.GetStringBuilder().Length == 0, "The fixture issuer produced an error.");
+                    }
+                    else
+                    {
+                        AssertObservation(phase, start, after, oneTimeRead, requireOriginal: true, requirePhysical: true);
+                        Assert.True(error.ToString() == MigrationFailed + error.NewLine, "Unexpected migration error.");
+                        Assert.True(output.GetStringBuilder().Length == 0, "The refused issuer produced output.");
+                        Assert.True(previousLedger.AsSpan().SequenceEqual(File.ReadAllBytes(ledger)), "The fixture ledger changed.");
+                        fixture.AssertData(previous);
+                    }
+                    Assert.Equal(permitted ? 0 : 1, result);
+                    Assert.Equal(permitted ? 1 : 0, verified);
+                    if (!permitted)
+                    {
+                        fixture.AssertPolicyAndIdentity(access, identity);
+                        evidence.AssertCounts(0, 0);
+                    }
+                }
+
+                if (retry)
+                {
+                    phase = "denied-write";
+                    Attempt(false, readOnlyDirectory: true);
+                }
+
+                phase = retry ? "retry-1" : allowWriter ? "issue-1" : "denied-write";
+                Attempt(!extraReader);
+                if (!extraReader)
+                {
+                    evidence.AssertCounts(1, 1);
+                    phase = retry ? "retry-2" : "issue-2";
+                    Attempt(true);
+                    Assert.Equal(3, File.ReadAllLines(ledger).Length);
+                }
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(der);
+            }
+        }
+        evidence.Prove(scenario, permitted: !extraReader);
+    }
+
+    private static void AssertIssued(ISigningKeyStore store, string ledger, LicencePublicKeys original)
     {
         using StringWriter output = new();
         using StringWriter error = new();
-        int result = RunIssue(store, ledger, output, error);
-        if (result != 0 && verifyRefusal is not null)
-        {
-            verifyRefusal();
-            Assert.True(output.GetStringBuilder().Length == 0, "The refused issuer produced output.");
-            Assert.True(error.ToString() == MigrationFailed + error.NewLine, "The refused issuer returned an unexpected error.");
-        }
-        Assert.True(result == 0, "The fixture issuer did not issue a verifiable licence.");
+        Assert.True(RunIssue(store, ledger, output, error) == 0, "The fixture issuer did not issue a licence.");
         Assert.True(error.GetStringBuilder().Length == 0, "The fixture issuer produced an error.");
         Assert.True(LicenceKey.TryVerify(output.ToString().Trim(), original, LicenceRevocations.None).IsValid);
     }
@@ -1003,7 +1078,23 @@ public sealed partial class MacKeychainMigrationTests
 
         public bool IsSupported => store.IsSupported;
         public string? WriteRefusal => store.WriteRefusal;
-        public byte[]? Read(string keyId) => store.Read(keychain, keyId);
+        public Action? BeforeRead { get; init; }
+        public Action? AfterRead { get; init; }
+        public byte[]? Read(string keyId)
+        {
+            BeforeRead?.Invoke();
+            byte[]? value = store.Read(keychain, keyId);
+            try
+            {
+                AfterRead?.Invoke();
+                return value;
+            }
+            catch
+            {
+                CryptographicOperations.ZeroMemory(value);
+                throw;
+            }
+        }
         public bool Exists(string keyId) => items.Exists(keychain, Service, keyId)
             || secondaries.Any(other => items.Exists(other, Service, keyId));
         public bool TryCreate(string keyId, byte[] pkcs8) => items.AddWithSearchList(keychain, secondaries,

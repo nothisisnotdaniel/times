@@ -65,6 +65,8 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
 
     private const int MaxBytes = 16 * 1024;
     private const string Unreadable = "The stored signing key is not readable.";
+    private static readonly Lock ReadGuardsLock = new();
+    private static readonly Dictionary<string, (Mutex Handle, int Users)> ReadGuards = new(StringComparer.Ordinal);
     // Complete DER encodings of id-ecPublicKey and prime256v1, respectively.
     private static ReadOnlySpan<byte> EcPublicKeyOid => [0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01];
     private static ReadOnlySpan<byte> P256Oid => [0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07];
@@ -91,8 +93,84 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
 
     public byte[]? Read(string keyId) => Read(IntPtr.Zero, keyId);
 
-    internal byte[]? Read(IntPtr search, string keyId) =>
-        keychain.ReadAndMigrate(search, Service, keyId, MaxBytes, trustedPath is not null, ReadKey);
+    internal byte[]? Read(IntPtr search, string keyId)
+    {
+        if (trustedPath is null)
+        {
+            return keychain.ReadAndMigrate(search, Service, keyId, MaxBytes, false, ReadKey);
+        }
+
+        // File Keychain persistent references can resolve a replacement with the same
+        // primary attributes. Serialize issuer reads before selecting the physical
+        // record, so the native writer can still reject every intervening replacement.
+        // Public issuer IDs have a bounded, filename-safe alphabet. Other direct
+        // store callers share the service mutex without putting input into its name.
+        string name = LicenceKey.IsValidKeyId(keyId) ? "Times.LicenceIssuer." + keyId : "Times.LicenceIssuer";
+        try
+        {
+            Mutex guard = RetainReadGuard(name);
+            try
+            {
+                try
+                {
+                    guard.WaitOne();
+                }
+                catch (AbandonedMutexException)
+                {
+                    // We own the mutex now. Select and validate the current item from the beginning.
+                }
+                try
+                {
+                    return keychain.ReadAndMigrate(search, Service, keyId, MaxBytes, true, ReadKey);
+                }
+                finally
+                {
+                    guard.ReleaseMutex();
+                }
+            }
+            finally
+            {
+                ReleaseReadGuard(name);
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or WaitHandleCannotBeOpenedException)
+        {
+            throw new TokenStoreException(MacKeychainItem.MigrationFailed);
+        }
+    }
+
+    // All local waiters share the same OS handle, including a reentrant read.
+    // Keep it alive until the last caller has finished waiting or reading.
+    private static Mutex RetainReadGuard(string name)
+    {
+        lock (ReadGuardsLock)
+        {
+            if (!ReadGuards.TryGetValue(name, out (Mutex Handle, int Users) entry))
+            {
+                NamedWaitHandleOptions options = new() { CurrentUserOnly = true, CurrentSessionOnly = false };
+                entry = (new Mutex(name, options), 0);
+            }
+            ReadGuards[name] = (entry.Handle, entry.Users + 1);
+            return entry.Handle;
+        }
+    }
+
+    private static void ReleaseReadGuard(string name)
+    {
+        lock (ReadGuardsLock)
+        {
+            (Mutex Handle, int Users) entry = ReadGuards[name];
+            if (entry.Users == 1)
+            {
+                ReadGuards.Remove(name);
+                entry.Handle.Dispose();
+            }
+            else
+            {
+                ReadGuards[name] = (entry.Handle, entry.Users - 1);
+            }
+        }
+    }
 
     public bool TryCreate(string keyId, byte[] pkcs8)
     {
@@ -416,6 +494,9 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
                     ValidateDate(dateTime[..8]);
                     ValidateTimeOfDay(dateTime[8..]);
                     break;
+                case UniversalTagNumber.Duration:
+                    ValidateDuration(reader.PeekContentBytes().Span);
+                    break;
                 case UniversalTagNumber.UniversalString:
                     ReadOnlySpan<byte> utf32 = reader.PeekContentBytes().Span;
                     Require(utf32.Length % 4 == 0);
@@ -470,6 +551,49 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
         int minute = (value[2] - '0') * 10 + value[3] - '0';
         int second = (value[4] - '0') * 10 + value[5] - '0';
         Require(hour < 24 && minute < 60 && second <= 60 || hour == 24 && minute == 0 && second == 0);
+    }
+
+    private static void ValidateDuration(ReadOnlySpan<byte> value)
+    {
+        // X.680 38.3.6 and X.690 8.26.5, 11.9. The encoding omits the leading P.
+        Require(!value.IsEmpty);
+        bool time = false;
+        int previousUnit = -1;
+        while (!value.IsEmpty)
+        {
+            if (value[0] == 'T')
+            {
+                Require(!time);
+                time = true;
+                previousUnit = -1;
+                value = value[1..];
+            }
+
+            int digits = value.IndexOfAnyExceptInRange((byte)'0', (byte)'9');
+            Require(digits > 0 && (digits == 1 || value[0] != '0'));
+            bool zero = digits == 1 && value[0] == '0';
+            value = value[digits..];
+            bool fraction = value[0] == '.';
+            if (fraction)
+            {
+                value = value[1..];
+                int places = value.IndexOfAnyExceptInRange((byte)'0', (byte)'9');
+                Require(places > 0);
+                value = value[places..];
+            }
+
+            byte unit = value[0];
+            value = value[1..];
+            if (unit == 'W')
+            {
+                Require(!time && previousUnit == -1 && value.IsEmpty);
+                return;
+            }
+
+            int index = (time ? "HMS"u8 : "YMD"u8).IndexOf(unit);
+            Require(index > previousUnit && (value.IsEmpty || !fraction && !zero));
+            previousUnit = index;
+        }
     }
 
     private static void ValidateIso2022(ReadOnlySpan<byte> value, bool graphicOnly, bool videotex)
@@ -582,9 +706,13 @@ internal sealed class MacKeychainSigningKeyStore : ISigningKeyStore
         int width = multibyte ? (final < 0x60 ? 2 : 3) : 1;
         bool is96 = slot >= '-';
         Range name = nameStart..(end + 1);
-        if (widths[set] == width && sets96[set] == is96)
+        for (int designated = 0; designated < widths.Length; designated++)
         {
-            ReadOnlySpan<byte> previous = value[designations[set]];
+            if (widths[designated] != width || sets96[designated] != is96)
+            {
+                continue;
+            }
+            ReadOnlySpan<byte> previous = value[designations[designated]];
             if (previous.IsEmpty)
             {
                 previous = videotex ? "u"u8 : "B"u8; // X.690 table 3, initial G0
