@@ -1,0 +1,114 @@
+name: Times 401 macOS verification
+on:
+  push:
+    branches:
+      - factory-ci/401-keychain-migration
+
+permissions:
+  contents: read
+
+jobs:
+  keychain:
+    name: macOS ARM64 • release suite and disposable Keychain
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      FACTORY_TEST_COMMIT: "3d9aa26f8aa6c183dde2872d101123906bd6442f"
+      DOTNET_NOLOGO: "1"
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+    steps:
+      - name: Check out the exact Times build
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: "3d9aa26f8aa6c183dde2872d101123906bd6442f"
+          persist-credentials: false
+      - name: Prepare the disposable Keychain test directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$FACTORY_TEST_COMMIT"
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          umask 077
+          mkdir -p "$HOME/Library/Keychains"
+          fixture="$(mktemp -d "$HOME/Library/Keychains/times-factory-401.XXXXXXXX")"
+          echo "TIMES_TEST_KEYCHAIN_ROOT=$fixture" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/times401/native" "$RUNNER_TEMP/times401/full"
+      - name: Install .NET 10
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          dotnet-version: 10.0.x
+      - name: Restore Times
+        run: dotnet restore Times.slnx
+      - name: Exercise native key migration with temporary test keys
+        id: native
+        continue-on-error: true
+        run: >
+          dotnet test tests/Times.Tests/Times.Tests.csproj -c Release --no-restore
+          --filter 'FullyQualifiedName~MacKeychainMigrationTests'
+          --logger 'trx;LogFileName=native.trx' --results-directory "$RUNNER_TEMP/times401/native"
+      - name: Run the complete Times Release suite
+        id: full
+        continue-on-error: true
+        run: >
+          dotnet test Times.slnx -c Release --no-restore --logger trx
+          --results-directory "$RUNNER_TEMP/times401/full"
+      - name: Verify the native cases and write test counts
+        if: always()
+        env:
+          NATIVE_STATUS: ${{ steps.native.outcome }}
+          FULL_STATUS: ${{ steps.full.outcome }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, xml.etree.ElementTree as ET
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "times401"
+          root.mkdir(exist_ok=True)
+          report = {"commit": os.environ["FACTORY_TEST_COMMIT"], "controller": os.environ["GITHUB_SHA"], "suites": {}}
+          valid = True
+          for name, status in (("native", "NATIVE_STATUS"), ("full", "FULL_STATUS")):
+              results = []
+              for trx in (root / name).glob("*.trx"):
+                  results.extend(ET.parse(trx).findall(".//{*}UnitTestResult"))
+              passed = sum(node.get("outcome") == "Passed" for node in results)
+              skipped = sum(node.get("outcome") == "NotExecuted" for node in results)
+              remaining = len(results) - passed - skipped
+              row = {"cases": len(results), "passed": passed, "skipped": skipped, "other": remaining,
+                     "step": os.environ.get(status, "missing")}
+              if name == "native":
+                  row["case_names"] = sorted(node.get("testName", "") for node in results)
+                  valid = valid and len(set(row["case_names"])) >= 2 and passed == len(results)
+              valid = valid and row["step"] == "success" and passed > 0 and remaining == 0
+              report["suites"][name] = row
+          (root / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              print("Tested Times commit \x60" + report["commit"] + "\x60\n", file=summary)
+              for name, row in report["suites"].items():
+                  print("- " + name + " — " + str(row["passed"]) + " passed, " + str(row["skipped"]) +
+                        " skipped, " + str(row["other"]) + " other. Step " + row["step"] + ".", file=summary)
+              for case in report["suites"]["native"]["case_names"]:
+                  print("  - " + case, file=summary)
+          raise SystemExit(0 if valid else 1)
+          PY
+      - name: Attach test counts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: times-401-macos-3d9aa26f8aa6c183dde2872d101123906bd6442f
+          path: ${{ runner.temp }}/times401/summary.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Clear the disposable test directory
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, shutil
+          chosen = os.environ.get("TIMES_TEST_KEYCHAIN_ROOT")
+          if chosen:
+              path = pathlib.Path(chosen)
+              parent = (pathlib.Path.home() / "Library/Keychains").resolve()
+              if path.resolve().parent != parent or path.is_symlink() or not path.name.startswith("times-factory-401."):
+                  raise SystemExit("Unexpected fixture directory")
+              if path.exists(): shutil.rmtree(path)
+          PY
