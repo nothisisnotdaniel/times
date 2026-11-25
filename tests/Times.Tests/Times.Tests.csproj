@@ -37,6 +37,14 @@
           Link="libTimesKeychainFixture.dylib" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <!-- The selected-Keychain creation case issues under a dedicated executable identity. -->
+  <PropertyGroup Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <OutputType>Exe</OutputType>
+    <UseAppHost>true</UseAppHost>
+    <GenerateProgramFile>false</GenerateProgramFile>
+    <DefineConstants>$(DefineConstants);KEYCHAIN_FIXTURE_APPHOST</DefineConstants>
+  </PropertyGroup>
+
   <Target Name="BuildKeychainFixture" BeforeTargets="PrepareForBuild" Condition="$([MSBuild]::IsOSPlatform('OSX'))"
           Inputs="MacKeychainFixture.c;$(MSBuildProjectFile)" Outputs="$(FixtureNativeDir)/libTimesKeychainFixture.dylib">
     <MakeDir Directories="$(FixtureNativeDir)" />

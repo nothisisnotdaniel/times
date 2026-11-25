@@ -796,11 +796,13 @@ public sealed class SigningKeyStoreTests : IDisposable
         public Action<Item>? AfterUpdate { get; set; }
         public bool RefuseCommit { get; set; }
         public int RollbackFailures { get; set; }
+        public bool RollbackUnavailable { get; set; }
+        public bool BorrowedMigrationSession { get; set; }
         public int RestoreFailures { get; set; }
         public int RollbackAttempts { get; private set; }
         public int RestoreAttempts { get; private set; }
         public bool RecoveryPending => pending.Count != 0;
-        private readonly Dictionary<IntPtr, MacKeychainItem.NativeCalls.FileTransaction> pending = [];
+        private readonly Dictionary<IntPtr, (MacKeychainItem.NativeCalls.FileTransaction Cleanup, Action? CloseSession)> pending = [];
         public bool DestinationUnavailable { get; set; }
         public Func<int>? SecondaryReply { get; set; }
         public Action<IntPtr>? BeforeDestinationInsert { get; set; }
@@ -907,6 +909,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         public bool InstanceBoundPersistentReferences { get; set; } = true;
         public bool StagedGroupUnavailable { get; set; }
         public int VerifiedRollbacks { get; private set; }
+        public int CommittedViewChecks { get; private set; }
         private (IntPtr Owner, byte[] Stamp)? limitation;
 
         public bool StagedProtectionGroupMissing(IntPtr item, byte[] der) =>
@@ -1051,6 +1054,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         public int VerifyCommittedView(IntPtr keychain, string service, string account, IntPtr persistent, IntPtr policy,
             byte[]? stamp)
         {
+            CommittedViewChecks++;
             Item current = GetItem(keychain)!;
             Item committed = CommittedReadView ?? current;
             return persistent == (InstanceBoundPersistentReferences ? -current.Reference : keychain) && stamp is not null
@@ -1058,7 +1062,13 @@ public sealed class SigningKeyStoreTests : IDisposable
                 && policies[policy].SequenceEqual([committed.Partition, .. committed.TrustedPaths]) ? 0 : -25293;
         }
 
-        public MacKeychainItem.IFileTransaction BeginTransaction(IntPtr keychain)
+        public MacKeychainItem.IFileTransaction? TryBeginReversibleMigration(IntPtr keychain) =>
+            BorrowedMigrationSession ? null : BeginTransaction(keychain, ownsSession: true);
+
+        public MacKeychainItem.IFileTransaction BeginTransaction(IntPtr keychain) =>
+            BeginTransaction(keychain, ownsSession: false);
+
+        private MacKeychainItem.IFileTransaction BeginTransaction(IntPtr keychain, bool ownsSession)
         {
             Recover(keychain);
             if (keychain == OtherKeychain)
@@ -1071,16 +1081,20 @@ public sealed class SigningKeyStoreTests : IDisposable
             scheduled?.Invoke();
             Assert.True(locked.Add(keychain));
             LockOrder.Add((int)keychain);
-            return new Transaction(this, keychain).Begin();
+            return new Transaction(this, keychain).Begin(ownsSession);
         }
 
         private void Recover(IntPtr owner)
         {
-            if (pending.TryGetValue(owner, out MacKeychainItem.NativeCalls.FileTransaction? cleanup))
+            if (pending.TryGetValue(owner, out (MacKeychainItem.NativeCalls.FileTransaction Cleanup, Action? CloseSession) session))
             {
-                if (!cleanup.Recover())
+                if (!session.Cleanup.Recover())
                 {
-                    throw new TokenStoreException(MacKeychainItem.MigrationFailed);
+                    if (session.CloseSession is null)
+                    {
+                        throw new TokenStoreException(MacKeychainItem.MigrationFailed);
+                    }
+                    session.CloseSession();
                 }
                 pending.Remove(owner);
             }
@@ -1102,6 +1116,7 @@ public sealed class SigningKeyStoreTests : IDisposable
             private readonly byte[]? beforeData;
             private readonly string? beforePartition;
             private readonly bool originalIntegrity;
+            private bool committed;
 
             public Transaction(FakeKeychain db, IntPtr owner)
             {
@@ -1113,9 +1128,20 @@ public sealed class SigningKeyStoreTests : IDisposable
                 originalIntegrity = before?.IntegrityValid == true;
             }
 
-            public MacKeychainItem.IFileTransaction Begin() =>
+            public MacKeychainItem.IFileTransaction Begin(bool ownsSession) =>
                 new MacKeychainItem.NativeCalls.FileTransaction(Commit, Rollback, Restore,
-                    cleanup => db.pending.Add(owner, cleanup), null);
+                    cleanup => db.pending.Add(owner, (cleanup, ownsSession ? CloseSession : null)), null);
+
+            // This in-memory backend owns the snapshot and can discard it even if the
+            // ordinary rollback call is permanently unavailable. FileDL lacks this option.
+            private void CloseSession()
+            {
+                if (!committed)
+                {
+                    RestoreOriginal();
+                }
+                Assert.True(db.locked.Remove(owner));
+            }
 
             private int Commit()
             {
@@ -1132,25 +1158,39 @@ public sealed class SigningKeyStoreTests : IDisposable
                     return -1;
                 }
 
+                committed = true;
                 return 0;
             }
 
             private int Rollback()
             {
                 db.RollbackAttempts++;
+                if (db.RollbackUnavailable)
+                {
+                    return -1;
+                }
                 if (owner == DefaultKeychain && db.RollbackFailures > 0)
                 {
                     db.RollbackFailures--;
                     return -1;
                 }
+                RestoreOriginal();
+                return 0;
+            }
+
+            private void RestoreOriginal()
+            {
                 db.SetItem(owner, before);
                 if (before is not null)
                 {
+                    if (!ReferenceEquals(before.Data, beforeData))
+                    {
+                        CryptographicOperations.ZeroMemory(before.Data);
+                    }
                     before.Data = beforeData!;
                     before.Partition = beforePartition!;
                     before.IntegrityValid = originalIntegrity;
                 }
-                return 0;
             }
 
             private int Restore()

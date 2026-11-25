@@ -932,6 +932,14 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
                 : is96 ? final is (byte)'F' or (byte)'L' or (byte)'O' or (byte)'R' or (byte)'S'
                 : nameBytes.SequenceEqual("!@"u8) || nameBytes.Length == 1 && final is (byte)'B' or (byte)'u' or (byte)'v');
         }
+        else if (type == UniversalTagNumber.VideotexString)
+        {
+            // X.680 Table 8 graphic sets. ISO-IR 103 ('v' in a 94-set) belongs to Teletex.
+            Require(multibyte ? final is (byte)'B' or (byte)'E'
+                : is96 ? final is (byte)'}' or (byte)'F' or (byte)'L' or (byte)'O' or (byte)'S'
+                : nameBytes.SequenceEqual("!@"u8) || nameBytes.Length == 1 && final is (byte)'I' or (byte)'d'
+                    or (byte)'k' or (byte)'u' or (byte)'|');
+        }
         // X.690 11.4 requires the lowest registered slot. The ISO 2022
         // designations for 94-character sets start at G0, and for 96 at G1.
         Require(set == (is96 ? 1 : 0));

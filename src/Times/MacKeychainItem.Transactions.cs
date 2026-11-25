@@ -248,6 +248,19 @@ internal sealed partial class MacKeychainItem
             }
         }
 
+        public IFileTransaction? TryBeginReversibleMigration(IntPtr keychain)
+        {
+            // The file database handle belongs to Security.framework. Its rollback can fail
+            // indefinitely and we cannot close the owning session to discard a staged update.
+            DatabaseHandle file = FileDatabase(keychain);
+            if (file.Database == 0 || file.DataLayer == 0)
+            {
+                throw new TokenStoreException(MigrationFailed);
+            }
+            Report("identified borrowed file database", 0);
+            return null;
+        }
+
         public virtual IFileTransaction BeginTransaction(IntPtr keychain)
         {
             RecoverSession(keychain);

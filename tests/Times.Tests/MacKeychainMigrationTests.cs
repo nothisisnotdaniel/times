@@ -526,18 +526,60 @@ public sealed partial class MacKeychainMigrationTests
     }
 
     [MacKeychainFact]
+    public void CreateKey_FreshSelectedKeychain_PreservesExactDerAndDuplicate()
+    {
+        // The fixture apphost issues under its own identity. The parent owns cleanup on timeout.
+        using Fixture target = new();
+        RunFixtureProcess(Path.Combine(AppContext.BaseDirectory, "Times.Tests"),
+            [nameof(CreateKey_FreshSelectedKeychain_PreservesExactDerAndDuplicate), Path.GetFileName(target.Directory)],
+            explainExit: code => $"Fresh creation failed during {(CreationStep)code}.");
+    }
+
+    private enum CreationStep { OpenFixture = 10, Create, VerifyDerAndPem, VerifyReader, Duplicate, VerifyPreservation }
+
+#if KEYCHAIN_FIXTURE_APPHOST
+    private static int Main(string[] args)
+    {
+        if (!OperatingSystem.IsMacOS() || NativeSkip is not null
+            || args is not [nameof(CreateKey_FreshSelectedKeychain_PreservesExactDerAndDuplicate), string directory]
+            || !Guid.TryParseExact(directory, "N", out Guid selected))
+        {
+            return 1;
+        }
+        CreationStep step = CreationStep.OpenFixture;
+        try
+        {
+            using Fixture target = new(selected);
+            AssertFreshCreation(target, null, Environment.ProcessPath!, phase => step = phase);
+            return 0;
+        }
+        catch (Exception)
+        {
+            return (int)step;
+        }
+    }
+#endif
+
+    [MacKeychainFact]
     public void CreateKey_SecondaryWithoutLock_CreatesAndReleasesFileLock()
     {
         using Fixture target = new();
         using Fixture secondary = new();
         File.Delete(Directory.GetFiles(secondary.Directory, ".fl*").Single());
+        AssertFreshCreation(target, secondary, IssuerApphost);
+        Assert.False(MacKeychainItem.Default.Exists(secondary.Reference, Service, Account));
+        Assert.True(Directory.GetFiles(secondary.Directory, ".fl*").Length == 1, "The lookup did not leave one lock file.");
+        Assert.True(BusyLockFiles(secondary.Directory).Length == 0, "The secondary lock is still held.");
+    }
 
+    private static void AssertFreshCreation(Fixture target, Fixture? secondary, string issuerPath, Action<CreationStep>? phase = null)
+    {
         using TempFolder folder = new();
         using StringWriter output = new(), error = new();
         using LicenceIssuerTests.CountingRandom random = new();
         byte[] data = [];
         byte[] issuerBuffer = [];
-        TestKeychainStore store = new(target.Reference, secondary: secondary.Reference)
+        TestKeychainStore store = new(target.Reference, secondary: secondary?.Reference ?? IntPtr.Zero, processPath: issuerPath)
         {
             BeforeCreate = generated =>
             {
@@ -549,7 +591,11 @@ public sealed partial class MacKeychainMigrationTests
         Issuer issuer = new(output, error, store, random, FixedTimeProvider.At20261027(), Path.Combine(folder.Path, "ledger.tsv"));
         try
         {
+            Assert.Null(store.WriteRefusal);
+            Assert.False(store.Exists(Account));
+            phase?.Invoke(CreationStep.Create);
             Assert.Equal(0, issuer.Run(["create-key", "--kid", Account]));
+            phase?.Invoke(CreationStep.VerifyDerAndPem);
             Assert.True(error.GetStringBuilder().Length == 0, "Fresh creation wrote to stderr.");
             Assert.NotEmpty(data);
             Assert.False(issuerBuffer.AsSpan().ContainsAnyExcept((byte)0));
@@ -559,6 +605,7 @@ public sealed partial class MacKeychainMigrationTests
             Assert.Equal(data.Length, consumed);
             Assert.True(output.ToString() == key.ExportSubjectPublicKeyInfoPem() + output.NewLine,
                 "The issuer did not print exactly the stored key's public PEM.");
+            phase?.Invoke(CreationStep.VerifyReader);
             MacKeychainItem.NativeCalls calls = new();
             Assert.Equal(0, calls.FindUnique(target.Reference, Service, Account, out IntPtr created));
             try
@@ -582,19 +629,23 @@ public sealed partial class MacKeychainMigrationTests
             string[] entries = AccessEntries(target.Path);
             Assert.Single(Fixture.PartitionIds(entries));
             Assert.Contains(entries, entry => entry.Contains(" integrity", StringComparison.Ordinal));
+            if (secondary is null)
+            {
+                SampleRead excluded = Assert.Single(target.ProbeReaders(data, data));
+                Assert.True(ReadDenied(excluded.Status), "A separate executable could read the new key.");
+            }
             byte[] identity = target.Identity();
             output.GetStringBuilder().Clear();
+            phase?.Invoke(CreationStep.Duplicate);
             Assert.Equal(1, issuer.Run(["create-key", "--kid", Account]));
             Assert.True(output.GetStringBuilder().Length == 0, "Duplicate creation wrote to stdout.");
             Assert.True(error.ToString() == $"A signing key named {Account} already exists; it was left as it is." + error.NewLine,
                 "Duplicate creation did not return the expected refusal.");
+            phase?.Invoke(CreationStep.VerifyPreservation);
             target.AssertData(data);
             target.AssertPolicyAndIdentity(entries, identity);
-            Assert.False(MacKeychainItem.Default.Exists(secondary.Reference, Service, Account));
             Assert.Empty(Directory.GetDirectories(target.Directory, ".times-create.*"));
-            Assert.True(Directory.GetFiles(secondary.Directory, ".fl*").Length == 1, "The lookup did not leave one lock file.");
             Assert.True(BusyLockFiles(target.Directory).Length == 0, "The target lock is still held.");
-            Assert.True(BusyLockFiles(secondary.Directory).Length == 0, "The secondary lock is still held.");
         }
         finally
         {
@@ -846,6 +897,7 @@ public sealed partial class MacKeychainMigrationTests
         {
             public int Setters;
             public bool Staged, MissingView, RolledBack, Restored, KnownLimitation, Counted;
+            public bool BorrowedFile, VerifiedOriginalView, VerifiedOriginalVersion;
         }
 
         public IssuerEvidence(ITestOutputHelper log) => this.log = log;
@@ -869,6 +921,15 @@ public sealed partial class MacKeychainMigrationTests
                 case "known file Keychain staged view unavailable" when status == -25300:
                     attempt.KnownLimitation = true;
                     break;
+                case "identified borrowed file database" when status == 0:
+                    attempt.BorrowedFile = true;
+                    break;
+                case "verify committed item" when attempt.BorrowedFile && status == 0:
+                    attempt.VerifiedOriginalView = true;
+                    break;
+                case "verify database version" when attempt.VerifiedOriginalView && status == 0:
+                    attempt.VerifiedOriginalVersion = true;
+                    break;
                 case "provider add": Interlocked.Increment(ref creates); break;
                 case "provider delete": Interlocked.Increment(ref deletes); break;
             }
@@ -881,7 +942,13 @@ public sealed partial class MacKeychainMigrationTests
         {
             AttemptTrace attempt = attempts[phase];
             Assert.False(attempt.Counted);
-            if (attempt.KnownLimitation)
+            if (attempt.BorrowedFile)
+            {
+                Assert.Equal(0, attempt.Setters);
+                Assert.True(attempt.VerifiedOriginalVersion,
+                    "The original committed item was not verified after identifying the borrowed file database.");
+            }
+            else if (attempt.KnownLimitation)
             {
                 Assert.Equal(0, attempt.Setters);
                 Assert.Contains(attempts.Values, prior => prior.Counted && prior.MissingView && prior.Restored);
@@ -1223,14 +1290,16 @@ public sealed partial class MacKeychainMigrationTests
     private sealed class Fixture : IDisposable
     {
         private readonly byte previousInteraction;
-        private readonly string password = Guid.NewGuid().ToString("N");
+        private readonly string password;
         private readonly List<string> readers = [];
         public string Directory { get; }
         public string Path { get; }
         public IntPtr Reference { get; }
         public byte[]? Legacy { get; private set; }
 
-        public Fixture()
+        private readonly bool ownsDatabase;
+
+        public Fixture(Guid? selected = null)
         {
             if (!OperatingSystem.IsMacOS())
             {
@@ -1249,20 +1318,38 @@ public sealed partial class MacKeychainMigrationTests
                 Assert.True(entry.LinkTarget is null, "A fixture directory is a symbolic link.");
             }
 
-            Directory = System.IO.Path.Combine(root, Guid.NewGuid().ToString("N"));
-            System.IO.Directory.CreateDirectory(Directory, OwnerOnly);
+            ownsDatabase = selected is null;
+            password = ownsDatabase ? Guid.NewGuid().ToString("N") : string.Empty;
+            Directory = System.IO.Path.Combine(root, (selected ?? Guid.NewGuid()).ToString("N"));
+            if (ownsDatabase)
+            {
+                System.IO.Directory.CreateDirectory(Directory, OwnerOnly);
+            }
             Path = System.IO.Path.Combine(Directory, "issuer.keychain-db");
+            Assert.Equal(OwnerOnly, File.GetUnixFileMode(Directory));
+            Assert.Null(new DirectoryInfo(Directory).LinkTarget);
+            if (!ownsDatabase)
+            {
+                Assert.True(File.Exists(Path));
+                Assert.Null(new FileInfo(Path).LinkTarget);
+            }
             Assert.Equal(0, SecKeychainGetUserInteractionAllowed(out previousInteraction));
             Assert.Equal(0, SecKeychainSetUserInteractionAllowed(0));
             byte[] encodedPassword = Encoding.UTF8.GetBytes(password);
             try
             {
-                Assert.Equal(0, SecKeychainCreate(Path, (uint)encodedPassword.Length, encodedPassword, 0, 0, out IntPtr reference));
+                int status = ownsDatabase
+                    ? SecKeychainCreate(Path, (uint)encodedPassword.Length, encodedPassword, 0, 0, out IntPtr reference)
+                    : SecKeychainOpen(Path, out reference);
+                Assert.Equal(0, status);
                 Reference = reference;
                 Assert.NotEqual(IntPtr.Zero, Reference);
                 Assert.True(Path == Encoding.UTF8.GetString(new MacKeychainItem.NativeCalls().KeychainPath(Reference)),
                     "Keychain Services opened a different database.");
-                Assert.Equal(0, TimesFixtureAdd(Reference, CheckService, null, null, FixtureReaders.IncludeCaller, [1], 1));
+                if (ownsDatabase)
+                {
+                    Assert.Equal(0, TimesFixtureAdd(Reference, CheckService, null, null, FixtureReaders.IncludeCaller, [1], 1));
+                }
                 string[] markerPolicy = AccessEntries(Path, CheckService);
                 Assert.True(PartitionIds(markerPolicy).Length > 0, "The marker lacks a partition.");
                 Assert.True(markerPolicy.Any(entry => entry.Contains(" integrity", StringComparison.Ordinal)),
@@ -1457,7 +1544,7 @@ public sealed partial class MacKeychainMigrationTests
             {
                 if (Reference != IntPtr.Zero)
                 {
-                    int result = SecKeychainDelete(Reference);
+                    int result = ownsDatabase ? SecKeychainDelete(Reference) : 0;
                     CFRelease(Reference);
                     Assert.Equal(0, result);
                 }
@@ -1466,7 +1553,10 @@ public sealed partial class MacKeychainMigrationTests
             {
                 CryptographicOperations.ZeroMemory(Legacy);
                 SecKeychainSetUserInteractionAllowed(previousInteraction);
-                System.IO.Directory.Delete(Directory, recursive: true);
+                if (ownsDatabase)
+                {
+                    System.IO.Directory.Delete(Directory, recursive: true);
+                }
             }
         }
     }
@@ -1554,7 +1644,7 @@ public sealed partial class MacKeychainMigrationTests
             .Select(entry => entry.Trim()).Order(StringComparer.Ordinal).ToArray();
     }
 
-    private static string RunFixtureProcess(string file, string[] args, byte[]? input = null)
+    private static string RunFixtureProcess(string file, string[] args, byte[]? input = null, Func<int, string>? explainExit = null)
     {
         ProcessStartInfo info = new(file)
         {
@@ -1573,7 +1663,7 @@ public sealed partial class MacKeychainMigrationTests
             child.StandardInput.BaseStream.Write(input);
         }
         child.StandardInput.Close();
-        WaitForFixture(child);
+        WaitForFixture(child, explainExit);
         Task.WhenAll(stdout, stderr).GetAwaiter().GetResult();
         return stdout.GetAwaiter().GetResult();
     }
@@ -1597,7 +1687,7 @@ public sealed partial class MacKeychainMigrationTests
         return output.GetAwaiter().GetResult();
     }
 
-    private static void WaitForFixture(Process process)
+    private static void WaitForFixture(Process process, Func<int, string>? explainExit = null)
     {
         if (!process.WaitForExit(FixtureTimeout))
         {
@@ -1605,7 +1695,7 @@ public sealed partial class MacKeychainMigrationTests
             Assert.True(process.WaitForExit(ChildCleanupTimeout), "The disposable helper did not exit during cleanup.");
             Assert.Fail("The disposable Keychain helper timed out.");
         }
-        Assert.Equal(0, process.ExitCode);
+        Assert.True(process.ExitCode == 0, explainExit?.Invoke(process.ExitCode) ?? $"The disposable helper exited with {process.ExitCode}.");
     }
 
     private static string? NativeSkip => !OperatingSystem.IsMacOS() ? "Requires the macOS file Keychain." :
@@ -1621,6 +1711,9 @@ public sealed partial class MacKeychainMigrationTests
     {
         public MacKeychainTheoryAttribute() => Skip = NativeSkip;
     }
+
+    [DllImport(Security)]
+    private static extern int SecKeychainOpen([MarshalAs(UnmanagedType.LPUTF8Str)] string path, out IntPtr keychain);
 
     [DllImport(Security)]
     private static extern int SecKeychainCreate([MarshalAs(UnmanagedType.LPUTF8Str)] string path, uint passwordLength,

@@ -527,7 +527,12 @@ internal sealed partial class MacKeychainItem
             {
                 try
                 {
-                    using IFileTransaction transaction = native.BeginTransaction(owner);
+                    using IFileTransaction? transaction = native.TryBeginReversibleMigration(owner);
+                    if (transaction is null)
+                    {
+                        native.WithStableRead(owner, VerifyOriginalViews);
+                        throw new TokenStoreException(MigrationFailed);
+                    }
                     if (TryMigrate(transaction))
                     {
                         return;
@@ -541,7 +546,7 @@ internal sealed partial class MacKeychainItem
                         // Disposal can transfer unfinished cleanup to this owning session.
                         // A stable read finishes that cleanup before inspecting either view,
                         // even when Dispose itself threw.
-                        native.WithStableRead(owner, VerifyRestored);
+                        native.WithStableRead(owner, VerifyOriginalViews);
                         if (missingStagedView)
                         {
                             native.RememberStagingLimitation(owner, service, account, stamp!);
@@ -612,7 +617,7 @@ internal sealed partial class MacKeychainItem
             }
         }
 
-        void VerifyRestored()
+        void VerifyOriginalViews()
         {
             IntPtr original = IntPtr.Zero, unique = IntPtr.Zero;
             try
@@ -913,6 +918,8 @@ internal sealed partial class MacKeychainItem
         public int VerifyCommittedView(IntPtr keychain, string service, string account, IntPtr persistent, IntPtr policy,
             byte[]? stamp);
         public IFileTransaction BeginTransaction(IntPtr keychain);
+        // Return null before opening a writer if a failed stage cannot be discarded at first refusal.
+        public IFileTransaction? TryBeginReversibleMigration(IntPtr keychain);
         public bool InstanceBoundPersistentReferences { get; }
         public bool StagedProtectionGroupMissing(IntPtr resolved, byte[] der);
         public bool HasStagingLimitation(IntPtr owner, string service, string account, byte[] stamp);

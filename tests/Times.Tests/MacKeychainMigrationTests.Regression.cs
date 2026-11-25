@@ -604,6 +604,64 @@ public sealed partial class MacKeychainMigrationTests
     }
 
     [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void SoleReader_PersistentRollbackFailure_PreservesOriginalAtFirstReturn(bool borrowed)
+    {
+        using PortableFixture fixture = new();
+        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        byte[] der = key.ExportPkcs8PrivateKey();
+        byte[] legacy = EncodeLegacy(der);
+        SigningKeyStoreTests.Item original = new(legacy, [fixture.Apphost]);
+        try
+        {
+            fixture.Calls.Stored = original;
+            fixture.Calls.BorrowedMigrationSession = borrowed;
+            fixture.Calls.RollbackUnavailable = true;
+            fixture.Calls.StagedGroupUnavailable = true;
+            fixture.Calls.AfterUpdate = staged =>
+            {
+                staged.IntegrityValid = false;
+                fixture.Calls.MissNextUniqueLookup = true;
+            };
+            byte[] group = original.ProtectionGroup.ToArray();
+            File.WriteAllBytes(fixture.Ledger, [1, 2, 3]);
+            using StringWriter output = new(), error = new();
+            Assert.Equal(1, RunIssue(fixture.Store, fixture.Ledger, output, error));
+            Assert.Equal(MigrationFailed + error.NewLine, error.ToString());
+            Assert.Empty(output.ToString());
+            Assert.Same(original, fixture.Calls.Stored);
+            Assert.True(CryptographicOperations.FixedTimeEquals(legacy, original.Data));
+            Assert.Equal([fixture.Apphost], original.TrustedPaths);
+            Assert.Equal(SigningKeyStoreTests.Item.OriginalPartition, original.Partition);
+            Assert.True(original.IntegrityValid);
+            Assert.Equal(group, original.ProtectionGroup);
+            Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(fixture.Ledger));
+            Assert.Equal(0, fixture.Calls.Creates + fixture.Calls.Deletes);
+            Assert.False(fixture.Calls.RecoveryPending);
+            Assert.Equal(borrowed ? 0 : 1, fixture.Calls.Updates);
+            Assert.Equal(borrowed ? 0 : 1, fixture.Calls.VerifiedRollbacks);
+            Assert.Equal(2, fixture.Calls.CommittedViewChecks);
+            if (borrowed)
+            {
+                Assert.Empty(fixture.Calls.LockOrder);
+                Assert.Equal(0, fixture.Calls.RollbackAttempts);
+            }
+            else
+            {
+                Assert.Single(fixture.Calls.LockOrder);
+                Assert.True(fixture.Calls.RollbackAttempts > 2);
+            }
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(legacy);
+            CryptographicOperations.ZeroMemory(der);
+            CryptographicOperations.ZeroMemory(original.Data);
+        }
+    }
+
+    [Theory]
     [InlineData(true, false, false)]
     [InlineData(false, true, false)]
     [InlineData(true, true, false)]
@@ -1198,6 +1256,9 @@ public sealed partial class MacKeychainMigrationTests
                 Teletex(false, 0x1b, 0x21, 0x45, 0x0d);
                 Teletex(false, 0x1b, 0x22, 0x48, 0x8b);
                 Teletex(true, 0x1b, 0x28, 0x76, 0x21);
+                // Same assigned cell: IR 103 is exclusive to Teletex here. IR 13 is valid Videotex.
+                cases.Add("1.3.6.1.4.1.32473.21", [0x15, 4, 0x1b, 0x28, 0x76, 0x21], false, legacy);
+                cases.Add("1.3.6.1.4.1.32473.21", [0x15, 4, 0x1b, 0x28, 0x49, 0x21], true, legacy);
                 Teletex(false, 0x1b, 0x28, 0x76, 0x29);
                 Teletex(true, 0x1b, 0x28, 0x42, 0x5c);
                 Teletex(false, 0x1b, 0x28, 0x49, 0x21);
