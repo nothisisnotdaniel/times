@@ -488,9 +488,8 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
                 case UniversalTagNumber.GraphicString:
                 case UniversalTagNumber.GeneralString:
                 case UniversalTagNumber.VideotexString:
-                    ValidateIso2022(reader.PeekContentBytes().Span,
-                        tag.TagValue is (int)UniversalTagNumber.GraphicString or (int)UniversalTagNumber.ObjectDescriptor,
-                        tag.TagValue == (int)UniversalTagNumber.VideotexString);
+                case UniversalTagNumber.T61String:
+                    ValidateIso2022(reader.PeekContentBytes().Span, (UniversalTagNumber)tag.TagValue);
                     break;
                 case UniversalTagNumber.Date:
                     ValidateDate(reader.PeekContentBytes().Span);
@@ -525,7 +524,6 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
                 case UniversalTagNumber.NumericString:
                 case UniversalTagNumber.PrintableString:
                 case UniversalTagNumber.VisibleString:
-                case UniversalTagNumber.T61String:
                     Span<char> characters = new char[reader.PeekContentBytes().Length];
                     try
                     {
@@ -680,14 +678,20 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
         }
     }
 
-    private static void ValidateIso2022(ReadOnlySpan<byte> value, bool graphicOnly, bool videotex)
+    private static void ValidateIso2022(ReadOnlySpan<byte> value, UniversalTagNumber type)
     {
         // ISO 2022 designates sets G0..G3 independently of the left/right or single shift
         // that invokes one. A designation can change the width of a graphic character.
         Span<int> widths = [1, 0, 0, 0];
         Span<Range> designations = stackalloc Range[4];
         designations.Clear();
-        byte c0 = (byte)'@', c1 = videotex ? (byte)'A' : (byte)0;
+        // X.690 Table 3. Teletex starts with IR 102, 106 and 107 already designated.
+        bool graphicOnly = type is UniversalTagNumber.GraphicString or UniversalTagNumber.ObjectDescriptor;
+        bool teletex = type == UniversalTagNumber.T61String;
+        bool videotex = type == UniversalTagNumber.VideotexString;
+        ReadOnlySpan<byte> initialG0 = teletex || videotex ? "u"u8 : "B"u8;
+        byte c0 = teletex ? (byte)'E' : (byte)'@';
+        byte c1 = teletex ? (byte)'H' : videotex ? (byte)'A' : (byte)0;
         bool? escapedC1 = null;
         int unusedGraphics = 0;
         Span<bool> sets96 = stackalloc bool[4];
@@ -701,6 +705,14 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
             {
                 Require(single < 0);
                 int start = ++i;
+                // ISO-IR 168 designates the 1990 revision of JIS X 0208. Keep
+                // the revision in the set identity as well as the character table.
+                bool revisedJis = value[start..].StartsWith("&@\u001b$B"u8);
+                if (revisedJis)
+                {
+                    i += 3;
+                    start = i;
+                }
                 while (i < value.Length && value[i] is >= 0x20 and <= 0x2f)
                 {
                     i++;
@@ -709,7 +721,7 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
                 Require(i < value.Length && value[i] is >= 0x30 and <= 0x7e);
                 if (start < i && value[start] is (byte)'!' or (byte)'"')
                 {
-                    Require(!graphicOnly && i == start + 1);
+                    Require(!graphicOnly && !teletex && i == start + 1);
                     bool primary = value[start] == '!';
                     ref byte active = ref (primary ? ref c0 : ref c1);
                     Require(value[i] != active && UsesControlSet(value[(i + 1)..], primary));
@@ -725,7 +737,7 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
                             continue;
                         }
                     }
-                    ReadGraphicEscape(value, start, i, graphicOnly, videotex, widths, sets96, designations,
+                    ReadGraphicEscape(value, start, i, revisedJis, type, initialG0, widths, sets96, designations,
                         ref left, ref right, ref single, ref unusedGraphics, ref pendingLeft, ref pendingRight);
                 }
             }
@@ -762,16 +774,17 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
                 int set = single >= 0 ? single : current < 0x80 ? left : right;
                 int width = widths[set];
                 Require(width > 0);
-                if (!sets96[set] && current == 0x20)
+                if (!sets96[set] && (current == 0x20 || current == 0x7f && !graphicOnly))
                 {
                     Require(single < 0);
-                    continue; // SPACE in the left half of a 94-character repertoire
+                    continue; // SPACE (and, for these control-bearing types, DELETE) are independent.
                 }
 
                 byte low = (byte)((current & 0x80) + (sets96[set] ? 0x20 : 0x21));
                 byte high = (byte)((current & 0x80) + (sets96[set] ? 0x7f : 0x7e));
                 Require(width <= value.Length - i && !value.Slice(i, width).ContainsAnyExceptInRange(low, high));
-                Require(Iso2022Repertoires.IsAssigned(value[designations[set]], sets96[set], value.Slice(i, width), videotex));
+                ReadOnlySpan<byte> name = value[designations[set]];
+                Require(Iso2022Repertoires.IsAssigned(name.IsEmpty ? initialG0 : name, sets96[set], value.Slice(i, width)));
                 if (single < 0)
                 {
                     if (current < 0x80)
@@ -848,9 +861,9 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
         _ => false,
     };
 
-    private static void ReadGraphicEscape(ReadOnlySpan<byte> value, int start, int end, bool graphicOnly, bool videotex,
-        Span<int> widths, Span<bool> sets96, Span<Range> designations, ref int left, ref int right, ref int single,
-        ref int unusedGraphics, ref bool pendingLeft, ref bool pendingRight)
+    private static void ReadGraphicEscape(ReadOnlySpan<byte> value, int start, int end, bool revisedJis,
+        UniversalTagNumber type, ReadOnlySpan<byte> initialG0, Span<int> widths, Span<bool> sets96, Span<Range> designations,
+        ref int left, ref int right, ref int single, ref int unusedGraphics, ref bool pendingLeft, ref bool pendingRight)
     {
         ReadOnlySpan<byte> intermediates = value[start..end];
         byte final = value[end];
@@ -868,7 +881,8 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
                     LockGraphicSet('~' - final + 1, widths, ref right, ref pendingRight);
                     break;
                 default:
-                    Require(!graphicOnly && final is >= 0x40 and <= 0x5f);
+                    Require(type is not (UniversalTagNumber.GraphicString or UniversalTagNumber.ObjectDescriptor)
+                        && final is >= 0x40 and <= 0x5f);
                     break;
             }
             return;
@@ -911,16 +925,23 @@ internal sealed partial class MacKeychainSigningKeyStore : ISigningKeyStore
                 || nameBytes.Length == 2 && nameBytes[0] == '!' && final is >= 0x40 and <= 0x46);
         }
         int width = multibyte ? 2 : 1;
+        if (type == UniversalTagNumber.T61String)
+        {
+            // X.680 Table 8. These are the graphic repertoires of TeletexString.
+            Require(multibyte ? final is (byte)'B' or (byte)'E'
+                : is96 ? final is (byte)'F' or (byte)'L' or (byte)'O' or (byte)'R' or (byte)'S'
+                : nameBytes.SequenceEqual("!@"u8) || nameBytes.Length == 1 && final is (byte)'B' or (byte)'u' or (byte)'v');
+        }
         // X.690 11.4 requires the lowest registered slot. The ISO 2022
         // designations for 94-character sets start at G0, and for 96 at G1.
         Require(set == (is96 ? 1 : 0));
-        Range name = nameStart..(end + 1);
+        Range name = (revisedJis ? start - 3 : nameStart)..(end + 1);
         if (widths[set] == width && sets96[set] == is96)
         {
             ReadOnlySpan<byte> previous = value[designations[set]];
             if (previous.IsEmpty)
             {
-                previous = videotex ? "u"u8 : "B"u8; // X.690 table 3, initial G0
+                previous = initialG0;
             }
             Require(!previous.SequenceEqual(value[name]));
         }

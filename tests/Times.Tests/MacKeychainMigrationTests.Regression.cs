@@ -541,8 +541,11 @@ public sealed partial class MacKeychainMigrationTests
         Assert.False(password.AsSpan().ContainsAnyExcept((byte)0));
     }
 
-    [Fact]
-    public void SoleReader_FileStagedGroupMissing_VerifiesRollbackThenRefusesBeforeAnotherSetter()
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    [InlineData(4)]
+    public void SoleReader_FileStagedGroupMissing_VerifiesRollbackThenRefusesBeforeAnotherSetter(int rollbackFailures)
     {
         using PortableFixture fixture = new();
         using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
@@ -554,7 +557,13 @@ public sealed partial class MacKeychainMigrationTests
             fixture.Calls.Stored = item;
             fixture.Calls.InstanceBoundPersistentReferences = false;
             fixture.Calls.StagedGroupUnavailable = true;
-            fixture.Calls.AfterUpdate = _ => fixture.Calls.MissNextUniqueLookup = true;
+            fixture.Calls.RollbackFailures = rollbackFailures;
+            byte[] originalGroup = item.ProtectionGroup.ToArray();
+            fixture.Calls.AfterUpdate = staged =>
+            {
+                staged.IntegrityValid = false;
+                fixture.Calls.MissNextUniqueLookup = true;
+            };
             File.WriteAllBytes(fixture.Ledger, [1, 2, 3]);
             for (int attempt = 0; attempt < 2; attempt++)
             {
@@ -567,7 +576,11 @@ public sealed partial class MacKeychainMigrationTests
                 Assert.True(CryptographicOperations.FixedTimeEquals(legacy, item.Data));
                 Assert.True(item.TrustedPaths.SequenceEqual(["original reader"]));
                 Assert.Equal(SigningKeyStoreTests.Item.OriginalPartition, item.Partition);
+                Assert.True(item.IntegrityValid);
+                Assert.Equal(originalGroup, item.ProtectionGroup);
                 Assert.Equal(new byte[] { 1, 2, 3 }, File.ReadAllBytes(fixture.Ledger));
+                Assert.False(fixture.Calls.RecoveryPending);
+                Assert.Equal(rollbackFailures + 1 + attempt, fixture.Calls.RollbackAttempts);
                 Assert.Equal(1, fixture.Calls.Updates);
                 Assert.Equal(1, fixture.Calls.VerifiedRollbacks);
                 Assert.Equal(0, fixture.Calls.Creates + fixture.Calls.Deletes);
@@ -1176,6 +1189,20 @@ public sealed partial class MacKeychainMigrationTests
                 cases.Add("1.3.6.1.4.1.32473.4", [0x31, 5, 0xa0, 0, 0x81, 1, 1], true, legacy);
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 2, 0x1b, 0x28], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 1, 65], true, legacy);
+                // X.690 Table 3 starts TeletexString in IR 102, with C0 106 and C1 107.
+                void Teletex(bool valid, params byte[] encoding) => cases.Add("1.3.6.1.4.1.32473.12",
+                    [0x14, checked((byte)encoding.Length), .. encoding], valid, legacy);
+                Teletex(true, 0x41);
+                Teletex(false, 0x1b, 0x28, 0x75, 0x41);
+                Teletex(true, 0x0d, 0x8b);
+                Teletex(false, 0x1b, 0x21, 0x45, 0x0d);
+                Teletex(false, 0x1b, 0x22, 0x48, 0x8b);
+                Teletex(true, 0x1b, 0x28, 0x76, 0x21);
+                Teletex(false, 0x1b, 0x28, 0x76, 0x29);
+                Teletex(true, 0x1b, 0x28, 0x42, 0x5c);
+                Teletex(false, 0x1b, 0x28, 0x49, 0x21);
+                Teletex(true, 0x1b, 0x26, 0x40, 0x1b, 0x24, 0x42, 0x74, 0x26);
+                Teletex(false, 0x1b, 0x24, 0x42, 0x74, 0x26);
                 // GraphicString has no C0 or C1 repertoire, even if the next character is graphic.
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 4, 0x1b, 0x21, 0x40, 65], false, legacy);
                 cases.Add("1.3.6.1.4.1.32473.5", [0x19, 4, 0x1b, 0x22, 0x43, 65], false, legacy);
@@ -1184,6 +1211,10 @@ public sealed partial class MacKeychainMigrationTests
                 cases.Add("1.3.6.1.4.1.32473.11", [0x1b, 5, 0x1b, 0x22, 0x43, 0x1b, 0x45], true, legacy);
                 void General(bool valid, params byte[] encoding) => cases.Add("1.3.6.1.4.1.32473.11",
                     [0x1b, checked((byte)encoding.Length), .. encoding], valid, legacy);
+                General(true, 0x1b, 0x28, 0x76, 0x21);
+                General(false, 0x1b, 0x28, 0x76, 0x29);
+                General(true, 0x1b, 0x28, 0x76, 0x2b);
+                General(false, 0x1b, 0x28, 0x76, 0x50);
                 General(false, 0x1b, 0x22, 0x7e, 0x85); // Empty C1 repertoire.
                 General(false, 0x1b, 0x22, 0x30, 0x85); // Private C1 repertoire.
                 General(false, 0x1b, 0x22, 0x43, 0x80); // Unassigned position in ISO-IR 77.

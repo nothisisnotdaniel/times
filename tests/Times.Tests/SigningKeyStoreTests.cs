@@ -751,6 +751,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         public IntPtr Reference { get; set; }
         public int PhysicalVersion { get; set; }
         public byte[] ProtectionGroup { get; } = RandomNumberGenerator.GetBytes(16);
+        public bool IntegrityValid { get; set; } = true;
         public bool IssuerCreated { get; init; }
     }
 
@@ -1038,6 +1039,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         public void WithStableRead(IntPtr keychain, Action read)
         {
             Assert.Contains(keychain, held);
+            Recover(keychain);
             int version = DatabaseVersion;
             read();
             if (DatabaseVersion != version)
@@ -1076,7 +1078,7 @@ public sealed class SigningKeyStoreTests : IDisposable
         {
             if (pending.TryGetValue(owner, out MacKeychainItem.NativeCalls.FileTransaction? cleanup))
             {
-                if (cleanup.FinishCleanup() != 0)
+                if (!cleanup.Recover())
                 {
                     throw new TokenStoreException(MacKeychainItem.MigrationFailed);
                 }
@@ -1099,6 +1101,7 @@ public sealed class SigningKeyStoreTests : IDisposable
             private readonly Item? before;
             private readonly byte[]? beforeData;
             private readonly string? beforePartition;
+            private readonly bool originalIntegrity;
 
             public Transaction(FakeKeychain db, IntPtr owner)
             {
@@ -1107,6 +1110,7 @@ public sealed class SigningKeyStoreTests : IDisposable
                 before = db.GetItem(owner);
                 beforeData = before?.Data;
                 beforePartition = before?.Partition;
+                originalIntegrity = before?.IntegrityValid == true;
             }
 
             public MacKeychainItem.IFileTransaction Begin() =>
@@ -1144,6 +1148,7 @@ public sealed class SigningKeyStoreTests : IDisposable
                 {
                     before.Data = beforeData!;
                     before.Partition = beforePartition!;
+                    before.IntegrityValid = originalIntegrity;
                 }
                 return 0;
             }
@@ -1193,7 +1198,8 @@ public sealed class SigningKeyStoreTests : IDisposable
 
         public int CheckMigrationReader(IntPtr item, IntPtr policy, byte[] expected) =>
             policies[policy].Length == 2 && policies[policy][0] == Item.OriginalPartition
-            && RemainingReads is null && CryptographicOperations.FixedTimeEquals(referents[item].Data, expected)
+            && RemainingReads is null && referents[item].IntegrityValid
+            && CryptographicOperations.FixedTimeEquals(referents[item].Data, expected)
                 ? 0 : -25293;
 
         public int CopyLegacyReadPolicy(IntPtr item, bool writable, out IntPtr snapshot)

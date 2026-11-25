@@ -532,13 +532,33 @@ public sealed partial class MacKeychainMigrationTests
         using Fixture secondary = new();
         File.Delete(Directory.GetFiles(secondary.Directory, ".fl*").Single());
 
-        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
-        byte[] data = key.ExportPkcs8PrivateKey();
+        using TempFolder folder = new();
+        using StringWriter output = new(), error = new();
+        using LicenceIssuerTests.CountingRandom random = new();
+        byte[] data = [];
+        byte[] issuerBuffer = [];
+        TestKeychainStore store = new(target.Reference, secondary: secondary.Reference)
+        {
+            BeforeCreate = generated =>
+            {
+                Assert.True(data.Length == 0, "The issuer generated another key for an existing ID.");
+                issuerBuffer = generated;
+                data = generated.ToArray();
+            }
+        };
+        Issuer issuer = new(output, error, store, random, FixedTimeProvider.At20261027(), Path.Combine(folder.Path, "ledger.tsv"));
         try
         {
-            Assert.True(MacKeychainItem.Default.AddWithSearchList(target.Reference, [secondary.Reference],
-                Service, Account, data, Environment.ProcessPath!));
+            Assert.Equal(0, issuer.Run(["create-key", "--kid", Account]));
+            Assert.True(error.GetStringBuilder().Length == 0, "Fresh creation wrote to stderr.");
+            Assert.NotEmpty(data);
+            Assert.False(issuerBuffer.AsSpan().ContainsAnyExcept((byte)0));
             target.AssertData(data);
+            using ECDsa key = ECDsa.Create();
+            key.ImportPkcs8PrivateKey(data, out int consumed);
+            Assert.Equal(data.Length, consumed);
+            Assert.True(output.ToString() == key.ExportSubjectPublicKeyInfoPem() + output.NewLine,
+                "The issuer did not print exactly the stored key's public PEM.");
             MacKeychainItem.NativeCalls calls = new();
             Assert.Equal(0, calls.FindUnique(target.Reference, Service, Account, out IntPtr created));
             try
@@ -548,6 +568,7 @@ public sealed partial class MacKeychainMigrationTests
                 {
                     Assert.Equal(0, status);
                     Assert.NotEqual(IntPtr.Zero, access);
+                    Assert.Equal(0, calls.CheckMigrationReader(created, access, data));
                 }
                 finally
                 {
@@ -558,6 +579,18 @@ public sealed partial class MacKeychainMigrationTests
             {
                 calls.Release(created);
             }
+            string[] entries = AccessEntries(target.Path);
+            Assert.Single(Fixture.PartitionIds(entries));
+            Assert.Contains(entries, entry => entry.Contains(" integrity", StringComparison.Ordinal));
+            byte[] identity = target.Identity();
+            output.GetStringBuilder().Clear();
+            Assert.Equal(1, issuer.Run(["create-key", "--kid", Account]));
+            Assert.True(output.GetStringBuilder().Length == 0, "Duplicate creation wrote to stdout.");
+            Assert.True(error.ToString() == $"A signing key named {Account} already exists; it was left as it is." + error.NewLine,
+                "Duplicate creation did not return the expected refusal.");
+            target.AssertData(data);
+            target.AssertPolicyAndIdentity(entries, identity);
+            Assert.False(MacKeychainItem.Default.Exists(secondary.Reference, Service, Account));
             Assert.Empty(Directory.GetDirectories(target.Directory, ".times-create.*"));
             Assert.True(Directory.GetFiles(secondary.Directory, ".fl*").Length == 1, "The lookup did not leave one lock file.");
             Assert.True(BusyLockFiles(target.Directory).Length == 0, "The target lock is still held.");
@@ -1355,7 +1388,7 @@ public sealed partial class MacKeychainMigrationTests
             }
         }
 
-        private static string[] PartitionIds(string[] entries)
+        public static string[] PartitionIds(string[] entries)
         {
             string partition = entries.Single(entry => entry.Contains(" partition_id", StringComparison.Ordinal));
             string description = partition.Split('\n').Select(line => line.Trim())
@@ -1498,11 +1531,15 @@ public sealed partial class MacKeychainMigrationTests
 
         public bool IsSupported => store.IsSupported;
         public string? WriteRefusal => store.WriteRefusal;
+        public Action<byte[]>? BeforeCreate { get; init; }
         public byte[]? Read(string keyId) => store.Read(keychain, keyId);
         public bool Exists(string keyId) => items.Exists(keychain, Service, keyId)
             || secondaries.Any(other => items.Exists(other, Service, keyId));
-        public bool TryCreate(string keyId, byte[] pkcs8) => items.AddWithSearchList(keychain, secondaries,
-            Service, keyId, pkcs8, Environment.ProcessPath!);
+        public bool TryCreate(string keyId, byte[] pkcs8)
+        {
+            BeforeCreate?.Invoke(pkcs8);
+            return items.AddWithSearchList(keychain, secondaries, Service, keyId, pkcs8, Environment.ProcessPath!);
+        }
     }
 
     private static string[] AccessEntries(string path, string service = Service)

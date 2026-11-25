@@ -519,23 +519,35 @@ internal sealed partial class MacKeychainItem
     private void Migrate(IntPtr owner, IntPtr persistent, IntPtr originalPolicy, string service,
         string account, byte[] expected, byte[] data, byte[]? stamp)
     {
+        bool verifyRollback = false;
+        bool missingStagedView = false;
         try
         {
             lock (TransactionLock)
             {
-                using (IFileTransaction transaction = native.BeginTransaction(owner))
+                try
                 {
+                    using IFileTransaction transaction = native.BeginTransaction(owner);
                     if (TryMigrate(transaction))
                     {
                         return;
                     }
+                    missingStagedView = true;
                 }
-
-                // The failed dual view was observed inside the transaction. Only a
-                // completed rollback and a fresh view of the original may establish
-                // this backend limitation for another attempt on the same envelope.
-                native.WithStableRead(owner, VerifyRestored);
-                native.RememberStagingLimitation(owner, service, account, stamp!);
+                finally
+                {
+                    if (verifyRollback)
+                    {
+                        // Disposal can transfer unfinished cleanup to this owning session.
+                        // A stable read finishes that cleanup before inspecting either view,
+                        // even when Dispose itself threw.
+                        native.WithStableRead(owner, VerifyRestored);
+                        if (missingStagedView)
+                        {
+                            native.RememberStagingLimitation(owner, service, account, stamp!);
+                        }
+                    }
+                }
                 throw new TokenStoreException(MigrationFailed);
             }
         }
@@ -583,11 +595,13 @@ internal sealed partial class MacKeychainItem
                 {
                     throw new TokenStoreException(MigrationFailed);
                 }
+                verifyRollback = true;
                 if (!UpdatePreservingAccess(owner, service, account, current, persistent, before, lockedStamp, data))
                 {
                     return false;
                 }
                 transaction.Commit();
+                verifyRollback = false;
                 return true;
             }
             finally

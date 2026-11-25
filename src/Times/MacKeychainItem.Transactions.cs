@@ -378,7 +378,10 @@ internal sealed partial class MacKeychainItem
             {
                 if (PendingCleanup.TryGetValue(keychain, out FileTransaction? pending))
                 {
-                    Check(pending.FinishCleanup(), failure);
+                    if (!pending.Recover())
+                    {
+                        throw new TokenStoreException(failure);
+                    }
                     PendingCleanup.Remove(keychain);
                     CFRelease(keychain);
                 }
@@ -451,7 +454,11 @@ internal sealed partial class MacKeychainItem
                 committed = true;
             }
 
-            internal int FinishCleanup()
+            // This is the same retained FileDL session. Until rollback succeeds,
+            // never enable autocommit or release it to a subsequent operation.
+            internal bool Recover() => SpinWait.SpinUntil(() => FinishCleanup() == 0, ProbeTimeout);
+
+            private int FinishCleanup()
             {
                 if (needsRollback)
                 {

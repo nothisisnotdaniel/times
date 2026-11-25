@@ -6,11 +6,10 @@ namespace Times.LicenceIssuer;
 // See https://itscj.ipsj.or.jp/ir/ and the registered tables in RFC 1345.
 internal static class Iso2022Repertoires
 {
-    public static bool IsAssigned(ReadOnlySpan<byte> name, bool set96, ReadOnlySpan<byte> character, bool videotex)
+    public static bool IsAssigned(ReadOnlySpan<byte> name, bool set96, ReadOnlySpan<byte> character)
     {
         int designation = name.Length switch
         {
-            0 => videotex ? 'u' : 'B',
             1 => name[0],
             _ => (name[0] << 8) | name[1]
         };
@@ -19,6 +18,15 @@ internal static class Iso2022Repertoires
         if (character.Length == 2)
         {
             position = (position << 8) | (character[1] & 0x7f);
+            if (name.SequenceEqual("&@\u001b$B"u8))
+            {
+                // IR 168 adds the last two cells of JIS X 0208 row 84 to IR 87.
+                if (position is 0x7425 or 0x7426)
+                {
+                    return true;
+                }
+                designation = 'B';
+            }
             bounds = Double94(designation);
         }
         else
@@ -82,7 +90,7 @@ internal static class Iso2022Repertoires
         0x5b or 0x5c => [0x21, 0x70, 0x72, 0x7e], // ISO-IR 18, 19
         0x5d => [0x3a, 0x3e, 0x5e, 0x7e], // ISO-IR 50
         0x5e => [0x2c, 0x2c, 0x2e, 0x7e], // ISO-IR 51
-        0x62 or 0x6c or 0x76 => [0x21, 0x58, 0x5c, 0x64, 0x66, 0x7e], // ISO-IR 70, 90, 103
+        0x62 or 0x6c => [0x21, 0x58, 0x5c, 0x64, 0x66, 0x7e], // ISO-IR 70, 90
         0x6a => // ISO-IR 88
         [
             0x21, 0x49, 0x4b, 0x56, 0x58, 0x69, 0x6b, 0x7e
@@ -101,6 +109,11 @@ internal static class Iso2022Repertoires
         0x75 => // ISO-IR 102
         [
             0x21, 0x5b, 0x5d, 0x5d, 0x5f, 0x5f, 0x61, 0x7a, 0x7c, 0x7c
+        ],
+        0x76 => // ISO-IR 103, supplementary Teletex chart (1985)
+        [
+            0x21, 0x28, 0x2b, 0x2b, 0x30, 0x38, 0x3b, 0x3f, 0x41, 0x48, 0x4a, 0x4f,
+            0x60, 0x64, 0x66, 0x7e
         ],
         0x79 => [0x21, 0x3f, 0x60, 0x6d, 0x70, 0x7d], // ISO-IR 137
         0x2140 => // ISO-IR 150
