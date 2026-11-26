@@ -139,9 +139,7 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] [#31](backlog/031-remove-unused-prime-parameters.md) Remove unused Prime parameters → 208-remove-prime-params
 - [x] [#36](backlog/036-teams-call-tracking.md) Teams call tracking → 327-teams-call-tracking
 - [x] [#40](backlog/040-devops-sync-becomes-pro.md) DevOps sync becomes Pro (after: #39) → 328-devops-sync-pro
-- [ ] [#41](backlog/041-suite-landing-page.md) Suite landing page (after: #39; Context#109)
 - [x] [#42](backlog/042-choose-a-source-licence.md) Choose a source licence
-- [h] [#43](backlog/043-open-the-shop.md) Open the shop (after: ReviewPack#1; #39; #41; Context#399)
 - [x] [#44](backlog/044-one-shot-help.md) One-shot help → 350-one-shot-help
 - [x] [#47](backlog/047-windows-prerelease-update-check.md) Windows prerelease update check
 - [x] [#52](backlog/052-unknown-key-reason-on-pro-activate.md) Unknown key reason on pro activate → 399-unknown-key-reason-on-pro.e6e3c776773b4d47bc96cd1e3485a4ce
