@@ -120,6 +120,9 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] Vacation allowance: a setting for the yearly vacation days. A command with an alias (or the settings dialog) shows the days taken and left for the current year, counted from the vacation absence days; half days are not supported yet. Builds on absence days and the settings dialog. (after: Absence days; Settings dialog) → 116-vacation-allowance
 - [x] Second instance guard: on start, take a lock file in the data folder (removed on every exit; a lock left by a crashed run is detected and taken over). If another Times already holds it, show a red line and exit with a non-zero code instead of letting two copies overwrite each other's day files. Also refuse to save a day file that changed on disk since it was loaded, with a red hint to reload. → 117-second-instance-guard
 - [x] Balance corrections: a command with an alias books a manual adjustment to the flexitime balance on the current day (plus or minus hours and minutes, with a reason checked like other names), for example a starting balance or paid-out overtime. The day view shows it and the balance includes it; old day files without corrections load as before. Builds on the daily target and flexitime balance. (after: Daily target and flexitime balance) → 121-balance-corrections
+- [ ] [#68](backlog/068-size-check-when-a-day-file.md) Size check when a day file is written
+- [ ] [#62](backlog/062-tray-confirm-a-booking-made-from.md) Tray: confirm a booking made from the reminder
+- [ ] [#63](backlog/063-tray-remind-again-after-a-missed.md) Tray: remind again after a missed check-in balloon
 - [ ] [#10](backlog/010-checkpoint-opens-context-note.md) Checkpoint opens Context note (after: Context#101)
 - [x] [#11](backlog/011-calendar-to-checkpoints.md) Calendar to checkpoints (after: Context#17) → 312-calendar-to-checkpoints
 - [x] Old data examples: put example files of the old time data (anonymised if needed; they become test fixtures) into `Times/import-samples/` and describe the old format or tool in `Times/import-samples/README.md`.
@@ -143,33 +146,12 @@ The order of the lines is the priority. Add items with `python3 factory/tools/jo
 - [x] [#44](backlog/044-one-shot-help.md) One-shot help → 350-one-shot-help
 - [x] [#47](backlog/047-windows-prerelease-update-check.md) Windows prerelease update check
 - [x] [#52](backlog/052-unknown-key-reason-on-pro-activate.md) Unknown key reason on pro activate → 399-unknown-key-reason-on-pro.e6e3c776773b4d47bc96cd1e3485a4ce
-- [?] [#53](backlog/053-pack-test-builds-on-its-own.md) Pack test builds on its own
-- [ ] [#54](backlog/054-signing-key-stored-as-raw-bytes.md) Signing key stored as raw bytes
-- [ ] [#55](backlog/055-mistyped-pro-command-kept-out-of.md) Mistyped pro command kept out of history
-- [?] [#56](backlog/056-hours-json-reads-day-files-once.md) Hours JSON reads day files once
-- [?] [#57](backlog/057-report-hint-order-for-bad-dates.md) Report hint order for bad dates
-- [?] [#58](backlog/058-show-a-reading-line-before-eod.md) Show a reading line before eod reads Context todos
-- [?] [#59](backlog/059-test-the-real-context-process-path.md) Test the real Context process path in ContextCli
-- [?] [#60](backlog/060-tray-no-left-today-row-on.md) Tray: no Left today row on an absent day
+- [ ] [#58](backlog/058-show-a-reading-line-before-eod.md) Show a reading line before eod reads Context todos
+- [ ] [#60](backlog/060-tray-no-left-today-row-on.md) Tray: no Left today row on an absent day
 - [ ] [#61](backlog/061-tray-windows-icon-check-and-handle.md) Tray: Windows icon check and handle cleanup
-- [ ] [#62](backlog/062-tray-confirm-a-booking-made-from.md) Tray: confirm a booking made from the reminder
-- [ ] [#63](backlog/063-tray-remind-again-after-a-missed.md) Tray: remind again after a missed check-in balloon
-- [?] [#64](backlog/064-cache-the-month-s-home-office.md) Cache the month's home-office count
-- [?] [#65](backlog/065-narrow-the-catch-lists-of-the.md) Narrow the catch lists of the read-only day counters
-- [?] [#66](backlog/066-drop-control-characters-from-timesheet-reasons.md) Drop control characters from timesheet reasons
-- [?] [#67](backlog/067-share-the-balance-rule-between-timesheet.md) Share the balance rule between Timesheet and FlexitimeBalance
-- [ ] [#68](backlog/068-size-check-when-a-day-file.md) Size check when a day file is written
-- [?] [#69](backlog/069-keep-the-home-office-mark-when.md) Keep the home-office mark when import replaces a day
-- [?] [#70](backlog/070-name-the-valid-values-when-a.md) Name the valid values when a setting falls back
-- [?] [#71](backlog/071-cap-the-number-of-calendar-meetings.md) Cap the number of calendar meetings read
+- [ ] [#69](backlog/069-keep-the-home-office-mark-when.md) Keep the home-office mark when import replaces a day
+- [ ] [#70](backlog/070-name-the-valid-values-when-a.md) Name the valid values when a setting falls back
 - [ ] [#72](backlog/072-run-the-windows-and-linux-file.md) Run the Windows and Linux file checks in CI
-- [?] [#73](backlog/073-drop-cache-entries-for-deleted-day.md) Drop cache entries for deleted day files
 - [ ] [#74](backlog/074-readme-take-the-signing-key-from.md) README: take the signing key from the release tag
-- [?] [#75](backlog/075-test-the-skipped-hint-order-on.md) Test the skipped hint order on empty days
-- [?] [#76](backlog/076-escape-other-echoed-text-with-echotext.md) Escape other echoed text with EchoText
-- [?] [#77](backlog/077-sync-send-exits-1-when-a.md) Sync send exits 1 when a work item fails
-- [?] [#78](backlog/078-keep-slash-only-first-word-token.md) Keep slash-only first word token lines out of history
-- [?] [#79](backlog/079-no-spurious-refusals-in-the-event.md) No spurious refusals in the event queue
-- [?] [#80](backlog/080-teams-token-file-read-without-following.md) Teams token file read without following links
-- [?] [#81](backlog/081-cap-call-bookings-from-teams.md) Cap Call bookings from Teams
+- [ ] [#77](backlog/077-sync-send-exits-1-when-a.md) Sync send exits 1 when a work item fails
 - [h] [#82](backlog/082-try-teams-call-tracking-with-a.md) Try Teams call tracking with a real Teams
